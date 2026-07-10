@@ -157,22 +157,25 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                 script_task = asyncio.create_task(script_runner.run(), name="script-runner")
 
             bridge_task = asyncio.create_task(bridge.run(), name="gemini-bridge")
-            nudge_task = asyncio.create_task(
-                nudge_caller_after_agent_greeting(
-                    observer,
-                    bridge,
-                    writer,
-                    first_speaker=run.first_speaker,
-                ),
-                name="agent-greeted-nudge",
-            )
+            nudge_task: asyncio.Task | None = None
+            if run.first_speaker == "agent" and not scenario.script_steps:
+                nudge_task = asyncio.create_task(
+                    nudge_caller_after_agent_greeting(
+                        observer,
+                        bridge,
+                        writer,
+                        first_speaker=run.first_speaker,
+                    ),
+                    name="agent-greeted-nudge",
+                )
             try:
                 end_reason = await _conversation_loop(
                     scenario, run, observer, bridge, writer, cfg.observe.silence_threshold_ms / 1000
                 )
             finally:
-                nudge_task.cancel()
-                await asyncio.gather(nudge_task, return_exceptions=True)
+                if nudge_task is not None:
+                    nudge_task.cancel()
+                    await asyncio.gather(nudge_task, return_exceptions=True)
                 if script_runner is not None:
                     script_runner.stop()
                 if script_task is not None:
