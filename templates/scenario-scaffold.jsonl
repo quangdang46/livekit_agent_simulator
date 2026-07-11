@@ -24,8 +24,10 @@
 // action: speak (default) | wait (no audio; for silence / "user gone")
 // barge_in: true → short delay barge-in while agent_speaking
 // delivery: gemini_text | room_pcm (+ asset)
+// asset: builtin:noise.loud | @noise.ambient | file in .agent-sim/cues/ | cues.aliases name
+// lk-sim cues --root .   # list built-in + target overrides
 // verify.min_interruptions / min_agent_finals_after_silence / …
-{"kind":"Script","spec":{"steps":[{"id":"example-backchannel","trigger":"agent_speaking","delay_ms":800,"say":"uh-huh","label":"backchannel","delivery":"gemini_text","once":true},{"id":"example-silence","trigger":"silence","delay_ms":2500,"action":"wait","label":"user-quiet","require_agent_spoke_first":true}],"verify":{"require_during_agent_speech":true,"min_agent_finals_after_silence":0}}}
+{"kind":"Script","spec":{"steps":[{"id":"example-backchannel","trigger":"agent_speaking","delay_ms":800,"say":"uh-huh","label":"backchannel","delivery":"gemini_text","once":true},{"id":"example-noise","trigger":"time","delay_ms":5000,"delivery":"room_pcm","asset":"builtin:noise.loud","say":"[noise]","label":"optional-noise","once":true},{"id":"example-silence","trigger":"silence","delay_ms":2500,"action":"wait","label":"user-quiet","require_agent_spoke_first":true}],"verify":{"require_during_agent_speech":false,"min_agent_finals_after_silence":0}}}
 // === Plugins (optional) ===
 {"kind":"Plugins","spec":{"modules":[]}}
 // === Assert (optional) — hard checks (tools / transcript / outcomes); fail run if not met ===

@@ -28,7 +28,6 @@ from ..audio.local_recorder import LocalConversationRecorder
 from ..audio.mic_mixer import ParallelMicMixer
 from ..audio.pcm_cue import load_wav_pcm, resolve_cue_asset
 from ..config import SimConfig
-from ..paths import package_templates_dir
 
 if TYPE_CHECKING:
     from ..livekit.observer import Observer
@@ -225,7 +224,8 @@ class GeminiCallerBridge:
             wav_path = resolve_cue_asset(
                 asset,
                 scenario_dir=scenario_dir,
-                templates_dir=package_templates_dir(),
+                project_root=self.cfg.project_root,
+                cues_config=getattr(self.cfg, "cues", None),
             )
             pcm, rate, channels = load_wav_pcm(wav_path)
             if channels != 1:

@@ -3,7 +3,7 @@
 Public ops (both surfaces expose these, same semantics):
 
     init_project, preflight, guide, web,
-    list_scenarios, list_plugins, validate_scenario, export_scenario, init_scenario,
+    list_scenarios, list_plugins, list_cues, validate_scenario, export_scenario, init_scenario,
     execute_scenario, execute_scenarios, execute_scenario_dict,
     get_run_status, get_run_log, get_run_report, compare_runs, list_runs
 
@@ -41,6 +41,19 @@ def init_project(project_root: Path | str) -> dict[str, Any]:
     (dot / "scenarios").mkdir(parents=True, exist_ok=True)
     (dot / "reports").mkdir(parents=True, exist_ok=True)
     (dot / "plugins").mkdir(parents=True, exist_ok=True)
+    (dot / "cues").mkdir(parents=True, exist_ok=True)
+    cues_readme = dot / "cues" / "README.md"
+    if not cues_readme.exists():
+        cues_readme.write_text(
+            "# Target audio cues (room_pcm)\n\n"
+            "Drop **PCM16 mono @ 24 kHz** WAVs here to override package built-ins "
+            "or add project-specific noise.\n\n"
+            "Scenario: `\"delivery\":\"room_pcm\",\"asset\":\"my_noise.wav\"` "
+            "or `\"asset\":\"builtin:noise.loud\"`.\n\n"
+            "List: `lk-sim cues --root .`\n",
+            encoding="utf-8",
+        )
+        created.append(str(cues_readme))
 
     config_dst = dot / "config.yaml"
     if not config_dst.exists():
@@ -227,6 +240,28 @@ def list_plugins(project_root: Path | str) -> dict[str, Any]:
         "load": load_info,
         "entry_point_group": "lk_sim.plugins",
     }
+
+
+def list_cues(project_root: Path | str | None = None) -> dict[str, Any]:
+    """List built-in + target room_pcm cues (and config aliases if root has config)."""
+    from .audio.cue_catalog import describe_resolution, list_all_cues
+
+    if project_root is None:
+        return list_all_cues(None)
+    root = Path(project_root).resolve()
+    try:
+        cfg = load_config(root)
+        catalog = list_all_cues(cfg.project_root, cues_config=cfg.cues)
+        catalog["resolve_examples"] = {
+            ref: describe_resolution(
+                ref, project_root=cfg.project_root, cues_config=cfg.cues
+            )
+            for ref in ("builtin:noise.loud", "builtin:noise.ambient", "@backchannel")
+        }
+        return catalog
+    except ConfigError:
+        # Still list package built-ins without target config
+        return list_all_cues(root if (root / DOT_FOLDER).is_dir() else None)
 
 
 async def _run_scenario_dict(project_root: Path | str, scenario: dict[str, Any]) -> dict[str, Any]:

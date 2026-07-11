@@ -87,10 +87,25 @@ lk-sim scenario-init my-case --root /path/to/target
 | `Simulator` | no | Defaults; overridden by Execute |
 | `Execute` | recommended | `max_turns`, `timeout_s`, `first_speaker` |
 | `Dispatch` | no | Per-scenario opaque metadata JSON string |
-| `Script` | no | Timed behavior: `trigger` agent_speaking \| silence \| time; `action` speak \| wait; `barge_in` |
+| `Script` | no | Timed: `trigger` agent_speaking \| silence \| time; `action` speak \| wait; `barge_in`; `room_pcm` + `asset` |
 | `Assert` | no | Hard checks: tools, transcript phrases, outcomes (fail run if not met) |
-| `Plugins` | no | Load `.agent-sim/plugins/*.py` |
+| `Plugins` | no | Load `.agent-sim/plugins/*.py` (**verify only** — not audio inject) |
 | `PassCriteria` | no | Soft LLM judge rubric strings |
+
+### Audio cues (built-in + per-repo custom)
+
+| Source | Location | Scenario `asset` |
+|--------|----------|------------------|
+| Built-in | package `templates/cues/` | `builtin:noise.loud`, `@noise.ambient` |
+| Target override | `.agent-sim/cues/*.wav` | `my_cafe.wav` (same name **overrides** built-in) |
+| Aliases / dirs | `config.yaml` → `cues:` | short name from `cues.aliases` |
+
+```bash
+lk-sim cues --root /path/to/target
+lk-sim cues --root /path/to/target --resolve builtin:noise.loud
+```
+
+WAV: **PCM16 mono @ 24 kHz**. Details: package `templates/cues/README.md`.
 
 ### Run
 
@@ -118,6 +133,7 @@ lk-sim execute-all --tag smoke --root /path/to/target
 | `preflight` | `preflight` |
 | `scenarios` | `list_scenarios` |
 | `plugins` | `list_plugins` |
+| `cues` | `list_cues` |
 | `validate` | `validate_scenario` |
 | `export` | `export_scenario` |
 | `scenario-init` | `init_scenario` |

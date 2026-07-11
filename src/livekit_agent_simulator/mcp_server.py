@@ -72,6 +72,12 @@ def list_plugins(project_root: str) -> dict[str, Any]:
 
 
 @mcp.tool
+def list_cues(project_root: str) -> dict[str, Any]:
+    """List built-in package room_pcm cues + target `.agent-sim/cues/` overrides and config aliases."""
+    return ops.list_cues(project_root)
+
+
+@mcp.tool
 def validate_scenario(project_root: str, scenario_id: str) -> dict[str, Any]:
     """Validate a scenario file: schema, required Persona brief, PassCriteria lint."""
     return ops.validate_scenario(project_root, scenario_id)

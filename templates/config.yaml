@@ -42,3 +42,12 @@ observe:
   # Consumer-specific observe/dispatch examples: docs/portability.md
   silence_threshold_ms: 4000
   turn_taking_warn_ms: 2500
+
+# room_pcm library: package built-ins + per-target overrides (multi-repo).
+# List: lk-sim cues --root .
+# Scenario asset: "builtin:noise.loud" | "my.wav" in .agent-sim/cues/ | alias name
+# cues:
+#   dirs:
+#     - shared-audio          # relative to project root (optional extra search dirs)
+#   aliases:
+#     office: office_loop.wav # short name → file under .agent-sim/cues/ or dirs

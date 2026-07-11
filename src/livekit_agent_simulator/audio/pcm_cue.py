@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import wave
 from pathlib import Path
+from typing import Any
 
 from livekit import rtc
 
@@ -25,28 +26,23 @@ def load_wav_pcm(path: Path) -> tuple[bytes, int, int]:
 def resolve_cue_asset(
     asset: str,
     *,
-    scenario_dir: Path | None,
+    scenario_dir: Path | None = None,
     package_root: Path | None = None,
     templates_dir: Path | None = None,
+    project_root: Path | None = None,
+    cues_config: Any = None,
 ) -> Path:
-    """Resolve a WAV cue: absolute path → scenario dir → package templates/cues."""
-    raw = Path(asset)
-    if raw.is_absolute():
-        path = raw
-    elif scenario_dir is not None and (scenario_dir / raw).exists():
-        path = scenario_dir / raw
-    else:
-        if templates_dir is None:
-            if package_root is not None:
-                templates_dir = package_root / "templates"
-            else:
-                from ..paths import package_templates_dir
+    """Resolve a WAV cue (builtin + target override). See ``cue_catalog``."""
+    from .cue_catalog import resolve_cue_asset as _resolve
 
-                templates_dir = package_templates_dir()
-        path = templates_dir / "cues" / raw
-    if not path.exists():
-        raise FileNotFoundError(f"Cue asset not found: {asset} (resolved {path})")
-    return path
+    return _resolve(
+        asset,
+        scenario_dir=scenario_dir,
+        package_root=package_root,
+        templates_dir=templates_dir,
+        project_root=project_root,
+        cues_config=cues_config,
+    )
 
 
 async def play_pcm_to_source(

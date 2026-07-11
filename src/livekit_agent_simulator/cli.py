@@ -124,6 +124,38 @@ def scenarios_cmd(root: Optional[Path] = ROOT_OPTION) -> None:
 
 
 @app.command()
+def cues(
+    root: Optional[Path] = ROOT_OPTION,
+    asset: Optional[str] = typer.Option(
+        None,
+        "--resolve",
+        help="Resolve one asset id/path and print path (builtin:noise.loud, my.wav, …)",
+    ),
+) -> None:
+    """List built-in + target room_pcm cues. (MCP: list_cues)"""
+    from .audio.cue_catalog import describe_resolution
+    from .config import load_config
+
+    r = _root(root)
+    if asset:
+        try:
+            cfg = load_config(r)
+            _print(
+                describe_resolution(
+                    asset, project_root=cfg.project_root, cues_config=cfg.cues
+                )
+            )
+        except ConfigError:
+            _print(describe_resolution(asset, project_root=r if (r / ".agent-sim").is_dir() else None))
+        return
+    try:
+        _print(ops.list_cues(r))
+    except Exception as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
 def plugins(root: Optional[Path] = ROOT_OPTION) -> None:
     """List verify plugins. (MCP: list_plugins)"""
     try:

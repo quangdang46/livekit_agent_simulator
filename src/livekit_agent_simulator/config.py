@@ -86,6 +86,14 @@ class ObserveConfig:
 
 
 @dataclass
+class CuesConfig:
+    """Per-target room_pcm library: extra dirs + name aliases (see cue_catalog)."""
+
+    dirs: list[str] = field(default_factory=list)
+    aliases: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class SimConfig:
     project_root: Path
     livekit: LiveKitConfig
@@ -93,6 +101,7 @@ class SimConfig:
     observe: ObserveConfig = field(default_factory=ObserveConfig)
     judge: JudgeConfig | None = None
     project: str | None = None
+    cues: CuesConfig = field(default_factory=CuesConfig)
 
     @property
     def dot_dir(self) -> Path:
@@ -105,6 +114,11 @@ class SimConfig:
     @property
     def scenarios_dir(self) -> Path:
         return self.dot_dir / "scenarios"
+
+    @property
+    def cues_dir(self) -> Path:
+        """Target override library: ``.agent-sim/cues/*.wav``."""
+        return self.dot_dir / "cues"
 
     @property
     def sqlite_path(self) -> Path:
@@ -198,6 +212,20 @@ def load_config(project_root: Path | str) -> SimConfig:
         turn_taking_warn_ms=int(obs_raw.get("turn_taking_warn_ms", 2_500)),
     )
 
+    cues = CuesConfig()
+    cues_raw = raw.get("cues")
+    if isinstance(cues_raw, dict):
+        dirs_raw = cues_raw.get("dirs") or []
+        if not isinstance(dirs_raw, list):
+            raise ConfigError("`cues.dirs` must be a list of directory paths.")
+        aliases_raw = cues_raw.get("aliases") or {}
+        if not isinstance(aliases_raw, dict):
+            raise ConfigError("`cues.aliases` must be a mapping of name → path/asset.")
+        cues = CuesConfig(
+            dirs=[str(d) for d in dirs_raw],
+            aliases={str(k): str(v) for k, v in aliases_raw.items()},
+        )
+
     return SimConfig(
         project_root=project_root,
         livekit=livekit,
@@ -205,6 +233,7 @@ def load_config(project_root: Path | str) -> SimConfig:
         observe=observe,
         judge=judge,
         project=raw.get("project"),
+        cues=cues,
     )
 
 
@@ -227,6 +256,11 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
             "language": cfg.simulator.voice.language,
         },
         "judge_enabled": cfg.judge is not None,
+        "cues": {
+            "dirs": list(cfg.cues.dirs),
+            "alias_keys": sorted(cfg.cues.aliases.keys()),
+            "target_cues_dir": str(cfg.cues_dir),
+        },
         "observe": {
             "lk_transcription": cfg.observe.lk_transcription,
             "record_audio": cfg.observe.audio_recording_enabled,
