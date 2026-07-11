@@ -344,9 +344,30 @@ def runs(
     _print(_run(ops.list_runs(_root(root), limit=limit, scenario_id=scenario_id)))
 
 
+@app.command("mcp")
+def mcp_serve() -> None:
+    """Start the MCP server (stdio). Same tools as CLI ops — for Cursor / Claude / etc.
+
+    Config example::
+
+        {
+          "mcpServers": {
+            "livekit-agent-simulator": {
+              "command": "lk-sim",
+              "args": ["mcp"]
+            }
+          }
+        }
+    """
+    from .mcp_server import main as mcp_main
+
+    mcp_main()
+
+
 def main() -> None:
     app()
 
 
 if __name__ == "__main__":
     main()
+

@@ -151,7 +151,7 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 |---|---|
 | Package | `livekit-agent-simulator` |
 | CLI | `lk-sim` |
-| MCP entry | `livekit-agent-simulator-mcp` |
+| MCP entry | `lk-sim mcp` (or console script `lk-sim-mcp`) |
 | Dot folder (target) | `.agent-sim/` |
 | Sim participant | `lk-sim-caller` |
 | Room prefix | `lk-sim-<run-id>` |

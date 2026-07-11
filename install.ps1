@@ -20,7 +20,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $BinaryName = "lk-sim"
-$McpBin = "livekit-agent-simulator-mcp"
 $McpServerName = "livekit-agent-simulator"
 $PkgName = "livekit-agent-simulator"
 $Owner = "quangdang46"
@@ -104,13 +103,13 @@ function Remove-McpFromFile {
     }
 }
 
-function Resolve-McpBinary {
-    $cmd = Get-Command $McpBin -ErrorAction SilentlyContinue
+function Resolve-LkSim {
+    $cmd = Get-Command $BinaryName -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     $candidates = @(
-        (Join-Path $env:USERPROFILE ".local\bin\$McpBin.exe"),
-        (Join-Path $env:USERPROFILE ".local\bin\$McpBin"),
-        (Join-Path $env:LOCALAPPDATA "Programs\Python\Scripts\$McpBin.exe")
+        (Join-Path $env:USERPROFILE ".local\bin\$BinaryName.exe"),
+        (Join-Path $env:USERPROFILE ".local\bin\$BinaryName"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Scripts\$BinaryName.exe")
     )
     foreach ($c in $candidates) {
         if (Test-Path $c) { return $c }
@@ -119,16 +118,16 @@ function Resolve-McpBinary {
 }
 
 function Configure-AllMcpProviders {
-    $binary = Resolve-McpBinary
+    $binary = Resolve-LkSim
     if (-not $binary) {
-        Write-Log "MCP binary not found on PATH — skip provider config" "WARN"
+        Write-Log "lk-sim not found on PATH — skip MCP provider config" "WARN"
         return
     }
-    Write-Log "Configuring MCP providers → $binary"
+    Write-Log "Configuring MCP providers → $binary mcp"
     $entry = @{
         $McpServerName = @{
             command = $binary
-            args    = @()
+            args    = @("mcp")
             env     = @{}
         }
     }
@@ -153,7 +152,7 @@ function Configure-AllMcpProviders {
             $McpServerName = @{
                 type    = "stdio"
                 command = $binary
-                args    = @()
+                args    = @("mcp")
                 env     = @()
             }
         }
@@ -171,7 +170,7 @@ function Configure-AllMcpProviders {
 [mcp_servers.$McpServerName]
 type = "stdio"
 command = "$binary"
-args = []
+args = ["mcp"]
 "@
         }
     }
@@ -220,7 +219,7 @@ if ($Uninstall) {
     return
 }
 
-Write-Log "Installing $PkgName (CLI $BinaryName + MCP $McpBin)"
+Write-Log "Installing $PkgName (CLI $BinaryName | MCP: $BinaryName mcp)"
 Install-Package
 
 if (-not $NoMcp) {
@@ -239,14 +238,16 @@ if ($Verify) {
 Write-Host ""
 Write-Host "✓ $PkgName installed" -ForegroundColor Green
 $lkCmd = Get-Command $BinaryName -ErrorAction SilentlyContinue
-if ($lkCmd) { Write-Host "  CLI: $($lkCmd.Source)" }
-$mcp = Resolve-McpBinary
-if ($mcp) { Write-Host "  MCP: $mcp" }
+if ($lkCmd) {
+    Write-Host "  CLI: $($lkCmd.Source)"
+    Write-Host "  MCP: $($lkCmd.Source) mcp"
+}
 Write-Host ""
 Write-Host "  Quick start:"
 Write-Host "    $BinaryName guide"
 Write-Host "    $BinaryName init --root C:\path\to\target"
 Write-Host "    $BinaryName web --root C:\path\to\target"
+Write-Host "    $BinaryName mcp"
 Write-Host ""
 Write-Host "  Report player is prebuilt in the git tree (no Node/pnpm required)."
 Write-Host ""

@@ -16,7 +16,7 @@ set -euo pipefail
 umask 022
 
 BINARY_NAME="lk-sim"
-MCP_BIN="livekit-agent-simulator-mcp"
+# Prefer `lk-sim mcp`; optional console script lk-sim-mcp also exists
 MCP_SERVER_NAME="livekit-agent-simulator"
 PKG_NAME="livekit-agent-simulator"
 OWNER="quangdang46"
@@ -54,6 +54,8 @@ Install ${PKG_NAME} from GitHub (uv tool / pipx). No PyPI.
   curl -fsSL "https://raw.githubusercontent.com/${OWNER}/${REPO}/main/install.sh?\$(date +%s)" | bash -s -- --ref v0.1.0 --verify
   curl -fsSL "https://raw.githubusercontent.com/${OWNER}/${REPO}/main/install.sh?\$(date +%s)" | bash -s -- --ref main --no-mcp
   curl -fsSL "https://raw.githubusercontent.com/${OWNER}/${REPO}/main/install.sh?\$(date +%s)" | bash -s -- --uninstall
+
+CLI: ${BINARY_NAME}   |   MCP: ${BINARY_NAME} mcp
 
 Options:
   --version / --ref REF   git tag or branch (default: main)
@@ -194,12 +196,12 @@ _toml_remove_mcp() {
   ' "$file" >"$tmpf" && mv "$tmpf" "$file"
 }
 
-resolve_mcp_binary() {
-  if command -v "$MCP_BIN" >/dev/null 2>&1; then
-    command -v "$MCP_BIN"
+resolve_lk_sim() {
+  if command -v "$BINARY_NAME" >/dev/null 2>&1; then
+    command -v "$BINARY_NAME"
     return 0
   fi
-  for c in "$DEST/$MCP_BIN" "$HOME/.local/bin/$MCP_BIN"; do
+  for c in "$DEST/$BINARY_NAME" "$HOME/.local/bin/$BINARY_NAME"; do
     [ -x "$c" ] && { echo "$c"; return 0; }
   done
   return 1
@@ -208,13 +210,13 @@ resolve_mcp_binary() {
 configure_mcp_provider() {
   local provider_name="$1" settings_file="$2" json_key="$3" binary="$4"
   [ -n "$binary" ] && [ -x "$binary" ] || return 0
-  log_info "MCP: $provider_name → $settings_file"
+  log_info "MCP: $provider_name → $settings_file  (${binary} mcp)"
   local mcp_entry
   mcp_entry=$(cat <<EOF
 {
   "${MCP_SERVER_NAME}": {
     "command": "${binary}",
-    "args": [],
+    "args": ["mcp"],
     "env": {}
   }
 }
@@ -234,7 +236,7 @@ configure_mcp_opencode() {
   "${MCP_SERVER_NAME}": {
     "type": "stdio",
     "command": "${binary}",
-    "args": [],
+    "args": ["mcp"],
     "env": []
   }
 }
@@ -248,18 +250,39 @@ configure_mcp_codex() {
   local config_file="$HOME/.codex/config.toml"
   [ -d "$(dirname "$config_file")" ] || return 0
   log_info "MCP: Codex CLI → $config_file"
-  _toml_upsert_mcp "$config_file" "$MCP_SERVER_NAME" "$binary"
+  # Codex: command + args for `lk-sim mcp`
+  mkdir -p "$(dirname "$config_file")"
+  [ -f "$config_file" ] || touch "$config_file"
+  if grep -q "^\[mcp_servers\.${MCP_SERVER_NAME}\]" "$config_file" 2>/dev/null; then
+    local tmpf; tmpf="$(mktemp)"
+    awk -v sn="$MCP_SERVER_NAME" -v cmd="$binary" '
+      BEGIN{insec=0}
+      $0 ~ "^\\[mcp_servers\\." sn "\\]" {insec=1; print; next}
+      insec && /^\[/ {insec=0}
+      insec && /^command[[:space:]]*=/ {print "command = \"" cmd "\""; next}
+      insec && /^args[[:space:]]*=/ {print "args = [\"mcp\"]"; next}
+      {print}
+    ' "$config_file" >"$tmpf" && mv "$tmpf" "$config_file"
+  else
+    cat >>"$config_file" <<TOML
+
+[mcp_servers.${MCP_SERVER_NAME}]
+type = "stdio"
+command = "${binary}"
+args = ["mcp"]
+TOML
+  fi
 }
 
 configure_all_mcp_providers() {
-  local mcp_binary
-  mcp_binary=$(resolve_mcp_binary) || {
-    log_warn "MCP binary not on PATH — skip provider config"
+  local lk_bin
+  lk_bin=$(resolve_lk_sim) || {
+    log_warn "lk-sim not on PATH — skip MCP provider config"
     return 0
   }
 
-  configure_mcp_provider "Claude Code" "$HOME/.claude.json" "mcpServers" "$mcp_binary"
-  configure_mcp_provider "Cursor" "$HOME/.cursor/mcp.json" "mcpServers" "$mcp_binary"
+  configure_mcp_provider "Claude Code" "$HOME/.claude.json" "mcpServers" "$lk_bin"
+  configure_mcp_provider "Cursor" "$HOME/.cursor/mcp.json" "mcpServers" "$lk_bin"
 
   local cline_settings
   case "$(uname -s)" in
@@ -271,20 +294,20 @@ configure_all_mcp_providers() {
       ;;
   esac
   [ -d "$(dirname "$cline_settings")" ] && \
-    configure_mcp_provider "Cline" "$cline_settings" "mcpServers" "$mcp_binary"
+    configure_mcp_provider "Cline" "$cline_settings" "mcpServers" "$lk_bin"
 
-  configure_mcp_provider "Windsurf" "$HOME/.codeium/windsurf/mcp_config.json" "mcpServers" "$mcp_binary"
-  configure_mcp_provider "VS Code Copilot" "$HOME/.vscode/mcp.json" "servers" "$mcp_binary"
-  configure_mcp_provider "Gemini CLI" "$HOME/.gemini/settings.json" "mcpServers" "$mcp_binary"
-  configure_mcp_provider "Amazon Q (CLI)" "$HOME/.aws/amazonq/mcp.json" "mcpServers" "$mcp_binary"
-  configure_mcp_provider "Amazon Q (IDE)" "$HOME/.aws/amazonq/default.json" "mcpServers" "$mcp_binary"
+  configure_mcp_provider "Windsurf" "$HOME/.codeium/windsurf/mcp_config.json" "mcpServers" "$lk_bin"
+  configure_mcp_provider "VS Code Copilot" "$HOME/.vscode/mcp.json" "servers" "$lk_bin"
+  configure_mcp_provider "Gemini CLI" "$HOME/.gemini/settings.json" "mcpServers" "$lk_bin"
+  configure_mcp_provider "Amazon Q (CLI)" "$HOME/.aws/amazonq/mcp.json" "mcpServers" "$lk_bin"
+  configure_mcp_provider "Amazon Q (IDE)" "$HOME/.aws/amazonq/default.json" "mcpServers" "$lk_bin"
 
   if [ -d ".warp" ] || [ -f "pyproject.toml" ]; then
-    configure_mcp_provider "Warp" ".warp/.mcp.json" "mcpServers" "$mcp_binary"
+    configure_mcp_provider "Warp" ".warp/.mcp.json" "mcpServers" "$lk_bin"
   fi
 
-  configure_mcp_opencode "$mcp_binary"
-  configure_mcp_codex "$mcp_binary"
+  configure_mcp_opencode "$lk_bin"
+  configure_mcp_codex "$lk_bin"
 }
 
 uninstall_mcp_providers() {
@@ -318,8 +341,8 @@ do_uninstall() {
   if command -v pipx >/dev/null 2>&1; then
     pipx uninstall "$PKG_NAME" 2>/dev/null || true
   fi
-  rm -f "$DEST/$BINARY_NAME" "$DEST/$MCP_BIN" \
-    "$HOME/.local/bin/$BINARY_NAME" "$HOME/.local/bin/$MCP_BIN" 2>/dev/null || true
+  rm -f "$DEST/$BINARY_NAME" "$DEST/lk-sim-mcp" \
+    "$HOME/.local/bin/$BINARY_NAME" "$HOME/.local/bin/lk-sim-mcp" 2>/dev/null || true
   uninstall_mcp_providers
   for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zprofile"; do
     [ -f "$rc" ] && sed -i.bak "/${BINARY_NAME} installer/d" "$rc" 2>/dev/null || true
@@ -336,6 +359,7 @@ main() {
   mkdir -p "$DEST"
 
   log_info "Installing ${PKG_NAME} from git@${GIT_REF} (no PyPI)"
+  log_info "CLI: ${BINARY_NAME}  |  MCP: ${BINARY_NAME} mcp"
   log_info "Dest PATH hint: $DEST"
 
   local installer=""
@@ -375,14 +399,15 @@ main() {
   if command -v "$BINARY_NAME" >/dev/null 2>&1; then
     echo "  CLI:  $(command -v "$BINARY_NAME")"
   fi
-  if mcpb=$(resolve_mcp_binary 2>/dev/null); then
-    echo "  MCP:  $mcpb"
+  if lkb=$(resolve_lk_sim 2>/dev/null); then
+    echo "  MCP:  $lkb mcp"
   fi
   echo ""
   echo "  Quick start:"
   echo "    ${BINARY_NAME} guide"
   echo "    ${BINARY_NAME} init --root /path/to/target"
   echo "    ${BINARY_NAME} web --root /path/to/target"
+  echo "    ${BINARY_NAME} mcp    # MCP server (stdio)"
   echo ""
   echo "  Report player is prebuilt in the git tree (no Node/pnpm required)."
   echo ""

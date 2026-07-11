@@ -72,7 +72,7 @@ irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/
 ```
 
 By default the installer also registers the **MCP** server `livekit-agent-simulator`
-(`livekit-agent-simulator-mcp`) into common AI coding tools (Claude Code, Cursor, Cline,
+as **`lk-sim mcp`** into common AI coding tools (Claude Code, Cursor, Cline,
 Windsurf, VS Code Copilot, Gemini CLI, Amazon Q, OpenCode, Codex, Warp when present).
 
 ### Report player (maintainers)
@@ -116,13 +116,15 @@ Installer writes the MCP command when tools are detected. Manual Cursor example:
 {
   "mcpServers": {
     "livekit-agent-simulator": {
-      "command": "livekit-agent-simulator-mcp",
-      "args": [],
+      "command": "lk-sim",
+      "args": ["mcp"],
       "env": {}
     }
   }
 }
 ```
+
+Equivalent one-shot entry: `lk-sim-mcp` (same process as `lk-sim mcp`).
 
 Dev checkout (package not installed globally):
 
@@ -131,7 +133,7 @@ Dev checkout (package not installed globally):
   "mcpServers": {
     "livekit-agent-simulator": {
       "command": "uv",
-      "args": ["run", "--directory", "/abs/path/livekit-agent-simulator", "livekit-agent-simulator-mcp"]
+      "args": ["run", "--directory", "/abs/path/livekit-agent-simulator", "lk-sim", "mcp"]
     }
   }
 }

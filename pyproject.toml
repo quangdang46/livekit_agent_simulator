@@ -24,7 +24,8 @@ dev = [
 
 [project.scripts]
 lk-sim = "livekit_agent_simulator.cli:main"
-livekit-agent-simulator-mcp = "livekit_agent_simulator.mcp_server:main"
+# Optional short entry (same as `lk-sim mcp`) for hosts that prefer a single argv[0]
+lk-sim-mcp = "livekit_agent_simulator.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
