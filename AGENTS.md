@@ -97,7 +97,7 @@ On Windows, if `uv sync` fails (MCP exe locked):
 | Bug / SDK / protocol | Exa + LiveKit MCP + `.venv` → fix → pytest |
 | New scenario kind / MCP tool | Research first; plan if large; tests required |
 | Target scenario/config only | Edit `<target>/.agent-sim/` — no package release |
-| Smoke against running agent | `lk-sim preflight` + `lk-sim execute <id> --root <path>` |
+| Smoke against running agent | `lk-sim preflight` + `lk-sim execute <id> --root <path>` (same ops as MCP) |
 
 ---
 

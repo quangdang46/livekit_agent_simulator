@@ -1,8 +1,19 @@
-"""Shared implementation of project operations — used by both MCP tools and CLI."""
+"""Shared project operations — single surface for MCP + CLI.
+
+Public ops (both surfaces expose these, same semantics):
+
+    init_project, preflight, guide,
+    list_scenarios, list_plugins, validate_scenario, export_scenario, init_scenario,
+    execute_scenario, execute_scenarios, execute_scenario_dict,
+    get_run_status, get_run_log, get_run_report, compare_runs, list_runs
+
+Internal helpers (not exposed on CLI/MCP): ``_run_scenario``, ``_run_scenario_dict``.
+"""
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -16,6 +27,8 @@ from . import run_orchestrator
 from .preflight import run_preflight
 from .plugins.loader import ensure_plugins_loaded
 from .plugins.registry import list_verify_plugins
+
+_SCENARIO_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 
 def init_project(project_root: Path | str) -> dict[str, Any]:
@@ -61,7 +74,81 @@ def init_project(project_root: Path | str) -> dict[str, Any]:
         "next_steps": [
             f"Fill in LiveKit + Google credentials in {config_dst}",
             "Make sure your worker is running with the configured agent_name",
-            "Run the smoke scenario: lk-sim run smoke-hello",
+            "Run the smoke scenario: lk-sim execute smoke-hello",
+        ],
+    }
+
+
+async def preflight(project_root: Path | str, connectivity: bool = True) -> dict[str, Any]:
+    """Config + folder + optional LiveKit API check. Returns {ok, checks}."""
+    result, _ = await run_preflight(project_root, connectivity=connectivity)
+    return {"ok": result.ok, "checks": result.checks}
+
+
+def guide() -> dict[str, Any]:
+    """On-demand setup / ops guide for humans and coding agents (no project_root required)."""
+    path = package_templates_dir() / "GUIDE.md"
+    if not path.exists():
+        raise ConfigError(f"Package guide missing: {path}")
+    return {
+        "path": str(path),
+        "text": path.read_text(encoding="utf-8"),
+    }
+
+
+def init_scenario(
+    project_root: Path | str,
+    scenario_id: str,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Scaffold ``.agent-sim/scenarios/<id>.jsonl`` with ``//`` guide lines + example JSON.
+
+    Full-line ``//`` comments are ignored at parse time. Delete unused kind lines as needed.
+    """
+    scenario_id = scenario_id.strip()
+    if not _SCENARIO_ID_RE.match(scenario_id):
+        raise ConfigError(
+            f"Invalid scenario_id {scenario_id!r}: use letters/digits/[_-], start with alnum, max 64 chars"
+        )
+
+    root = Path(project_root).resolve()
+    # Prefer target .agent-sim if already initialized; else create scenarios dir only.
+    try:
+        cfg = load_config(root)
+        scenarios_dir = cfg.scenarios_dir
+    except ConfigError:
+        scenarios_dir = root / DOT_FOLDER / "scenarios"
+        scenarios_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = scenarios_dir / f"{scenario_id}.jsonl"
+    if dest.exists() and not force:
+        raise ConfigError(
+            f"{dest} already exists. Pass force=true / --force to overwrite, or pick another id."
+        )
+
+    scaffold = package_templates_dir() / "scenario-scaffold.jsonl"
+    if not scaffold.exists():
+        raise ConfigError(f"Package scaffold missing: {scaffold}")
+    text = scaffold.read_text(encoding="utf-8").replace("{{SCENARIO_ID}}", scenario_id)
+    dest.write_text(text, encoding="utf-8")
+
+    # Ensure the scaffold still parses after id substitution.
+    try:
+        parse_scenario(dest)
+    except ScenarioError as e:
+        dest.unlink(missing_ok=True)
+        raise ConfigError(f"Scaffold failed validation: {e}") from e
+
+    return {
+        "path": str(dest),
+        "scenario_id": scenario_id,
+        "created": True,
+        "overwritten": force,
+        "next_steps": [
+            f"Edit {dest} — // lines are guides; remove unused kind JSON lines",
+            f"Validate: lk-sim validate {scenario_id} --root {root}",
+            f"Run: lk-sim execute {scenario_id} --root {root}",
         ],
     }
 
@@ -142,16 +229,22 @@ def list_plugins(project_root: Path | str) -> dict[str, Any]:
     }
 
 
-async def run_scenario_dict(project_root: Path | str, scenario: dict[str, Any]) -> dict[str, Any]:
-    """Run a scenario built in Python (same fields as export_scenario / JSONL sections)."""
+async def _run_scenario_dict(project_root: Path | str, scenario: dict[str, Any]) -> dict[str, Any]:
+    """Internal: run dict after preflight (no schema validation wrapper)."""
     cfg = load_config(project_root)
-    preflight, _ = await run_preflight(cfg.project_root, connectivity=True)
-    if not preflight.ok:
-        failed = [c for c in preflight.checks if c["status"] == "fail"]
+    pf = await preflight(cfg.project_root, connectivity=True)
+    if not pf["ok"]:
+        failed = [c for c in pf["checks"] if c["status"] == "fail"]
         raise RuntimeError("Preflight failed: " + "; ".join(f"{c['name']}: {c['detail']}" for c in failed))
     scenario_id = str(scenario.get("id") or (scenario.get("metadata") or {}).get("id", "dynamic"))
     s = scenario_from_dict(scenario, path=cfg.scenarios_dir / f"{scenario_id}.jsonl")
     return await run_orchestrator.run_scenario_instance(cfg, s)
+
+
+async def _run_scenario(project_root: Path | str, scenario_id: str) -> dict[str, Any]:
+    """Internal: run JSONL scenario after preflight (orchestrator also preflights)."""
+    cfg = load_config(project_root)
+    return await run_orchestrator.run_scenario(cfg, scenario_id)
 
 
 async def execute_scenario_dict(project_root: Path | str, scenario: dict[str, Any]) -> dict[str, Any]:
@@ -160,7 +253,7 @@ async def execute_scenario_dict(project_root: Path | str, scenario: dict[str, An
         scenario_from_dict(scenario)
     except ScenarioError as e:
         return {"executed": False, "validation": {"valid": False, "error": str(e)}}
-    result = await run_scenario_dict(project_root, scenario)
+    result = await _run_scenario_dict(project_root, scenario)
     return {"executed": True, "validation": {"valid": True}, **result}
 
 
@@ -169,7 +262,7 @@ async def execute_scenario(project_root: Path | str, scenario_id: str) -> dict[s
     validation = validate_scenario(project_root, scenario_id)
     if not validation.get("valid"):
         return {"executed": False, "validation": validation}
-    result = await run_scenario(project_root, scenario_id)
+    result = await _run_scenario(project_root, scenario_id)
     return {"executed": True, "validation": validation, **result}
 
 
@@ -196,11 +289,6 @@ async def execute_scenarios(
         except Exception as e:
             results.append({"executed": False, "scenario_id": sid, "error": f"{type(e).__name__}: {e}"})
     return {"count": len(results), "results": results}
-
-
-async def run_scenario(project_root: Path | str, scenario_id: str) -> dict[str, Any]:
-    cfg = load_config(project_root)
-    return await run_orchestrator.run_scenario(cfg, scenario_id)
 
 
 async def get_run_status(project_root: Path | str, run_id: str) -> dict[str, Any]:
@@ -350,15 +438,16 @@ async def list_runs(
 __all__ = [
     "ConfigError",
     "init_project",
+    "preflight",
+    "guide",
+    "init_scenario",
     "list_scenarios",
     "list_plugins",
     "validate_scenario",
     "export_scenario",
-    "run_scenario",
-    "run_scenario_dict",
     "execute_scenario",
-    "execute_scenario_dict",
     "execute_scenarios",
+    "execute_scenario_dict",
     "get_run_status",
     "get_run_log",
     "get_run_report",

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -32,9 +33,12 @@ from .scenario import Scenario, SimulatorSpec, find_scenario
 from .script_runner import ScriptRunner, evaluate_script_log
 
 
-def new_run_id() -> str:
+def new_run_id(scenario_id: str) -> str:
+    """Human-readable run id: ``{scenario}-{YYYYMMDD-HHMMSS}-{hex4}`` (UTC)."""
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", (scenario_id or "").strip()).strip("-_.")
+    slug = (slug[:48] if slug else "scenario").lower()
     now = datetime.now(timezone.utc)
-    return f"r-{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+    return f"{slug}-{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
 
 
 async def run_scenario(cfg: SimConfig, scenario_id: str) -> dict[str, Any]:
@@ -52,7 +56,7 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
     plugin_load = ensure_plugins_loaded(cfg.project_root, scenario.plugin_modules)
     run = scenario.run_spec
     dispatch_metadata = scenario.dispatch_metadata(cfg.livekit.dispatch_metadata)
-    run_id = new_run_id()
+    run_id = new_run_id(scenario.id)
     report_dir = cfg.reports_dir / run_id
     writer = EventWriter(
         run_id,

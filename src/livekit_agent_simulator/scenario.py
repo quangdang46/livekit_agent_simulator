@@ -27,6 +27,11 @@ API_VERSION = "agent-sim/v1"
 KNOWN_KINDS = {"Persona", "Context", "Simulator", "Execute", "Dispatch", "PassCriteria", "Script", "Plugins"}
 
 
+def strip_extension_keys(obj: dict[str, Any]) -> dict[str, Any]:
+    """Drop keys starting with ``_`` (e.g. ``_doc`` scaffold notes). Not part of the wire schema."""
+    return {k: v for k, v in obj.items() if not str(k).startswith("_")}
+
+
 class ScenarioError(Exception):
     """Raised on malformed scenario files. Message includes file + line number."""
 
@@ -178,15 +183,19 @@ def parse_scenario(path: Path | str) -> Scenario:
     lines = [ln for ln in path.read_text(encoding="utf-8").splitlines()]
     records: list[tuple[int, dict[str, Any]]] = []
     for i, ln in enumerate(lines, start=1):
-        if not ln.strip():
+        stripped = ln.strip()
+        if not stripped:
+            continue
+        # Full-line guides (scaffold / human notes). Not JSON — ignored by runtime.
+        if stripped.startswith("//"):
             continue
         try:
-            obj = json.loads(ln)
+            obj = json.loads(stripped)
         except json.JSONDecodeError as e:
             raise ScenarioError(f"{path}:{i}: invalid JSON — {e}") from e
         if not isinstance(obj, dict):
             raise ScenarioError(f"{path}:{i}: each line must be a JSON object")
-        records.append((i, obj))
+        records.append((i, strip_extension_keys(obj)))
 
     if not records:
         raise ScenarioError(f"{path}: empty scenario file")

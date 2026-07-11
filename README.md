@@ -8,6 +8,9 @@ transcripts, tool events, flow events, room events — all timestamped per turn.
 agent's registered `agent_name`; it never reads or modifies the target project's code,
 `.env`, or model config.
 
+CLI and MCP expose the **same public ops** (shared `ops.py`). No duplicate “run vs execute”
+paths — use `execute_*` to validate then run.
+
 ## How it works
 
 1. Reads `<your-repo>/.agent-sim/config.yaml` (LiveKit creds + `agent_name` + simulator voice).
@@ -17,7 +20,7 @@ agent's registered `agent_name`; it never reads or modifies the target project's
 4. Observes everything from inside the room: `lk.transcription` text streams, custom
    data topics (when configured), audio timing, interruptions, silences.
 5. Writes `reports/<run-id>/` — `events.jsonl`, `timeline.md`, `summary.json`,
-   `meta.json` — and mirrors to `runs.sqlite`.
+   `meta.json`, optional `conversation.wav` — and mirrors to `runs.sqlite`.
 6. Optional LLM judge (`gemini-2.5-flash`) scores the transcript + tool spans against
    the scenario's PassCriteria.
 
@@ -28,7 +31,8 @@ agent's registered `agent_name`; it never reads or modifies the target project's
 uv run --directory /path/to/livekit-agent-simulator lk-sim init
 #   → scaffolds .agent-sim/ (gitignored) — fill in config.yaml
 
-uv run --directory /path/to/livekit-agent-simulator lk-sim run smoke-hello
+uv run --directory /path/to/livekit-agent-simulator lk-sim preflight
+uv run --directory /path/to/livekit-agent-simulator lk-sim execute smoke-hello
 uv run --directory /path/to/livekit-agent-simulator lk-sim report <run-id>
 ```
 
@@ -45,19 +49,26 @@ uv run --directory /path/to/livekit-agent-simulator lk-sim report <run-id>
 }
 ```
 
-## MCP tools
+## Public ops (CLI ↔ MCP)
 
-| Tool | Purpose |
-|------|---------|
-| `init_project` | Scaffold `.agent-sim/` + add to `.gitignore` |
-| `list_scenarios` | Glob `scenarios/*.jsonl` |
-| `validate_scenario` | Schema + lint |
-| `run_scenario` | Run a simulation, returns `run_id` |
-| `get_run_status` | running / done / failed + turn count |
-| `get_run_log` | Read `events.jsonl` with kind/turn/source/time filters |
-| `get_run_report` | Summary + judge verdict + suspicious turns |
-| `compare_runs` | Diff two runs |
-| `list_runs` | Run history from SQLite |
+| CLI | MCP tool | Purpose |
+|-----|----------|---------|
+| `init` | `init_project` | Scaffold `.agent-sim/` + gitignore |
+| `guide` | `guide` | On-demand setup/ops guide (markdown) |
+| `preflight` | `preflight` | Config + LiveKit connectivity |
+| `scenarios` | `list_scenarios` | List `scenarios/*.jsonl` |
+| `plugins` | `list_plugins` | Verify plugins |
+| `validate` | `validate_scenario` | Schema + lint |
+| `export` | `export_scenario` | Parsed scenario JSON |
+| `scenario-init` | `init_scenario` | Scaffold `.jsonl` with `//` guides + examples |
+| `execute` | `execute_scenario` | Validate then run one JSONL scenario |
+| `execute-all` | `execute_scenarios` | Batch (optional ids / tag) |
+| `execute-dict` | `execute_scenario_dict` | Validate then run in-memory dict |
+| `status` | `get_run_status` | SQLite run status |
+| `log` | `get_run_log` | Filtered `events.jsonl` |
+| `report` | `get_run_report` | Summary + verdict + audio path |
+| `compare` | `compare_runs` | Diff two runs |
+| `runs` | `list_runs` | Run history |
 
 ## Docs
 
@@ -70,7 +81,7 @@ uv run --directory /path/to/livekit-agent-simulator lk-sim report <run-id>
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [CI](.github/workflows/ci.yml) | PR / push → `master` | `pytest` (Python 3.10 + 3.12), `lk-sim --help`, `uv build` |
+| [CI](.github/workflows/ci.yml) | PR / push → `main` | `pytest` (Python 3.10 + 3.12), `lk-sim --help`, `uv build` |
 | [Release](.github/workflows/release.yml) | tag `v*` | test → build → GitHub Release (wheel + sdist); PyPI if `PYPI_API_TOKEN` secret is set |
 
 Local check:

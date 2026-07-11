@@ -1,0 +1,38 @@
+// === Scenario (required header — first JSON line) ===
+// apiVersion: must be "agent-sim/v1"
+// metadata.id: same as this filename (without .jsonl)
+// metadata.locale: BCP-47 language for the sim persona (e.g. en-US, vi-VN, ja-JP)
+// metadata.tags: free labels; use with: lk-sim execute-all --tag smoke
+{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"{{SCENARIO_ID}}","locale":"en-US","tags":["draft"]}}
+// === Persona (required) ===
+// name: display label for logs
+// brief: system prompt for the Gemini simulated caller (required)
+// goals: optional list the persona tries to achieve
+// style: optional speaking style
+{"kind":"Persona","spec":{"name":"Alex","brief":"You are calling a business for the first time. Confirm you reached the right place, answer briefly, then politely end the call when done.","goals":["Hear the agent greeting or first reply","State your reason briefly","End the call politely"],"style":"polite, brief, natural spoken language"}}
+// === Context (optional) — delete both this comment block and the next JSON line if unused ===
+// notes: extra facts injected into the persona prompt (ticket ids, order numbers, …)
+{"kind":"Context","spec":{"notes":"Example: open ticket #12345. Prefer deleting this line over leaving fake notes."}}
+// === Simulator (optional defaults) — Execute overrides these; can delete if you only use Execute ===
+// max_turns: max conversation turns
+// timeout_s: hard wall-clock limit
+// first_speaker: "agent" | "user"
+{"kind":"Simulator","spec":{"max_turns":6,"timeout_s":120,"first_speaker":"agent"}}
+// === Execute (recommended run knobs; overrides Simulator) ===
+// first_speaker=user if agent waits for caller audio; agent if agent greets first
+{"kind":"Execute","spec":{"max_turns":4,"timeout_s":120,"first_speaker":"user"}}
+// === Dispatch (optional) — delete if your worker needs no job metadata ===
+// metadata: opaque JSON *string* for RoomAgentDispatch.metadata (core does not parse keys)
+{"kind":"Dispatch","spec":{"metadata":"{\"yourProjectKey\":\"replace-me\"}"}}
+// === Script (optional) — timed cues while agent is speaking; delete if free conversation only ===
+// steps[].trigger: only "agent_speaking" for now
+// steps[].delay_ms: wait after agent starts speaking
+// steps[].say: text (gemini_text) or caption for room_pcm
+// steps[].delivery: "gemini_text" | "room_pcm" (room_pcm needs steps[].asset WAV path)
+// verify: optional log checks after the run
+{"kind":"Script","spec":{"steps":[{"id":"example-backchannel","trigger":"agent_speaking","delay_ms":800,"say":"uh-huh","label":"backchannel-during-agent","delivery":"gemini_text","once":true}],"verify":{"require_during_agent_speech":true}}}
+// === Plugins (optional) — load .agent-sim/plugins/<module>.py; delete if unused ===
+{"kind":"Plugins","spec":{"modules":[]}}
+// === PassCriteria (optional) — LLM judge after call; needs judge: in config.yaml; delete to skip ===
+// criteria: list of plain-language pass rules
+{"kind":"PassCriteria","spec":{"criteria":["The agent responded to the caller","The agent responded in a language the caller can understand"]}}

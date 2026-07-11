@@ -1,4 +1,7 @@
-"""`lk-sim` CLI — mirrors the MCP tools for humans. Defaults project root to CWD."""
+"""`lk-sim` CLI — same public ops as the MCP server (see ops module docstring).
+
+Defaults project root to CWD; use `--root` for another target repo.
+"""
 
 from __future__ import annotations
 
@@ -24,10 +27,12 @@ _ensure_utf8_stdio()
 
 from . import ops
 from .config import ConfigError
-from .preflight import run_preflight
 from .scenario import ScenarioError
 
-app = typer.Typer(name="lk-sim", help="Simulate an AI caller against a LiveKit voice agent.")
+app = typer.Typer(
+    name="lk-sim",
+    help="Simulate an AI caller against a LiveKit voice agent (parity with MCP tools).",
+)
 
 ROOT_OPTION = typer.Option(None, "--root", help="Project root (default: current directory)")
 
@@ -57,22 +62,31 @@ def _run(coro: Any) -> Any:
 
 @app.command()
 def init(root: Optional[Path] = ROOT_OPTION) -> None:
-    """Scaffold .agent-sim/ in the target repo."""
+    """Scaffold .agent-sim/ in the target repo. (MCP: init_project)"""
     _print(ops.init_project(_root(root)))
 
 
 @app.command()
-def preflight(root: Optional[Path] = ROOT_OPTION) -> None:
-    """Check config + LiveKit connectivity without running a scenario."""
-    result, _ = _run(run_preflight(_root(root)))
-    _print({"ok": result.ok, "checks": result.checks})
-    if not result.ok:
+def guide() -> None:
+    """Print setup/ops guide for agents and humans. (MCP: guide)"""
+    typer.echo(ops.guide()["text"])
+
+
+@app.command()
+def preflight(
+    root: Optional[Path] = ROOT_OPTION,
+    no_connectivity: bool = typer.Option(False, "--no-connectivity", help="Skip LiveKit API check"),
+) -> None:
+    """Check config + LiveKit connectivity without running a scenario. (MCP: preflight)"""
+    result = _run(ops.preflight(_root(root), connectivity=not no_connectivity))
+    _print(result)
+    if not result.get("ok"):
         raise typer.Exit(1)
 
 
 @app.command("scenarios")
 def scenarios_cmd(root: Optional[Path] = ROOT_OPTION) -> None:
-    """List scenarios."""
+    """List scenarios. (MCP: list_scenarios)"""
     try:
         _print(ops.list_scenarios(_root(root)))
     except ConfigError as e:
@@ -82,7 +96,7 @@ def scenarios_cmd(root: Optional[Path] = ROOT_OPTION) -> None:
 
 @app.command()
 def plugins(root: Optional[Path] = ROOT_OPTION) -> None:
-    """List verify plugins (.agent-sim/plugins + entry-points)."""
+    """List verify plugins. (MCP: list_plugins)"""
     try:
         _print(ops.list_plugins(_root(root)))
     except ConfigError as e:
@@ -92,7 +106,7 @@ def plugins(root: Optional[Path] = ROOT_OPTION) -> None:
 
 @app.command()
 def validate(scenario_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
-    """Validate one scenario."""
+    """Validate one scenario. (MCP: validate_scenario)"""
     result = ops.validate_scenario(_root(root), scenario_id)
     _print(result)
     if not result.get("valid"):
@@ -101,7 +115,7 @@ def validate(scenario_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
 
 @app.command()
 def export(scenario_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
-    """Export parsed scenario JSON (Execute run params, Dispatch flag, PassCriteria)."""
+    """Export parsed scenario JSON. (MCP: export_scenario)"""
     try:
         _print(ops.export_scenario(_root(root), scenario_id))
     except ConfigError as e:
@@ -109,18 +123,23 @@ def export(scenario_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
         raise typer.Exit(1)
 
 
-@app.command()
-def run(scenario_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
-    """Run a scenario end-to-end and print the summary."""
-    result = _run(ops.run_scenario(_root(root), scenario_id))
-    _print(result)
-    if _run_failed(result):
+@app.command("scenario-init")
+def scenario_init_cmd(
+    scenario_id: str = typer.Argument(..., help="New scenario id (filename without .jsonl)"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing file"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Scaffold scenario JSONL with // guide comments + examples. (MCP: init_scenario)"""
+    try:
+        _print(ops.init_scenario(_root(root), scenario_id, force=force))
+    except ConfigError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
 
 @app.command()
 def execute(scenario_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
-    """Validate then execute one scenario from .agent-sim/scenarios/."""
+    """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)"""
     result = _run(ops.execute_scenario(_root(root), scenario_id))
     _print(result)
     if _run_failed(result):
@@ -129,19 +148,57 @@ def execute(scenario_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
 
 @app.command("execute-all")
 def execute_all_cmd(
-    tag: Optional[str] = typer.Option(None, help="Only scenarios with this tag"),
+    scenario_ids: Optional[list[str]] = typer.Argument(
+        None,
+        help="Optional scenario ids; omit to run all valid scenarios",
+    ),
+    tag: Optional[str] = typer.Option(None, help="Only scenarios with this tag (when ids omitted)"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Execute all valid scenarios (optional tag filter)."""
-    result = _run(ops.execute_scenarios(_root(root), scenario_ids=None, tag=tag))
+    """Execute multiple scenarios. (MCP: execute_scenarios)"""
+    result = _run(
+        ops.execute_scenarios(
+            _root(root),
+            scenario_ids=list(scenario_ids) if scenario_ids else None,
+            tag=tag,
+        )
+    )
     _print(result)
     if any(_run_failed(r) for r in result.get("results", [])):
         raise typer.Exit(1)
 
 
+@app.command("execute-dict")
+def execute_dict_cmd(
+    file: Optional[Path] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="JSON file with scenario dict; omit to read JSON from stdin",
+    ),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Validate then run an in-memory scenario JSON. (MCP: execute_scenario_dict)"""
+    try:
+        if file is not None:
+            scenario = json.loads(file.read_text(encoding="utf-8"))
+        else:
+            scenario = json.load(sys.stdin)
+    except (OSError, json.JSONDecodeError) as e:
+        typer.secho(f"Invalid scenario JSON: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    if not isinstance(scenario, dict):
+        typer.secho("Scenario JSON must be an object", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    result = _run(ops.execute_scenario_dict(_root(root), scenario))
+    _print(result)
+    if _run_failed(result):
+        raise typer.Exit(1)
+
+
 @app.command()
 def status(run_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
-    """Run status from SQLite."""
+    """Run status from SQLite. (MCP: get_run_status)"""
     _print(_run(ops.get_run_status(_root(root), run_id)))
 
 
@@ -151,12 +208,23 @@ def log(
     kind: Optional[str] = typer.Option(None, help="Event kind, trailing * for prefix (tool.*)"),
     turn: Optional[int] = typer.Option(None),
     source: Optional[str] = typer.Option(None),
+    since_mono_ms: Optional[int] = typer.Option(None, help="Only events at/after this mono ms"),
     limit: int = typer.Option(200),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Filtered view of events.jsonl."""
+    """Filtered view of events.jsonl. (MCP: get_run_log)"""
     try:
-        _print(ops.get_run_log(_root(root), run_id, kind=kind, turn=turn, source=source, limit=limit))
+        _print(
+            ops.get_run_log(
+                _root(root),
+                run_id,
+                kind=kind,
+                turn=turn,
+                source=source,
+                since_mono_ms=since_mono_ms,
+                limit=limit,
+            )
+        )
     except ConfigError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
@@ -164,13 +232,13 @@ def log(
 
 @app.command()
 def report(run_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
-    """Summary + verdict + suspicious turns."""
+    """Summary + verdict + suspicious turns. (MCP: get_run_report)"""
     _print(_run(ops.get_run_report(_root(root), run_id)))
 
 
 @app.command()
 def compare(run_id_a: str, run_id_b: str, root: Optional[Path] = ROOT_OPTION) -> None:
-    """Diff two runs."""
+    """Diff two runs. (MCP: compare_runs)"""
     _print(_run(ops.compare_runs(_root(root), run_id_a, run_id_b)))
 
 
@@ -180,7 +248,7 @@ def runs(
     scenario_id: Optional[str] = typer.Option(None, "--scenario"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Run history, newest first."""
+    """Run history, newest first. (MCP: list_runs)"""
     _print(_run(ops.list_runs(_root(root), limit=limit, scenario_id=scenario_id)))
 
 

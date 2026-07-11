@@ -76,7 +76,7 @@ import asyncio
 from livekit_agent_simulator import ops, scenario_from_dict
 
 async def main():
-    result = await ops.run_scenario_dict(
+    result = await ops.execute_scenario_dict(
         "/path/to/target-agent-repo",
         {
             "id": "dynamic-backchannel",

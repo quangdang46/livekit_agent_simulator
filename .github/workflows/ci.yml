@@ -3,11 +3,11 @@ name: CI
 on:
   pull_request:
     branches:
-      - master
+      - main
       - main
   push:
     branches:
-      - master
+      - main
       - main
 
 concurrency:

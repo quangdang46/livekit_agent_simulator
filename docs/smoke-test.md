@@ -28,7 +28,7 @@ uv run --directory /path/to/livekit-agent-simulator lk-sim init
 uv run --directory /path/to/livekit-agent-simulator lk-sim preflight
 
 # 4. Run the bundled smoke scenario (2 turns, 90s cap)
-uv run --directory /path/to/livekit-agent-simulator lk-sim run smoke-hello
+uv run --directory /path/to/livekit-agent-simulator lk-sim execute smoke-hello
 
 # 5. Inspect
 uv run --directory /path/to/livekit-agent-simulator lk-sim report <run-id>
