@@ -164,7 +164,12 @@ function renderPlayerShell(root: HTMLElement, runId: string): PlayerUI {
       <section class="transcript-panel">
         <div class="section-head">
           <h2 class="section-title">Conversation</h2>
-          <span class="section-hint">Agent left · Caller right · Script barge amber · Events centered</span>
+          <span class="section-hint">Full-width 3 columns · Agent · Script/events · Caller</span>
+        </div>
+        <div class="col-headers" aria-hidden="true">
+          <div class="col-h agent">Agent</div>
+          <div class="col-h script">Script / events</div>
+          <div class="col-h user">Caller</div>
         </div>
         <ol id="cues" class="cues"></ol>
       </section>
@@ -402,15 +407,17 @@ function mountTimelineList(
 
     if (item.kind === "marker") {
       const m = item.marker;
-      li.className = `cue marker ${m.type}`;
+      li.className = `cue-row marker ${m.type}`;
       li.innerHTML = `
-        <div class="cue-meta">
-          <span class="role marker-type ${m.type}"></span>
-          <span class="time"></span>
-          <span class="tag ${m.type}"></span>
+        <div class="cue-card marker ${m.type}">
+          <div class="cue-meta">
+            <span class="role marker-type ${m.type}"></span>
+            <span class="time"></span>
+            <span class="tag ${m.type}"></span>
+          </div>
+          <div class="cue-text"></div>
+          <div class="cue-detail"></div>
         </div>
-        <div class="cue-text"></div>
-        <div class="cue-detail"></div>
       `;
       const role = li.querySelector(".role");
       const time = li.querySelector(".time");
@@ -429,17 +436,20 @@ function mountTimelineList(
       const c = item.cue;
       const r = (c.role || "other").toLowerCase();
       const origin = c.speech_origin || "natural";
-      li.className = `cue ${roleClass(r, origin)}`;
+      const col = roleClass(r, origin);
+      li.className = `cue-row ${col}`;
       li.dataset.role = r;
       li.dataset.origin = origin;
       li.innerHTML = `
-        <div class="cue-meta">
-          <span class="role ${r} origin-${origin}"></span>
-          <span class="time"></span>
-          <span class="tags"></span>
+        <div class="cue-card ${col}">
+          <div class="cue-meta">
+            <span class="role ${r} origin-${origin}"></span>
+            <span class="time"></span>
+            <span class="tags"></span>
+          </div>
+          <div class="cue-text"></div>
+          <div class="cue-detail script-origin hidden"></div>
         </div>
-        <div class="cue-text"></div>
-        <div class="cue-detail script-origin hidden"></div>
       `;
       const role = li.querySelector(".role");
       const time = li.querySelector(".time");
@@ -540,13 +550,15 @@ function findActiveIndex(els: HTMLElement[], tMs: number): number {
 }
 
 function setNowBadge(el: HTMLElement, on: boolean): void {
-  let badge = el.querySelector<HTMLElement>(":scope > .now-badge");
+  const card =
+    el.querySelector<HTMLElement>(":scope > .cue-card") || el;
+  let badge = card.querySelector<HTMLElement>(":scope > .now-badge");
   if (on) {
     if (!badge) {
       badge = document.createElement("span");
       badge.className = "now-badge";
       badge.textContent = "Now";
-      el.appendChild(badge);
+      card.appendChild(badge);
     }
   } else if (badge) {
     badge.remove();

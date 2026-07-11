@@ -89,9 +89,13 @@ body {
   padding: 1.25rem 1rem 3rem;
 }
 
+/* Player uses almost full viewport — 3-col conversation needs room */
 .player-page {
-  max-width: 56rem;
-  padding-bottom: 2rem;
+  max-width: min(100%, 96rem);
+  width: 100%;
+  margin: 0 auto;
+  padding: 1rem clamp(0.75rem, 2vw, 1.75rem) 2.5rem;
+  box-sizing: border-box;
 }
 
 .header h1 {
@@ -362,6 +366,10 @@ audio {
 
 .transcript-panel {
   margin-top: 1rem;
+  /* Subtle 3-column rails behind the chat */
+  --col-agent-rail: color-mix(in srgb, var(--agent) 6%, transparent);
+  --col-script-rail: color-mix(in srgb, var(--script-barge) 7%, transparent);
+  --col-user-rail: color-mix(in srgb, var(--user) 6%, transparent);
 }
 
 .section-head {
@@ -369,7 +377,7 @@ audio {
   align-items: baseline;
   justify-content: space-between;
   gap: 0.75rem;
-  margin: 0.25rem 0 0.75rem;
+  margin: 0.25rem 0 0.55rem;
 }
 
 .section-title {
@@ -386,82 +394,166 @@ audio {
   color: var(--muted);
 }
 
-/* Chat-style timeline */
+/* Sticky column headers — Agent | Script | Caller */
+.col-headers {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  display: grid;
+  grid-template-columns: 1fr minmax(12rem, 0.95fr) 1fr;
+  gap: 0.85rem;
+  margin: 0 0 0.65rem;
+  padding: 0.45rem 0;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.col-h {
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.col-h.agent {
+  color: var(--agent);
+  background: var(--agent-bg);
+  border-color: var(--agent-border);
+}
+
+.col-h.script {
+  color: var(--script-barge);
+  background: var(--script-barge-bg);
+  border-color: var(--script-barge-border);
+}
+
+.col-h.user {
+  color: var(--user);
+  background: var(--user-bg);
+  border-color: var(--user-border);
+}
+
+/* Full-width 3-column timeline */
 .cues {
   list-style: none;
   margin: 0;
-  padding: 0 0 2rem;
+  padding: 0 0 2.5rem;
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  gap: 0.55rem;
+  /* Column rails */
+  background:
+    linear-gradient(
+      to right,
+      var(--col-agent-rail) 0%,
+      var(--col-agent-rail) calc((100% - 1.7rem) / 3 + 0.4rem),
+      transparent calc((100% - 1.7rem) / 3 + 0.4rem),
+      transparent calc((100% - 1.7rem) / 3 + 0.5rem),
+      var(--col-script-rail) calc((100% - 1.7rem) / 3 + 0.5rem),
+      var(--col-script-rail) calc(2 * (100% - 1.7rem) / 3 + 1.2rem),
+      transparent calc(2 * (100% - 1.7rem) / 3 + 1.2rem),
+      transparent calc(2 * (100% - 1.7rem) / 3 + 1.3rem),
+      var(--col-user-rail) calc(2 * (100% - 1.7rem) / 3 + 1.3rem),
+      var(--col-user-rail) 100%
+    );
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  padding: 0.65rem 0.55rem 2rem;
 }
 
-.cue {
-  display: flex;
-  flex-direction: column;
-  max-width: min(92%, 36rem);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 0.7rem 0.9rem 0.75rem;
+/* Each event is a full-width 3-col row; card sits in one column */
+.cue-row {
+  display: grid;
+  grid-template-columns: 1fr minmax(12rem, 0.95fr) 1fr;
+  gap: 0.85rem;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
   cursor: pointer;
-  transition:
-    border-color 0.15s,
-    box-shadow 0.15s,
-    transform 0.12s;
   text-align: left;
-  width: fit-content;
   color: inherit;
   font: inherit;
-  position: relative;
+  list-style: none;
 }
 
-.cue:hover {
+.cue-row:hover .cue-card {
   transform: translateY(-1px);
 }
 
-.cue.role-agent {
-  align-self: flex-start;
+.cue-row.role-agent .cue-card {
+  grid-column: 1;
+}
+
+.cue-row.role-user .cue-card {
+  grid-column: 3;
+}
+
+.cue-row.role-script-barge .cue-card,
+.cue-row.role-script-cue .cue-card,
+.cue-row.marker .cue-card,
+.cue-row.role-other .cue-card {
+  grid-column: 2;
+}
+
+.cue-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.75rem 0.95rem 0.8rem;
+  background: var(--panel);
+  position: relative;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    transform 0.12s,
+    background 0.15s;
+}
+
+.cue-card.role-agent {
   background: var(--agent-bg);
   border-color: var(--agent-border);
-  border-left: 3px solid var(--agent);
+  border-left: 4px solid var(--agent);
 }
 
-.cue.role-user {
-  align-self: flex-end;
+.cue-card.role-user {
   background: var(--user-bg);
   border-color: var(--user-border);
-  border-right: 3px solid var(--user);
+  border-right: 4px solid var(--user);
 }
 
-/* Script barge / inject — right side but amber, dashed, easy to not confuse with Caller */
-.cue.role-script-barge,
-.cue.role-script-cue {
-  align-self: flex-end;
+.cue-card.role-script-barge,
+.cue-card.role-script-cue {
   background: var(--script-barge-bg);
   border-color: var(--script-barge-border);
   border-style: dashed;
   border-width: 2px;
-  border-right: 4px solid var(--script-barge);
-  max-width: min(92%, 36rem);
+  border-left: 4px solid var(--script-barge);
 }
 
-.cue.role-script-barge .role,
-.cue.role-script-cue .role,
+.cue-card.role-script-barge .role,
+.cue-card.role-script-cue .role,
 .role.user.origin-script_barge,
 .role.user.origin-script_cue {
   color: var(--script-barge);
   text-transform: none;
 }
 
-.cue.role-other {
-  align-self: stretch;
-  max-width: 100%;
-  width: 100%;
+.cue-card.role-other {
   background: var(--panel);
 }
 
-/* Current playback position — must be obvious while listening */
-.cue.active {
+/* Active row highlight on the card */
+.cue-row.active .cue-card {
   z-index: 2;
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--active) 85%, transparent),
@@ -470,7 +562,7 @@ audio {
   outline-offset: 1px;
 }
 
-.cue.role-agent.active {
+.cue-row.role-agent.active .cue-card {
   background: color-mix(in srgb, var(--agent) 28%, var(--agent-bg));
   border-color: var(--agent);
   box-shadow:
@@ -479,7 +571,7 @@ audio {
   outline-color: color-mix(in srgb, var(--agent) 50%, transparent);
 }
 
-.cue.role-user.active {
+.cue-row.role-user.active .cue-card {
   background: color-mix(in srgb, var(--user) 26%, var(--user-bg));
   border-color: var(--user);
   box-shadow:
@@ -488,11 +580,10 @@ audio {
   outline-color: color-mix(in srgb, var(--user) 50%, transparent);
 }
 
-.cue.role-script-barge.active,
-.cue.role-script-cue.active {
+.cue-row.role-script-barge.active .cue-card,
+.cue-row.role-script-cue.active .cue-card {
   background: color-mix(in srgb, var(--script-barge) 28%, var(--script-barge-bg));
   border-color: var(--script-barge);
-  border-style: dashed;
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--script-barge) 75%, transparent),
     0 6px 22px color-mix(in srgb, var(--script-barge) 28%, transparent);
@@ -516,25 +607,23 @@ audio {
   animation: now-pulse 1.4s ease-in-out infinite;
 }
 
-.cue.role-agent .now-badge {
+.cue-card.role-agent .now-badge {
   background: var(--agent);
   color: #0b1220;
   right: auto;
   left: 0.65rem;
 }
 
-.cue.role-user .now-badge {
+.cue-card.role-user .now-badge {
   background: var(--user);
   color: #042f2e;
 }
 
-.cue.role-script-barge .now-badge,
-.cue.role-script-cue .now-badge {
+.cue-card.role-script-barge .now-badge,
+.cue-card.role-script-cue .now-badge,
+.cue-card.marker .now-badge {
   background: var(--script-barge);
   color: #1c0a00;
-}
-
-.cue.marker .now-badge {
   right: 50%;
   transform: translateX(50%);
 }
@@ -555,46 +644,41 @@ audio {
   }
 }
 
-/* Marker rows (events, not dialogue) */
-.cue.marker {
-  align-self: center;
-  max-width: min(96%, 40rem);
-  width: auto;
+/* Marker cards (center column) */
+.cue-card.marker {
   border-style: dashed;
   border-width: 1.5px;
-  border-left-width: 1.5px;
-  border-right-width: 1.5px;
   background: color-mix(in srgb, var(--panel) 85%, transparent);
   border-radius: 10px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.55rem 0.8rem;
 }
 
-.cue.marker.barge_in {
+.cue-card.marker.barge_in {
   border-color: var(--mk-barge);
   background: color-mix(in srgb, var(--mk-barge) 12%, var(--panel));
 }
-.cue.marker.script_cue {
+.cue-card.marker.script_cue {
   border-color: var(--mk-script);
   background: color-mix(in srgb, var(--mk-script) 12%, var(--panel));
 }
-.cue.marker.silence_wait {
+.cue-card.marker.silence_wait {
   border-color: var(--mk-silence-wait);
   background: color-mix(in srgb, var(--mk-silence-wait) 14%, var(--panel));
 }
-.cue.marker.silence {
+.cue-card.marker.silence {
   border-color: var(--mk-silence);
   background: color-mix(in srgb, var(--mk-silence) 14%, var(--panel));
 }
-.cue.marker.interruption {
+.cue-card.marker.interruption {
   border-color: var(--mk-interrupt);
   background: color-mix(in srgb, var(--mk-interrupt) 14%, var(--panel));
 }
-.cue.marker.recovery {
+.cue-card.marker.recovery {
   border-color: var(--mk-recovery);
   background: color-mix(in srgb, var(--mk-recovery) 12%, var(--panel));
 }
 
-.cue.marker.active {
+.cue-row.marker.active .cue-card {
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--active) 75%, transparent),
     0 4px 14px color-mix(in srgb, var(--active) 18%, transparent);
@@ -718,13 +802,14 @@ audio {
 .cue-text {
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 0.95rem;
-  line-height: 1.5;
+  font-size: 0.98rem;
+  line-height: 1.55;
 }
 
-.cue.role-agent .cue-text,
-.cue.role-user .cue-text {
-  font-size: 0.97rem;
+.cue-card.role-agent .cue-text,
+.cue-card.role-user .cue-text,
+.cue-card.role-script-barge .cue-text {
+  font-size: 1rem;
 }
 
 .cue-detail {
@@ -772,14 +857,33 @@ audio {
   white-space: pre-wrap;
 }
 
-@media (max-width: 640px) {
-  .cue {
-    max-width: 100%;
+@media (max-width: 900px) {
+  .col-headers,
+  .cue-row {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
   }
-  .cue.role-user,
-  .cue.role-agent {
-    max-width: 96%;
+
+  .cue-row.role-agent .cue-card,
+  .cue-row.role-user .cue-card,
+  .cue-row.role-script-barge .cue-card,
+  .cue-row.role-script-cue .cue-card,
+  .cue-row.marker .cue-card,
+  .cue-row.role-other .cue-card {
+    grid-column: 1;
   }
+
+  .col-headers {
+    display: none;
+  }
+
+  .cues {
+    background: transparent;
+    border: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
   .player-page {
     padding-left: 0.75rem;
     padding-right: 0.75rem;
