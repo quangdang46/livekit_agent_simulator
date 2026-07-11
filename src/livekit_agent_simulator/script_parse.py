@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .script_runner import ScriptStep, ScriptVerifySpec
+from .script_runner import SUPPORTED_ACTIONS, SUPPORTED_TRIGGERS, ScriptStep, ScriptVerifySpec
 
 
 def parse_script_verify(raw: Any) -> ScriptVerifySpec | None:
@@ -34,6 +34,7 @@ def parse_script_verify(raw: Any) -> ScriptVerifySpec | None:
         max_interruptions=int(raw["max_interruptions"])
         if raw.get("max_interruptions") is not None
         else None,
+        min_agent_finals_after_silence=int(raw.get("min_agent_finals_after_silence", 0)),
         plugins=plugins,
         plugin_options=plugin_options,
     )
@@ -52,36 +53,52 @@ def parse_script_steps(spec: dict[str, Any], path_label: str) -> list[ScriptStep
             raise ValueError(f"{path_label}: Script.spec.steps[{i}] must be an object")
         step_id = str(raw.get("id") or raw.get("label") or f"step-{i}")
         trigger = str(raw.get("trigger", "agent_speaking"))
-        if trigger != "agent_speaking":
+        if trigger not in SUPPORTED_TRIGGERS:
             raise ValueError(
                 f"{path_label}: Script step {step_id!r}: unsupported trigger {trigger!r} "
-                "(supported: agent_speaking)"
+                f"(supported: {sorted(SUPPORTED_TRIGGERS)})"
             )
-        say = raw.get("say") or raw.get("text")
-        if not say or not str(say).strip():
-            raise ValueError(f"{path_label}: Script step {step_id!r}: say/text is required")
+        action = str(raw.get("action", "speak"))
+        if action not in SUPPORTED_ACTIONS:
+            raise ValueError(
+                f"{path_label}: Script step {step_id!r}: action must be speak|wait"
+            )
+        say = raw.get("say") or raw.get("text") or ""
+        if action == "speak" and not str(say).strip():
+            raise ValueError(f"{path_label}: Script step {step_id!r}: say/text required when action=speak")
         delivery = str(raw.get("delivery", "gemini_text"))
         if delivery not in ("gemini_text", "room_pcm"):
             raise ValueError(
                 f"{path_label}: Script step {step_id!r}: delivery must be gemini_text or room_pcm"
             )
         asset = raw.get("asset")
-        if delivery == "room_pcm" and not asset:
+        if action == "speak" and delivery == "room_pcm" and not asset:
             raise ValueError(
                 f"{path_label}: Script step {step_id!r}: room_pcm delivery requires asset (WAV path)"
             )
+        # Barge-in convenience: short delay while agent speaking
+        delay_ms = int(raw.get("delay_ms", 800))
+        min_agent = int(raw.get("min_agent_active_ms", 400))
+        if raw.get("barge_in") or raw.get("interrupt"):
+            delay_ms = int(raw.get("delay_ms", 250))
+            min_agent = int(raw.get("min_agent_active_ms", 200))
+            trigger = "agent_speaking"
+            action = "speak"
+
         steps.append(
             ScriptStep(
                 id=step_id,
                 trigger=trigger,
-                delay_ms=int(raw.get("delay_ms", 800)),
+                delay_ms=delay_ms,
                 say=str(say).strip(),
                 label=str(raw.get("label") or step_id),
                 once=bool(raw.get("once", True)),
-                min_agent_active_ms=int(raw.get("min_agent_active_ms", 400)),
+                min_agent_active_ms=min_agent,
                 delivery=delivery,
                 asset=str(asset).strip() if asset else None,
                 silence_after_cue_ms=int(raw.get("silence_after_cue_ms", 0)),
+                action=action,
+                require_agent_spoke_first=bool(raw.get("require_agent_spoke_first", True)),
             )
         )
     return steps

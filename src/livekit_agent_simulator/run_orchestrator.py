@@ -252,6 +252,8 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
             if meta.get("room_name"):
                 await adapter.delete_room(meta["room_name"])
 
+    summary_extra: dict[str, Any] = {}
+
     has_script_verify = scenario.script_verify is not None and (
         scenario.script_steps or bool(scenario.script_verify.plugins)
     )
@@ -264,17 +266,33 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
             project_root=cfg.project_root,
         )
         writer.emit("script.verify", spec=script_verify, include_dialogue=False)
-        summary_extra = {"script_verify": script_verify}
-    else:
-        summary_extra = {}
+        summary_extra["script_verify"] = script_verify
 
-    if status == "done" and cfg.judge is not None and scenario.pass_criteria:
+    if status == "done" and scenario.asserts is not None and not scenario.asserts.empty:
+        from .asserts import evaluate_asserts
+
+        assert_result = evaluate_asserts(writer.events, scenario.asserts)
+        writer.emit("assert.verify", spec=assert_result, include_dialogue=False)
+        summary_extra["assert_verify"] = assert_result
+        if not assert_result.get("pass"):
+            # Hard asserts fail the run even if the LLM judge would pass.
+            if status == "done":
+                status = "failed"
+            meta["assert_failed"] = True
+
+    if status in ("done", "failed") and cfg.judge is not None and scenario.pass_criteria:
         try:
             tool_events = [e for e in writer.events if e["kind"].startswith("tool.")]
+            # Include llm_bool outcome prompts as extra criteria when present.
+            criteria = list(scenario.pass_criteria)
+            if scenario.asserts:
+                for oc in scenario.asserts.outcomes:
+                    if oc.type == "llm_bool" and oc.prompt:
+                        criteria.append(f"[outcome:{oc.id}] {oc.prompt}")
             verdict = await judge_run(
                 cfg.judge,
                 cfg.simulator.google_api_key,
-                scenario.pass_criteria,
+                criteria,
                 writer.turn_metrics(),
                 tool_events,
             )

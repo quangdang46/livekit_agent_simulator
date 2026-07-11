@@ -21,10 +21,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .asserts import AssertSpec, parse_assert_spec
 from .script_runner import ScriptStep, ScriptVerifySpec
 
 API_VERSION = "agent-sim/v1"
-KNOWN_KINDS = {"Persona", "Context", "Simulator", "Execute", "Dispatch", "PassCriteria", "Script", "Plugins"}
+KNOWN_KINDS = {
+    "Persona",
+    "Context",
+    "Simulator",
+    "Execute",
+    "Dispatch",
+    "PassCriteria",
+    "Script",
+    "Plugins",
+    "Assert",
+}
 
 
 def strip_extension_keys(obj: dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +85,7 @@ class Scenario:
     script_steps: list[Any] = field(default_factory=list)
     script_verify: ScriptVerifySpec | None = None
     plugin_modules: list[str] = field(default_factory=list)
+    asserts: AssertSpec | None = None
 
     @property
     def run_spec(self) -> SimulatorSpec:
@@ -125,6 +137,7 @@ class Scenario:
             "pass_criteria": self.pass_criteria,
             "script_steps": len(self.script_steps),
             "plugin_modules": list(self.plugin_modules),
+            "has_asserts": self.asserts is not None and not self.asserts.empty,
             "script_verify": None
             if self.script_verify is None
             else {
@@ -133,17 +146,24 @@ class Scenario:
                 "min_user_finals_after_first_cue": self.script_verify.min_user_finals_after_first_cue,
                 "min_interruptions": self.script_verify.min_interruptions,
                 "max_interruptions": self.script_verify.max_interruptions,
+                "min_agent_finals_after_silence": self.script_verify.min_agent_finals_after_silence,
                 "plugins": list(self.script_verify.plugins),
             },
         }
 
+    def effective_locale(self) -> str:
+        """Locale for speech: Persona.language overrides Scenario.metadata.locale."""
+        p_lang = self.persona.get("language") or self.persona.get("locale")
+        return str(p_lang).strip() if p_lang else self.locale
+
     def persona_system_prompt(self) -> str:
         """Build the Gemini Live system instruction for the simulated caller."""
         p = self.persona
+        locale = self.effective_locale()
         lines = [
             "You are role-playing a HUMAN CALLER on a phone call with a voice assistant.",
             "You are NOT an assistant. Never offer help; you are the customer.",
-            f"Speak only in the language/locale: {self.locale}.",
+            f"Speak only in the language/locale: {locale}.",
             "Keep every utterance short and natural like real phone speech (1-2 sentences).",
             "Never mention that you are an AI or a simulation.",
         ]
@@ -156,6 +176,22 @@ class Scenario:
             lines.append(f"Your goals for this call, in order: {goals}")
         if p.get("style"):
             lines.append(f"Speaking style: {p['style']}")
+        traits = p.get("traits") or p.get("behaviors") or []
+        if isinstance(traits, str):
+            traits = [traits]
+        if traits:
+            # Portable behavior tags for diverse callers (impatient, interrupts, quiet, …)
+            lines.append(
+                "Caller behavior traits (follow these while staying natural): "
+                + ", ".join(str(t) for t in traits)
+            )
+            if any("interrupt" in str(t).lower() or "impatient" in str(t).lower() for t in traits):
+                lines.append(
+                    "You may speak briefly over the agent when natural (impatient), "
+                    "but do not monologue."
+                )
+            if any("silent" in str(t).lower() or "quiet" in str(t).lower() for t in traits):
+                lines.append("You are often quiet; wait before answering; short replies.")
         if self.context.get("notes"):
             lines.append(f"Background context you know: {self.context['notes']}")
         if self.script_steps:
@@ -262,6 +298,11 @@ def parse_scenario(path: Path | str) -> Scenario:
             if not isinstance(modules, list):
                 raise ScenarioError(f"{path}:{line_no}: Plugins.spec.modules must be an array")
             scenario.plugin_modules.extend(str(m) for m in modules)
+        elif kind == "Assert":
+            try:
+                scenario.asserts = parse_assert_spec(spec, f"{path}:{line_no}")
+            except ValueError as e:
+                raise ScenarioError(str(e)) from e
 
     if not scenario.persona.get("brief"):
         raise ScenarioError(f"{path}: Persona.spec.brief is required — the simulator needs a caller brief")

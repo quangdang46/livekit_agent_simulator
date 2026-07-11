@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .asserts import parse_assert_spec
 from .scenario import (
     API_VERSION,
     DispatchSpec,
@@ -72,6 +73,14 @@ def scenario_from_dict(
 
     plugin_modules = [str(m) for m in (data.get("plugin_modules") or data.get("plugins") or [])]
 
+    asserts = None
+    assert_raw = data.get("assert") or data.get("asserts")
+    if isinstance(assert_raw, dict):
+        try:
+            asserts = parse_assert_spec(assert_raw, path_label)
+        except ValueError as e:
+            raise ScenarioError(str(e)) from e
+
     scenario = Scenario(
         id=str(scenario_id),
         path=path or Path(f"{scenario_id}.jsonl"),
@@ -86,6 +95,7 @@ def scenario_from_dict(
         script_steps=script_steps,
         script_verify=script_verify,
         plugin_modules=plugin_modules,
+        asserts=asserts,
     )
 
     if scenario.simulator.first_speaker not in ("agent", "user"):

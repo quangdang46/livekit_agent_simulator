@@ -14,14 +14,29 @@ def test_parse_script_steps():
                     "delay_ms": 700,
                     "say": "うん",
                     "label": "backchannel",
-                }
+                },
+                {
+                    "id": "quiet",
+                    "trigger": "silence",
+                    "delay_ms": 2000,
+                    "action": "wait",
+                },
+                {
+                    "id": "bi",
+                    "barge_in": True,
+                    "say": "wait—",
+                },
             ]
         },
         "test.jsonl:1",
     )
-    assert len(steps) == 1
+    assert len(steps) == 3
     assert steps[0].say == "うん"
     assert steps[0].delay_ms == 700
+    assert steps[1].trigger == "silence"
+    assert steps[1].action == "wait"
+    assert steps[2].trigger == "agent_speaking"
+    assert steps[2].delay_ms == 250
 
 
 def test_parse_script_verify():
@@ -63,3 +78,24 @@ def test_evaluate_script_log_interrupt_scenario():
     ]
     result = evaluate_script_log(events, steps, ScriptVerifySpec(min_interruptions=1))
     assert result["pass"] is True
+
+
+def test_evaluate_silence_wait_and_agent_resume():
+    steps = [
+        ScriptStep("q", "silence", 2000, say="", label="quiet", action="wait"),
+    ]
+    events = [
+        {
+            "kind": "sim.script.wait",
+            "ts_mono_ms": 5000,
+            "spec": {"step_id": "q", "trigger": "silence", "action": "wait"},
+        },
+        {"kind": "transcript.agent.final", "ts_mono_ms": 8000, "spec": {"text": "Are you still there?"}},
+    ]
+    result = evaluate_script_log(
+        events,
+        steps,
+        ScriptVerifySpec(min_agent_finals_after_silence=1),
+    )
+    assert result["pass"] is True
+    assert result["agent_finals_after_silence"] == 1

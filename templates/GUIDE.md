@@ -87,9 +87,10 @@ lk-sim scenario-init my-case --root /path/to/target
 | `Simulator` | no | Defaults; overridden by Execute |
 | `Execute` | recommended | `max_turns`, `timeout_s`, `first_speaker` |
 | `Dispatch` | no | Per-scenario opaque metadata JSON string |
-| `Script` | no | Timed cues (`agent_speaking`); `gemini_text` \| `room_pcm` |
+| `Script` | no | Timed behavior: `trigger` agent_speaking \| silence \| time; `action` speak \| wait; `barge_in` |
+| `Assert` | no | Hard checks: tools, transcript phrases, outcomes (fail run if not met) |
 | `Plugins` | no | Load `.agent-sim/plugins/*.py` |
-| `PassCriteria` | no | Judge rubric strings |
+| `PassCriteria` | no | Soft LLM judge rubric strings |
 
 ### Run
 

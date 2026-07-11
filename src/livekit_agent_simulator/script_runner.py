@@ -1,4 +1,4 @@
-"""Timed caller cues — inject speech while the agent is active (replaces flaky persona-only timing)."""
+"""Timed caller cues — inject speech / wait while exercising agent turn-taking."""
 
 from __future__ import annotations
 
@@ -13,19 +13,28 @@ if TYPE_CHECKING:
     from .livekit.observer import Observer
     from .logging.event_writer import EventWriter
 
+# agent_speaking: fire while agent is active speaker (barge-in / backchannel)
+# silence: fire after agent has been idle for delay_ms (optional require agent spoke first)
+# time: fire delay_ms after step is armed (absolute wait from step order)
+SUPPORTED_TRIGGERS = frozenset({"agent_speaking", "silence", "time"})
+SUPPORTED_ACTIONS = frozenset({"speak", "wait"})
+
 
 @dataclass(frozen=True)
 class ScriptStep:
     id: str
-    trigger: str  # agent_speaking
+    trigger: str
     delay_ms: int
-    say: str
-    label: str
+    say: str = ""
+    label: str = ""
     once: bool = True
     min_agent_active_ms: int = 400
     delivery: str = "gemini_text"  # gemini_text | room_pcm
     asset: str | None = None
     silence_after_cue_ms: int = 0
+    action: str = "speak"  # speak | wait
+    # For silence trigger: only start counting idle after agent has spoken once.
+    require_agent_spoke_first: bool = True
 
 
 @dataclass(frozen=True)
@@ -35,6 +44,8 @@ class ScriptVerifySpec:
     min_user_finals_after_first_cue: int = 0
     min_interruptions: int | None = None
     max_interruptions: int | None = None
+    # After a silence-wait step, require agent transcript final later (agent re-prompts).
+    min_agent_finals_after_silence: int = 0
     plugins: tuple[str, ...] = ()
     plugin_options: dict[str, Any] = field(default_factory=dict)
 
@@ -43,9 +54,9 @@ class ScriptRunner:
     def __init__(
         self,
         steps: list[ScriptStep],
-        observer: Observer,
-        bridge: GeminiCallerBridge,
-        writer: EventWriter,
+        observer: "Observer",
+        bridge: "GeminiCallerBridge",
+        writer: "EventWriter",
         *,
         scenario_dir: Path | None = None,
     ) -> None:
@@ -103,7 +114,10 @@ class ScriptRunner:
                 self._trigger_gap_since.pop(step.id, None)
                 started = self._trigger_since.setdefault(step.id, time.monotonic())
                 elapsed_ms = int((time.monotonic() - started) * 1000)
-                if elapsed_ms < step.min_agent_active_ms + step.delay_ms:
+                need = step.delay_ms
+                if step.trigger == "agent_speaking":
+                    need = step.min_agent_active_ms + step.delay_ms
+                if elapsed_ms < need:
                     continue
                 await self._fire(step, elapsed_ms)
             await asyncio.sleep(0.05)
@@ -111,6 +125,12 @@ class ScriptRunner:
     def _trigger_active(self, step: ScriptStep) -> bool:
         if step.trigger == "agent_speaking":
             return self.observer.agent_is_active_speaker
+        if step.trigger == "silence":
+            if step.require_agent_spoke_first and not self.observer.agent_has_spoken:
+                return False
+            return not self.observer.agent_is_active_speaker
+        if step.trigger == "time":
+            return True
         return False
 
     async def _fire(self, step: ScriptStep, waited_ms: int) -> None:
@@ -122,22 +142,27 @@ class ScriptRunner:
                 self.observer.agent_is_active_speaker
                 or agent_active_ms >= step.min_agent_active_ms
             )
-            await self.bridge.inject_cue(
-                step.say,
-                label=step.label,
-                delivery=step.delivery,
-                asset=step.asset,
-                scenario_dir=self.scenario_dir,
-            )
-            if step.silence_after_cue_ms > 0:
-                self.bridge.suppress_persona_output(step.silence_after_cue_ms)
+            if step.action == "wait":
+                kind = "sim.script.wait"
+            else:
+                kind = "sim.script.cue"
+                await self.bridge.inject_cue(
+                    step.say,
+                    label=step.label or step.id,
+                    delivery=step.delivery,
+                    asset=step.asset,
+                    scenario_dir=self.scenario_dir,
+                )
+                if step.silence_after_cue_ms > 0:
+                    self.bridge.suppress_persona_output(step.silence_after_cue_ms)
             self.writer.emit(
-                "sim.script.cue",
+                kind,
                 spec={
                     "step_id": step.id,
-                    "label": step.label,
+                    "label": step.label or step.id,
                     "say": step.say,
                     "trigger": step.trigger,
+                    "action": step.action,
                     "waited_ms": waited_ms,
                     "agent_active": self.observer.agent_is_active_speaker,
                     "agent_active_ms": agent_active_ms,
@@ -152,7 +177,7 @@ class ScriptRunner:
                 self._fired.add(step.id)
                 self._armed_step_index += 1
                 if self._armed_step_index < len(self.steps):
-                    self._await_post_cue_gap = True
+                    self._await_post_cue_gap = step.trigger == "agent_speaking"
                     self._post_cue_gap_since = None
                 self._trigger_since.clear()
                 self._trigger_gap_since.clear()
@@ -167,7 +192,7 @@ def evaluate_script_log(
     project_root: Path | str | None = None,
 ) -> dict[str, object]:
     """Log-based PASS/FAIL for scripted adaptive scenarios (no LLM judge required)."""
-    cues = [e for e in events if e.get("kind") == "sim.script.cue"]
+    cues = [e for e in events if e.get("kind") in ("sim.script.cue", "sim.script.wait")]
     agent_finals = [e for e in events if e.get("kind") == "transcript.agent.final"]
     user_finals = [e for e in events if e.get("kind") == "transcript.user.final"]
     interruptions = [e for e in events if e.get("kind") == "interruption"]
@@ -177,12 +202,12 @@ def evaluate_script_log(
     for step in steps:
         matching = [c for c in cues if c.get("spec", {}).get("step_id") == step.id]
         if not matching:
-            checks.append({"step_id": step.id, "pass": False, "reason": "sim.script.cue not fired"})
+            checks.append({"step_id": step.id, "pass": False, "reason": "script step not fired"})
             continue
         cue = matching[0]
         spec = cue.get("spec") or {}
         during = bool(spec.get("during_agent_speech"))
-        if step.trigger == "agent_speaking" and not during:
+        if step.trigger == "agent_speaking" and step.action == "speak" and not during:
             checks.append(
                 {
                     "step_id": step.id,
@@ -191,9 +216,25 @@ def evaluate_script_log(
                 }
             )
             continue
-        checks.append({"step_id": step.id, "pass": True, "during_agent_speech": during})
+        checks.append(
+            {
+                "step_id": step.id,
+                "pass": True,
+                "during_agent_speech": during,
+                "trigger": step.trigger,
+                "action": step.action,
+            }
+        )
 
     cue_ms = cues[0]["ts_mono_ms"] if cues else None
+    silence_cues = [
+        e
+        for e in cues
+        if (e.get("spec") or {}).get("trigger") == "silence"
+        or (e.get("spec") or {}).get("action") == "wait"
+    ]
+    silence_ms = silence_cues[0]["ts_mono_ms"] if silence_cues else None
+
     agent_after_cue = (
         sum(1 for e in agent_finals if cue_ms is not None and e.get("ts_mono_ms", 0) >= cue_ms)
         if cue_ms is not None
@@ -204,9 +245,17 @@ def evaluate_script_log(
         if cue_ms is not None
         else 0
     )
+    agent_after_silence = (
+        sum(
+            1
+            for e in agent_finals
+            if silence_ms is not None and e.get("ts_mono_ms", 0) >= silence_ms
+        )
+        if silence_ms is not None
+        else 0
+    )
 
     verify = verify or ScriptVerifySpec()
-    # require_during_agent_speech is enforced per agent_speaking step in checks above.
     if verify.min_agent_finals_after_first_cue > 0:
         ok = agent_after_cue >= verify.min_agent_finals_after_first_cue
         checks.append(
@@ -225,6 +274,16 @@ def evaluate_script_log(
                 "pass": ok,
                 "expected": verify.min_user_finals_after_first_cue,
                 "actual": user_after_cue,
+            }
+        )
+    if verify.min_agent_finals_after_silence > 0:
+        ok = agent_after_silence >= verify.min_agent_finals_after_silence
+        checks.append(
+            {
+                "check": "min_agent_finals_after_silence",
+                "pass": ok,
+                "expected": verify.min_agent_finals_after_silence,
+                "actual": agent_after_silence,
             }
         )
     if verify.min_interruptions is not None:
@@ -320,9 +379,11 @@ def evaluate_script_log(
 
     return {
         "script_steps": len(steps),
-        "cues_fired": len(cues),
+        "cues_fired": len([e for e in cues if e.get("kind") == "sim.script.cue"]),
+        "waits_fired": len([e for e in cues if e.get("kind") == "sim.script.wait"]),
         "agent_finals_after_first_cue": agent_after_cue,
         "user_finals_after_first_cue": user_after_cue,
+        "agent_finals_after_silence": agent_after_silence,
         "interruptions": len(interruptions),
         "checks": checks,
         "plugin_results": plugin_results,
