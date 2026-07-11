@@ -36,6 +36,8 @@ class ScriptStep:
     # For silence trigger: only start counting idle after agent has spoken once.
     require_agent_spoke_first: bool = True
     barge_in: bool = False
+    # When barge_in + gemini_text: play builtin noise.blip first (audible cut-in).
+    with_blip: bool = True
 
 
 @dataclass(frozen=True)
@@ -162,7 +164,11 @@ class ScriptRunner:
                     # Hard barge-in: always mix a short PCM blip into the mic first so
                     # the agent STT / stereo L channel actually "cuts across" speech.
                     # gemini_text alone is delayed TTS and rarely sounds like an interrupt.
-                    if step.barge_in and step.delivery != "room_pcm":
+                    if (
+                        step.barge_in
+                        and step.with_blip
+                        and step.delivery != "room_pcm"
+                    ):
                         try:
                             await self.bridge.inject_cue(
                                 "[barge blip]",

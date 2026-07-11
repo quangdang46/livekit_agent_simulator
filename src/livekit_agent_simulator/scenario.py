@@ -33,6 +33,7 @@ KNOWN_KINDS = {
     "Dispatch",
     "PassCriteria",
     "Script",
+    "Behavior",
     "Plugins",
     "Assert",
 }
@@ -86,6 +87,8 @@ class Scenario:
     script_verify: ScriptVerifySpec | None = None
     plugin_modules: list[str] = field(default_factory=list)
     asserts: AssertSpec | None = None
+    # Raw Behavior.spec (Hamming-style policy); compiled into script_steps at parse end.
+    behavior_spec: dict[str, Any] | None = None
 
     @property
     def run_spec(self) -> SimulatorSpec:
@@ -138,6 +141,21 @@ class Scenario:
             "script_steps": len(self.script_steps),
             "plugin_modules": list(self.plugin_modules),
             "has_asserts": self.asserts is not None and not self.asserts.empty,
+            "has_behavior": bool(self.behavior_spec),
+            "constraints": (
+                list(self.persona.get("constraints") or [])
+                if isinstance(self.persona.get("constraints"), list)
+                else (
+                    [str(self.persona["constraints"])]
+                    if self.persona.get("constraints")
+                    else []
+                )
+            ),
+            "speech_conditions": (
+                self.persona.get("speech_conditions")
+                if isinstance(self.persona.get("speech_conditions"), dict)
+                else {}
+            ),
             "script_verify": None
             if self.script_verify is None
             else {
@@ -147,6 +165,7 @@ class Scenario:
                 "min_interruptions": self.script_verify.min_interruptions,
                 "max_interruptions": self.script_verify.max_interruptions,
                 "min_agent_finals_after_silence": self.script_verify.min_agent_finals_after_silence,
+                "min_agent_finals_after_barge_in": self.script_verify.min_agent_finals_after_barge_in,
                 "plugins": list(self.script_verify.plugins),
             },
         }
@@ -187,8 +206,37 @@ class Scenario:
                 + ", ".join(str(t) for t in traits)
             )
             lines.extend(expand_traits(traits))
+        constraints = p.get("constraints") or []
+        if isinstance(constraints, str):
+            constraints = [constraints]
+        constraints = [str(c).strip() for c in constraints if str(c).strip()]
+        if constraints:
+            lines.append("Hard constraints (do not violate):")
+            for c in constraints:
+                lines.append(f"- {c}")
+        sc = p.get("speech_conditions") or p.get("speechConditions") or {}
+        if isinstance(sc, dict) and sc:
+            bits = []
+            if sc.get("barge_policy"):
+                bits.append(f"barge_policy={sc.get('barge_policy')}")
+            if sc.get("silence_ms") or sc.get("user_silence_ms"):
+                bits.append(
+                    f"may go silent ~{sc.get('silence_ms') or sc.get('user_silence_ms')}ms "
+                    "(simulator may enforce this)"
+                )
+            if sc.get("noise") or sc.get("ambient"):
+                bits.append("there may be background noise on the line")
+            if bits:
+                lines.append("Speech conditions: " + "; ".join(bits) + ".")
         if self.context.get("notes"):
             lines.append(f"Background context you know: {self.context['notes']}")
+        fixtures = self.context.get("fixtures")
+        if isinstance(fixtures, dict) and fixtures:
+            # Opaque hints for the caller (not parsed as business keys by core).
+            lines.append(
+                "You may know these test fixture hints (use only if natural): "
+                + ", ".join(f"{k}={v}" for k, v in list(fixtures.items())[:12])
+            )
         if self.script_steps:
             lines.append(
                 "Timed caller cues are injected automatically by the simulator while the agent speaks. "
@@ -288,6 +336,8 @@ def parse_scenario(path: Path | str) -> Scenario:
                 scenario.script_verify = parse_script_verify(spec.get("verify"))
             except ValueError as e:
                 raise ScenarioError(str(e)) from e
+        elif kind == "Behavior":
+            scenario.behavior_spec = dict(spec)
         elif kind == "Plugins":
             modules = spec.get("modules") or spec.get("load") or []
             if not isinstance(modules, list):
@@ -311,6 +361,20 @@ def parse_scenario(path: Path | str) -> Scenario:
             json.loads(scenario.dispatch.metadata)
         except json.JSONDecodeError as e:
             raise ScenarioError(f"{path}: Dispatch.spec.metadata must be valid JSON string — {e}") from e
+
+    # Hamming-style: compile speech_conditions + Behavior into Script (explicit Script wins by id).
+    try:
+        from .behavior_compile import apply_caller_behavior
+
+        scenario.script_steps, scenario.script_verify = apply_caller_behavior(
+            scenario.persona,
+            scenario.behavior_spec,
+            scenario.script_steps,
+            scenario.script_verify,
+            path_label=str(path),
+        )
+    except ValueError as e:
+        raise ScenarioError(str(e)) from e
 
     return scenario
 

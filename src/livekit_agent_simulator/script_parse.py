@@ -86,6 +86,11 @@ def parse_script_steps(spec: dict[str, Any], path_label: str) -> list[ScriptStep
             min_agent = int(raw.get("min_agent_active_ms", 200))
             trigger = "agent_speaking"
             action = "speak"
+        # Default: blip on text barge; off when room_pcm (asset is the cut-in audio).
+        if "with_blip" in raw:
+            with_blip = bool(raw.get("with_blip"))
+        else:
+            with_blip = barge_in and delivery != "room_pcm"
 
         steps.append(
             ScriptStep(
@@ -102,6 +107,7 @@ def parse_script_steps(spec: dict[str, Any], path_label: str) -> list[ScriptStep
                 action=action,
                 require_agent_spoke_first=bool(raw.get("require_agent_spoke_first", True)),
                 barge_in=barge_in,
+                with_blip=with_blip,
             )
         )
     return steps

@@ -82,15 +82,23 @@ lk-sim scenario-init my-case --root /path/to/target
 | Kind | Required? | Role |
 |------|-----------|------|
 | `Scenario` | yes | `metadata.id`, `locale`, `tags` |
-| `Persona` | yes | Sim caller; `spec.brief` required |
-| `Context` | no | Extra notes for persona |
+| `Persona` | yes | Character: `brief`, `goals`, `traits`, **`constraints`**, **`speech_conditions`** |
+| `Context` | no | `notes` + optional opaque `fixtures` hints |
 | `Simulator` | no | Defaults; overridden by Execute |
 | `Execute` | recommended | `max_turns`, `timeout_s`, `first_speaker` |
 | `Dispatch` | no | Per-scenario opaque metadata JSON string |
-| `Script` | no | Timed: `trigger` agent_speaking \| silence \| time; `action` speak \| wait; `barge_in`; `room_pcm` + `asset` |
-| `Assert` | no | Hard checks: tools, transcript phrases, outcomes (fail run if not met) |
-| `Plugins` | no | Load `.agent-sim/plugins/*.py` (**verify only** — not audio inject) |
-| `PassCriteria` | no | Soft LLM judge rubric strings |
+| `Behavior` | no | Hamming policy → auto Script (`barge_ins`, `user_silence`, `ambient`) |
+| `Script` | no | Timed cues (wins over Behavior on same step `id`) |
+| `Assert` | no | tools / transcript / outcomes (`transcript_contains`, **`recovery`**, `llm_bool`) |
+| `Plugins` | no | Verify plugins only |
+| `PassCriteria` | no | Soft LLM judge rubric |
+
+### Caller character (Hamming-aligned)
+
+- **constraints[]** → hard rules in Gemini system prompt  
+- **speech_conditions** → auto barge / ambient / silence Script if you skip hand-written Script  
+- **Behavior** kind → explicit barge/silence/ambient policies  
+- See `docs/caller-pattern-plan.md` and `templates/examples/character-impatient.jsonl`  
 
 ### Audio cues (built-in + per-repo custom)
 

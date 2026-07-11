@@ -74,6 +74,47 @@ def test_transcript_contains_and_forbidden():
     assert bad["pass"] is False
 
 
+def test_outcome_recovery():
+    events = [
+        {
+            "kind": "sim.script.cue",
+            "ts_mono_ms": 1000,
+            "spec": {"barge_in": True, "step_id": "cut"},
+        },
+        {"kind": "interruption", "ts_mono_ms": 1000, "spec": {"by": "sim", "barge_in": True}},
+        {"kind": "transcript.agent.final", "ts_mono_ms": 2500, "spec": {"text": "Sorry, go on."}},
+    ]
+    ok = evaluate_asserts(
+        events,
+        AssertSpec(
+            outcomes=[
+                OutcomeExpect(
+                    id="rec",
+                    type="recovery",
+                    min_agent_finals_after_barge_in=1,
+                    min_interruptions=1,
+                    max_ms_after_barge_to_agent_final=2000,
+                )
+            ]
+        ),
+    )
+    assert ok["pass"] is True
+    slow = evaluate_asserts(
+        events,
+        AssertSpec(
+            outcomes=[
+                OutcomeExpect(
+                    id="rec",
+                    type="recovery",
+                    min_agent_finals_after_barge_in=1,
+                    max_ms_after_barge_to_agent_final=500,
+                )
+            ]
+        ),
+    )
+    assert slow["pass"] is False
+
+
 def test_outcome_transcript_contains():
     events = [
         {"kind": "transcript.agent.final", "spec": {"text": "Your booking is confirmed."}},

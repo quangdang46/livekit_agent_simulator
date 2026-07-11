@@ -130,11 +130,13 @@ Aligned with LiveKit/Hamming “regression + offline eval” without becoming Sa
 1. ~~Behavioral richness (P0)~~ **Done v1**  
 2. ~~Hard asserts~~ **Done**  
 3. ~~**P1.1 + P1.5** — suite matrix + CI exit policy~~ **Done v1**  
-4. **P1.3** — metrics on summary/web (TTFW, barge, turn-taking p50/p95)  
-5. **P1.2** — pass@k for flaky judge scenarios  
-6. **P1.4** — scenario-from-run  
-7. Polish: VI speech cue pack; optional text-fast  
-8. Later: SIP / load / OTel  
+4. ~~**Caller pattern redesign (Hamming-aligned)**~~ **Done v1** — `docs/caller-pattern-plan.md`  
+   - `constraints` / `speech_conditions` / `Behavior` → Script compile  
+   - `Assert.outcomes` type `recovery` + vocal cue aliases  
+5. **P1.3** — metrics on summary/web (optional)  
+6. **P1.2** — pass@k  
+7. **P1.4** — scenario-from-run (prod → persona)  
+8. Later: SIP; load via `lk perf` (not Gemini N-way)  
 
 Keep portable: no consumer keys in `src/`; extend via scenario / `.agent-sim/cues` / config / verify plugins (`AGENTS.md`).
 

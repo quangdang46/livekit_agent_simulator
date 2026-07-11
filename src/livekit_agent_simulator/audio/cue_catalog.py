@@ -34,6 +34,10 @@ BUILTIN_ALIASES: dict[str, str] = {
     "real_interrupt_ja": "real_interrupt_ja.wav",
     "ambiguous": "ambiguous_ja.wav",
     "ambiguous_ja": "ambiguous_ja.wav",
+    # Vocal-oriented aliases (may resolve to same JA samples or target overrides).
+    "voice.backchannel": "backchannel_ja.wav",
+    "voice.barge_short": "real_interrupt_ja.wav",
+    "voice.interrupt": "real_interrupt_ja.wav",
 }
 
 

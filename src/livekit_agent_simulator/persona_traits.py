@@ -50,6 +50,20 @@ TRAIT_LIBRARY: dict[str, list[str]] = {
     "chatty": [
         "You add a small extra detail about your situation, but still finish goals.",
     ],
+    "backchannel": [
+        "Occasionally acknowledge with a very short uh-huh / okay while listening,",
+        "without stealing the full turn.",
+    ],
+    "hangup_threat": [
+        "If the agent is unhelpful or loops the menu, you may briefly threaten to hang up,",
+        "then give one more chance before ending the call.",
+    ],
+    "code_switch": [
+        "You mainly use the call language but may mix one short English phrase if stuck.",
+    ],
+    "urgent": [
+        "State urgency early; prefer concrete next steps over long explanations.",
+    ],
 }
 
 

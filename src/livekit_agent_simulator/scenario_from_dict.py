@@ -81,6 +81,11 @@ def scenario_from_dict(
         except ValueError as e:
             raise ScenarioError(str(e)) from e
 
+    behavior_spec = None
+    beh_raw = data.get("behavior")
+    if isinstance(beh_raw, dict):
+        behavior_spec = dict(beh_raw)
+
     scenario = Scenario(
         id=str(scenario_id),
         path=path or Path(f"{scenario_id}.jsonl"),
@@ -96,7 +101,21 @@ def scenario_from_dict(
         script_verify=script_verify,
         plugin_modules=plugin_modules,
         asserts=asserts,
+        behavior_spec=behavior_spec,
     )
+
+    try:
+        from .behavior_compile import apply_caller_behavior
+
+        scenario.script_steps, scenario.script_verify = apply_caller_behavior(
+            scenario.persona,
+            scenario.behavior_spec,
+            scenario.script_steps,
+            scenario.script_verify,
+            path_label=path_label,
+        )
+    except ValueError as e:
+        raise ScenarioError(str(e)) from e
 
     if scenario.simulator.first_speaker not in ("agent", "user"):
         raise ScenarioError(f"{path_label}: simulator.first_speaker must be agent or user")

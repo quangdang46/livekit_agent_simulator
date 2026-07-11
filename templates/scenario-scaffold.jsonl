@@ -4,36 +4,30 @@
 // metadata.locale: BCP-47 language for the sim persona (e.g. en-US, vi-VN, ja-JP)
 // metadata.tags: free labels; use with: lk-sim execute-all --tag smoke
 {"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"{{SCENARIO_ID}}","locale":"en-US","tags":["draft"]}}
-// === Persona (required) ===
-// name, brief (required), goals[], style
-// traits[]: behavior tags e.g. impatient, interrupts, quiet (injected into sim system prompt)
+// === Persona (required) — Hamming-style character ===
+// name, brief (required), goals[], style, traits[]
+// constraints[]: hard rules (no card numbers, hang up if restart menu, …)
+// speech_conditions: optional auto Script — barge_policy, noise, silence_ms
 // language: optional override of metadata.locale for speech
-{"kind":"Persona","spec":{"name":"Alex","brief":"You are calling a business for the first time. Confirm you reached the right place, answer briefly, then politely end the call when done.","goals":["Hear the agent greeting or first reply","State your reason briefly","End the call politely"],"style":"polite, brief, natural spoken language","traits":["polite"]}}
-// === Context (optional) — delete this comment block and the next JSON line if unused ===
-// notes: extra facts injected into the persona prompt
-{"kind":"Context","spec":{"notes":"Example: open ticket #12345. Prefer deleting this line over leaving fake notes."}}
-// === Simulator (optional defaults) — Execute overrides these ===
-// max_turns, timeout_s, first_speaker: agent | user
+{"kind":"Persona","spec":{"name":"Alex","brief":"You are calling a business for the first time. Confirm you reached the right place, answer briefly, then politely end the call when done.","goals":["Hear the agent greeting or first reply","State your reason briefly","End the call politely"],"style":"polite, brief, natural spoken language","traits":["polite"],"constraints":["Do not invent account numbers or payment details"],"speech_conditions":{"barge_policy":"","noise":"","silence_ms":0}}}
+// === Context (optional) ===
+// notes + optional fixtures (opaque hints for humans/seed; not parsed by core)
+{"kind":"Context","spec":{"notes":"Example: open ticket #12345. Prefer deleting this line over leaving fake notes.","fixtures":{}}}
+// === Simulator / Execute ===
 {"kind":"Simulator","spec":{"max_turns":6,"timeout_s":120,"first_speaker":"agent"}}
-// === Execute (recommended run knobs; overrides Simulator) ===
 {"kind":"Execute","spec":{"max_turns":4,"timeout_s":120,"first_speaker":"user"}}
 // === Dispatch (optional) — opaque JSON string for RoomAgentDispatch.metadata ===
 {"kind":"Dispatch","spec":{"metadata":"{\"yourProjectKey\":\"replace-me\"}"}}
-// === Script (optional) — timed behavior while agent talks / silence ===
+// === Behavior (optional, Hamming policy) — compiles to Script if present ===
+// barge_ins[], user_silence[], ambient{asset,delay_ms}
+// Explicit Script below wins on same step id
+// {"kind":"Behavior","spec":{"barge_ins":[{"id":"cut1","after_agent_ms":800,"say":"Wait — one second","with_blip":true}],"ambient":{"asset":"builtin:noise.ambient","delay_ms":5000}}}
+// === Script (optional) — timed cues; omit if speech_conditions/Behavior enough ===
 // trigger: agent_speaking | silence | time
-// action: speak (default) | wait (no audio; for silence / "user gone")
-// barge_in: true → short delay barge-in while agent_speaking
-// delivery: gemini_text | room_pcm (+ asset)
-// asset: builtin:noise.loud | @noise.ambient | file in .agent-sim/cues/ | cues.aliases name
-// lk-sim cues --root .   # list built-in + target overrides
-// verify.min_interruptions / min_agent_finals_after_silence / …
-{"kind":"Script","spec":{"steps":[{"id":"example-backchannel","trigger":"agent_speaking","delay_ms":800,"say":"uh-huh","label":"backchannel","delivery":"gemini_text","once":true},{"id":"example-noise","trigger":"time","delay_ms":5000,"delivery":"room_pcm","asset":"builtin:noise.loud","say":"[noise]","label":"optional-noise","once":true},{"id":"example-silence","trigger":"silence","delay_ms":2500,"action":"wait","label":"user-quiet","require_agent_spoke_first":true}],"verify":{"require_during_agent_speech":false,"min_agent_finals_after_silence":0}}}
-// === Plugins (optional) ===
-{"kind":"Plugins","spec":{"modules":[]}}
-// === Assert (optional) — hard checks (tools / transcript / outcomes); fail run if not met ===
-// tools[].name, min_count, args_contains
-// transcript[].role, contains_any[], must_not_match (regex)
-// outcomes[]: type transcript_contains | llm_bool (llm_bool needs judge:)
-{"kind":"Assert","spec":{"tools":[],"transcript":[{"role":"agent","contains_any":["help","support","hello","hi"]}],"outcomes":[]}}
-// === PassCriteria (optional) — soft LLM judge rubric; needs judge: in config.yaml ===
+// barge_in + with_blip (default true for gemini_text)
+// asset: builtin:noise.loud | voice.barge_short | .agent-sim/cues/file.wav
+// {"kind":"Script","spec":{"steps":[],"verify":{"require_during_agent_speech":false,"min_agent_finals_after_barge_in":0}}}
+// === Assert — tools / transcript / outcomes (recovery | transcript_contains | llm_bool) ===
+{"kind":"Assert","spec":{"tools":[],"transcript":[{"role":"agent","contains_any":["help","support","hello","hi"]}],"outcomes":[{"id":"agent_spoke","type":"transcript_contains","role":"agent","phrases":["a","e","i","o","u"]}]}}
+// === PassCriteria (optional soft judge) ===
 {"kind":"PassCriteria","spec":{"criteria":["The agent responded to the caller","The agent responded in a language the caller can understand"]}}

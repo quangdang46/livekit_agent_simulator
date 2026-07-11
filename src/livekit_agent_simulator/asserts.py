@@ -33,13 +33,17 @@ class OutcomeExpect:
     type:
       - transcript_contains: any agent/user text matches phrases (contains_any)
       - llm_bool: deferred to judge layer (evaluated when judge runs)
+      - recovery: agent re-engages after sim barge-in / interruption
     """
 
     id: str
-    type: str  # transcript_contains | llm_bool
+    type: str  # transcript_contains | llm_bool | recovery
     phrases: tuple[str, ...] = ()
     prompt: str | None = None  # for llm_bool
     role: str = "any"
+    min_agent_finals_after_barge_in: int = 1
+    min_interruptions: int = 0
+    max_ms_after_barge_to_agent_final: int | None = None
 
 
 @dataclass
@@ -92,11 +96,12 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
         if not isinstance(raw, dict) or not raw.get("id"):
             raise ValueError(f"{path_label}: outcomes[{i}] needs id")
         otype = str(raw.get("type", "transcript_contains"))
-        if otype not in ("transcript_contains", "llm_bool"):
+        if otype not in ("transcript_contains", "llm_bool", "recovery"):
             raise ValueError(f"{path_label}: outcomes[{i}].type unsupported: {otype}")
         phrases = raw.get("phrases") or raw.get("contains_any") or []
         if isinstance(phrases, str):
             phrases = [phrases]
+        max_ms = raw.get("max_ms_after_barge_to_agent_final")
         outcomes.append(
             OutcomeExpect(
                 id=str(raw["id"]),
@@ -104,6 +109,11 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
                 phrases=tuple(str(p) for p in phrases),
                 prompt=str(raw["prompt"]) if raw.get("prompt") else None,
                 role=str(raw.get("role", "any")),
+                min_agent_finals_after_barge_in=int(
+                    raw.get("min_agent_finals_after_barge_in", 1)
+                ),
+                min_interruptions=int(raw.get("min_interruptions", 0)),
+                max_ms_after_barge_to_agent_final=int(max_ms) if max_ms is not None else None,
             )
         )
 
@@ -211,6 +221,31 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
         )
 
     pending_llm: list[dict[str, Any]] = []
+    barge_ms: list[int] = []
+    for e in events:
+        kind = str(e.get("kind") or "")
+        spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
+        try:
+            mono = int(e.get("ts_mono_ms") or 0)
+        except (TypeError, ValueError):
+            mono = 0
+        if kind == "sim.script.cue" and spec.get("barge_in"):
+            barge_ms.append(mono)
+        if kind == "interruption" and (
+            spec.get("barge_in") or str(spec.get("by") or "") == "sim"
+        ):
+            barge_ms.append(mono)
+    barge_ms = sorted(set(barge_ms))
+    agent_final_ms: list[int] = []
+    for e in events:
+        if e.get("kind") != "transcript.agent.final":
+            continue
+        try:
+            agent_final_ms.append(int(e.get("ts_mono_ms") or 0))
+        except (TypeError, ValueError):
+            continue
+    interruptions = [e for e in events if e.get("kind") == "interruption"]
+
     for oc in asserts.outcomes:
         if oc.type == "transcript_contains":
             role = oc.role if oc.role in ("agent", "user") else "any"
@@ -226,6 +261,36 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
                     "pass": ok,
                     "type": oc.type,
                     "phrases": list(oc.phrases),
+                }
+            )
+        elif oc.type == "recovery":
+            after = 0
+            first_barge = barge_ms[0] if barge_ms else None
+            if first_barge is not None:
+                after = sum(1 for t in agent_final_ms if t > first_barge)
+            ok = after >= oc.min_agent_finals_after_barge_in
+            if oc.min_interruptions and len(interruptions) < oc.min_interruptions:
+                ok = False
+            timing_ok = True
+            recovery_ms = None
+            if ok and oc.max_ms_after_barge_to_agent_final is not None and first_barge is not None:
+                nxt = next((t for t in agent_final_ms if t > first_barge), None)
+                if nxt is None:
+                    timing_ok = False
+                else:
+                    recovery_ms = nxt - first_barge
+                    timing_ok = recovery_ms <= oc.max_ms_after_barge_to_agent_final
+                ok = ok and timing_ok
+            checks.append(
+                {
+                    "check": f"outcome:{oc.id}",
+                    "pass": ok,
+                    "type": "recovery",
+                    "agent_finals_after_barge_in": after,
+                    "expected_min": oc.min_agent_finals_after_barge_in,
+                    "interruptions": len(interruptions),
+                    "recovery_ms": recovery_ms,
+                    "max_ms_after_barge_to_agent_final": oc.max_ms_after_barge_to_agent_final,
                 }
             )
         elif oc.type == "llm_bool":
