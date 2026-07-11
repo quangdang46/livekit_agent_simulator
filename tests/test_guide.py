@@ -8,3 +8,6 @@ def test_guide_returns_markdown() -> None:
     assert "scenario-init" in text or "init_scenario" in text
     assert "preflight" in text
     assert "execute" in text
+    assert "config.yaml" in text
+    assert "conversation.wav" in text
+    assert "run_id" in text
