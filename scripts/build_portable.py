@@ -113,7 +113,7 @@ def _write_launchers(root: Path, is_windows: bool) -> None:
         )
     # Always write Unix-style launchers too (Git Bash / WSL friendly).
     # Critical:
-    # - Resolve symlinks so ~/.local/bin/lk-sim → pack/current/lk-sim works
+    # - Resolve symlinks so ~/.local/bin/lk-sim -> pack/current/lk-sim works
     # - Prefer `python -m` over entrypoint scripts (shebangs embed CI absolute paths)
     for name, mod in (
         ("lk-sim", "livekit_agent_simulator"),
@@ -142,7 +142,7 @@ fi
 if [ -x "$ROOT/python/python.exe" ]; then
   exec "$ROOT/python/python.exe" -m {mod} "$@"
 fi
-# Fallbacks (may fail if shebang is absolute CI path — kept for odd layouts)
+# Fallbacks (may fail if shebang is absolute CI path - kept for odd layouts)
 if [ -x "$ROOT/python/bin/{name}" ]; then
   exec "$ROOT/python/bin/{name}" "$@"
 fi
@@ -153,6 +153,8 @@ echo "lk-sim portable: python not found under $ROOT/python" >&2
 exit 1
 """
         path = root / name
+        # Launchers must stay pure ASCII (Windows cmd / minimal shells).
+        body.encode("ascii")
         path.write_text(body, encoding="ascii")
         path.chmod(path.stat().st_mode | 0o755)
 
