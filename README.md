@@ -27,6 +27,23 @@ curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulato
 
 </div>
 
+### Install via coding agent (copy-paste)
+
+Paste into Claude Code, Cursor, Codex, AmpCode, Windsurf, or any coding agent **from the repo you want to test**:
+
+```text
+Install and configure livekit-agent-simulator (CLI: lk-sim) for this project by following the instructions here:
+https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md
+
+Target project root is this workspace. Use absolute --root paths. Install the portable CLI if missing, run lk-sim init, help fill .agent-sim/config.yaml from my local env or ask me for LiveKit + Gemini + agent_name, ensure .agent-sim is gitignored, run preflight, and stop before execute if the voice agent worker is not running. Do not edit agent application source outside .agent-sim/.
+```
+
+Same idea, one line:
+
+```text
+Install and configure livekit-agent-simulator by following: https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md
+```
+
 ---
 
 ## TL;DR
@@ -186,6 +203,10 @@ curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/releases/down
 | `--uninstall` | Remove install |
 
 By default the installer registers the MCP server `livekit-agent-simulator` (`lk-sim mcp`) into detected tools: Claude Code, Cursor, Cline, Windsurf, VS Code Copilot, Gemini CLI, Amazon Q, OpenCode, Codex, Warp.
+
+**Agent-oriented install playbook (long form):** [docs/guide/installation.md](docs/guide/installation.md)  
+Raw URL for paste into agents:  
+`https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md`
 
 ### From source (maintainers / contributors)
 
