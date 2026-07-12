@@ -112,24 +112,42 @@ def _write_launchers(root: Path, is_windows: bool) -> None:
             newline="\r\n",
         )
     # Always write Unix-style launchers too (Git Bash / WSL friendly).
+    # Critical:
+    # - Resolve symlinks so ~/.local/bin/lk-sim → pack/current/lk-sim works
+    # - Prefer `python -m` over entrypoint scripts (shebangs embed CI absolute paths)
     for name, mod in (
         ("lk-sim", "livekit_agent_simulator"),
         ("lk-sim-mcp", "livekit_agent_simulator.mcp_server"),
     ):
         body = f"""#!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+# Resolve PATH shims / nested symlinks to the pack directory.
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  LINK="$(readlink "$SOURCE")"
+  case "$LINK" in
+    /*) SOURCE="$LINK" ;;
+    *) SOURCE="$DIR/$LINK" ;;
+  esac
+done
+ROOT="$(cd "$(dirname "$SOURCE")" && pwd)"
+# Prefer python -m: entrypoint scripts ship with absolute shebangs from CI.
+if [ -x "$ROOT/python/bin/python3" ]; then
+  exec "$ROOT/python/bin/python3" -m {mod} "$@"
+fi
+if [ -x "$ROOT/python/bin/python" ]; then
+  exec "$ROOT/python/bin/python" -m {mod} "$@"
+fi
+if [ -x "$ROOT/python/python.exe" ]; then
+  exec "$ROOT/python/python.exe" -m {mod} "$@"
+fi
+# Fallbacks (may fail if shebang is absolute CI path — kept for odd layouts)
 if [ -x "$ROOT/python/bin/{name}" ]; then
   exec "$ROOT/python/bin/{name}" "$@"
 fi
 if [ -x "$ROOT/python/Scripts/{name}.exe" ]; then
   exec "$ROOT/python/Scripts/{name}.exe" "$@"
-fi
-if [ -x "$ROOT/python/bin/python3" ]; then
-  exec "$ROOT/python/bin/python3" -m {mod} "$@"
-fi
-if [ -x "$ROOT/python/python.exe" ]; then
-  exec "$ROOT/python/python.exe" -m {mod} "$@"
 fi
 echo "lk-sim portable: python not found under $ROOT/python" >&2
 exit 1
@@ -139,18 +157,31 @@ exit 1
         path.chmod(path.stat().st_mode | 0o755)
 
 
-def _rewrite_absolute_paths(python_home: Path, pack_root: Path) -> None:
-    """Best-effort: neutralize absolute path embeds that break after relocate.
+def _rewrite_absolute_paths(python_home: Path) -> None:
+    """Rewrite #! shebangs in python/bin scripts to the pack-local python.
 
-    Entry-point scripts (#! lines) and pyvenv.cfg if any.
+    Absolute CI paths (e.g. /Users/runner/work/...) break after relocate.
+    We rewrite to the absolute path *inside this pack copy*; launchers still
+    prefer ``python -m`` so relocating the pack remains safe.
     """
-    # Fix shebangs in bin/ and Scripts/
-    for folder in ("bin", "Scripts"):
+    is_win = os.name == "nt"
+    for folder, py_name in (("bin", "python3"), ("Scripts", "python.exe")):
         d = python_home / folder
         if not d.is_dir():
             continue
+        py_bin = d / py_name
+        if not py_bin.exists() and folder == "bin":
+            py_bin = d / "python"
+        if not py_bin.exists() and folder == "Scripts":
+            # top-level windows layout
+            cand = python_home / "python.exe"
+            if cand.exists():
+                py_bin = cand
+        shebang = f"#!{py_bin.resolve().as_posix()}\n"
         for f in d.iterdir():
             if not f.is_file():
+                continue
+            if f.suffix.lower() in (".exe", ".pyd", ".dll", ".so", ".dylib"):
                 continue
             try:
                 data = f.read_bytes()
@@ -158,7 +189,6 @@ def _rewrite_absolute_paths(python_home: Path, pack_root: Path) -> None:
                 continue
             if not data.startswith(b"#!"):
                 continue
-            # Only rewrite text scripts
             if b"\0" in data[:200]:
                 continue
             try:
@@ -168,17 +198,13 @@ def _rewrite_absolute_paths(python_home: Path, pack_root: Path) -> None:
             lines = text.splitlines(keepends=True)
             if not lines:
                 continue
-            # Point shebang at relative python via /usr/bin/env is wrong inside pack.
-            # Use the sibling python binary name.
-            is_win = os.name == "nt"
-            py_name = "python.exe" if is_win else "python3"
-            # On Windows shebang rarely used for .exe; skip binaries.
-            if f.suffix.lower() in (".exe", ".pyd", ".dll"):
+            if lines[0] == shebang:
                 continue
-            lines[0] = f"#!{python_home / folder / py_name}\n".replace("\\", "/") if False else lines[0]
-            # Prefer a portable shebang that installers rewrite; for now leave
-            # and rely on .cmd / bash launchers calling python -m.
-            _ = lines
+            lines[0] = shebang
+            try:
+                f.write_text("".join(lines), encoding="utf-8")
+            except OSError as e:
+                print(f"warn: could not rewrite shebang {f}: {e}", flush=True)
 
 
 def build(wheel: Path, out_dir: Path) -> Path:
@@ -227,6 +253,10 @@ def build(wheel: Path, out_dir: Path) -> Path:
             str(wheel.resolve()),
         ]
     )
+
+    # Rewrite absolute CI shebangs in entrypoint scripts (belt + suspenders;
+    # Unix launchers prefer python -m and do not rely on these scripts).
+    _rewrite_absolute_paths(py_dest)
 
     _write_launchers(root, is_windows=is_windows)
     (root / "README.txt").write_text(
