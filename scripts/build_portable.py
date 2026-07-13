@@ -70,9 +70,21 @@ def _find_python_home(uv: str) -> Path:
     raise SystemExit(f"unexpected python path: {py}")
 
 
+def _remove_uv_trampolines(py_dest: Path) -> None:
+    """Drop uv .exe entrypoints: they embed CI absolute paths and break after relocate."""
+    scripts = py_dest / "Scripts"
+    if not scripts.is_dir():
+        return
+    for name in ("lk-sim.exe", "lk-sim-mcp.exe"):
+        target = scripts / name
+        if target.exists():
+            print(f"removing broken uv trampoline {target}", flush=True)
+            target.unlink()
+
+
 def _write_launchers(root: Path, is_windows: bool) -> None:
     if is_windows:
-        # Use Scripts\lk-sim.exe when present; else -m module.
+        # Always python -m: uv trampoline .exe embeds CI absolute paths (see uv #3669).
         (root / "lk-sim.cmd").write_text(
             "\r\n".join(
                 [
@@ -80,10 +92,6 @@ def _write_launchers(root: Path, is_windows: bool) -> None:
                     "setlocal",
                     'set "ROOT=%~dp0"',
                     'set "ROOT=%ROOT:~0,-1%"',
-                    'if exist "%ROOT%\\python\\Scripts\\lk-sim.exe" (',
-                    '  "%ROOT%\\python\\Scripts\\lk-sim.exe" %*',
-                    "  exit /b %ERRORLEVEL%",
-                    ")",
                     '"%ROOT%\\python\\python.exe" -m livekit_agent_simulator %*',
                     "exit /b %ERRORLEVEL%",
                     "",
@@ -99,10 +107,6 @@ def _write_launchers(root: Path, is_windows: bool) -> None:
                     "setlocal",
                     'set "ROOT=%~dp0"',
                     'set "ROOT=%ROOT:~0,-1%"',
-                    'if exist "%ROOT%\\python\\Scripts\\lk-sim-mcp.exe" (',
-                    '  "%ROOT%\\python\\Scripts\\lk-sim-mcp.exe" %*',
-                    "  exit /b %ERRORLEVEL%",
-                    ")",
                     '"%ROOT%\\python\\python.exe" -m livekit_agent_simulator.mcp_server %*',
                     "exit /b %ERRORLEVEL%",
                     "",
@@ -257,8 +261,9 @@ def build(wheel: Path, out_dir: Path) -> Path:
     )
 
     # Rewrite absolute CI shebangs in entrypoint scripts (belt + suspenders;
-    # Unix launchers prefer python -m and do not rely on these scripts).
+    # launchers prefer python -m and do not rely on these scripts).
     _rewrite_absolute_paths(py_dest)
+    _remove_uv_trampolines(py_dest)
 
     _write_launchers(root, is_windows=is_windows)
     (root / "README.txt").write_text(

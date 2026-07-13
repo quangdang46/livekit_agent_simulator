@@ -295,6 +295,31 @@ function Install-PortableFromRelease {
     Copy-Item -Path $payload.FullName -Destination $CurrentDir -Recurse -Force
     Write-Log "Installed files -> $CurrentDir"
 
+    # Portable packs from v0.1.2 shipped uv trampoline .exe with CI-absolute paths.
+    # Rewrite launchers to python -m (works after relocate); drop broken exes.
+    $fixedLk = @"
+@echo off
+setlocal
+set "ROOT=%~dp0"
+set "ROOT=%ROOT:~0,-1%"
+"%ROOT%\python\python.exe" -m livekit_agent_simulator %*
+exit /b %ERRORLEVEL%
+"@
+    $fixedMcp = @"
+@echo off
+setlocal
+set "ROOT=%~dp0"
+set "ROOT=%ROOT:~0,-1%"
+"%ROOT%\python\python.exe" -m livekit_agent_simulator.mcp_server %*
+exit /b %ERRORLEVEL%
+"@
+    $fixedLk | Set-Content -Path (Join-Path $CurrentDir "lk-sim.cmd") -Encoding ASCII
+    $fixedMcp | Set-Content -Path (Join-Path $CurrentDir "lk-sim-mcp.cmd") -Encoding ASCII
+    foreach ($broken in @("lk-sim.exe", "lk-sim-mcp.exe")) {
+        $p = Join-Path $CurrentDir "python\Scripts\$broken"
+        if (Test-Path $p) { Remove-Item -Force $p -ErrorAction SilentlyContinue }
+    }
+
     # Shims in ~/.local/bin (ASCII .cmd only)
     if (-not (Test-Path $ShimDir)) {
         New-Item -ItemType Directory -Path $ShimDir -Force | Out-Null
