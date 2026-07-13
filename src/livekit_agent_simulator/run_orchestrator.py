@@ -191,15 +191,13 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                 first_speaker=run.first_speaker,
                 recorder=recorder,
             )
-            if leg_handle.gemini_listen_sip:
-                # Prefer sim-room SIP track when hairpin lands there; also feed
-                # agent-room WebRTC so Gemini still hears the agent if sim-room
-                # never gets a SIP participant (common when call_to == agent DID).
+            # Listen/record feed derived from SimLegHandle — no mode ifs.
+            if leg_handle.gemini_listen_agent_room:
+                bridge.watch_agent_tracks_on_room(
+                    leg_handle.agent_room, leg_handle.agent_identity
+                )
+            elif leg_handle.gemini_listen_sip:
                 bridge.watch_sip_audio_tracks()
-                if leg_handle.agent_room is not leg_handle.sim_room:
-                    bridge.watch_agent_tracks_on_room(
-                        leg_handle.agent_room, leg_handle.agent_identity
-                    )
             elif leg_handle.gemini_listen_identity:
                 bridge.watch_agent_tracks(leg_handle.gemini_listen_identity)
             else:
@@ -313,7 +311,7 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                         source="sim",
                         include_dialogue=False,
                     )
-            # Multi-room cleanup (WebRTC: one room; SIP: agent + sim).
+            # Cleanup rooms from SimLegHandle (WebRTC: one room; SIP: agent + sim).
             rooms: list[str] = []
             if leg_handle is not None:
                 rooms = list(leg_handle.rooms_to_delete)

@@ -72,5 +72,9 @@ See `templates/outbound-callee-sim.jsonl` and `templates/inbound-caller-sim.json
 - **Template Method** — one orchestrator pipeline.
 - **Strategy** — `SimLeg` (`WebRtc` / `InboundSip` / `OutboundSip` / `AgentDials`).
 - **Factory** — `sim_leg_factory(mode)`.
+- **Inbound room resolution (parallel-safe):**
+  - A: `Telephony.agent_room` / template (`{run_id}`, `{dial_in}`, `{number}`).
+  - B: `sip_call_id` correlation from `CreateSIPParticipant`.
+- **Room resolve module:** `room_resolve.py` — no legacy "first agent room" fallback under `--parallel`.
 
 Package core stays target-agnostic: no product names, agent IDs, or dashboard keys in `src/`.

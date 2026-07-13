@@ -318,7 +318,7 @@ Package docs describe the checklist with placeholders. Package code never embeds
 
 ## 5. Port / copy matrix
 
-### T0–T4 primary path — no vendor SIP stack
+### T0 ✅–T4 primary path — no vendor SIP stack
 
 | Source | Copy into `src/`? | Take |
 |---|---|---|
@@ -343,7 +343,7 @@ Apache-2.0 sip-to-ai SIP/RTP core only; strip multi-AI clients; fix `audioop` �
 
 **Accept:** Zero behavior change.
 
-### T1 — Contract + factory + docs
+### T1 ✅ — Contract + factory + docs
 
 - [ ] `Caller` / `Telephony` kinds + merge helpers (`scenario` overrides `config`)
 - [ ] `sim_leg_factory` — SIP modes raise clear `NotImplementedError` until T2/T3
@@ -353,7 +353,7 @@ Apache-2.0 sip-to-ai SIP/RTP core only; strip multi-AI clients; fix `audioop` �
 
 **Accept:** Missing required SIP fields fail at parse/preflight; WebRTC identical.
 
-### T2 — `outbound_sip` (Gemini callee)
+### T2 ✅ — `outbound_sip` (Gemini callee)
 
 - [ ] `LiveKitAdapter.create_sip_participant` + structured dial errors
 - [ ] `OutboundSipSimLeg` per §3.5
@@ -365,7 +365,7 @@ Apache-2.0 sip-to-ai SIP/RTP core only; strip multi-AI clients; fix `audioop` �
 
 **Accept:** SIP participant reaches `active`; bidirectional audio; full forensic artifacts; no consumer-specific asserts required.
 
-### T3 — `inbound_sip` (Gemini caller)
+### T3 ✅ — `inbound_sip` (Gemini caller)
 
 - [ ] `InboundSipSimLeg`; reuse SIP + cross-room from T2
 - [ ] Neutral template `templates/inbound-caller-sim.jsonl`
@@ -373,7 +373,7 @@ Apache-2.0 sip-to-ai SIP/RTP core only; strip multi-AI clients; fix `audioop` �
 
 **Accept:** Same artifact set as WebRTC + SIP events.
 
-### T4 — SIP asserts + suite columns
+### T4 ✅ — SIP asserts + suite columns
 
 - [ ] Assert kinds: `sip_call_status`, `sip_participant_present`
 - [ ] summary/suite: `mode`, `dial_ms`, `sip_status`
