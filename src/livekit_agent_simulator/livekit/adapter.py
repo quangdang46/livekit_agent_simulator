@@ -122,30 +122,124 @@ class LiveKitAdapter:
         exclude_rooms: set[str] | None = None,
         timeout_ms: int | None = None,
         poll_ms: int = 500,
+        require_sip: bool = False,
+        prefer_name_substr: str | None = None,
+        sip_call_id_substr: str | None = None,
     ) -> tuple[str, str]:
-        """Discover a room that currently has the configured agent. Returns (room, identity)."""
+        """Discover a room that currently has the configured agent. Returns (room, identity).
+
+        Strategy (A+B):
+          1. [A] If ``prefer_name_substr`` matches a room name (deterministic inbound rule),
+             wait for agent in that specific room (scoring, not scanning).
+          2. [A] If ``sip_call_id_substr`` matches a SIP participant on an agent room (exact
+             call identity — 100% parallel-safe; returned by ``CreateSIPParticipant``), pick it.
+          3. [B] Otherwise fall back to first agent room (legacy, may race under --parallel).
+
+        ``exclude_rooms``: rooms the caller already knows are wrong.
+        ``require_sip``: When true, only consider rooms with at least one SIP participant
+        (which is the correct agent-room for inbound hairpin; the room with the agent
+        that the inbound call landed in).
+        """
         exclude = exclude_rooms or set()
         timeout = timeout_ms if timeout_ms is not None else self.cfg.livekit.agent_join_timeout_ms
         deadline = asyncio.get_event_loop().time() + timeout / 1000
-        while True:
+        needle = (prefer_name_substr or "").strip()
+        needle_digits = "".join(ch for ch in needle if ch.isdigit())
+        sip_needle = (sip_call_id_substr or "").strip()
+
+        start = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() < deadline:
             rooms = await self.lkapi.room.list_rooms(api.ListRoomsRequest())
-            for room in rooms.rooms:
-                name = getattr(room, "name", "") or ""
-                if not name or name in exclude:
-                    continue
-                res = await self.lkapi.room.list_participants(
-                    api.ListParticipantsRequest(room=name)
-                )
-                for p in res.participants:
-                    if self._is_agent_participant(p):
-                        return name, p.identity
-            if asyncio.get_event_loop().time() > deadline:
-                raise AgentJoinTimeout(
-                    f"No room with agent `{self.cfg.livekit.agent_name}` found within {timeout}ms. "
-                    f"For inbound_sip, set Telephony.agent_room or telephony.agent_room_name_template "
-                    f"if the dispatch rule room name is known."
-                )
+
+            # Phase 1 — sip_call_id B match (exact call identity, parallel-safe).
+            if sip_needle:
+                for room in rooms.rooms:
+                    name = getattr(room, "name", "") or ""
+                    if not name or name in exclude:
+                        continue
+                    res = await self.lkapi.room.list_participants(
+                        api.ListParticipantsRequest(room=name)
+                    )
+                    agent_id: str | None = None
+                    for p in res.participants:
+                        if agent_id is None and self._is_agent_participant(p):
+                            agent_id = p.identity
+                        if sip_needle in self._any_sip_attr(p):
+                            if agent_id is not None:
+                                return name, agent_id
+                    # Room may have agent + SIP even if attr hasn't arrived yet.
+                    # Prefer rooms that have both when sip_needle is set.
+                    has_sip = any(self._is_sip_participant(p) for p in res.participants)
+                    if has_sip and agent_id is not None and not sip_needle:
+                        return name, agent_id
+
+            # Phase 2 — prefer name needle A (deterministic inbound rule).
+            if needle or needle_digits:
+                for room in rooms.rooms:
+                    name = getattr(room, "name", "") or ""
+                    if not name or name in exclude:
+                        continue
+                    name_digits = name.replace("+", "").replace("_", "")
+                    if needle and needle not in name and (not needle_digits or needle_digits not in name_digits):
+                        continue
+                    if not needle and needle_digits and needle_digits not in name_digits:
+                        continue
+                    res = await self.lkapi.room.list_participants(
+                        api.ListParticipantsRequest(room=name)
+                    )
+                    agent_id = None
+                    for p in res.participants:
+                        if agent_id is None and self._is_agent_participant(p):
+                            agent_id = p.identity
+                    if agent_id is not None:
+                        return name, agent_id
+
+            # Phase 3 — first agent room with SIP (if require_sip).
+            if require_sip:
+                candidates: list[tuple[str, str]] = []  # (name, agent_id)
+                for room in rooms.rooms:
+                    name = getattr(room, "name", "") or ""
+                    if not name or name in exclude:
+                        continue
+                    res = await self.lkapi.room.list_participants(
+                        api.ListParticipantsRequest(room=name)
+                    )
+                    agent_id = None
+                    has_sip = False
+                    for p in res.participants:
+                        if agent_id is None and self._is_agent_participant(p):
+                            agent_id = p.identity
+                        if self._is_sip_participant(p):
+                            has_sip = True
+                    if agent_id and has_sip:
+                        candidates.append((name, agent_id))
+                if candidates:
+                    candidates.sort(key=lambda x: x[0])
+                    return candidates[0]
+            else:
+                # Phase 4 — absolute fallback: first room with agent (legacy).
+                for room in rooms.rooms:
+                    name = getattr(room, "name", "") or ""
+                    if not name or name in exclude:
+                        continue
+                    res = await self.lkapi.room.list_participants(
+                        api.ListParticipantsRequest(room=name)
+                    )
+                    agent_id = None
+                    for p in res.participants:
+                        if agent_id is None and self._is_agent_participant(p):
+                            agent_id = p.identity
+                    if agent_id is not None:
+                        return name, agent_id
+
             await asyncio.sleep(poll_ms / 1000)
+
+        extra = " with SIP participant" if require_sip else ""
+        raise AgentJoinTimeout(
+            f"No room with agent `{self.cfg.livekit.agent_name}`{extra} found within {timeout}ms. "
+            f"Set Telephony.agent_room / telephony.agent_room_name_template for deterministic "
+            f"inbound room resolution (parallel-safe)."
+        )
 
     @staticmethod
     def _is_agent_participant(p: object) -> bool:
@@ -182,6 +276,21 @@ class LiveKitAdapter:
         if isinstance(attrs, dict):
             return attrs.get("sip.callStatus") or attrs.get("sip.call_status")
         return None
+
+    @staticmethod
+    def _any_sip_attr(p: object) -> str:
+        """Concatenate SIP-related participant attributes for call-id matching."""
+        attrs = getattr(p, "attributes", None) or {}
+        if not isinstance(attrs, dict):
+            return ""
+        parts: list[str] = []
+        for k, v in attrs.items():
+            if str(k).startswith("sip.") and v is not None:
+                parts.append(str(v))
+        identity = getattr(p, "identity", "") or ""
+        if identity:
+            parts.append(str(identity))
+        return " ".join(parts)
 
     async def wait_for_sip_participant(
         self,

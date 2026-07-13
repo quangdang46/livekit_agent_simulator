@@ -393,22 +393,50 @@ class InboundSipSimLeg:
             include_dialogue=False,
         )
 
-        # Resolve agent-room: explicit config/scenario, else discover room with agent.
+        # Resolve agent-room (A+B):
+        #   A. Explicit Telephony.agent_room / agent_room_name_template (deterministic rule).
+        #   B. Correlate via sip_call_id (safe under --parallel).
+        #   C. Fallback: name + SIP heuristics.
         agent_room_name = tel.agent_room
         if not agent_room_name and tel.agent_room_name_template:
             agent_room_name = tel.agent_room_name_template.replace("{run_id}", ctx.run_id)
+            if tel.dial_in:
+                agent_room_name = agent_room_name.replace("{dial_in}", tel.dial_in.strip())
+            from string import digits
+            num_digits = "".join(ch for ch in (tel.dial_in or "") if ch.isdigit())
+            if num_digits:
+                agent_room_name = agent_room_name.replace("{number}", num_digits)
 
         if agent_room_name:
-            # Optional explicit dispatch into known room (if agent not auto-dispatched).
+            # Deterministic A — dispatch + wait for agent in known room.
             try:
                 await adapter.dispatch_agent(agent_room_name, ctx.dispatch_metadata)
             except Exception:
                 pass
             agent_identity = await adapter.wait_for_agent(agent_room_name)
+            writer.emit(
+                "inbound.agent_room_deterministic",
+                spec={"room": agent_room_name, "agent_identity": agent_identity},
+                include_dialogue=False,
+            )
         else:
+            # B + C — correlate via sip_call_id (returned by create_sip_participant) or heuristics.
+            sip_call_id = getattr(sip_info, "sip_call_id", None)
+            writer.emit(
+                "inbound.agent_room_discover",
+                spec={
+                    "dial_in": tel.dial_in,
+                    "sip_call_id": sip_call_id,
+                    "require_sip": True,
+                },
+                include_dialogue=False,
+            )
             agent_room_name, agent_identity = await adapter.find_agent_room(
                 exclude_rooms={sim_room_name},
                 timeout_ms=ctx.cfg.livekit.agent_join_timeout_ms,
+                require_sip=True,
+                prefer_name_substr=tel.dial_in,
+                sip_call_id_substr=sip_call_id,
             )
 
         writer.emit(
