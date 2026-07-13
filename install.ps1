@@ -205,6 +205,34 @@ function Repair-NestedPortableLayout {
     return (Test-PortablePythonValid -Dir $Dir)
 }
 
+function Stop-LkSimProcesses {
+    param([string]$Root = $InstallRoot)
+
+    if (-not $Root -or -not (Test-Path $Root)) { return }
+
+    $rootNorm = (Resolve-Path $Root).Path.TrimEnd('\').ToLowerInvariant()
+    $stopped = 0
+
+    foreach ($proc in Get-Process -Name "python", "pythonw" -ErrorAction SilentlyContinue) {
+        try {
+            $exe = $proc.Path
+            if (-not $exe) { continue }
+            $exeNorm = $exe.TrimEnd('\').ToLowerInvariant()
+            if ($exeNorm.StartsWith($rootNorm)) {
+                Write-Log "Stopping lk-sim process PID $($proc.Id) ($exe)"
+                Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+                $stopped++
+            }
+        } catch {
+            Write-Log "Could not stop PID $($proc.Id): $_" "WARN"
+        }
+    }
+
+    if ($stopped -gt 0) {
+        Start-Sleep -Milliseconds 800
+    }
+}
+
 function Copy-PortablePayloadContents {
     param(
         [string]$SourceDir,
@@ -287,6 +315,7 @@ args = ["mcp"]
 
 function Uninstall-All {
     Write-Log "Uninstalling $PkgName portable pack..."
+    Stop-LkSimProcesses -Root $InstallRoot
     if (Test-Path $InstallRoot) {
         Remove-Item -Recurse -Force $InstallRoot -ErrorAction SilentlyContinue
     }
@@ -354,16 +383,29 @@ function Install-PortableFromRelease {
     }
 
     if (Test-Path $InstallRoot) {
-        Remove-Item -Recurse -Force $InstallRoot -ErrorAction SilentlyContinue
+        Stop-LkSimProcesses -Root $InstallRoot
     }
-    New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
-    New-Item -ItemType Directory -Path $CurrentDir -Force | Out-Null
-    # Copy lk-sim-windows-x64/* into current/, not current/lk-sim-windows-x64/
-    Copy-PortablePayloadContents -SourceDir $payload.FullName -DestDir $CurrentDir
-    if (-not (Repair-NestedPortableLayout -Dir $CurrentDir)) {
-        throw "Portable pack invalid: python not found under $CurrentDir\python after extract"
+
+    $stagingDir = Join-Path $env:TEMP ("lk-sim-staging-" + [guid]::NewGuid().ToString("n"))
+    New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+    try {
+        Copy-PortablePayloadContents -SourceDir $payload.FullName -DestDir $stagingDir
+        if (-not (Repair-NestedPortableLayout -Dir $stagingDir)) {
+            throw "Portable pack invalid: python not found under $stagingDir\python after extract"
+        }
+
+        Stop-LkSimProcesses -Root $InstallRoot
+        if (Test-Path $InstallRoot) {
+            Remove-Item -Recurse -Force $InstallRoot -ErrorAction SilentlyContinue
+        }
+        New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+        Move-Item -Path $stagingDir -Destination $CurrentDir
+        Write-Log "Installed files -> $CurrentDir"
+    } finally {
+        if (Test-Path $stagingDir) {
+            Remove-Item -Recurse -Force $stagingDir -ErrorAction SilentlyContinue
+        }
     }
-    Write-Log "Installed files -> $CurrentDir"
 
     # Portable packs from v0.1.2 shipped uv trampoline .exe with CI-absolute paths.
     # Rewrite launchers to python -m (works after relocate); drop broken exes.
@@ -424,6 +466,7 @@ if ($Repair) {
     if (-not (Test-Path $CurrentDir)) {
         throw "Nothing to repair at $CurrentDir - run install first"
     }
+    Stop-LkSimProcesses -Root $InstallRoot
     if (-not (Repair-NestedPortableLayout -Dir $CurrentDir)) {
         throw "Repair failed: python still missing under $CurrentDir\python"
     }
