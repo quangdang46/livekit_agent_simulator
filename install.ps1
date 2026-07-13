@@ -12,6 +12,7 @@ param(
     [switch]$NoMcp,
     [switch]$Verify,
     [switch]$Uninstall,
+    [switch]$Repair,
     [switch]$Quiet
 )
 
@@ -160,6 +161,70 @@ function Remove-McpFromFile {
     }
 }
 
+function Get-PortablePythonExe {
+    param([string]$Dir)
+    $win = Join-Path $Dir "python\python.exe"
+    if (Test-Path $win) { return $win }
+    $unix = Join-Path $Dir "python\bin\python3"
+    if (Test-Path $unix) { return $unix }
+    return $null
+}
+
+function Test-PortablePythonValid {
+    param([string]$Dir)
+    $py = Get-PortablePythonExe -Dir $Dir
+    if (-not $py) { return $false }
+    $enc = Join-Path $Dir "python\Lib\encodings\__init__.py"
+    if (Test-Path $enc) { return $true }
+    $encUnix = Join-Path $Dir "python\lib\python3.12\encodings\__init__.py"
+    return (Test-Path $encUnix)
+}
+
+function Repair-NestedPortableLayout {
+    param([string]$Dir)
+    if (Test-PortablePythonValid -Dir $Dir) { return $true }
+
+    $nested = Get-ChildItem -Path $Dir -Directory -Filter "lk-sim-*" -ErrorAction SilentlyContinue |
+        Where-Object { Test-PortablePythonValid -Dir $_.FullName } |
+        Select-Object -First 1
+    if (-not $nested) { return $false }
+
+    Write-Log "Repairing nested portable layout ($($nested.Name) -> $Dir)"
+    $staging = Join-Path $env:TEMP ("lk-sim-repair-" + [guid]::NewGuid().ToString("n"))
+    try {
+        Copy-PortablePayloadContents -SourceDir $nested.FullName -DestDir $staging
+        Get-ChildItem -Path $Dir -Force | ForEach-Object {
+            Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
+        }
+        Copy-PortablePayloadContents -SourceDir $staging -DestDir $Dir
+    } finally {
+        if (Test-Path $staging) {
+            Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+        }
+    }
+    return (Test-PortablePythonValid -Dir $Dir)
+}
+
+function Copy-PortablePayloadContents {
+    param(
+        [string]$SourceDir,
+        [string]$DestDir
+    )
+    if (-not (Test-Path $SourceDir)) {
+        throw "Portable source not found: $SourceDir"
+    }
+    if (-not (Test-Path $DestDir)) {
+        New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+    }
+    Get-ChildItem -Path $SourceDir -Force | ForEach-Object {
+        $target = Join-Path $DestDir $_.Name
+        if (Test-Path $target) {
+            Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
+        }
+        Copy-Item -Path $_.FullName -Destination $DestDir -Recurse -Force
+    }
+}
+
 function Resolve-LkSim {
     $cmd = Get-Command $BinaryName -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -292,7 +357,12 @@ function Install-PortableFromRelease {
         Remove-Item -Recurse -Force $InstallRoot -ErrorAction SilentlyContinue
     }
     New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
-    Copy-Item -Path $payload.FullName -Destination $CurrentDir -Recurse -Force
+    New-Item -ItemType Directory -Path $CurrentDir -Force | Out-Null
+    # Copy lk-sim-windows-x64/* into current/, not current/lk-sim-windows-x64/
+    Copy-PortablePayloadContents -SourceDir $payload.FullName -DestDir $CurrentDir
+    if (-not (Repair-NestedPortableLayout -Dir $CurrentDir)) {
+        throw "Portable pack invalid: python not found under $CurrentDir\python after extract"
+    }
     Write-Log "Installed files -> $CurrentDir"
 
     # Portable packs from v0.1.2 shipped uv trampoline .exe with CI-absolute paths.
@@ -350,6 +420,47 @@ if ($Uninstall) {
     return
 }
 
+if ($Repair) {
+    if (-not (Test-Path $CurrentDir)) {
+        throw "Nothing to repair at $CurrentDir - run install first"
+    }
+    if (-not (Repair-NestedPortableLayout -Dir $CurrentDir)) {
+        throw "Repair failed: python still missing under $CurrentDir\python"
+    }
+    $fixedLk = @"
+@echo off
+setlocal
+set "ROOT=%~dp0"
+set "ROOT=%ROOT:~0,-1%"
+"%ROOT%\python\python.exe" -m livekit_agent_simulator %*
+exit /b %ERRORLEVEL%
+"@
+    $fixedMcp = @"
+@echo off
+setlocal
+set "ROOT=%~dp0"
+set "ROOT=%ROOT:~0,-1%"
+"%ROOT%\python\python.exe" -m livekit_agent_simulator.mcp_server %*
+exit /b %ERRORLEVEL%
+"@
+    $fixedLk | Set-Content -Path (Join-Path $CurrentDir "lk-sim.cmd") -Encoding ASCII
+    $fixedMcp | Set-Content -Path (Join-Path $CurrentDir "lk-sim-mcp.cmd") -Encoding ASCII
+    Ensure-DirOnPath $ShimDir
+    $lkCmd = Join-Path $CurrentDir "lk-sim.cmd"
+    @"
+@echo off
+"$lkCmd" %*
+"@ | Set-Content -Path (Join-Path $ShimDir "lk-sim.cmd") -Encoding ASCII
+    if ($Verify) {
+        cmd /c "`"$lkCmd`" --help" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Repair verify failed: lk-sim --help" }
+        Write-Log "Verified lk-sim --help after repair"
+    }
+    Write-Host ""
+    Write-Host "OK repaired portable layout at $CurrentDir" -ForegroundColor Green
+    return
+}
+
 $ResolvedRef = Resolve-InstallRef
 Write-Log "Installing $PkgName (portable pack from $ResolvedRef)"
 Write-Log "No uv/pip/build on this machine - CI already built everything"
@@ -363,11 +474,10 @@ if (-not $NoMcp) {
 
 $lkResolved = Resolve-LkSim
 if ($Verify) {
-    if (-not $lkResolved) { throw "$BinaryName not found after install" }
-    & $lkResolved --help | Out-Null
-    if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
-        # cmd.exe sometimes leaves exit 0 only; still try
-    }
+    $lkCmd = Join-Path $CurrentDir "lk-sim.cmd"
+    if (-not (Test-Path $lkCmd)) { throw "lk-sim.cmd missing after install" }
+    cmd /c "`"$lkCmd`" --help" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "$BinaryName --help failed after install (exit $LASTEXITCODE)" }
     Write-Log "Verified $BinaryName --help"
 }
 

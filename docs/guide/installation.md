@@ -132,6 +132,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps
 | `-Ref vX.Y.Z` / `-Version` | Pin release tag (default: latest) |
 | `-NoMcp` | Skip auto MCP registration |
 | `-Uninstall` | Remove install |
+| `-Repair` | Fix broken nested layout (`current/lk-sim-windows-x64/`) without re-download |
 | `-Quiet` | Suppress info logs |
 
 Install locations: pack under `%LOCALAPPDATA%\lk-sim\current`, shim `lk-sim` under `%USERPROFILE%\.local\bin`.
@@ -434,6 +435,7 @@ Common failures:
 | config missing | `lk-sim init --root …` first |
 | livekit.api 401 | Wrong URL / api_key / api_secret |
 | agent timeout later | Worker not running or `agent_name` mismatch |
+| Windows: `No module named 'encodings'` / `Could not find platform independent libraries` | Broken portable layout from older installer — run `install.ps1 -Repair -Verify` or reinstall with latest `install.ps1` |
 
 ---
 

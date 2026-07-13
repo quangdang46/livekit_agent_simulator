@@ -262,8 +262,29 @@ install_portable() {
   [ -n "$payload" ] || die "portable folder not found in zip"
 
   rm -rf "$INSTALL_ROOT"
-  mkdir -p "$INSTALL_ROOT"
-  cp -a "$payload" "$CURRENT_DIR"
+  mkdir -p "$CURRENT_DIR"
+  # Copy lk-sim-linux-x64/* into current/, not current/lk-sim-linux-x64/
+  cp -a "$payload"/. "$CURRENT_DIR/"
+  repair_nested_portable_layout() {
+    local dir="$1"
+    if [ -f "$dir/python/Lib/encodings/__init__.py" ] || [ -f "$dir/python/lib/python3.12/encodings/__init__.py" ]; then
+      return 0
+    fi
+    local nested
+    nested="$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name 'lk-sim-*' | head -1)"
+    [ -n "$nested" ] || return 1
+    if [ ! -f "$nested/python/Lib/encodings/__init__.py" ] && [ ! -f "$nested/python/lib/python3.12/encodings/__init__.py" ]; then
+      return 1
+    fi
+    log_info "Repairing nested portable layout ($(basename "$nested") -> $dir)"
+    if [ -d "$dir/python" ]; then
+      rm -rf "$dir/python"
+    fi
+    cp -a "$nested"/. "$dir/"
+    rm -rf "$nested"
+    [ -f "$dir/python/Lib/encodings/__init__.py" ] || [ -f "$dir/python/lib/python3.12/encodings/__init__.py" ]
+  }
+  repair_nested_portable_layout "$CURRENT_DIR" || die "portable pack invalid: python missing under $CURRENT_DIR/python"
   chmod +x "$CURRENT_DIR/lk-sim" "$CURRENT_DIR/lk-sim-mcp" 2>/dev/null || true
 
   mkdir -p "$DEST"
