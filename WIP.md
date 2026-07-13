@@ -493,3 +493,25 @@ SIP attributes to surface in report ([sip-participant doc](https://docs.livekit.
 ## Telephony SimLeg (2026-07-13)
 
 Implemented portable SimLeg: webrtc_sim / inbound_sip / outbound_sip / agent_dials. See docs/telephony.md and docs/plans/PLAN-20260713-telephony-simleg.md.
+
+## Refactor (2026-07-13)
+
+- Split `livekit/sim_leg/` package (protocol, factory, 4 legs, errors, room_resolve)
+- Thin orchestrator (SimLegHandle listen fields, no mode ifs)
+- Cue helpers split (`cue_helpers/source_priority.py` + `windows.py`)
+- Safety tests: 7 room resolve A+B tests
+
+## Parallel suite (2026-07-13)
+
+- `--parallel N` flag for `execute-all`
+- Inbound room discovery A+B (template + sip_call_id) — parallel-safe
+
+## goals_met assert (2026-07-14)
+
+- New OutcomeExpect type `goals_met` — LLM judge verifies caller pursued N persona goals
+- Persona template rewritten: numbered GOAL checklist + GUARDRAILS section
+- `Assert.spec.outcomes[].type: goals_met` — hard fail if goals not met
+
+## Known problem (2026-07-14)
+
+Gemini "answering" PSTN calls: outbound_sip works via agent DID dispatch, but calling a real PSTN number does not reach Gemini (call routes to phone, not sim-room). See `docs/PROBLEM.md`.
