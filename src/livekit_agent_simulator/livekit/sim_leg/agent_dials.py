@@ -9,7 +9,7 @@ class AgentDialsSimLeg:
     """Dispatch only; wait for SIP participant the agent creates (cooperative agent)."""
 
     async def connect(self, ctx: SimLegContext) -> SimLegHandle:
-        from ..scenario import effective_telephony
+        from ...scenario import effective_telephony
 
         tel = effective_telephony(ctx.scenario, ctx.cfg)
         adapter, writer = ctx.adapter, ctx.writer

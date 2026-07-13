@@ -13,7 +13,7 @@ class OutboundSipSimLeg:
     """Agent-room dials ``call_to``; Gemini answers on sim-room (Cloud hairpin)."""
 
     async def connect(self, ctx: SimLegContext) -> SimLegHandle:
-        from ..scenario import effective_telephony
+        from ...scenario import effective_telephony
 
         tel = effective_telephony(ctx.scenario, ctx.cfg)
         if not tel.outbound_trunk_id:
