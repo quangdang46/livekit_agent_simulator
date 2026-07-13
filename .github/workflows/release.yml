@@ -30,7 +30,11 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm run build
-          test -f ../templates/report-player/index.html
+
+      - name: Stage report player for wheel
+        run: |
+          python scripts/bundle_report_player.py
+          test -f templates/report-player/index.html
 
       - uses: astral-sh/setup-uv@v5
         with:

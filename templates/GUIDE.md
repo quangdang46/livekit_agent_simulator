@@ -341,7 +341,7 @@ lk-sim web <run-id> --root /path/to/target     # specific run
 # Middle column shows agent actions (script cues + tool cards with args/output when L3 enabled)
 ```
 
-No Node/Vite on the user machine. Player assets ship inside the package.
+No Node/Vite on the user machine. Player assets ship inside the wheel (built in CI from `web/dist/`).
 
 ---
 

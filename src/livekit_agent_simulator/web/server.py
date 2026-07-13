@@ -21,7 +21,21 @@ DEFAULT_PORT = 8765
 
 
 def _player_dir() -> Path:
-    return package_templates_dir() / "report-player"
+    """Bundled static assets for ``lk-sim web`` (wheel / release).
+
+    Search order:
+    1. ``templates/report-player`` (staged by CI / ``scripts/bundle_report_player.py``)
+    2. ``web/dist`` (editable checkout after ``pnpm --dir web build`` only)
+    """
+    bundled = package_templates_dir() / "report-player"
+    if (bundled / "index.html").is_file():
+        return bundled
+    repo_templates = package_templates_dir()
+    repo_root = repo_templates.parent
+    dev_dist = repo_root / "web" / "dist"
+    if (dev_dist / "index.html").is_file():
+        return dev_dist
+    return bundled
 
 
 def list_run_ids(reports_dir: Path) -> list[str]:
@@ -238,7 +252,10 @@ def start_web_server(
     player_dir = _player_dir()
     if not (player_dir / "index.html").exists():
         raise FileNotFoundError(
-            f"Report player assets missing: {player_dir}/index.html — run: pnpm --dir web build"
+            f"Report player assets missing: {player_dir}/index.html — "
+            "maintainers: pnpm --dir web install && pnpm --dir web build "
+            "(then python scripts/bundle_report_player.py before uv build; "
+            "or use pnpm --dir web dev with lk-sim web in another terminal)"
         )
 
     runs = list_run_ids(reports_dir)

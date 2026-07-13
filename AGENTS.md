@@ -112,7 +112,8 @@ On Windows, if `uv sync` fails (MCP exe locked):
 | `livekit/` | Room, dispatch, observer |
 | `gemini/` | Sim caller bridge + optional judge |
 | `logging/` | Event envelope, SQLite, reports |
-| `web/` | Report player API (`cues` facade + markers / transcript / speech_origin) |
+| `web/` (repo root) | Report player UI — Vite/TS; `pnpm build` → `web/dist/`; CI bundles into wheel |
+| `src/.../web/` | Report player API (`cues`, markers, HTTP server) |
 | `mcp_server.py` / `cli.py` | MCP tools + `lk-sim` |
 | `templates/` | Init scaffolds |
 | `tests/` | pytest |

@@ -221,13 +221,16 @@ Requires **Python 3.10–3.13**.
 
 ### Report player (maintainers)
 
-Users never build this — CI packs it. Source: `web/` (Vite + TypeScript).
+Users never build this — CI packs it. Source: `web/` (standard Vite → `web/dist/`).
 
 ```bash
 pnpm --dir web install
-pnpm --dir web build    # → templates/report-player/ (served by lk-sim web)
-pnpm --dir web dev      # HMR; proxy /api + /runs → lk-sim web on :8765
+pnpm --dir web build                    # → web/dist/
+python scripts/bundle_report_player.py  # → templates/report-player/ (wheel only)
+pnpm --dir web dev                      # HMR; proxy /api + /runs → lk-sim web :8765
 ```
+
+See `web/README.md`.
 
 ---
 

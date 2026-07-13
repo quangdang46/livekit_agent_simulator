@@ -10,6 +10,7 @@ build/
 *.sqlite-journal
 .env
 
-# Vite report player (source in web/; ship built assets under templates/report-player/)
+# Vite report player — source in web/; built output is gitignored
 web/node_modules/
 web/dist/
+templates/report-player/

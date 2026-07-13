@@ -1,8 +1,10 @@
 import { defineConfig } from "vite";
 
-// Build ships into package templates so `lk-sim web` serves without Node on the user machine.
+/** Standard Vite app: build → web/dist; CI copies dist into the Python wheel via scripts/bundle_report_player.py */
 export default defineConfig({
+  root: ".",
   base: "/",
+  publicDir: "public",
   server: {
     port: 5173,
     proxy: {
@@ -11,7 +13,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: "../templates/report-player",
+    outDir: "dist",
     emptyOutDir: true,
     sourcemap: true,
     assetsDir: "assets",
