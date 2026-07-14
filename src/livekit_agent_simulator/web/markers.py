@@ -113,37 +113,56 @@ def _build_markers(
             say = str(spec.get("say") or "").strip()
             during = bool(spec.get("during_agent_speech"))
             waited = int(spec.get("waited_ms") or 0)
+            icls = str(spec.get("class") or spec.get("interrupt_class") or "").strip() or None
             mtype = MARKER_BARGE_IN if barge else MARKER_SCRIPT_CUE
+            # Non-recovery classes get distinct marker types for UI chips
+            if icls == "backchannel":
+                mtype = "backchannel"
+            elif icls == "noise":
+                mtype = "false_interrupt"
+            elif icls == "dtmf":
+                mtype = "dtmf"
             detail_parts = [
                 f"trigger={spec.get('trigger') or '?'}",
                 f"during_agent={during}",
             ]
+            if icls:
+                detail_parts.append(f"class={icls}")
             if say:
                 detail_parts.append(f'say="{say}"')
             if waited:
                 detail_parts.append(f"waited={waited}ms")
             # Prefer real inject play length so scrubber/highlight match audible audio.
             inj_dur = _inject_duration_near(injects, start, label=label, say=say)
-            if barge:
+            if barge and icls not in ("noise", "backchannel"):
                 span = max(2200 if during else 1400, (inj_dur or 0) + 400)
             else:
                 span = max(400, min(waited, 2000) or 400, (inj_dur or 0) + 200)
             end = _clamp_end(start, start + span, duration_ms)
+            prefix = ""
+            if barge and during and icls not in ("noise", "backchannel"):
+                prefix = "⚡ "
+            elif icls == "backchannel":
+                prefix = "💬 "
+            elif icls == "noise":
+                prefix = "🔇 "
             markers.append(
                 {
                     "type": mtype,
                     "start_ms": start,
                     "end_ms": end,
-                    "label": ("⚡ " if barge and during else "") + label,
+                    "label": prefix + label,
                     "detail": " · ".join(detail_parts),
                     "step_id": step_id or None,
                     "say": say or None,
                     "during_agent_speech": during,
                     "barge_in": barge,
+                    "class": icls,
                     "audio_ms": inj_dur or span,
                 }
             )
-            if barge:
+            # Only recovery barges feed recovery markers
+            if barge and icls not in ("noise", "backchannel", "dtmf", "silence"):
                 barge_points.append(start)
             continue
 
@@ -197,6 +216,7 @@ def _build_markers(
                     "type": MARKER_INTERRUPTION,
                     "start_ms": start,
                     "end_ms": end,
+                    "class": (str(spec.get("class") or "").strip() or None),
                     "label": f"interruption ({by})",
                     "detail": note or f"by={by}",
                     "by": by,
