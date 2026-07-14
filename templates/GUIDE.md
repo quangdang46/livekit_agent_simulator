@@ -79,8 +79,8 @@ as JSON strings. Core **never** parses consumer keys (e.g. product agent ids). I
 bootstraps from dispatch metadata, set `livekit.dispatch_metadata` or
 per-scenario `Dispatch` — see https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md .
 
-**Telephony modes** (scenario only): `webrtc_sim` (default) · `inbound_sip` · `outbound_sip` · `agent_dials`.
-Templates: `outbound-callee-sim.jsonl`, `inbound-caller-sim.jsonl`. Full guide: `docs/telephony.md`.
+**Telephony modes** (scenario only): `webrtc_sim` (default) · `inbound_sip` · `outbound_sip` · `outbound_sim_callee` · `agent_dials`.
+Templates: `outbound-sip.jsonl`, `outbound-callee-sim.jsonl`, `inbound-caller-sim.jsonl`. Full guide: `docs/telephony.md`.
 
 ### Voice, language & call recording
 
@@ -164,7 +164,7 @@ lk-sim scenario-init my-case --root /path/to/target
 | `Simulator` | no | Defaults; overridden by Execute |
 | `Execute` | recommended | `max_turns`, `timeout_s`, `first_speaker` |
 | `Dispatch` | no | Per-scenario opaque metadata JSON string |
-| `Caller` | no | Transport mode: `webrtc_sim` (default) · `inbound_sip` · `outbound_sip` · `agent_dials` |
+| `Caller` | no | Transport mode: `webrtc_sim` (default) · `inbound_sip` · `outbound_sip` · `outbound_sim_callee` · `agent_dials` |
 | `Telephony` | no if WebRTC | SIP dial params: `call_to` / `dial_in` / `sip_trunk_id` / `prepare_ms` (overrides config) |
 | `Behavior` | no | Hamming policy → auto Script (`barge_ins`, `user_silence`, `ambient`, `hang_ups`) |
 | `Script` | no | Timed cues (`speak`, `wait`, **`hang_up`**) (wins over Behavior on same step `id`) |
@@ -293,11 +293,13 @@ Mode is **per scenario** (`Caller.mode`), never in `config.yaml`.
 |------|-------------|-------------------------|
 | `webrtc_sim` | Caller (default) | No `telephony:` required |
 | `inbound_sip` | Caller dials agent DID | `telephony.outbound_trunk_id` + `dial_in` (or `Telephony.dial_in`) |
-| `outbound_sip` | Callee answers | trunk + `call_to` / `sim_inbound_number` that routes into sim-room |
+| `outbound_sip` | Human answers; Gemini colocated | trunk + `call_to` (handset E.164); optional `handset_isolation` |
+| `outbound_sim_callee` | Gemini SIP callee (hairpin) | trunk + `call_to` / `sim_inbound_number` that routes into sim-room |
 | `agent_dials` | Callee; agent dials | Cooperative agent + sim answer path |
 
 Package templates (copy into target `.agent-sim/scenarios/`):
 
+- `templates/outbound-sip.jsonl`
 - `templates/outbound-callee-sim.jsonl`
 - `templates/inbound-caller-sim.jsonl`
 
@@ -311,7 +313,8 @@ Package templates (copy into target `.agent-sim/scenarios/`):
 telephony:
   outbound_trunk_id: "ST_xxxxxxxxxxxx"
   dial_in: "+15551234567"
-  sim_inbound_number: "+15559876543"  # Gemini answers here for outbound_sip
+  sim_inbound_number: "+15559876543"  # Gemini answers here for outbound_sim_callee
+  handset_isolation: mute_and_unsubscribe  # outbound_sip after human answers
   prepare_ms: 3000
   wait_until_answered: true
 ```

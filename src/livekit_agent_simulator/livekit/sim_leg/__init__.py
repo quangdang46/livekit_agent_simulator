@@ -10,12 +10,14 @@ from .factory import sim_leg_factory
 from .inbound import InboundSipSimLeg
 from .outbound import OutboundSipSimLeg
 from .protocol import SimLeg, SimLegContext, SimLegError, SimLegHandle
+from .sim_callee import OutboundSimCalleeSimLeg
 from .webrtc import WebRtcSimLeg
 
 __all__ = [
     "AgentDialsSimLeg",
     "InboundSipSimLeg",
     "OutboundSipSimLeg",
+    "OutboundSimCalleeSimLeg",
     "SimLeg",
     "SimLegContext",
     "SimLegError",

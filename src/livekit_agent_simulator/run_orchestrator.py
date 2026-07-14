@@ -1,6 +1,6 @@
 """End-to-end run: preflight → SimLeg.connect → converse → report.
 
-Phases: prepare → SimLeg (WebRTC | inbound_sip | outbound_sip | agent_dials) →
+Phases: prepare → SimLeg (WebRTC | inbound_sip | outbound_sip | outbound_sim_callee | agent_dials) →
 SimBrain → converse → verify → judge → finalize.
 
 End conditions (first one wins):
@@ -168,7 +168,7 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                 recorder.mark_start()
 
             # Observer on agent-room: transcripts + agent WAV R-channel (works for SIP 2-room).
-            # For outbound, agent_room was joined *before* dial inside OutboundSipSimLeg.
+            # For outbound_sim_callee, agent_room was joined *before* dial inside OutboundSimCalleeSimLeg.
             observer = Observer(
                 leg_handle.agent_room,
                 writer,

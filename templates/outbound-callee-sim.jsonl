@@ -1,7 +1,7 @@
-// Outbound SIP: Gemini answers as the human callee.
-// Requires target .agent-sim/config.yaml telephony.outbound_trunk_id + call_to (or sim_inbound_number).
-{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"outbound-callee-sim","locale":"en-US","tags":["telephony","outbound"]}}
-{"kind":"Caller","spec":{"mode":"outbound_sip"}}
+// Outbound sim-callee: Gemini answers as SIP callee (Cloud hairpin, 2 rooms).
+// Requires telephony.outbound_trunk_id + call_to (or config sim_inbound_number) that routes into sim-room.
+{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"outbound-callee-sim","locale":"en-US","tags":["telephony","outbound","sim_callee"]}}
+{"kind":"Caller","spec":{"mode":"outbound_sim_callee"}}
 {"kind":"Telephony","spec":{"call_to":"+15559876543"}}
 {"kind":"Persona","spec":{"name":"Alex","brief":"You just answered a phone call. You are a real person, slightly busy. Be brief and natural.","goals":["Understand why they called","End politely if not interested"],"style":"short, natural phone speech"}}
 {"kind":"Execute","spec":{"timeout_s":120,"first_speaker":"user","max_turns":10}}

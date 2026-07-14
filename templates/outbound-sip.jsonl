@@ -1,0 +1,10 @@
+// Outbound SIP: human answers the phone; Gemini joins the same room and speaks.
+// Requires telephony.outbound_trunk_id + Telephony.call_to (real/test handset E.164).
+// Leave the handset connected after pickup (isolation mutes it by default).
+{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"outbound-sip","locale":"en-US","tags":["telephony","outbound","human_pickup"]}}
+{"kind":"Caller","spec":{"mode":"outbound_sip"}}
+{"kind":"Telephony","spec":{"call_to":"+15551234567","handset_isolation":"mute_and_unsubscribe"}}
+{"kind":"Persona","spec":{"name":"Alex","brief":"You are on a phone call with an AI agent. Speak briefly and naturally as the human callee.","goals":["Understand why they called","Answer simply"],"style":"short, natural phone speech"}}
+{"kind":"Execute","spec":{"timeout_s":120,"first_speaker":"user","max_turns":10}}
+{"kind":"Assert","spec":{"sip":{"participant_present":true,"dial_answered":true},"transcript":[{"role":"agent","contains_any":["a","e","i","o","u"]}]}}
+{"kind":"PassCriteria","spec":{"criteria":["The agent spoke after the call was answered","The conversation was understandable"]}}

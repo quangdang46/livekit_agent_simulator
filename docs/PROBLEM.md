@@ -4,25 +4,30 @@
 
 ### Problem
 
-Current `outbound_sip` flow: `call_to` = **agent's inbound DID** → agent joins room → audio bridge → Gemini converses.
+Mode **`outbound_sim_callee`** (formerly misnamed `outbound_sip`): `call_to` must be a **sim DID** that routes into the **sim-room** where Gemini already sits (Cloud hairpin).
 
-But calling a **real PSTN number**:
+Calling a **real PSTN number** without that DID:
 
 ```
 lk-sim dial +84xxxxxxxxx  ──►  Cloud Trunk  ──►  PSTN  ──►  Real phone rings
                                                               │
                                                             Human picks up
                                                               │
-                                                            Worker hears human,
-                                                            Gemini hears nothing
+                                                            Agent-room hears human;
+                                                            Gemini is in a *different* room
+                                                            → audio paths split (2 rooms, no hairpin)
 ```
 
-Gemini can only "answer" when the call lands in a **room Gemini is in**. On Cloud:
-- Agent has an inbound DID + dispatch rule → agent-room
-- Gemini needs a **separate inbound DID + dispatch rule** → sim-room
-- Currently no DID is provisioned to route into sim-room
+### Mitigation (implemented)
 
-### Potential solutions
+| Mode | Use when |
+|---|---|
+| **`outbound_sip`** | Human answers to connect; Gemini joins **same** agent-room and speaks (no sim DID) |
+| **`outbound_sim_callee`** | True Gemini-as-SIP-callee via sim DID + dispatch (2-room hairpin) |
+
+See: `docs/telephony.md`, `docs/plans/PLAN-20260714-outbound-sip-migrate-human-pickup.md`
+
+### Potential solutions (sim-callee path)
 
 | Approach | Description | Requires |
 |---|---|---|

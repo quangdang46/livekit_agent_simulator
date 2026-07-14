@@ -238,7 +238,7 @@ observe:
 # telephony:
 #   outbound_trunk_id: "ST_xxxxxxxxxxxx"
 #   dial_in: "+15551234567"              # inbound_sip: Gemini dials this
-#   sim_inbound_number: "+15559876543"   # outbound_sip: Gemini answers this
+#   sim_inbound_number: "+15559876543"   # outbound_sim_callee: Gemini answers this
 #   prepare_ms: 3000
 #   wait_until_answered: true
 ```
@@ -552,7 +552,8 @@ Script action `hang_up` makes the sim caller leave the room (hard hangup).
 
 Package templates (copy into `.agent-sim/scenarios/`):
 
-- `outbound-callee-sim.jsonl` — Gemini answers (`Caller.mode: outbound_sip`)
+- `outbound-sip.jsonl` — human answers, Gemini speaks (`Caller.mode: outbound_sip`)
+- `outbound-callee-sim.jsonl` — Gemini SIP callee (`Caller.mode: outbound_sim_callee`)
 - `inbound-caller-sim.jsonl` — Gemini dials agent DID (`Caller.mode: inbound_sip`)
 
 ```bash
@@ -582,7 +583,7 @@ Mark setup complete only when **all** of these are true:
 - [ ] (Tool scenarios) report contains `tool.*` and `session.chat_history`, with no `tool_events` observe gap
 - [ ] (Optional) MCP `livekit-agent-simulator` registered if they use a coding agent
 - [ ] (Optional) `lk-sim execute smoke-hello --root "$TARGET_ROOT"` → `status: done` or a clear next fix (agent timeout / Gemini quota)
-- [ ] (Optional SIP) `telephony:` trunk/DID filled when testing `inbound_sip` / `outbound_sip`; scenarios validated
+- [ ] (Optional SIP) `telephony:` trunk/DID filled when testing `inbound_sip` / `outbound_sip` / `outbound_sim_callee`; scenarios validated
 
 **Do not claim “fully working E2E”** if preflight failed or the worker is not registered.
 
@@ -592,7 +593,7 @@ Mark setup complete only when **all** of these are true:
 
 - **In scope:** install CLI, scaffold `.agent-sim/`, fill config from user/env, preflight, create/edit scenarios under `.agent-sim/scenarios/`, run executes, reports, MCP config.
 - **Out of scope:** rewriting the user’s agent product logic; load testing; provisioning carrier trunks/DIDs; committing secrets; changing production LiveKit keys without confirmation.
-- **In package (optional):** SIP **scenario modes** (`inbound_sip` / `outbound_sip`) via SimLeg — see [telephony.md](../telephony.md). Target still owns trunk IDs and numbers in gitignored config.
+- **In package (optional):** SIP **scenario modes** (`inbound_sip` / `outbound_sip` / `outbound_sim_callee`) via SimLeg — see [telephony.md](../telephony.md). Target still owns trunk IDs and numbers in gitignored config.
 - **Quota:** Gemini free tier can 429 on judge/Live after many runs — report that honestly; hard gates (status/assert/script) still work when judge is soft-error.
 
 ---

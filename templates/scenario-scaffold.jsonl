@@ -19,10 +19,11 @@
 // === Dispatch (optional) — opaque JSON string for RoomAgentDispatch.metadata ===
 {"kind":"Dispatch","spec":{"metadata":"{\"yourProjectKey\":\"replace-me\"}"}}
 // === Caller / Telephony (optional) — transport mode; NEVER put mode in config.yaml ===
-// mode: webrtc_sim (default if omitted) | inbound_sip | outbound_sip | agent_dials
-// outbound_sip: Gemini answers — need call_to OR config telephony.sim_inbound_number + trunk
-// inbound_sip:  Gemini dials  — need dial_in OR config telephony.dial_in + trunk
-// See docs/telephony.md and templates/outbound-callee-sim.jsonl / inbound-caller-sim.jsonl
+// mode: webrtc_sim (default) | inbound_sip | outbound_sip | outbound_sim_callee | agent_dials
+// outbound_sip:        human answers — need Telephony.call_to (handset) + trunk
+// outbound_sim_callee: Gemini answers — need call_to OR config sim_inbound_number + trunk + DID dispatch
+// inbound_sip:         Gemini dials  — need dial_in OR config telephony.dial_in + trunk
+// See docs/telephony.md and templates/outbound-sip.jsonl / outbound-callee-sim.jsonl / inbound-caller-sim.jsonl
 // {"kind":"Caller","spec":{"mode":"webrtc_sim"}}
 // {"kind":"Telephony","spec":{"call_to":"+15559876543","dial_in":"+15551234567","prepare_ms":3000}}
 // === Behavior (optional, Hamming policy) — compiles to Script if present ===

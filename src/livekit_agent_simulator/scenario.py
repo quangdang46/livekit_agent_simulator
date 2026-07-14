@@ -42,8 +42,13 @@ KNOWN_KINDS = {
     "Telephony",
 }
 
-CALLER_MODES = frozenset({"webrtc_sim", "inbound_sip", "outbound_sip", "agent_dials"})
-SIP_MODES = frozenset({"inbound_sip", "outbound_sip", "agent_dials"})
+CALLER_MODES = frozenset(
+    {"webrtc_sim", "inbound_sip", "outbound_sip", "outbound_sim_callee", "agent_dials"}
+)
+SIP_MODES = frozenset({"inbound_sip", "outbound_sip", "outbound_sim_callee", "agent_dials"})
+HANDSET_ISOLATION_MODES = frozenset(
+    {"mute_uplink", "mute_and_unsubscribe", "none", "remove"}
+)
 
 
 def strip_extension_keys(obj: dict[str, Any]) -> dict[str, Any]:
@@ -97,6 +102,7 @@ class TelephonySpec:
     krisp_enabled: bool | None = None
     agent_room: str | None = None
     agent_room_name_template: str | None = None
+    handset_isolation: str | None = None
 
 
 @dataclass
@@ -112,6 +118,7 @@ class EffectiveTelephony:
     krisp_enabled: bool
     agent_room: str | None
     agent_room_name_template: str | None
+    handset_isolation: str
 
 
 @dataclass
@@ -419,6 +426,12 @@ def parse_scenario(path: Path | str) -> Scenario:
             prepare = spec.get("prepare_ms")
             wait = spec.get("wait_until_answered")
             krisp = spec.get("krisp_enabled")
+            handset_iso = _opt("handset_isolation")
+            if handset_iso is not None and handset_iso not in HANDSET_ISOLATION_MODES:
+                raise ScenarioError(
+                    f"{path}:{line_no}: Telephony.spec.handset_isolation must be one of "
+                    f"{sorted(HANDSET_ISOLATION_MODES)} (got {handset_iso!r})"
+                )
             scenario.telephony = TelephonySpec(
                 call_to=_opt("call_to"),
                 dial_in=_opt("dial_in"),
@@ -428,6 +441,7 @@ def parse_scenario(path: Path | str) -> Scenario:
                 krisp_enabled=bool(krisp) if krisp is not None else None,
                 agent_room=_opt("agent_room"),
                 agent_room_name_template=_opt("agent_room_name_template"),
+                handset_isolation=handset_iso,
             )
         elif kind == "PassCriteria":
             scenario.pass_criteria = [str(c) for c in spec.get("criteria", [])]
@@ -468,11 +482,14 @@ def parse_scenario(path: Path | str) -> Scenario:
     mode = scenario.effective_caller_mode()
     if mode not in CALLER_MODES:
         raise ScenarioError(f"{path}: Caller.mode {mode!r} is not supported")
-    if mode == "outbound_sip":
+    if mode == "outbound_sim_callee":
         has_call_to = bool(scenario.telephony and scenario.telephony.call_to)
         if not has_call_to:
             # Allowed: config telephony.sim_inbound_number may supply it at run time.
             pass
+    if mode == "outbound_sip":
+        # Human handset number — must be on scenario or validated at run (no sim DID fallback).
+        pass
     if mode == "inbound_sip":
         has_dial_in = bool(scenario.telephony and scenario.telephony.dial_in)
         if not has_dial_in:
@@ -515,10 +532,16 @@ def effective_telephony(scenario: Scenario, cfg: Any) -> EffectiveTelephony:
         None,
         getattr(tel_cfg, "inbound_trunk_id", None) if tel_cfg else None,
     )
-    call_to = pick_str(
-        sc.call_to if sc else None,
-        getattr(tel_cfg, "sim_inbound_number", None) if tel_cfg else None,
-    )
+    mode = scenario.effective_caller_mode()
+    # sim_inbound_number is only a call_to fallback for Gemini-as-callee hairpin.
+    if mode == "outbound_sim_callee":
+        call_to = pick_str(
+            sc.call_to if sc else None,
+            getattr(tel_cfg, "sim_inbound_number", None) if tel_cfg else None,
+        )
+    else:
+        call_to = pick_str(sc.call_to if sc else None, None)
+
     dial_in = pick_str(
         sc.dial_in if sc else None,
         getattr(tel_cfg, "dial_in", None) if tel_cfg else None,
@@ -541,6 +564,16 @@ def effective_telephony(scenario: Scenario, cfg: Any) -> EffectiveTelephony:
     if sc is not None and sc.krisp_enabled is not None:
         krisp = bool(sc.krisp_enabled)
 
+    handset_isolation = "mute_and_unsubscribe"
+    if tel_cfg is not None:
+        handset_isolation = str(
+            getattr(tel_cfg, "handset_isolation", None) or "mute_and_unsubscribe"
+        ).strip().lower()
+    if sc is not None and sc.handset_isolation:
+        handset_isolation = sc.handset_isolation.strip().lower()
+    if handset_isolation not in HANDSET_ISOLATION_MODES:
+        handset_isolation = "mute_and_unsubscribe"
+
     agent_room = pick_str(
         sc.agent_room if sc else None,
         getattr(tel_cfg, "agent_room", None) if tel_cfg else None,
@@ -559,6 +592,7 @@ def effective_telephony(scenario: Scenario, cfg: Any) -> EffectiveTelephony:
         krisp_enabled=krisp,
         agent_room=agent_room,
         agent_room_name_template=agent_room_tmpl,
+        handset_isolation=handset_isolation,
     )
 
 
@@ -568,7 +602,7 @@ def validate_telephony_for_mode(scenario: Scenario, cfg: Any) -> None:
     if mode not in SIP_MODES:
         return
     tel = effective_telephony(scenario, cfg)
-    if mode in ("outbound_sip", "inbound_sip") and not tel.outbound_trunk_id:
+    if mode in ("outbound_sip", "outbound_sim_callee", "inbound_sip") and not tel.outbound_trunk_id:
         raise ScenarioError(
             f"Scenario `{scenario.id}` mode={mode} requires telephony.outbound_trunk_id "
             f"in config or Telephony.sip_trunk_id in the scenario."
@@ -576,7 +610,13 @@ def validate_telephony_for_mode(scenario: Scenario, cfg: Any) -> None:
     if mode == "outbound_sip" and not tel.call_to:
         raise ScenarioError(
             f"Scenario `{scenario.id}` mode=outbound_sip requires Telephony.call_to "
-            f"or config telephony.sim_inbound_number (number/DID Gemini answers)."
+            f"(human/PSTN number that will answer). "
+            f"For Gemini-as-callee hairpin use mode=outbound_sim_callee + sim_inbound_number."
+        )
+    if mode == "outbound_sim_callee" and not tel.call_to:
+        raise ScenarioError(
+            f"Scenario `{scenario.id}` mode=outbound_sim_callee requires Telephony.call_to "
+            f"or config telephony.sim_inbound_number (DID/number Gemini answers)."
         )
     if mode == "inbound_sip" and not tel.dial_in:
         raise ScenarioError(

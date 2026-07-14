@@ -354,6 +354,168 @@ class LiveKitAdapter:
             kwargs["timeout"] = timeout
         return await self.lkapi.sip.create_sip_participant(req, **kwargs)
 
+    # -------------------------------------------------------------- room admin (mute / isolate)
+
+    async def get_participant(self, room_name: str, identity: str) -> Any:
+        return await self.lkapi.room.get_participant(
+            api.RoomParticipantIdentity(room=room_name, identity=identity)
+        )
+
+    async def mute_published_track(
+        self,
+        *,
+        room_name: str,
+        identity: str,
+        track_sid: str,
+        muted: bool = True,
+    ) -> Any:
+        return await self.lkapi.room.mute_published_track(
+            api.MuteRoomTrackRequest(
+                room=room_name,
+                identity=identity,
+                track_sid=track_sid,
+                muted=muted,
+            )
+        )
+
+    async def update_subscriptions(
+        self,
+        *,
+        room_name: str,
+        identity: str,
+        track_sids: list[str],
+        subscribe: bool,
+    ) -> Any:
+        if not track_sids:
+            return None
+        return await self.lkapi.room.update_subscriptions(
+            api.UpdateSubscriptionsRequest(
+                room=room_name,
+                identity=identity,
+                track_sids=track_sids,
+                subscribe=subscribe,
+            )
+        )
+
+    async def update_participant_permission(
+        self,
+        *,
+        room_name: str,
+        identity: str,
+        can_subscribe: bool,
+        can_publish: bool = True,
+        can_publish_data: bool = True,
+    ) -> Any:
+        """Permissions replace atomically — set all flags you intend to keep."""
+        return await self.lkapi.room.update_participant(
+            api.UpdateParticipantRequest(
+                room=room_name,
+                identity=identity,
+                permission=api.ParticipantPermission(
+                    can_subscribe=can_subscribe,
+                    can_publish=can_publish,
+                    can_publish_data=can_publish_data,
+                ),
+            )
+        )
+
+    async def remove_participant(self, room_name: str, identity: str) -> Any:
+        return await self.lkapi.room.remove_participant(
+            api.RoomParticipantIdentity(room=room_name, identity=identity)
+        )
+
+    async def isolate_sip_handset(
+        self,
+        *,
+        room_name: str,
+        sip_identity: str,
+        isolation: str = "mute_and_unsubscribe",
+    ) -> dict[str, Any]:
+        """Reduce handset audio after human answer (human-pickup / outbound_sip).
+
+        ``mute_and_unsubscribe`` (default): mute SIP uplink + deny subscribe so the
+        handset does not hear agent/Gemini. ``remove`` kicks the SIP leg (risky).
+        """
+        isolation = (isolation or "mute_and_unsubscribe").strip().lower()
+        result: dict[str, Any] = {
+            "isolation": isolation,
+            "muted_track_sids": [],
+            "unsubscribed_track_sids": [],
+            "removed": False,
+        }
+        if isolation == "none":
+            return result
+
+        if isolation == "remove":
+            await self.remove_participant(room_name, sip_identity)
+            result["removed"] = True
+            return result
+
+        # mute uplink
+        if isolation in ("mute_uplink", "mute_and_unsubscribe"):
+            try:
+                p = await self.get_participant(room_name, sip_identity)
+            except Exception as e:
+                result["mute_error"] = f"{type(e).__name__}: {e}"
+                p = None
+            if p is not None:
+                for t in getattr(p, "tracks", None) or []:
+                    if getattr(t, "type", None) != api.TrackType.AUDIO:
+                        continue
+                    sid = getattr(t, "sid", None)
+                    if not sid:
+                        continue
+                    try:
+                        await self.mute_published_track(
+                            room_name=room_name,
+                            identity=sip_identity,
+                            track_sid=sid,
+                            muted=True,
+                        )
+                        result["muted_track_sids"].append(sid)
+                    except Exception as e:
+                        result["mute_error"] = f"{type(e).__name__}: {e}"
+
+        if isolation == "mute_and_unsubscribe":
+            # Block handset from hearing anyone (future publishes included).
+            try:
+                await self.update_participant_permission(
+                    room_name=room_name,
+                    identity=sip_identity,
+                    can_subscribe=False,
+                    can_publish=True,
+                    can_publish_data=True,
+                )
+                result["can_subscribe"] = False
+            except Exception as e:
+                result["permission_error"] = f"{type(e).__name__}: {e}"
+
+            # Also unsubscribe from tracks already subscribed.
+            try:
+                res = await self.lkapi.room.list_participants(
+                    api.ListParticipantsRequest(room=room_name)
+                )
+                block: list[str] = []
+                for other in res.participants:
+                    oid = getattr(other, "identity", "") or ""
+                    if oid == sip_identity:
+                        continue
+                    for t in getattr(other, "tracks", None) or []:
+                        if getattr(t, "type", None) == api.TrackType.AUDIO and getattr(t, "sid", None):
+                            block.append(t.sid)
+                if block:
+                    await self.update_subscriptions(
+                        room_name=room_name,
+                        identity=sip_identity,
+                        track_sids=block,
+                        subscribe=False,
+                    )
+                    result["unsubscribed_track_sids"] = block
+            except Exception as e:
+                result["unsubscribe_error"] = f"{type(e).__name__}: {e}"
+
+        return result
+
     # -------------------------------------------------------------- connect
 
     def build_token(

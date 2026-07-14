@@ -67,7 +67,7 @@ Voice agents fail in ways unit tests never see:
 |---------|--------------|
 | `lk-sim` CLI | init → preflight → execute → report → web |
 | MCP server | Same ops for Claude Code, Cursor, Codex, … |
-| Transport modes | `webrtc_sim` · `inbound_sip` · `outbound_sip` (optional `agent_dials`) |
+| Transport modes | `webrtc_sim` · `inbound_sip` · `outbound_sip` · `outbound_sim_callee` (optional `agent_dials`) |
 | Reports | `events.jsonl`, `timeline.md`, `summary.json`, optional stereo WAV |
 | Judge | Optional LLM PassCriteria scoring |
 
@@ -127,7 +127,7 @@ lk-sim web --root /path/to/target          # Ctrl+C to stop
 
 ```text
 1. Read <target>/.agent-sim/config.yaml
-2. Pick SimLeg from scenario Caller.mode (webrtc_sim | inbound_sip | outbound_sip | agent_dials)
+2. Pick SimLeg from scenario Caller.mode (webrtc_sim | inbound_sip | outbound_sip | outbound_sim_callee | agent_dials)
 3. Connect leg → LiveKit room(s) / SIP hairpin as needed; Gemini stays WebRTC in the sim room
 4. Bridge audio; observe transcripts, tools, timing, interruptions
 5. Write reports/<run-id>/ + runs.sqlite
@@ -136,12 +136,13 @@ lk-sim web --root /path/to/target          # Ctrl+C to stop
 
 ```text
                     Caller.mode (scenario)
-         ┌───────────────┬────────────────┬───────────────┐
-         │  webrtc_sim   │  inbound_sip   │ outbound_sip  │
-         │  room audio   │  sim dials DID │  sim answers  │
-         └───────┬───────┴────────┬───────┴───────┬───────┘
-                 │                │               │
-                 └────────────────┼───────────────┘
+         ┌───────────────┬────────────────┬──────────────────┬────────────────────┐
+         │  webrtc_sim   │  inbound_sip   │   outbound_sip   │ outbound_sim_callee│
+         │  room audio   │  sim dials DID │ human answers → │  Gemini SIP callee │
+         │               │                │ Gemini colocated│  (2-room hairpin)  │
+         └───────┬───────┴────────┬───────┴────────┬─────────┴─────────┬──────────┘
+                 │                │                │                   │
+                 └────────────────┼────────────────┼───────────────────┘
                                   ▼
                     ┌──────────────────────────┐
                     │  Gemini Live persona     │
@@ -153,7 +154,7 @@ lk-sim web --root /path/to/target          # Ctrl+C to stop
                     reports/<run-id>/ · runs.sqlite · judge
 ```
 
-Mode details and config: [docs/telephony.md](docs/telephony.md). Templates: `inbound-caller-sim`, `outbound-callee-sim`.
+Mode details and config: [docs/telephony.md](docs/telephony.md). Templates: `inbound-caller-sim`, `outbound-sip`, `outbound-callee-sim`.
 
 ---
 

@@ -49,10 +49,11 @@ def test_default_mode_webrtc(tmp_path):
     assert s.export_dict()["caller_mode"] == "webrtc_sim"
 
 
-def test_parse_outbound_caller(tmp_path):
+def test_parse_outbound_sip_human(tmp_path):
     content = BASE + (
         '{"kind":"Caller","spec":{"mode":"outbound_sip"}}\n'
-        '{"kind":"Telephony","spec":{"call_to":"+15551112222","prepare_ms":1000}}\n'
+        '{"kind":"Telephony","spec":{"call_to":"+15551112222","prepare_ms":1000,'
+        '"handset_isolation":"mute_uplink"}}\n'
     )
     f = tmp_path / "out.jsonl"
     f.write_text(content, encoding="utf-8")
@@ -61,6 +62,18 @@ def test_parse_outbound_caller(tmp_path):
     assert s.telephony is not None
     assert s.telephony.call_to == "+15551112222"
     assert s.telephony.prepare_ms == 1000
+    assert s.telephony.handset_isolation == "mute_uplink"
+
+
+def test_parse_outbound_sim_callee(tmp_path):
+    content = BASE + (
+        '{"kind":"Caller","spec":{"mode":"outbound_sim_callee"}}\n'
+        '{"kind":"Telephony","spec":{"call_to":"+15559876543"}}\n'
+    )
+    f = tmp_path / "callee.jsonl"
+    f.write_text(content, encoding="utf-8")
+    s = parse_scenario(f)
+    assert s.effective_caller_mode() == "outbound_sim_callee"
 
 
 def test_invalid_mode(tmp_path):
@@ -91,8 +104,8 @@ def test_merge_scenario_over_config(tmp_path):
     assert tel.prepare_ms == 5000  # scenario omitted prepare → config
 
 
-def test_merge_config_defaults_when_scenario_omits(tmp_path):
-    content = BASE + '{"kind":"Caller","spec":{"mode":"outbound_sip"}}\n'
+def test_sim_inbound_fallback_only_for_sim_callee(tmp_path):
+    content = BASE + '{"kind":"Caller","spec":{"mode":"outbound_sim_callee"}}\n'
     f = tmp_path / "out2.jsonl"
     f.write_text(content, encoding="utf-8")
     s = parse_scenario(f)
@@ -110,7 +123,19 @@ def test_merge_config_defaults_when_scenario_omits(tmp_path):
     assert tel.wait_until_answered is False
 
 
-def test_validate_outbound_missing_call_to(tmp_path):
+def test_outbound_sip_no_sim_inbound_fallback(tmp_path):
+    content = BASE + '{"kind":"Caller","spec":{"mode":"outbound_sip"}}\n'
+    f = tmp_path / "human.jsonl"
+    f.write_text(content, encoding="utf-8")
+    s = parse_scenario(f)
+    cfg = _cfg(tmp_path, outbound_trunk_id="ST_cfg", sim_inbound_number="+1555888")
+    tel = effective_telephony(s, cfg)
+    assert tel.call_to is None
+    with pytest.raises(ScenarioError, match="human/PSTN"):
+        validate_telephony_for_mode(s, cfg)
+
+
+def test_validate_outbound_sip_missing_call_to(tmp_path):
     content = BASE + '{"kind":"Caller","spec":{"mode":"outbound_sip"}}\n'
     f = tmp_path / "miss.jsonl"
     f.write_text(content, encoding="utf-8")
@@ -118,6 +143,15 @@ def test_validate_outbound_missing_call_to(tmp_path):
     cfg = _cfg(tmp_path, outbound_trunk_id="ST_x")
     with pytest.raises(ScenarioError, match="call_to"):
         validate_telephony_for_mode(s, cfg)
+
+
+def test_validate_sim_callee_ok_with_config_did(tmp_path):
+    content = BASE + '{"kind":"Caller","spec":{"mode":"outbound_sim_callee"}}\n'
+    f = tmp_path / "ok.jsonl"
+    f.write_text(content, encoding="utf-8")
+    s = parse_scenario(f)
+    cfg = _cfg(tmp_path, outbound_trunk_id="ST_x", sim_inbound_number="+1555")
+    validate_telephony_for_mode(s, cfg)  # no raise
 
 
 def test_validate_inbound_missing_trunk(tmp_path):

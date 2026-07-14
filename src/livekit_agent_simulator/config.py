@@ -110,6 +110,8 @@ class TelephonyConfig:
     krisp_enabled: bool = False
     agent_room: str | None = None
     agent_room_name_template: str | None = None
+    # outbound_sip only — mute human handset after answer (see docs/telephony.md)
+    handset_isolation: str = "mute_and_unsubscribe"
 
 
 @dataclass
@@ -273,6 +275,9 @@ def load_config(project_root: Path | str) -> SimConfig:
             krisp_enabled=bool(tel_raw.get("krisp_enabled", False)),
             agent_room=_opt_str("agent_room"),
             agent_room_name_template=_opt_str("agent_room_name_template"),
+            handset_isolation=(
+                _opt_str("handset_isolation") or "mute_and_unsubscribe"
+            ),
         )
 
     return SimConfig(

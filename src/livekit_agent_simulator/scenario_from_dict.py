@@ -86,6 +86,7 @@ def scenario_from_dict(
         prepare = tel_raw.get("prepare_ms")
         wait = tel_raw.get("wait_until_answered")
         krisp = tel_raw.get("krisp_enabled")
+        handset_iso = _opt("handset_isolation")
         telephony = TelephonySpec(
             call_to=_opt("call_to"),
             dial_in=_opt("dial_in"),
@@ -95,6 +96,7 @@ def scenario_from_dict(
             krisp_enabled=bool(krisp) if krisp is not None else None,
             agent_room=_opt("agent_room"),
             agent_room_name_template=_opt("agent_room_name_template"),
+            handset_isolation=handset_iso,
         )
 
     script_steps = []
