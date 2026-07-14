@@ -92,10 +92,18 @@ class AssertSpec:
     transcript: list[TranscriptExpect] = field(default_factory=list)
     outcomes: list[OutcomeExpect] = field(default_factory=list)
     sip: SipExpect | None = None
+    # Hamming workflow: required tool.start name sequence (subsequence, not contiguous)
+    tool_order: tuple[str, ...] = ()
 
     @property
     def empty(self) -> bool:
-        return not (self.tools or self.transcript or self.outcomes or self.sip)
+        return not (
+            self.tools
+            or self.transcript
+            or self.outcomes
+            or self.sip
+            or self.tool_order
+        )
 
 
 def _opt_int(raw: dict[str, Any], key: str) -> int | None:
@@ -246,7 +254,20 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
             dial_answered=bool(sip_raw.get("dial_answered", False)),
         )
 
-    return AssertSpec(tools=tools, transcript=transcript, outcomes=outcomes, sip=sip)
+    order_raw = spec.get("tool_order") or spec.get("required_order") or []
+    if isinstance(order_raw, str):
+        order_raw = [order_raw]
+    if not isinstance(order_raw, list):
+        raise ValueError(f"{path_label}: tool_order must be an array of tool names")
+    tool_order = tuple(str(x).strip() for x in order_raw if str(x).strip())
+
+    return AssertSpec(
+        tools=tools,
+        transcript=transcript,
+        outcomes=outcomes,
+        sip=sip,
+        tool_order=tool_order,
+    )
 
 
 def _tool_args_blob(spec: dict[str, Any]) -> dict[str, Any]:
@@ -325,6 +346,9 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
                 "args_contains": te.args_contains or None,
             }
         )
+
+    if asserts.tool_order:
+        checks.append(_eval_tool_order(asserts.tool_order, tool_starts))
 
     for i, tr in enumerate(asserts.transcript):
         role = tr.role if tr.role in ("agent", "user") else "any"
@@ -714,4 +738,43 @@ def _eval_constraint_respected(
         "type": "constraint_respected",
         "pending_judge": True,
         "prompt": oc.prompt,
+    }
+
+
+def _eval_tool_order(
+    required: tuple[str, ...],
+    tool_starts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Require tool.start names to appear in order (subsequence).
+
+    Extra tools between required names are allowed. Names are exact string match
+    as observed in events (scenario author owns portable tool names).
+    """
+    actual = []
+    for e in tool_starts:
+        spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
+        name = str(spec.get("name") or "").strip()
+        if name:
+            actual.append(name)
+
+    idx = 0
+    matched: list[str] = []
+    for name in actual:
+        if idx < len(required) and name == required[idx]:
+            matched.append(name)
+            idx += 1
+    ok = idx == len(required)
+    return {
+        "check": "tool_order",
+        "pass": ok,
+        "type": "tools",
+        "expected_order": list(required),
+        "actual_order": actual,
+        "matched_prefix": matched,
+        "reason": None
+        if ok
+        else (
+            f"required subsequence {list(required)!r} not found in tool.start order "
+            f"{actual!r} (matched {matched!r})"
+        ),
     }
