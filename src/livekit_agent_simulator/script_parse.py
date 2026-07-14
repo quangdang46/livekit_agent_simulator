@@ -87,10 +87,30 @@ def parse_script_steps(spec: dict[str, Any], path_label: str) -> list[ScriptStep
         action = str(raw.get("action", "speak"))
         if action not in SUPPORTED_ACTIONS:
             raise ValueError(
-                f"{path_label}: Script step {step_id!r}: action must be speak|wait"
+                f"{path_label}: Script step {step_id!r}: action must be speak|wait|hang_up|dtmf"
             )
         say = raw.get("say") or raw.get("text") or ""
-        if action == "speak" and not str(say).strip():
+        dtmf_digits = str(raw.get("digits") or raw.get("dtmf") or raw.get("dtmf_digits") or "").strip()
+        if action == "dtmf":
+            if not dtmf_digits:
+                raise ValueError(
+                    f"{path_label}: Script step {step_id!r}: action=dtmf requires digits "
+                    f"(e.g. \"1234#\"; w = pause)"
+                )
+            # Validate charset
+            allowed = set("0123456789*#wW")
+            bad = sorted({c for c in dtmf_digits if c not in allowed})
+            if bad:
+                raise ValueError(
+                    f"{path_label}: Script step {step_id!r}: invalid DTMF chars {bad!r} "
+                    f"(allowed 0-9 * # w)"
+                )
+            if not say:
+                say = f"[dtmf:{dtmf_digits}]"
+            # Default class for dtmf steps
+            if not (raw.get("class") or raw.get("interrupt_class")):
+                raw = {**raw, "class": "dtmf"}
+        elif action == "speak" and not str(say).strip():
             raise ValueError(f"{path_label}: Script step {step_id!r}: say/text required when action=speak")
         delivery = str(raw.get("delivery", "gemini_text"))
         if delivery not in ("gemini_text", "room_pcm"):
@@ -143,6 +163,9 @@ def parse_script_steps(spec: dict[str, Any], path_label: str) -> list[ScriptStep
                 with_blip=with_blip,
                 gain=gain,
                 interrupt_class=interrupt_class,
+                dtmf_digits=dtmf_digits if action == "dtmf" else "",
+                dtmf_gap_ms=int(raw.get("dtmf_gap_ms") or raw.get("gap_ms") or 200),
+                dtmf_w_ms=int(raw.get("dtmf_w_ms") or raw.get("w_ms") or 500),
             )
         )
     return steps

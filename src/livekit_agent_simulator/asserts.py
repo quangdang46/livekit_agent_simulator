@@ -78,6 +78,9 @@ class SipExpect:
     # Require outbound.dial_answered or inbound.answered.
     dial_answered: bool = False
 
+    # Require sim.dtmf sent sequence contains this digit string (order-preserving).
+    dtmf_sequence: str = ""
+
 
 @dataclass
 class AssertSpec:
@@ -219,6 +222,12 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
             ),
             call_status_any=tuple(str(s) for s in statuses),
             dial_answered=bool(sip_raw.get("dial_answered", False)),
+            dtmf_sequence=str(
+                sip_raw.get("dtmf_sequence")
+                or sip_raw.get("dtmf")
+                or sip_raw.get("digits")
+                or ""
+            ).strip(),
         )
 
     return AssertSpec(tools=tools, transcript=transcript, outcomes=outcomes, sip=sip)
@@ -634,4 +643,26 @@ def _eval_sip_expect(sip: SipExpect, events: list[dict[str, Any]]) -> list[dict[
                 "actual": statuses,
             }
         )
+    
+    if sip.dtmf_sequence:
+        sent_blob = ""
+        for e in events:
+            if e.get("kind") not in ("sim.dtmf", "sip.dtmf", "sip.dtmf.sent"):
+                continue
+            spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
+            sent_blob += str(spec.get("sent") or spec.get("digits") or "")
+        # strip w pauses from expected for containment check
+        expect = "".join(c for c in sip.dtmf_sequence if c not in ("w", "W"))
+        actual = "".join(c for c in sent_blob if c not in ("w", "W"))
+        ok = bool(expect) and expect in actual
+        checks.append(
+            {
+                "check": "sip_dtmf_sequence",
+                "pass": ok,
+                "type": "sip",
+                "expected": sip.dtmf_sequence,
+                "actual": actual,
+            }
+        )
+
     return checks

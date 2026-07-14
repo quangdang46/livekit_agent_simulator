@@ -117,6 +117,59 @@ class ScriptRunner:
                     else:
                         self.bridge.suppress_persona_output(hold_silence_ms)
                     await asyncio.sleep(hold_silence_ms / 1000.0)
+            elif step.action == "dtmf":
+                kind = "sim.script.dtmf"
+                digits = (step.dtmf_digits or "").strip()
+                sent: list[str] = []
+                codes: list[int] = []
+                # RFC 4733: 0-9 → 0-9, * → 10, # → 11
+                code_map = {str(i): i for i in range(10)}
+                code_map.update({"*": 10, "#": 11})
+                try:
+                    room = getattr(self.bridge, "room", None)
+                    lp = getattr(room, "local_participant", None) if room is not None else None
+                    if lp is None or not hasattr(lp, "publish_dtmf"):
+                        raise RuntimeError(
+                            "DTMF requires bridge.room.local_participant.publish_dtmf "
+                            "(LiveKit RTC); not available on this leg"
+                        )
+                    for ch in digits:
+                        if ch in ("w", "W"):
+                            await asyncio.sleep(max(0, step.dtmf_w_ms) / 1000.0)
+                            continue
+                        code = code_map[ch]
+                        await lp.publish_dtmf(code=code, digit=ch)
+                        sent.append(ch)
+                        codes.append(code)
+                        gap = max(0, step.dtmf_gap_ms) / 1000.0
+                        if gap:
+                            await asyncio.sleep(gap)
+                    self.writer.emit(
+                        "sim.dtmf",
+                        spec={
+                            "step_id": step.id,
+                            "label": step.label or step.id,
+                            "digits": digits,
+                            "sent": "".join(sent),
+                            "codes": codes,
+                            "class": step.interrupt_class or "dtmf",
+                        },
+                        source="sim.script",
+                        include_dialogue=False,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    inject_error = f"{type(e).__name__}: {e}"
+                    self.writer.emit(
+                        "sim.dtmf.error",
+                        spec={
+                            "step_id": step.id,
+                            "label": step.label or step.id,
+                            "digits": digits,
+                            "error": inject_error,
+                        },
+                        source="sim.script",
+                        include_dialogue=False,
+                    )
             elif step.action == "hang_up":
                 kind = "sim.script.hang_up"
                 # Optionally say something before hanging up
@@ -228,7 +281,8 @@ class ScriptRunner:
                     "action": step.action,
                     "barge_in": step.barge_in,
                     "class": step.interrupt_class,
-                    "delivery": step.delivery if step.action != "wait" else None,
+                    "digits": step.dtmf_digits if step.action == "dtmf" else None,
+                    "delivery": step.delivery if step.action not in ("wait", "dtmf") else None,
                     "asset": step.asset if step.action != "wait" else None,
                     "gain": step.gain if step.action == "speak" else None,
                     "waited_ms": waited_ms,

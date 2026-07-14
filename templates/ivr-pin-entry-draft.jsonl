@@ -1,0 +1,10 @@
+// DRAFT — lk-sim can send DTMF via Script action=dtmf; target agent must handle digits.
+// voice-ai-worker currently only has flow press-digit from *spoken* text, not SIP DTMF events.
+// Do not use as blocking CI until worker listens for sip_dtmf_received / GetDtmfTask.
+{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"ivr-pin-entry-draft","locale":"en-US","tags":["draft","dtmf","telephony"]}}
+{"kind":"Persona","spec":{"name":"IVR tester","brief":"You are navigating an automated phone menu. Prefer keypad over speech when Script sends DTMF.","goals":["Reach the agent or menu that accepts a PIN","Complete the call"],"style":"brief","traits":["polite"],"constraints":["Do not invent a real bank PIN — use scenario digits only"]}}
+{"kind":"Caller","spec":{"mode":"webrtc_sim"}}
+{"kind":"Execute","spec":{"max_turns":6,"timeout_s":120,"first_speaker":"agent"}}
+{"kind":"Script","spec":{"steps":[{"id":"pin","trigger":"time","delay_ms":3000,"action":"dtmf","digits":"1234#","class":"dtmf"}],"verify":{"require_during_agent_speech":false}}}
+{"kind":"Assert","spec":{"sip":{"dtmf_sequence":"1234#"},"outcomes":[{"id":"agent_spoke","type":"transcript_contains","role":"agent","phrases":["a","e","i","o","u"]}]}}
+{"kind":"PassCriteria","spec":{"criteria":["DRAFT: sim emitted DTMF sequence; agent digit handling may be incomplete"]}}

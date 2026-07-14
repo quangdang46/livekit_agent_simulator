@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 SUPPORTED_TRIGGERS = frozenset({"agent_speaking", "silence", "time"})
-SUPPORTED_ACTIONS = frozenset({"speak", "wait", "hang_up"})
+SUPPORTED_ACTIONS = frozenset({"speak", "wait", "hang_up", "dtmf"})
 
 # Hamming-aligned mid-call input classes (P1.F). JSON field name: ``class``.
 INTERRUPTION_CLASSES = frozenset(
@@ -89,6 +89,11 @@ class ScriptStep:
     gain: float = 1.0
     # Hamming class: correction | backchannel | noise | dtmf | silence | escalate
     interrupt_class: str | None = None
+    # DTMF sequence for action=dtmf: digits 0-9 * # and w (~0.5s pause)
+    dtmf_digits: str = ""
+    # Pause between tones (ms); w character inserts this pause (default 500)
+    dtmf_gap_ms: int = 200
+    dtmf_w_ms: int = 500
 
 
 @dataclass(frozen=True)
