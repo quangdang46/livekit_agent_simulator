@@ -7,7 +7,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from .script import ScriptStep, ScriptVerifySpec, normalize_interrupt_class
+from .script import (
+    ScriptStep,
+    ScriptVerifySpec,
+    counts_for_recovery_barge,
+    normalize_interrupt_class,
+)
 
 
 def _is_voice_asset(asset: str | None) -> bool:
@@ -319,6 +324,113 @@ def default_verify_for_compiled(
     )
 
 
+
+def _norm_traits(persona: dict[str, Any]) -> list[str]:
+    traits = persona.get("traits") or persona.get("behaviors") or []
+    if isinstance(traits, str):
+        traits = [traits]
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in traits:
+        key = str(raw).strip().lower().replace(" ", "_").replace("-", "_")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def compile_from_traits(
+    persona: dict[str, Any],
+    already: list[ScriptStep] | None = None,
+) -> list[ScriptStep]:
+    """Soft Script defaults from Persona.traits when interaction steps are missing.
+
+    Portable Hamming bridge: traits stay prompt style, but CI-critical stress tags
+    get weak timed steps so behavior is replayable. Explicit Script / Behavior /
+    speech_conditions always win on id (merge_script_steps).
+
+    Does **not** auto hang_up (too aggressive). hangup_threat stays prompt-only
+    unless author adds Script hang_up.
+    """
+    traits = set(_norm_traits(persona))
+    if not traits:
+        return []
+
+    already = list(already or [])
+    has_recovery_barge = any(
+        counts_for_recovery_barge(
+            barge_in=bool(s.barge_in), interrupt_class=s.interrupt_class
+        )
+        for s in already
+    )
+    has_backchannel = any(
+        (s.interrupt_class == "backchannel")
+        or (s.id.startswith("trait-auto-backchannel"))
+        for s in already
+    )
+    has_silence_hold = any(
+        s.action == "wait" and int(s.silence_after_cue_ms or 0) >= 500 for s in already
+    )
+
+    steps: list[ScriptStep] = []
+
+    # interrupts / impatient / urgent → one correction barge if none yet
+    if traits & {"interrupts", "impatient", "urgent", "angry"} and not has_recovery_barge:
+        steps.append(
+            ScriptStep(
+                id="trait-auto-barge-1",
+                trigger="agent_speaking",
+                delay_ms=600,
+                say="Wait — one second —",
+                label="trait-auto-barge-1",
+                min_agent_active_ms=300,
+                delivery="gemini_text",
+                barge_in=True,
+                with_blip=True,
+                once=True,
+                interrupt_class="correction",
+            )
+        )
+
+    # backchannel trait → non-barge ack if none
+    if "backchannel" in traits and not has_backchannel:
+        steps.append(
+            ScriptStep(
+                id="trait-auto-backchannel-1",
+                trigger="agent_speaking",
+                delay_ms=1200,
+                say="uh-huh",
+                label="trait-auto-backchannel-1",
+                min_agent_active_ms=400,
+                delivery="room_pcm",
+                asset="builtin:voice.backchannel",
+                barge_in=False,
+                with_blip=False,
+                once=True,
+                interrupt_class="backchannel",
+            )
+        )
+
+    # silent / quiet → long user hold if none
+    if traits & {"silent", "quiet"} and not has_silence_hold:
+        hold = 8000 if "silent" in traits else 4000
+        steps.append(
+            ScriptStep(
+                id="trait-auto-silence-1",
+                trigger="time",
+                delay_ms=800,
+                say="",
+                label="trait-auto-silence-1",
+                action="wait",
+                silence_after_cue_ms=hold,
+                once=True,
+            )
+        )
+
+    return steps
+
+
 def apply_caller_behavior(
     persona: dict[str, Any],
     behavior_spec: dict[str, Any] | None,
@@ -327,11 +439,17 @@ def apply_caller_behavior(
     *,
     path_label: str = "scenario",
 ) -> tuple[list[ScriptStep], ScriptVerifySpec | None]:
-    """Compile persona speech_conditions + Behavior and merge with explicit Script."""
+    """Compile speech_conditions + Behavior + soft trait defaults; merge with Script.
+
+    Precedence (highest wins on step id): explicit Script > Behavior/speech_conditions
+    > trait soft defaults. Traits alone never override hand-written steps.
+    """
     compiled: list[ScriptStep] = []
     compiled.extend(compile_from_speech_conditions(persona))
     if behavior_spec:
         compiled.extend(compile_from_behavior_spec(behavior_spec, f"{path_label}:Behavior"))
+    # Trait soft defaults only fill gaps (no recovery barge / backchannel / silence yet).
+    compiled.extend(compile_from_traits(persona, already=compiled + list(explicit_steps)))
     steps = merge_script_steps(explicit_steps, compiled)
     verify = default_verify_for_compiled(steps, explicit_verify)
     return steps, verify

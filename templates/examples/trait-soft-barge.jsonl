@@ -1,0 +1,5 @@
+{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"trait-soft-barge","locale":"en-US","tags":["smoke","regression"]}}
+{"kind":"Persona","spec":{"name":"Alex","language":"en-US","brief":"You called for a quick status check.","goals":["Confirm you reached the agent","Ask for a brief status","End politely"],"style":"short answers","traits":["interrupts","polite"],"constraints":["Do not invent account numbers"]}}
+{"kind":"Execute","spec":{"max_turns":5,"timeout_s":120,"first_speaker":"agent"}}
+{"kind":"Assert","spec":{"outcomes":[{"id":"recovered","type":"recovery","min_agent_finals_after_barge_in":1}]}}
+{"kind":"PassCriteria","spec":{"criteria":["The agent responded after an interruption"]}}

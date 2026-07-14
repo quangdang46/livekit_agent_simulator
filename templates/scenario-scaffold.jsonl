@@ -9,6 +9,9 @@
 // constraints[]: hard rules (no card numbers, hang up if restart menu, …)
 // speech_conditions: optional auto Script — barge_policy, noise, silence_ms
 // language: optional override of metadata.locale for speech
+// traits soft-compile (P1.G1): interrupts/impatient/urgent/angry → correction barge;
+//   backchannel → non-barge PCM; silent/quiet → wait hold. Explicit Script wins on id.
+//   hangup_threat stays prompt-only unless Script hang_up.
 {"kind":"Persona","spec":{"name":"Alex","brief":"You are calling a business for the first time. Confirm you reached the right place, answer briefly, then politely end the call when done.","goals":["Hear the agent greeting or first reply","State your reason briefly","End the call politely"],"style":"polite, brief, natural spoken language","traits":["polite"],"constraints":["Do not invent account numbers or payment details"],"speech_conditions":{"barge_policy":"","noise":"","silence_ms":0}}}
 // === Context (optional) ===
 // notes + optional fixtures (opaque hints for humans/seed; not parsed by core)
