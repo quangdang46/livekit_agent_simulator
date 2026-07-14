@@ -64,6 +64,29 @@ async def run_preflight(project_root: Path | str, connectivity: bool = True) -> 
         bits.append("dial_in=" + ("set" if tel.dial_in else "unset"))
         bits.append("sim_inbound=" + ("set" if tel.sim_inbound_number else "unset"))
         result.add("telephony", "pass" if tel.outbound_trunk_id else "warn", "; ".join(bits))
+        # Actionable recipe for Gemini-as-SIP-callee hairpin (docs/PROBLEM.md).
+        if tel.outbound_trunk_id and not tel.sim_inbound_number:
+            result.add(
+                "telephony.outbound_sim_callee",
+                "warn",
+                "sim_inbound_number unset — outbound_sim_callee scenarios need a DID that "
+                "hairpins into the sim-room (or Telephony.call_to per scenario). "
+                "Dialing a real PSTN handset is outbound_human_pickup, not Gemini callee. "
+                "See docs/telephony.md + docs/PROBLEM.md.",
+            )
+        elif tel.sim_inbound_number and not tel.outbound_trunk_id:
+            result.add(
+                "telephony.outbound_sim_callee",
+                "warn",
+                "sim_inbound_number set but outbound_trunk_id missing — SIP dial cannot run.",
+            )
+        elif tel.sim_inbound_number and tel.outbound_trunk_id:
+            result.add(
+                "telephony.outbound_sim_callee",
+                "pass",
+                "trunk + sim_inbound_number present — ensure LiveKit dispatch rule routes "
+                "this DID into the lk-sim room (Cloud hairpin). Real PSTN ≠ Gemini without that rule.",
+            )
     else:
         result.add("telephony", "pass", "not configured (WebRTC-only OK)")
 

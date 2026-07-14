@@ -628,7 +628,10 @@ def validate_telephony_for_mode(scenario: Scenario, cfg: Any) -> None:
     if mode == "outbound_sim_callee" and not tel.call_to:
         raise ScenarioError(
             f"Scenario `{scenario.id}` mode=outbound_sim_callee requires Telephony.call_to "
-            f"or config telephony.sim_inbound_number (DID/number Gemini answers)."
+            f"or config telephony.sim_inbound_number (sim DID Gemini answers via Cloud hairpin). "
+            f"Do not put a real handset PSTN here — that is mode=outbound_human_pickup. "
+            f"The DID must dispatch into the sim-room where Gemini already sits "
+            f"(see docs/telephony.md, docs/PROBLEM.md)."
         )
     if mode == "inbound_sip" and not tel.dial_in:
         raise ScenarioError(
