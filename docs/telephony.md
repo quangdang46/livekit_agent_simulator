@@ -119,3 +119,15 @@ sim-room (Gemini ready) + agent-room → dial sim DID → hairpin into sim-room
 - **Factory** — `sim_leg_factory(mode)`.
 
 Package core stays target-agnostic: no product names, agent IDs, or dashboard keys in `src/`.
+
+## Warm transfer / SIP REFER (deferred P2)
+
+LiveKit agents may use `WarmTransferTask` / SIP REFER. **lk-sim core does not yet** assert transfer lifecycle (second SIP participant, room move, handoff summary).
+
+Recommended until implemented:
+
+1. Keep transfer logic in the **agent under test**
+2. Use black-box asserts you already have: tools (if transfer is a tool), `ended_by`, transcript phrases
+3. Track full observe/assert work as a future portable feature (no carrier-specific REFER parsing in core without LiveKit attrs)
+
+See LiveKit docs: telephony transfers / WarmTransferTask. Product rule: Gemini remains the simulated human; transfer observe is optional forensics.

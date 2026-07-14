@@ -317,7 +317,7 @@ Keep portable: no consumer keys in `src/`; extend via scenario / `.agent-sim/cue
 | Golden baseline compare | Planned (P1.D) |
 | outbound_sim_callee DID ops | Planned (P1.E) |
 | Tool order / from-run extract / rate timer / events | Planned (P1.I–L) |
-| Warm transfer observe | Deferred P2 |
+| Warm transfer observe | Deferred P2 (docs note in telephony.md; no core yet) |
 | Load / accent / prod observe | Deferred P2 |
 
 ---
