@@ -7,6 +7,12 @@ import time
 from ..adapter import SIM_IDENTITY
 from .errors import sip_error_spec
 from .protocol import SimLegContext, SimLegError, SimLegHandle
+from .room_resolve import (
+    resolve_deterministic,
+    resolve_inbound_agent_room,
+    wall_time_ms,
+)
+
 
 class InboundSipSimLeg:
     """Gemini in sim-room dials agent ``dial_in`` (Cloud hairpin)."""
@@ -39,6 +45,10 @@ class InboundSipSimLeg:
             include_dialogue=False,
         )
 
+        # Snapshot before dial so leftover call-+DID-* rooms cannot win discovery.
+        preexisting_rooms = await adapter.list_room_names()
+        dial_started_ms = wall_time_ms()
+
         sip_identity = f"sip-in-{ctx.run_id[:12]}"
         writer.emit(
             "inbound.dial_started",
@@ -47,6 +57,7 @@ class InboundSipSimLeg:
                 "room": sim_room_name,
                 "participant_identity": sip_identity,
                 "wait_until_answered": tel.wait_until_answered,
+                "preexisting_rooms": len(preexisting_rooms),
             },
             include_dialogue=False,
         )
@@ -70,64 +81,82 @@ class InboundSipSimLeg:
             raise SimLegError(f"inbound dial failed: {e}") from e
 
         dial_ms = int((time.monotonic() - t0) * 1000)
+        sip_call_id = getattr(sip_info, "sip_call_id", None)
         writer.emit(
             "inbound.answered",
             spec={
                 "dial_in": tel.dial_in,
                 "dial_ms": dial_ms,
                 "participant_identity": getattr(sip_info, "participant_identity", sip_identity),
-                "sip_call_id": getattr(sip_info, "sip_call_id", None),
+                "sip_call_id": sip_call_id,
             },
             include_dialogue=False,
         )
 
-        # Resolve agent-room (A+B):
-        #   A. Explicit Telephony.agent_room / agent_room_name_template (deterministic rule).
-        #   B. Correlate via sip_call_id (safe under --parallel).
-        #   C. Fallback: name + SIP heuristics.
+        # Resolve agent-room:
+        #   A. Explicit Telephony.agent_room / agent_room_name_template.
+        #   B. sip_call_id attr match, else fresh dial-digit room (not preexisting).
         agent_room_name = tel.agent_room
         if not agent_room_name and tel.agent_room_name_template:
             agent_room_name = tel.agent_room_name_template.replace("{run_id}", ctx.run_id)
             if tel.dial_in:
                 agent_room_name = agent_room_name.replace("{dial_in}", tel.dial_in.strip())
-            from string import digits
             num_digits = "".join(ch for ch in (tel.dial_in or "") if ch.isdigit())
             if num_digits:
                 agent_room_name = agent_room_name.replace("{number}", num_digits)
 
         if agent_room_name:
-            # Deterministic A — dispatch + wait for agent in known room.
-            try:
-                await adapter.dispatch_agent(agent_room_name, ctx.dispatch_metadata)
-            except Exception:
-                pass
-            agent_identity = await adapter.wait_for_agent(agent_room_name)
+            hit = await resolve_deterministic(
+                adapter,
+                room_name=agent_room_name,
+                dispatch_metadata=ctx.dispatch_metadata,
+                timeout_ms=ctx.cfg.livekit.agent_join_timeout_ms,
+            )
             writer.emit(
                 "inbound.agent_room_deterministic",
-                spec={"room": agent_room_name, "agent_identity": agent_identity},
+                spec={
+                    "room": hit.room,
+                    "agent_identity": hit.agent_identity,
+                    "phase": hit.phase,
+                },
                 include_dialogue=False,
             )
         else:
-            # B + C — correlate via sip_call_id (returned by create_sip_participant) or heuristics.
-            sip_call_id = getattr(sip_info, "sip_call_id", None)
             writer.emit(
                 "inbound.agent_room_discover",
                 spec={
                     "dial_in": tel.dial_in,
                     "sip_call_id": sip_call_id,
+                    "preexisting_rooms": len(preexisting_rooms),
+                    "created_after_ms": dial_started_ms,
                     "require_sip": True,
-                    "note": "A+B: prefer sip_call_id match; then name digits; "
-                    "then SIP room (no legacy first-agent under --parallel)",
+                    "note": "sip_call_id match, else fresh dial-digit room "
+                    "(never latch leftover call-* rooms)",
                 },
                 include_dialogue=False,
             )
-            agent_room_name, agent_identity = await adapter.find_agent_room(
+            hit = await resolve_inbound_agent_room(
+                adapter,
+                sip_call_id=sip_call_id,
+                dial_in=tel.dial_in,
                 exclude_rooms={sim_room_name},
+                preexisting_rooms=preexisting_rooms,
+                created_after_ms=dial_started_ms,
                 timeout_ms=ctx.cfg.livekit.agent_join_timeout_ms,
-                require_sip=True,
-                prefer_name_substr=tel.dial_in,
-                sip_call_id_substr=sip_call_id,
             )
+            writer.emit(
+                "inbound.agent_room_resolved",
+                spec={
+                    "room": hit.room,
+                    "agent_identity": hit.agent_identity,
+                    "phase": hit.phase,
+                    "sip_call_id": sip_call_id,
+                },
+                include_dialogue=False,
+            )
+
+        agent_room_name = hit.room
+        agent_identity = hit.agent_identity
 
         writer.emit(
             "dispatch.agent_joined",
@@ -135,6 +164,7 @@ class InboundSipSimLeg:
                 "identity": agent_identity,
                 "room": agent_room_name,
                 "mode": "inbound_sip",
+                "phase": hit.phase,
             },
             include_dialogue=False,
         )
@@ -154,7 +184,6 @@ class InboundSipSimLeg:
             name="Agent Simulator Observer",
         )
 
-        # Human side from agent POV = SIP participant in agent-room (caller).
         try:
             human_sip = await adapter.wait_for_sip_participant(
                 agent_room_name, timeout_ms=10_000
@@ -177,6 +206,7 @@ class InboundSipSimLeg:
             meta={
                 "dial_ms": dial_ms,
                 "dial_in": tel.dial_in,
-                "sip_call_id": getattr(sip_info, "sip_call_id", None),
+                "sip_call_id": sip_call_id,
+                "resolve_phase": hit.phase,
             },
         )

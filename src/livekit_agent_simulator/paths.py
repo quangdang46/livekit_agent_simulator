@@ -31,21 +31,41 @@ def package_cues_dir() -> Path:
     return package_templates_dir() / "cues"
 
 
-def package_web_dir() -> Path:
-    """Built Vite assets for ``lk-sim web``.
-
-    Search order:
-    1. ``livekit_agent_simulator/web_static`` (wheel force-include of ``web/dist``)
-    2. Repo-root ``web/dist`` (editable checkout after ``pnpm --dir web build``)
-    """
-    pkg_dir = Path(__file__).resolve().parent
-    packaged = pkg_dir / "web_static"
-    if (packaged / "index.html").is_file():
-        return packaged
+def _find_repo_web_dist(pkg_dir: Path) -> Path | None:
     cur = pkg_dir
     for _ in range(6):
         cand = cur / "web" / "dist"
         if (cand / "index.html").is_file():
             return cand
         cur = cur.parent
+    return None
+
+
+def package_web_dir() -> Path:
+    """Built Vite assets for ``lk-sim web``.
+
+    Prefer the newest of:
+    1. Repo-root ``web/dist`` (editable checkout after ``pnpm --dir web build``)
+    2. ``livekit_agent_simulator/web_static`` (wheel / AppData install)
+
+    When both exist, ``web/dist`` wins if its ``index.html`` is newer — so a local
+    rebuild is visible without reinstalling the wheel.
+    """
+    pkg_dir = Path(__file__).resolve().parent
+    packaged = pkg_dir / "web_static"
+    packaged_ok = (packaged / "index.html").is_file()
+    dist = _find_repo_web_dist(pkg_dir)
+
+    if dist is not None and (dist / "index.html").is_file():
+        if not packaged_ok:
+            return dist
+        try:
+            if (dist / "index.html").stat().st_mtime >= (
+                packaged / "index.html"
+            ).stat().st_mtime:
+                return dist
+        except OSError:
+            return dist
+        return packaged
+
     return packaged

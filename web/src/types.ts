@@ -6,6 +6,8 @@ export type RunSummary = {
   turn_count?: number;
   tool_count?: number;
   has_audio?: boolean;
+  started_utc?: string | null;
+  mtime_ms?: number;
 };
 
 export type MarkerType =

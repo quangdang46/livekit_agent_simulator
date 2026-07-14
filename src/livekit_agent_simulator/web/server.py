@@ -36,6 +36,23 @@ def list_run_ids(reports_dir: Path) -> list[str]:
     return sorted(runs, reverse=True)
 
 
+def _run_sort_key(run: dict[str, Any]) -> tuple[float, str]:
+    """Newest first: started_utc epoch, else mtime_ms, else run_id."""
+    started = run.get("started_utc")
+    if isinstance(started, str) and started.strip():
+        try:
+            from datetime import datetime
+
+            dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            return (dt.timestamp(), str(run.get("run_id") or ""))
+        except ValueError:
+            pass
+    mtime = run.get("mtime_ms")
+    if isinstance(mtime, (int, float)) and mtime > 0:
+        return (float(mtime) / 1000.0, str(run.get("run_id") or ""))
+    return (0.0, str(run.get("run_id") or ""))
+
+
 class ReportUIHandler(SimpleHTTPRequestHandler):
     """Serves player assets + per-run reports under /runs/<id>/."""
 
@@ -85,17 +102,24 @@ class ReportUIHandler(SimpleHTTPRequestHandler):
                     except json.JSONDecodeError:
                         summary = {}
                 scenario_id = summary.get("scenario_id")
+                started_utc = summary.get("started_utc")
                 mp = rd / "meta.json"
                 if mp.exists():
                     try:
                         meta = json.loads(mp.read_text(encoding="utf-8"))
                         if not scenario_id:
                             scenario_id = meta.get("scenario_id")
+                        if not started_utc:
+                            started_utc = meta.get("started_utc")
                     except json.JSONDecodeError:
                         pass
                 tool_count = summary.get("tool_calls")
                 if tool_count is None and isinstance(summary.get("metrics"), dict):
                     tool_count = summary["metrics"].get("tool_calls")
+                try:
+                    mtime_ms = int(rd.stat().st_mtime * 1000)
+                except OSError:
+                    mtime_ms = 0
                 runs.append(
                     {
                         "run_id": rid,
@@ -105,8 +129,11 @@ class ReportUIHandler(SimpleHTTPRequestHandler):
                         "turn_count": summary.get("turn_count"),
                         "tool_count": tool_count,
                         "has_audio": (rd / "conversation.wav").exists(),
+                        "started_utc": started_utc,
+                        "mtime_ms": mtime_ms,
                     }
                 )
+            runs.sort(key=_run_sort_key, reverse=True)
             return self._json(runs)
 
         if path.startswith("/api/runs/"):
@@ -171,13 +198,24 @@ class ReportUIHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _serve_file(self, path: Path, content_type: str) -> None:
+    def _serve_file(self, path: Path, content_type: str, *, no_store: bool = False) -> None:
         if not path.is_file():
             return self._error(404, f"missing {path.name}")
         data = path.read_bytes()
+        # Windows mimetypes often maps .js → text/plain; browsers may refuse ES modules.
+        suffix = path.suffix.lower()
+        if suffix == ".js":
+            content_type = "text/javascript; charset=utf-8"
+        elif suffix == ".css":
+            content_type = "text/css; charset=utf-8"
+        elif suffix == ".html":
+            content_type = "text/html; charset=utf-8"
+            no_store = True
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        if no_store or suffix in (".html", ".js", ".css"):
+            self.send_header("Cache-Control", "no-store")
         if content_type.startswith("audio/"):
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
@@ -278,6 +316,7 @@ def start_web_server(
         "run_id": run_id,
         "runs": runs,
         "reports_dir": str(reports_dir),
+        "player_dir": str(player_dir),
     }
 
     if open_browser:
@@ -288,6 +327,7 @@ def start_web_server(
 
     if blocking:
         print(f"Open: {url}", flush=True)
+        print(f"UI assets: {player_dir}", flush=True)
         _serve_blocking(httpd)
     else:
         thread = threading.Thread(target=httpd.serve_forever, name="lk-sim-web", daemon=True)

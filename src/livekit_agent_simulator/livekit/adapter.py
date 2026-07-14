@@ -60,6 +60,16 @@ class LiveKitAdapter:
 
     # ------------------------------------------------------------- rooms
 
+    async def list_room_names(self) -> set[str]:
+        """Snapshot current room names (inbound discover skips leftovers)."""
+        rooms = await self.lkapi.room.list_rooms(api.ListRoomsRequest())
+        out: set[str] = set()
+        for room in rooms.rooms:
+            name = getattr(room, "name", "") or ""
+            if name:
+                out.add(name)
+        return out
+
     async def create_room(self, room_name: str) -> None:
         await self.lkapi.room.create_room(
             api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=8)
@@ -161,26 +171,29 @@ class LiveKitAdapter:
                         api.ListParticipantsRequest(room=name)
                     )
                     agent_id: str | None = None
+                    sip_blob = ""
                     for p in res.participants:
                         if agent_id is None and self._is_agent_participant(p):
                             agent_id = p.identity
-                        if sip_needle in self._any_sip_attr(p):
-                            if agent_id is not None:
-                                return name, agent_id
-                    # Room may have agent + SIP even if attr hasn't arrived yet.
-                    # Prefer rooms that have both when sip_needle is set.
-                    has_sip = any(self._is_sip_participant(p) for p in res.participants)
-                    if has_sip and agent_id is not None and not sip_needle:
+                        if self._is_sip_participant(p):
+                            sip_blob += " " + self._any_sip_attr(p)
+                    if agent_id is not None and sip_needle in sip_blob:
                         return name, agent_id
 
-            # Phase 2 — prefer name needle A (deterministic inbound rule).
+            # Phase 2 — prefer name needle (deterministic inbound rule).
+            # When sip_call_id is also set, the named room MUST carry that call-id
+            # in SIP attrs — otherwise we would latch a leftover dial-digit room
+            # (BUG-20260714-inbound-stale-agent-room). Use resolve_inbound_agent_room
+            # for hairpin freshness when attrs do not share the outbound SCL_*.
             if needle or needle_digits:
                 for room in rooms.rooms:
                     name = getattr(room, "name", "") or ""
                     if not name or name in exclude:
                         continue
                     name_digits = name.replace("+", "").replace("_", "")
-                    if needle and needle not in name and (not needle_digits or needle_digits not in name_digits):
+                    if needle and needle not in name and (
+                        not needle_digits or needle_digits not in name_digits
+                    ):
                         continue
                     if not needle and needle_digits and needle_digits not in name_digits:
                         continue
@@ -188,11 +201,24 @@ class LiveKitAdapter:
                         api.ListParticipantsRequest(room=name)
                     )
                     agent_id = None
+                    sip_blob = ""
                     for p in res.participants:
                         if agent_id is None and self._is_agent_participant(p):
                             agent_id = p.identity
-                    if agent_id is not None:
-                        return name, agent_id
+                        if self._is_sip_participant(p):
+                            sip_blob += " " + self._any_sip_attr(p)
+                    if agent_id is None:
+                        continue
+                    if sip_needle and sip_needle not in sip_blob:
+                        continue
+                    return name, agent_id
+
+            # When a sip_call_id needle was provided and neither Phase 1 nor a
+            # name+sip match succeeded, do NOT fall through to "first SIP room"
+            # — that is the stale-latch failure mode under leftover call-* rooms.
+            if sip_needle:
+                await asyncio.sleep(poll_ms / 1000)
+                continue
 
             # Phase 3 — first agent room with SIP (if require_sip).
             if require_sip:

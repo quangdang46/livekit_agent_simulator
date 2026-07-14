@@ -73,6 +73,17 @@ telephony:
 - Gemini callee hairpin: `templates/outbound-callee-sim.jsonl` — `Caller.mode: outbound_sim_callee`
 - Inbound: `templates/inbound-caller-sim.jsonl`
 
+### Inbound room discovery
+
+After dial answer, lk-sim resolves the agent room without latching leftovers:
+
+1. `Telephony.agent_room` / `agent_room_name_template` (deterministic), else
+2. SIP participant attrs containing CreateSIPParticipant `sip_call_id`, else
+3. **Fresh** dial-digit room that did not exist in the pre-dial room snapshot (or was created at/after dial)
+
+Leftover `call-+DID-*` rooms from aborted runs are ignored. Events emit
+`inbound.agent_room_resolved.phase` (`sip_call_id` | `new_dial_room` | `newest_dial_room`).
+
 ### `outbound_human_pickup` sequence
 
 ```text

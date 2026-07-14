@@ -31,14 +31,14 @@ def test_install_shutdown_handlers_does_not_break_sigint_on_windows(monkeypatch)
         signal.signal(signal.SIGINT, previous)
 
 
-def _make_run(reports: Path, run_id: str, *, scenario_id: str, status: str = "done") -> None:
+def _make_run(reports: Path, run_id: str, *, scenario_id: str, status: str = "done", started_utc: str | None = None) -> None:
     rd = reports / run_id
     rd.mkdir(parents=True)
     (rd / "events.jsonl").write_text("{}\n", encoding="utf-8")
-    (rd / "meta.json").write_text(
-        json.dumps({"run_id": run_id, "scenario_id": scenario_id}),
-        encoding="utf-8",
-    )
+    meta = {"run_id": run_id, "scenario_id": scenario_id}
+    if started_utc:
+        meta["started_utc"] = started_utc
+    (rd / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     (rd / "summary.json").write_text(
         json.dumps(
             {
@@ -116,3 +116,19 @@ def test_start_web_server_deep_links_explicit_run(tmp_path: Path) -> None:
     assert info["run_id"] == run_id
     open_browser.assert_called_once_with(f"http://127.0.0.1:8765/?run={run_id}")
     write_cues.assert_called_once()
+
+
+def test_run_sort_key_prefers_started_utc() -> None:
+    from livekit_agent_simulator.web.server import _run_sort_key
+
+    older = {
+        "run_id": "a",
+        "started_utc": "2026-07-14T10:00:00+00:00",
+        "mtime_ms": 9_999_999_999,
+    }
+    newer = {
+        "run_id": "b",
+        "started_utc": "2026-07-14T11:00:00+00:00",
+        "mtime_ms": 1,
+    }
+    assert _run_sort_key(newer) > _run_sort_key(older)

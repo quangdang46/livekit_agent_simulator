@@ -13,6 +13,8 @@ build/
 # Vite web UI — source in web/; built output is gitignored (CI attaches into wheel)
 web/node_modules/
 web/dist/
+# Local copy of built assets under the package (dev sync / mistaken copy — never commit)
+src/livekit_agent_simulator/web_static/
 
 # Cloned reference repos (telephony plan prior art)
 references/
