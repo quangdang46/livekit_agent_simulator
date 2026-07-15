@@ -44,6 +44,18 @@ GEMINI_OUT_RATE = 24_000
 __all__ = ["END_CALL_TOKEN", "GeminiCallerBridge"]
 
 
+def _is_voice_cue_asset(asset: str | None) -> bool:
+    """True for voice.* refs (spoken script lines), not noise.*."""
+    if not asset:
+        return False
+    name = str(asset).strip().lower()
+    if name.startswith("builtin:"):
+        name = name[len("builtin:") :]
+    if name.startswith("@"):
+        name = name[1:]
+    return name.startswith("voice.")
+
+
 class GeminiCallerBridge:
     """Owns the Gemini Live session + the LiveKit audio tracks of the simulated caller."""
 
@@ -344,10 +356,18 @@ class GeminiCallerBridge:
                     f"room_pcm asset rate {rate} != sim mic {GEMINI_OUT_RATE} "
                     f"(resample cue WAV): {wav_path}"
                 )
-            # Parallel: noise layer mixes with Gemini speech; does not mute TTS.
-            self._mixer.push_noise(pcm, gain=gain)
-            # Pace script step roughly for the noise duration without blocking speech path.
             duration_s = max(0.05, len(pcm) / 2 / rate)
+            # Vocal speech (voice.*): play on speech layer + suppress free persona TTS so
+            # goodbye/[END_CALL] cannot override the scripted words (SoT = mic audio).
+            # Noise layers stay on push_noise so they can ride under persona speech.
+            vocal = _is_voice_cue_asset(asset)
+            if vocal:
+                self.suppress_persona_output(int(duration_s * 1000) + 400)
+                self._mixer.push_speech(pcm, gain=gain)
+                mix = "speech"
+            else:
+                self._mixer.push_noise(pcm, gain=gain)
+                mix = "parallel"
             await asyncio.sleep(duration_s)
             self.writer.emit(
                 "sim.script_inject",
@@ -356,7 +376,7 @@ class GeminiCallerBridge:
                     "label": label,
                     "delivery": delivery,
                     "asset": str(wav_path),
-                    "mix": "parallel",
+                    "mix": mix,
                     "duration_ms": int(duration_s * 1000),
                     "gain": gain,
                 },
@@ -367,6 +387,8 @@ class GeminiCallerBridge:
 
         if self._live_session is None:
             raise RuntimeError("Gemini live session not ready for inject")
+        # Prefer room_pcm + voice.* WAVs when asserts require exact spoken interrupt words.
+        # gemini_text is realtime input to the persona — not guaranteed literal TTS.
         self._inject_playback_gain = gain
         self._inject_turn_active = True
         await self._live_session.send_realtime_input(text=text)

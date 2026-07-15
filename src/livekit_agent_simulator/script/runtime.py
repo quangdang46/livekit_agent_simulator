@@ -136,10 +136,39 @@ class ScriptRunner:
                 await asyncio.sleep(0.3)
                 # Mark caller disconnected by triggering end_call via bridge
                 self.bridge.sim_hang_up()
+                hang_spec = {
+                    "step_id": step.id,
+                    "label": step.label or step.id,
+                    "say": step.say,
+                    "trigger": step.trigger,
+                    "action": step.action,
+                    "barge_in": step.barge_in,
+                    "class": step.interrupt_class,
+                    "delivery": step.delivery,
+                    "asset": step.asset,
+                    "gain": step.gain,
+                    "waited_ms": waited_ms,
+                    "hold_silence_ms": 0,
+                    "agent_active": self.observer.agent_is_active_speaker,
+                    "agent_active_ms": agent_active_ms,
+                    "during_agent_speech": during_agent_speech,
+                    "error": inject_error,
+                }
+                # Script verify matches step_id on this kind (not only sim.script.cue).
+                self.writer.emit(
+                    kind,
+                    spec=hang_spec,
+                    source="sim.script",
+                    include_dialogue=False,
+                )
                 self.writer.emit(
                     "sim.hang_up",
-                    spec={"step_id": step.id, "label": step.label or step.id, "say": step.say, "error": inject_error} if inject_error else
-                         {"step_id": step.id, "label": step.label or step.id, "say": step.say},
+                    spec={
+                        "step_id": step.id,
+                        "label": step.label or step.id,
+                        "say": step.say,
+                        **({"error": inject_error} if inject_error else {}),
+                    },
                     source="sim.script",
                     include_dialogue=False,
                 )

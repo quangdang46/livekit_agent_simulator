@@ -198,3 +198,35 @@ def test_evaluate_barge_in_recovery():
     )
     assert result["pass"] is True
     assert result["agent_finals_after_barge_in"] == 1
+
+
+def test_evaluate_hang_up_step_counts_as_fired():
+    steps = [
+        ScriptStep("open", "silence", 100, say="hi", require_agent_spoke_first=False),
+        ScriptStep("bye", "silence", 500, say="bye", action="hang_up"),
+    ]
+    events = [
+        {
+            "kind": "sim.script.cue",
+            "ts_mono_ms": 1000,
+            "spec": {
+                "step_id": "open",
+                "during_agent_speech": False,
+                "trigger": "silence",
+                "action": "speak",
+            },
+        },
+        {
+            "kind": "sim.script.hang_up",
+            "ts_mono_ms": 5000,
+            "spec": {
+                "step_id": "bye",
+                "during_agent_speech": False,
+                "trigger": "silence",
+                "action": "hang_up",
+            },
+        },
+    ]
+    result = evaluate_script_log(events, steps, ScriptVerifySpec())
+    assert result["pass"] is True
+    assert result["hang_ups_fired"] == 1

@@ -4,6 +4,7 @@ import pytest
 
 from livekit_agent_simulator.audio.cue_catalog import (
     BUILTIN_ALIASES,
+    BUILTIN_CUES,
     list_all_cues,
     list_package_cues,
     resolve_cue_asset,
@@ -81,6 +82,21 @@ def test_scenario_dir_wins_over_package(tmp_path: Path) -> None:
 def test_list_package_cues_nonempty() -> None:
     items = list_package_cues()
     assert any(i["id"] == "noise.loud" for i in items)
+
+
+def test_list_package_cues_includes_description() -> None:
+    items = {i["id"]: i for i in list_package_cues()}
+    barge = items["voice.barge_short"]
+    assert barge["description"]
+    assert barge["kind"] == "voice"
+    assert barge["locale"] == "en-US"
+    assert "Wait" in (barge["text"] or "")
+    loud = items["noise.loud"]
+    assert loud["kind"] == "noise"
+    assert loud["text"] is None
+    assert "voice.ask_fee_vi" not in items
+    assert "voice.bye_vi" not in items
+    assert len(BUILTIN_CUES) == len(BUILTIN_ALIASES)
 
 
 def test_list_all_cues_structure() -> None:

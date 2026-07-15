@@ -36,6 +36,8 @@ Regenerate EN SAPI vocals (Windows):
 
 ### Voice interrupt (Hamming-aligned)
 
+Canonical descriptions also live in code (`BUILTIN_CUES` → `lk-sim cues`).
+
 | ID | File | Class | Notes |
 |----|------|-------|--------|
 | **`voice.correction`** / `voice.barge_correction` | `barge_correction_en.wav` | correction | “No wait - I meant next Friday.” |
@@ -49,6 +51,8 @@ Regenerate EN SAPI vocals (Windows):
 | **`voice.barge_long_vi`** | `barge_long_vi.wav` | correction | stacked VI (longer VAD) |
 | **`voice.backchannel_vi`** / `voice.uhhuh_vi` | `backchannel_vi.wav` | backchannel | stacked VI sustain |
 | `backchannel` / `interrupt` / `ambiguous` | `*_ja.wav` | legacy JA samples |
+
+Product/locale dialogue (fee questions, goodbyes, brand lines) belongs in **Persona goals** or target `.agent-sim/cues/` — not package builtins.
 
 Vocal `voice.*` assets are PCM speech mixed into the sim mic (`room_pcm`). Prefer them for audible barge-in; leave `with_blip: false` (default when asset is `voice.*`).
 
