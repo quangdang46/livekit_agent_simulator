@@ -393,21 +393,37 @@ def parse_scenario(path: Path | str) -> Scenario:
                         f"{path}:{line_no}: PassCriteria.spec.judges[{ji}] must be object"
                     )
                 jid = str(j.get("id") or j.get("name") or f"judge-{ji}")
+                builtin = j.get("builtin")
                 jc = j.get("criteria") or []
                 if isinstance(jc, str):
                     jc = [jc]
-                if not isinstance(jc, list) or not jc:
+                if not isinstance(jc, list):
                     raise ScenarioError(
-                        f"{path}:{line_no}: PassCriteria.judges[{ji}] needs non-empty criteria[]"
+                        f"{path}:{line_no}: PassCriteria.judges[{ji}].criteria must be array"
                     )
-                judges.append({"id": jid, "criteria": [str(c) for c in jc]})
+                if not jc and not builtin:
+                    raise ScenarioError(
+                        f"{path}:{line_no}: PassCriteria.judges[{ji}] needs "
+                        f"criteria[] and/or builtin"
+                    )
+                entry: dict[str, Any] = {
+                    "id": jid,
+                    "criteria": [str(c) for c in jc],
+                }
+                if builtin:
+                    entry["builtin"] = str(builtin).strip()
+                judges.append(entry)
             scenario.pass_judges = judges
             # Backward compatible: flat criteria still used when no judges
             if judges and not scenario.pass_criteria:
                 # Flatten for list_scenarios / export that only show count
-                scenario.pass_criteria = [
-                    f"[{j['id']}] {c}" for j in judges for c in j["criteria"]
-                ]
+                flat: list[str] = []
+                for j in judges:
+                    if j.get("builtin"):
+                        flat.append(f"[{j['id']}] builtin:{j['builtin']}")
+                    for c in j.get("criteria") or []:
+                        flat.append(f"[{j['id']}] {c}")
+                scenario.pass_criteria = flat
         elif kind == "Script":
             from .script_parse import parse_script_steps, parse_script_verify
 

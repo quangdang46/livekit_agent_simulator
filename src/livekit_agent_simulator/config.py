@@ -55,8 +55,14 @@ class SimulatorConfig:
 
 @dataclass
 class JudgeConfig:
-    model: str = DEFAULT_JUDGE_MODEL
+    # None → JUDGE_MODEL env → DEFAULT_JUDGE_MODEL at resolve time
+    model: str | None = None
     temperature: float = 0.0
+    # HTTP gateway. Empty base_url → Gemini via simulator.google_api_key.
+    base_url: str | None = None
+    api_key: str | None = None
+    # Wire format when base_url set: openai (/chat/completions) | anthropic (/messages)
+    endpoint_type: str = "openai"
 
 
 @dataclass
@@ -209,9 +215,24 @@ def load_config(project_root: Path | str) -> SimConfig:
     judge: JudgeConfig | None = None
     judge_raw = raw.get("judge")
     if isinstance(judge_raw, dict):
+        base_url = judge_raw.get("base_url")
+        api_key = judge_raw.get("api_key")
+        ep_raw = str(judge_raw.get("endpoint_type") or "openai").strip().lower()
+        if ep_raw not in ("openai", "anthropic"):
+            raise ConfigError(
+                "`judge.endpoint_type` must be openai or anthropic "
+                "(HTTP wire format when base_url is set)."
+            )
         judge = JudgeConfig(
-            model=str(judge_raw.get("model", DEFAULT_JUDGE_MODEL)),
+            model=(
+                str(judge_raw["model"]).strip()
+                if judge_raw.get("model") not in (None, "")
+                else None
+            ),
             temperature=float(judge_raw.get("temperature", 0.0)),
+            base_url=str(base_url).strip() if base_url else None,
+            api_key=str(api_key).strip() if api_key else None,
+            endpoint_type=ep_raw,
         )
 
     obs_raw = raw.get("observe") or {}
@@ -312,6 +333,16 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
             "language": cfg.simulator.voice.language,
         },
         "judge_enabled": cfg.judge is not None,
+        "judge": (
+            {
+                "model": cfg.judge.model or DEFAULT_JUDGE_MODEL,
+                "http": bool(cfg.judge.base_url),
+                "endpoint_type": cfg.judge.endpoint_type if cfg.judge.base_url else None,
+                "api_key_set": bool(cfg.judge.api_key),
+            }
+            if cfg.judge
+            else None
+        ),
         "cues": {
             "dirs": list(cfg.cues.dirs),
             "alias_keys": sorted(cfg.cues.aliases.keys()),

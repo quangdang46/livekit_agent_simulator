@@ -390,7 +390,7 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                 for oc in scenario.asserts.outcomes:
                     if oc.type == "llm_bool" and oc.prompt:
                         criteria.append(f"[outcome:{oc.id}] {oc.prompt}")
-            from .gemini.judge import judge_run, judge_run_multi, judge_goals
+            from .evals.runner import judge_run, judge_run_multi
 
             if getattr(scenario, "pass_judges", None):
                 verdict = await judge_run_multi(
@@ -409,13 +409,16 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                     writer.turn_metrics(),
                     tool_events,
                 )
-            writer.emit("judge.verdict", spec=verdict or {}, include_dialogue=False)
         except Exception as e:
-            verdict = {"verdict": "error", "notes": f"{type(e).__name__}: {e}"}
+            verdict = {
+                "verdict": "error",
+                "notes": f"Judge failed (soft): {type(e).__name__}: {e}",
+            }
+        writer.emit("judge.verdict", spec=verdict or {}, include_dialogue=False)
 
-    # ── Post-run: goals_met assert (hard fail if judge LLM confirms caller missed goals) ─
-    if status in ("done", "failed") and scenario.asserts:
-        from .gemini.judge import judge_goals
+    # ── Post-run: goals_met (hard fail only on explicit LLM fail; soft-skip if judge unavailable) ─
+    if status in ("done", "failed") and scenario.asserts and cfg.judge is not None:
+        from .evals.runner import judge_goals
 
         for oc in scenario.asserts.outcomes or []:
             if oc.type != "goals_met":
@@ -431,8 +434,28 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                     goal_list, oc.min_goals,
                     writer.turn_metrics(),
                 )
-                gv = (goals_result or {}).get("verdict", "fail")
-                gs = int((goals_result or {}).get("score", 0))
+                gv = str((goals_result or {}).get("verdict") or "fail").lower()
+                notes = str((goals_result or {}).get("notes") or "")
+                # Misconfig / transport / skip → do not flip hard run status
+                if gv in ("skipped", "error"):
+                    writer.emit(
+                        "assert.goals_met",
+                        spec={
+                            "outcome_id": oc.id,
+                            "min_goals": oc.min_goals,
+                            "goals": goal_list,
+                            "verdict": gv,
+                            "pass": True,
+                            "skipped": True,
+                            "notes": notes or "goals_met soft-skipped (judge unavailable).",
+                        },
+                        include_dialogue=False,
+                    )
+                    continue
+                try:
+                    gs = int((goals_result or {}).get("score", 0))
+                except (TypeError, ValueError):
+                    gs = 0
                 goals_pass = gv == "pass" and gs >= 50
                 writer.emit(
                     "assert.goals_met",
@@ -443,6 +466,7 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                         "verdict": gv,
                         "score": gs,
                         "pass": goals_pass,
+                        "notes": notes,
                     },
                     include_dialogue=False,
                 )
@@ -456,7 +480,9 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                     spec={
                         "outcome_id": oc.id,
                         "error": f"{type(e).__name__}: {e}",
-                        "pass": False,
+                        "pass": True,
+                        "skipped": True,
+                        "notes": "goals_met soft-skipped after judge exception.",
                     },
                     include_dialogue=False,
                 )

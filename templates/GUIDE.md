@@ -66,7 +66,8 @@ Created by `init`. **Gitignored.** Paste secrets here (no env substitution in v1
 | `livekit.agent_join_timeout_ms` | no | Default 25000 |
 | `simulator.google_api_key` | yes | Gemini API key for sim caller (+ judge) |
 | `simulator.voice.model` / `voice` / `language` | no | Defaults: flash-live model, Puck, `en-US` |
-| `judge.model` | no | If present + scenario PassCriteria → post-run LLM judge |
+| `judge.model` / `base_url` / `api_key` | no | Soft LLM judge; HTTP OpenAI chat when `base_url` set, else Gemini |
+
 | `observe.record_audio` | no | `true` → local stereo WAV (L=sim, R=agent), no Egress |
 | `observe.timezone` | no | Default `UTC` (report timestamps) |
 | `observe.lk_agent_session` | no | Default `true`; SDK tools, state, errors, usage + final chat history via `lk.agent.session` |
@@ -107,8 +108,14 @@ simulator:
     language: "vi-VN"
 
 judge:
+  # Gemini (default when base_url omitted) — uses simulator.google_api_key
   model: "gemini-2.5-flash"
   temperature: 0
+  # Or HTTP via OpenAI-compatible gateway. `endpoint_type` = wire format (default openai):
+  # base_url: "http://localhost:8080/v1"
+  # api_key: "sk-..."
+  # model: "gpt-4o-mini"
+  # endpoint_type: openai   # openai → /chat/completions | anthropic → /messages
 
 observe:
   record_audio: true     # reports/<run-id>/conversation.wav — L=sim, R=agent
@@ -212,7 +219,17 @@ Multi-judge groups (aggregate with `mode`):
 {"kind":"PassCriteria","spec":{"mode":"majority","judges":[{"id":"task","criteria":["Task completed"]},{"id":"tone","criteria":["Polite tone"]}]}}
 ```
 
-`mode`: `all` (default) \| `majority` \| `any`. Still soft unless you pass `--strict-judge`. Needs `judge.model` in config.
+Builtin dimensions (Hamming/LiveKit-shaped — `evals.presets`):
+
+```jsonl
+{"kind":"PassCriteria","spec":{"judges":[{"id":"tc","builtin":"task_completion"},{"id":"acc","builtin":"accuracy"}]}}
+```
+
+Or flat: `"criteria":["builtin:task_completion"]`.
+
+Judge verdicts: `pass` | `fail` | `maybe` (soft unless `--strict-judge`). Criteria may mark `relevant=false` to skip irrelevant checks.
+
+`mode`: `all` (default) \| `majority` \| `any`. Still soft unless you pass `--strict-judge`. Needs `judge:` in config (Gemini or HTTP `base_url`/`api_key`).
 
 ### Audio cues (built-in + per-repo custom)
 
@@ -448,7 +465,9 @@ No Node/Vite on the user machine. Player assets ship inside the wheel (built in 
 | `dispatch.agent_timeout` | Worker process up? `agent_name` exact match (e.g. `…-local` vs prod)? |
 | Agent joins but silent | `Execute.first_speaker`; worker may need `Dispatch.metadata` |
 | Sim never speaks after agent | Normal nudge only when `first_speaker=agent` and no Script |
-| Judge skipped | Need `PassCriteria` **and** `judge:` block in config |
+| Judge skipped | Need `PassCriteria` **and** `judge:` block; HTTP needs `base_url`+`api_key` (or `JUDGE_*` env) |
+| Judge HTTP error | `base_url` reachable? OpenAI `/chat/completions` + `stream:false`; model id correct on gateway? |
+
 | No `conversation.wav` | Set `observe.record_audio: true` |
 | Scenario JSON error | Remove `#` comments; only full-line `//` allowed |
 | scenario-from-run draft says "DRAFT — review" | The draft is a starting point; tighten Persona/Assert before promoting to CI |

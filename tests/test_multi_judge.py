@@ -1,13 +1,13 @@
-"""P1.C — PassCriteria multi-judge parse + aggregate (no live Gemini)."""
+"""P1.C — PassCriteria multi-judge parse + aggregate (no live LLM)."""
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from livekit_agent_simulator.gemini import judge as judge_mod
+from livekit_agent_simulator.evals import aggregate, runner
 from livekit_agent_simulator.scenario import parse_scenario
 
 
@@ -35,33 +35,72 @@ def test_parse_judges_and_mode(tmp_path: Path):
     assert any("task" in c for c in s.pass_criteria)
 
 
+def test_parse_builtin_judge(tmp_path: Path):
+    p = tmp_path / "bj.jsonl"
+    p.write_text(
+        "\n".join(
+            [
+                '{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"bj","locale":"en-US"}}',
+                '{"kind":"Persona","spec":{"name":"A","brief":"caller","goals":["g"]}}',
+                '{"kind":"Execute","spec":{"max_turns":2}}',
+                '{"kind":"PassCriteria","spec":{"judges":['
+                '{"id":"tc","builtin":"task_completion"}'
+                "]}}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    s = parse_scenario(p)
+    assert s.pass_judges[0]["builtin"] == "task_completion"
+    assert any("builtin:task_completion" in c for c in s.pass_criteria)
+
+
 @pytest.mark.asyncio
-async def test_aggregate_all_majority_any(monkeypatch):
-    async def fake_judge(cfg, key, criteria, turns, tools, goals_met=None):
-        # pass if criterion text contains "pass"
+async def test_aggregate_all_majority_any(monkeypatch: pytest.MonkeyPatch):
+    async def fake_judge(
+        backend: Any,
+        criteria: list[str],
+        turns: list,
+        tools: list,
+        *,
+        goals_met=None,
+    ):
         text = " ".join(criteria)
         if "PASS" in text:
             return {"verdict": "pass", "score": 90}
         return {"verdict": "fail", "score": 10}
 
-    monkeypatch.setattr(judge_mod, "_judge", fake_judge)
-    cfg = object()
+    monkeypatch.setattr(runner, "_judge", fake_judge)
     judges = [
         {"id": "a", "criteria": ["PASS me"]},
         {"id": "b", "criteria": ["fail me"]},
     ]
-    all_v = await judge_mod.judge_run_multi(cfg, "k", judges, "all", [], [])
+    from livekit_agent_simulator.config import JudgeConfig
+
+    cfg = JudgeConfig(base_url="http://example/v1", api_key="k", model="m")
+    all_v = await runner.judge_run_multi(cfg, "g", judges, "all", [], [])
     assert all_v["verdict"] == "fail"
-    maj = await judge_mod.judge_run_multi(cfg, "k", judges, "majority", [], [])
-    # 1/2 is not > 0.5
+    maj = await runner.judge_run_multi(cfg, "g", judges, "majority", [], [])
     assert maj["verdict"] == "fail"
-    any_v = await judge_mod.judge_run_multi(cfg, "k", judges, "any", [], [])
+    any_v = await runner.judge_run_multi(cfg, "g", judges, "any", [], [])
     assert any_v["verdict"] == "pass"
 
     both = [
         {"id": "a", "criteria": ["PASS"]},
         {"id": "b", "criteria": ["PASS too"]},
     ]
-    all_ok = await judge_mod.judge_run_multi(cfg, "k", both, "all", [], [])
+    all_ok = await runner.judge_run_multi(cfg, "g", both, "all", [], [])
     assert all_ok["verdict"] == "pass"
     assert all_ok["passed_count"] == 2
+
+
+def test_aggregate_all_errors_is_error():
+    out = aggregate.aggregate_judges(
+        [
+            {"verdict": "error", "notes": "HTTP 401"},
+            {"verdict": "error", "notes": "timeout"},
+        ],
+        "all",
+    )
+    assert out["verdict"] == "error"
