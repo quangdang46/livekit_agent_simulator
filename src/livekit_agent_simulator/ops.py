@@ -629,6 +629,7 @@ def evaluate_baseline_gate(
     max_ttfw_regression_ms: float = 1500.0,
     max_turn_p95_regression_ms: float = 2000.0,
     max_duration_regression_ms: float = 30000.0,
+    max_barge_recovery_drop: float = 0.0,
     require_status_done: bool = True,
 ) -> dict[str, Any]:
     """Hard gate: candidate must not regress vs baseline digest (portable thresholds)."""
@@ -693,6 +694,38 @@ def evaluate_baseline_gate(
         if not ok:
             reasons.append(f"tool_errors rose {bt:.0f} → {ct:.0f}")
 
+    # Rate metric: higher is better — fail if drop exceeds max_barge_recovery_drop.
+    br_b = _as_float(baseline.get("barge_recovery_rate"))
+    br_c = _as_float(candidate.get("barge_recovery_rate"))
+    if br_b is not None and br_c is not None:
+        drop = br_b - br_c
+        ok = drop <= max_barge_recovery_drop
+        checks.append(
+            {
+                "check": "barge_recovery_rate_not_down",
+                "pass": ok,
+                "baseline": br_b,
+                "candidate": br_c,
+                "drop": drop,
+                "max_drop": max_barge_recovery_drop,
+            }
+        )
+        if not ok:
+            reasons.append(
+                f"barge_recovery_rate dropped {br_b:.2f} → {br_c:.2f} "
+                f"(max drop {max_barge_recovery_drop:.2f})"
+            )
+    else:
+        checks.append(
+            {
+                "check": "barge_recovery_rate_not_down",
+                "pass": True,
+                "skipped": True,
+                "baseline": br_b,
+                "candidate": br_c,
+            }
+        )
+
     ok = not reasons
     return {"ok": ok, "pass": ok, "checks": checks, "reasons": reasons}
 
@@ -705,6 +738,7 @@ async def compare_runs_with_baseline(
     max_ttfw_regression_ms: float = 1500.0,
     max_turn_p95_regression_ms: float = 2000.0,
     max_duration_regression_ms: float = 30000.0,
+    max_barge_recovery_drop: float = 0.0,
 ) -> dict[str, Any]:
     """Compare candidate to golden baseline; attach hard ``gate`` for CI exit codes."""
     raw = await compare_runs(project_root, baseline_run_id, candidate_run_id)
@@ -716,6 +750,7 @@ async def compare_runs_with_baseline(
         max_ttfw_regression_ms=max_ttfw_regression_ms,
         max_turn_p95_regression_ms=max_turn_p95_regression_ms,
         max_duration_regression_ms=max_duration_regression_ms,
+        max_barge_recovery_drop=max_barge_recovery_drop,
     )
     return {
         **raw,
@@ -817,5 +852,7 @@ __all__ = [
     "get_run_log",
     "get_run_report",
     "compare_runs",
+    "compare_runs_with_baseline",
+    "evaluate_baseline_gate",
     "list_runs",
 ]

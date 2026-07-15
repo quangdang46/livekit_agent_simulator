@@ -13,6 +13,7 @@ def test_gate_pass_similar():
         "turn_taking_p95": 2000,
         "duration_ms": 10000,
         "tool_errors": 0,
+        "barge_recovery_rate": 1.0,
     }
     cand = {
         "status": "done",
@@ -21,6 +22,7 @@ def test_gate_pass_similar():
         "turn_taking_p95": 2100,
         "duration_ms": 11000,
         "tool_errors": 0,
+        "barge_recovery_rate": 1.0,
     }
     g = evaluate_baseline_gate(base, cand)
     assert g["ok"] is True
@@ -46,3 +48,40 @@ def test_gate_fail_tool_errors_up():
     cand = {"status": "done", "tool_errors": 3, "ttfw_ms": 1, "turn_taking_p95": 1, "duration_ms": 1}
     g = evaluate_baseline_gate(base, cand)
     assert g["ok"] is False
+
+
+def test_gate_fail_assert_pass():
+    base = {"status": "done", "assert_pass": True}
+    cand = {"status": "done", "assert_pass": False}
+    g = evaluate_baseline_gate(base, cand)
+    assert g["ok"] is False
+    assert any("assert" in r for r in g["reasons"])
+
+
+def test_gate_fail_barge_recovery_drop():
+    base = {
+        "status": "done",
+        "ttfw_ms": 1,
+        "turn_taking_p95": 1,
+        "duration_ms": 1,
+        "barge_recovery_rate": 1.0,
+    }
+    cand = {
+        "status": "done",
+        "ttfw_ms": 1,
+        "turn_taking_p95": 1,
+        "duration_ms": 1,
+        "barge_recovery_rate": 0.4,
+    }
+    g = evaluate_baseline_gate(base, cand, max_barge_recovery_drop=0.0)
+    assert g["ok"] is False
+    assert any("barge_recovery" in r for r in g["reasons"])
+
+
+def test_gate_skips_missing_latency():
+    base = {"status": "done", "ttfw_ms": None}
+    cand = {"status": "done", "ttfw_ms": None}
+    g = evaluate_baseline_gate(base, cand)
+    assert g["ok"] is True
+    skipped = [c for c in g["checks"] if c.get("skipped")]
+    assert skipped

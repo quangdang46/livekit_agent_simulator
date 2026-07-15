@@ -205,6 +205,7 @@ async def compare_runs(
     max_ttfw_regression_ms: float = 1500.0,
     max_turn_p95_regression_ms: float = 2000.0,
     max_duration_regression_ms: float = 30000.0,
+    max_barge_recovery_drop: float = 0.0,
 ) -> dict[str, Any]:
     """Diff two runs. If baseline=True, run_id_a is golden and gate hard-fails regressions."""
     if baseline:
@@ -215,6 +216,7 @@ async def compare_runs(
             max_ttfw_regression_ms=max_ttfw_regression_ms,
             max_turn_p95_regression_ms=max_turn_p95_regression_ms,
             max_duration_regression_ms=max_duration_regression_ms,
+            max_barge_recovery_drop=max_barge_recovery_drop,
         )
     return await ops.compare_runs(project_root, run_id_a, run_id_b)
 

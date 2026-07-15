@@ -382,6 +382,11 @@ def compare(
     max_duration_regression_ms: float = typer.Option(
         30000.0, "--max-duration-regression-ms", help="Max allowed duration increase vs baseline"
     ),
+    max_barge_recovery_drop: float = typer.Option(
+        0.0,
+        "--max-barge-recovery-drop",
+        help="Max allowed barge_recovery_rate drop vs baseline (0 = no drop)",
+    ),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Diff two runs. With --baseline, hard-fail on latency/assert regression. (MCP: compare_runs)"""
@@ -394,6 +399,7 @@ def compare(
                 max_ttfw_regression_ms=max_ttfw_regression_ms,
                 max_turn_p95_regression_ms=max_turn_p95_regression_ms,
                 max_duration_regression_ms=max_duration_regression_ms,
+                max_barge_recovery_drop=max_barge_recovery_drop,
             )
         )
         _print(result)
