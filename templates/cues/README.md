@@ -27,7 +27,7 @@ lk-sim cues --root /path/to/target --resolve builtin:noise.loud
 | `noise.blip` / `noise.interrupt` | `loud_interrupt_blip.wav` | short cut-in blip |
 | **`voice.barge_short`** / `voice.barge_wait` | `barge_wait_en.wav` | **speech** “Wait a second…” (EN) |
 | **`voice.barge_sorry`** | `barge_sorry_en.wav` | speech “Sorry — one second…” |
-| **`voice.backchannel`** / `voice.uhhuh` | `backchannel_uhhuh_en.wav` | speech “uh-huh” |
+| **`voice.backchannel`** / `voice.uhhuh` | `backchannel_uhhuh_en.wav` | speech “uh-huh” ×5 (~4s) — longer so server VAD treats it as sustained listener cue |
 | `voice.barge_vi` | `barge_wait_vi.wav` | short VI barge |
 | `backchannel` / `interrupt` / `ambiguous` | `*_ja.wav` | legacy JA samples |
 
