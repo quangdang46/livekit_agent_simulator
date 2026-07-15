@@ -181,13 +181,13 @@ class ScriptRunner:
     async def _fire(self, step: ScriptStep, waited_ms: int) -> None:
         if step.once:
             self._firing.add(step.id)
+        inject_error: str | None = None
         try:
             agent_active_ms = self.observer.agent_active_duration_ms() or 0
             # Strict: "cut across" only if agent is the active speaker *now*.
             # (Historical active_ms alone is not a live interrupt.)
             during_agent_speech = bool(self.observer.agent_is_active_speaker)
 
-            inject_error: str | None = None
             hold_silence_ms = int(step.silence_after_cue_ms or 0)
             if step.action == "wait":
                 kind = "sim.script.wait"
@@ -374,10 +374,15 @@ class ScriptRunner:
             self._firing.discard(step.id)
             if step.once:
                 self._fired.add(step.id)
-                self._armed_step_index += 1
-                if self._armed_step_index < len(self.steps):
-                    self._await_post_cue_gap = step.trigger == "agent_speaking"
-                    self._post_cue_gap_since = None
+                # Silent/failed speak must not look like a successful cue chain — abort.
+                if inject_error and step.action == "speak":
+                    self._armed_step_index = len(self.steps)
+                    self.bridge.sim_hang_up()
+                else:
+                    self._armed_step_index += 1
+                    if self._armed_step_index < len(self.steps):
+                        self._await_post_cue_gap = step.trigger == "agent_speaking"
+                        self._post_cue_gap_since = None
                 self._trigger_since.clear()
                 self._trigger_gap_since.clear()
 

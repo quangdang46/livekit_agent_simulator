@@ -53,17 +53,28 @@ class GoalsSection:
         ]
         for i, g in enumerate(goals, 1):
             lines.append(f"GOAL {i}: {g}")
-        lines.extend(
-            [
-                "",
-                "Rules for goals (follow in order):",
-                "1. Work through ALL goals one by one.",
-                "2. Do NOT skip ahead to a later goal before the current one is addressed.",
-                "3. Do NOT say goodbye or [END_CALL] until ALL goals are addressed.",
-                "4. If the assistant cannot help with one goal, state that briefly and move to the next.",
-                "5. If the assistant goes off-topic, steer back to the current GOAL.",
-            ]
-        )
+        if ctx.script_steps:
+            lines.extend(
+                [
+                    "",
+                    "Rules for goals when a timed Script is active:",
+                    "1. Goals are context for Script cues — do NOT freestyle to finish signup yourself.",
+                    "2. Stay silent between Script injects; speak only the short line when the harness injects it.",
+                    "3. Do NOT say goodbye or [END_CALL]; Script hang-up ends the call.",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    "Rules for goals (follow in order):",
+                    "1. Work through ALL goals one by one.",
+                    "2. Do NOT skip ahead to a later goal before the current one is addressed.",
+                    "3. Do NOT say goodbye or [END_CALL] until ALL goals are addressed.",
+                    "4. If the assistant cannot help with one goal, state that briefly and move to the next.",
+                    "5. If the assistant goes off-topic, steer back to the current GOAL.",
+                ]
+            )
         return lines
 
 
@@ -164,9 +175,9 @@ class ScriptTimingSection:
             "## INTERACTION TIMING (simulator-owned)",
             f"This call has {n} timed Script step(s). Timing and hang-up are owned by the simulator.",
             "Timed caller cues (barge, silence, hang-up, DTMF, PCM) are injected automatically.",
-            "Do NOT try to backchannel or interrupt on your own timing.",
-            "Stay quiet and listen unless you are answering a direct question after the assistant finishes,",
-            "or a cue was just injected for you to continue from.",
+            "Do NOT backchannel, interrupt, answer questions, invent small-talk, or continue signup on your own.",
+            "Between Script cues stay silent — even if the assistant asks for name, email, or card details.",
+            "EXCEPTION: when you receive a SIMULATOR CUE, speak that line aloud once immediately, then go silent again.",
             "Do NOT say goodbye, bye, thanks-bye, hang up, or [END_CALL] while Script steps remain.",
             "Only the final Script hang-up step ends the call. Freestyle farewell will FAIL the test.",
         ]
@@ -174,6 +185,11 @@ class ScriptTimingSection:
 
 class FirstSpeakerSection:
     def render(self, ctx: CallerPolicyContext) -> list[str]:
+        if ctx.script_steps:
+            return [
+                "Timed Script owns when you speak. Stay silent at connect "
+                "until a SIMULATOR CUE instructs you to say a line aloud."
+            ]
         if ctx.first_speaker == "agent":
             return [
                 "Wait for the assistant to greet you first, then respond "
@@ -193,15 +209,23 @@ class GuardrailsSection:
             "",
             "## GUARDRAILS",
             "Your job is to pursue your goals as the caller. You are not solving the assistant's job.",
-            "Only end the call when ALL goals are done (or unmistakably impossible after you tried).",
+            (
+                "A timed Script will end the call — do not freestyle an ending."
+                if has_script
+                else "Only end the call when ALL goals are done (or unmistakably impossible after you tried)."
+            ),
             "If you say goodbye or [END_CALL] early, the automated test will FAIL.",
-            "If the assistant says something irrelevant, steer back to your current goal.",
+            (
+                "If the assistant asks for details between Script cues, stay silent."
+                if has_script
+                else "If the assistant says something irrelevant, steer back to your current goal."
+            ),
         ]
         if has_script:
             lines.extend(
                 [
-                    "A timed Script is active: do NOT freestyle a goodbye. Wait for the simulator hang-up cue.",
-                    "After the assistant answers, stay brief (okay / got it) — no bye until Script hang-up.",
+                    "A timed Script is active: do NOT freestyle answers, small-talk, or a goodbye.",
+                    "Stay silent between Script cues; wait for the simulator hang-up cue to end the call.",
                 ]
             )
         else:
@@ -218,7 +242,7 @@ class GuardrailsSection:
                 "The marker is for the test harness transcript only.",
             ]
         )
-        if n:
+        if n and not has_script:
             lines.append(
                 f"You have {n} numbered goal(s). Ending before they are addressed is a failure."
             )

@@ -188,6 +188,7 @@ async def run_scenario_instance(cfg: SimConfig, scenario: Scenario) -> dict[str,
                 persona=dict(scenario.persona or {}),
                 locale=scenario.effective_locale(),
                 context=dict(scenario.context or {}),
+                script_steps=list(scenario.script_steps or []),
                 first_speaker=run.first_speaker,
             )
             _midcall_cues = DefaultCallerPolicy().midcall_cues(_midcall_ctx)

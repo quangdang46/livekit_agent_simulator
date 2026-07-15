@@ -99,6 +99,26 @@ def test_evaluate_script_log_fail_not_during_agent():
     assert result["pass"] is False
 
 
+def test_evaluate_script_log_fail_cue_with_inject_error():
+    steps = [ScriptStep("open", "silence", 1000, "Hi")]
+    events = [
+        {
+            "kind": "sim.script.cue",
+            "ts_mono_ms": 3000,
+            "spec": {
+                "step_id": "open",
+                "during_agent_speech": False,
+                "error": "gemini_text inject produced no mic audio (model stayed silent)",
+            },
+        },
+    ]
+    result = evaluate_script_log(events, steps, ScriptVerifySpec())
+    assert result["pass"] is False
+    checks = result["checks"]
+    assert isinstance(checks, list)
+    assert any("error" in str(c.get("reason", "")) for c in checks)
+
+
 def test_evaluate_script_log_interrupt_scenario():
     steps = [ScriptStep("ri", "agent_speaking", 800, "wait", "interrupt")]
     events = [

@@ -34,6 +34,15 @@ def evaluate_script_log(
             continue
         cue = matching[0]
         spec = cue.get("spec") or {}
+        if spec.get("error"):
+            checks.append(
+                {
+                    "step_id": step.id,
+                    "pass": False,
+                    "reason": f"cue fired with error: {spec.get('error')}",
+                }
+            )
+            continue
         during = bool(spec.get("during_agent_speech"))
         if step.trigger == "agent_speaking" and step.action == "speak" and not during:
             checks.append(
