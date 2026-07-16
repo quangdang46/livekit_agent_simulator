@@ -1,8 +1,8 @@
-# Agent install guide — livekit-agent-simulator (`lk-sim`)
+# Agent install guide — livekit-agent-simulator (`lks`, alias: `lk-sim`)
 
 **Audience:** coding agents (Claude Code, Cursor, Codex, AmpCode, Windsurf, …) and humans who paste this URL into an agent.
 
-**Goal:** install the `lk-sim` CLI on the user’s machine, scaffold `.agent-sim/` inside **the user’s project repo** (the LiveKit voice agent under test), fill config safely, register MCP if useful, and prove the setup with `preflight` (and optionally a smoke run).
+**Goal:** install the `lks` CLI (alias: `lk-sim`) on the user’s machine, scaffold `.agent-sim/` inside **the user’s project repo** (the LiveKit voice agent under test), fill config safely, register MCP if useful, and prove the setup with `preflight` (and optionally a smoke run).
 
 **Hard rules for the agent:**
 
@@ -12,6 +12,7 @@
 4. **Discover before `AskQuestion`.** Read target docs and existing `.agent-sim/` (read-only). Do not assume consumer-specific file paths or metadata keys (e.g. one repo’s `job-metadata.ts` or `customAgentId` is not universal).
 5. Prefer **non-interactive** commands. Use `--root <absolute-path>` always.
 6. Prefer the **portable installer** (no uv/pip on the user machine) unless the user is developing the simulator package itself.
+7. **Primary CLI is `lks`** (short). **`lk-sim` remains a supported alias** for scripts and older docs. Runtime IDs stay `lk-sim-caller` / room prefix `lk-sim-<run-id>`.
 
 ---
 
@@ -19,8 +20,8 @@
 
 | Piece | Purpose |
 |-------|---------|
-| CLI `lk-sim` | Black-box LiveKit room tester + report player |
-| MCP server `livekit-agent-simulator` | Same ops for coding agents (`lk-sim mcp`) |
+| CLI `lks` (alias: `lk-sim`) | Black-box LiveKit room tester + report player |
+| MCP server `livekit-agent-simulator` | Same ops for coding agents (`lks mcp` / alias `lks mcp`) |
 | Target folder `.agent-sim/` | Config, scenarios, reports, local cues/plugins (gitignored) |
 
 The simulator joins LiveKit as `lk-sim-caller`, talks to the user’s already-running voice agent worker via Gemini Live, and writes forensic reports.
@@ -47,8 +48,8 @@ macOS / Linux (bash):
 
 ```bash
 uname -s
-which lk-sim || true
-lk-sim --help 2>/dev/null | head -5 || true
+which lks || which lks || true
+lks --help 2>/dev/null | head -5 || lks --help 2>/dev/null | head -5 || true
 pwd
 # If the user said "this project", use the current workspace root as TARGET_ROOT
 ```
@@ -56,8 +57,8 @@ pwd
 Windows (PowerShell — note: plain `cmd.exe` has no `Set-Location`/`&&`; prefer PowerShell):
 
 ```powershell
-Get-Command lk-sim -ErrorAction SilentlyContinue
-lk-sim --help 2>$null | Select-Object -First 5
+Get-Command lks -ErrorAction SilentlyContinue; Get-Command lks -ErrorAction SilentlyContinue
+lks --help 2>$null | Select-Object -First 5; if (-not $?) { lks --help 2>$null | Select-Object -First 5 }
 Get-Location
 ```
 
@@ -76,11 +77,11 @@ $TARGET_ROOT = (Get-Location).Path   # or the path the user named
 # Optional pin: $env:LK_SIM_REF = "v0.1.0"
 ```
 
-If `lk-sim --help` already works, skip §2 install and go to §3 init.
+If `lks --help` or `lks --help` already works, skip §2 install and go to §3 init.
 
 ---
 
-## 2. Install `lk-sim` (portable)
+## 2. Install `lks` (portable; alias `lk-sim`)
 
 ### macOS / Linux
 
@@ -100,20 +101,20 @@ Flags:
 
 | Flag | Meaning |
 |------|---------|
-| `--verify` | Run post-install check (`lk-sim --help`) |
+| `--verify` | Run post-install check (`lks --help` / alias `lks --help`) |
 | `--ref vX.Y.Z` / `--version` | Pin release tag (default: latest) |
 | `--no-mcp` | Skip auto MCP registration |
 | `--easy-mode` | Append install dir to shell PATH in rc files |
 | `--uninstall` | Remove install |
 
-Default binary location: `$HOME/.local/bin/lk-sim`  
-If `lk-sim` is not found after install, ensure `~/.local/bin` is on `PATH` for this shell:
+Default binary locations: `$HOME/.local/bin/lks` and alias `$HOME/.local/bin/lks`  
+If `lks` / `lks` is not found after install, ensure `~/.local/bin` is on `PATH` for this shell:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 hash -r 2>/dev/null || true
-command -v lk-sim
-lk-sim --help | head -20
+command -v lks || command -v lks
+lks --help | head -20
 ```
 
 ### Windows PowerShell
@@ -129,27 +130,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps
 
 | Flag | Meaning |
 |------|---------|
-| `-Verify` | Run post-install check (`lk-sim --help`) |
+| `-Verify` | Run post-install check (`lks --help` / alias `lks --help`) |
 | `-Ref vX.Y.Z` / `-Version` | Pin release tag (default: latest) |
 | `-NoMcp` | Skip auto MCP registration |
 | `-Uninstall` | Remove install |
 | `-Repair` | Fix broken nested layout (`current/lk-sim-windows-x64/`) without re-download |
 | `-Quiet` | Suppress info logs |
 
-Install locations: pack under `%LOCALAPPDATA%\lk-sim\current`, shim `lk-sim` under `%USERPROFILE%\.local\bin`.
+Install locations: pack under `%LOCALAPPDATA%\lk-sim\current`, shims `lks` + alias `lk-sim` under `%USERPROFILE%\.local\bin`.
 The installer prepends that dir to the **user** `PATH` automatically — but already-open terminals do not see it.
-If `lk-sim` is not found after install, open a **new** terminal, or for the current session:
+If `lks` / `lks` is not found after install, open a **new** terminal, or for the current session:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
-Get-Command lk-sim
-lk-sim --help | Select-Object -First 20
+Get-Command lks, lks
+lks --help | Select-Object -First 20
 ```
 
 ### Installer success criteria
 
-- `command -v lk-sim` (bash) / `Get-Command lk-sim` (PowerShell) resolves
-- `lk-sim --help` exits 0 and lists: `init`, `preflight`, `execute`, `scenario-from-run`, `web`, `mcp`, …
+- `command -v lks` (or alias `lk-sim`) / `Get-Command lks` resolves
+- `lks --help` exits 0 and lists: `init`, `preflight`, `execute`, `scenario-from-run`, `web`, `mcp`, …
 - Prefer not to use `uv run` / `pip install` for end users
 
 ### From source (only if user is developing the simulator package)
@@ -158,9 +159,9 @@ lk-sim --help | Select-Object -First 20
 git clone https://github.com/quangdang46/livekit-agent-simulator.git
 cd livekit-agent-simulator
 uv sync --extra dev
-uv run lk-sim --help
+uv run lks --help
 # When pointing at a target repo, still use absolute --root
-uv run lk-sim init --root /abs/path/to/target
+uv run lks init --root /abs/path/to/target
 ```
 
 ---
@@ -168,7 +169,7 @@ uv run lk-sim init --root /abs/path/to/target
 ## 3. Init project scaffold in the user’s repo
 
 ```bash
-lk-sim init --root "$TARGET_ROOT"
+lks init --root "$TARGET_ROOT"
 ```
 
 This creates (if missing):
@@ -192,7 +193,7 @@ And ensures `.agent-sim/` is listed in `$TARGET_ROOT/.gitignore`.
 test -f "$TARGET_ROOT/.agent-sim/config.yaml"
 test -d "$TARGET_ROOT/.agent-sim/scenarios"
 grep -q '\.agent-sim/' "$TARGET_ROOT/.gitignore" || true
-lk-sim guide | head -5
+lks guide | head -5
 ```
 
 ---
@@ -220,7 +221,7 @@ Optional but common:
 ```yaml
 livekit:
   # Opaque JSON string for RoomAgentDispatch.metadata (consumer-specific keys).
-  # lk-sim forwards this string as-is; discover keys from target docs/source (§4.0).
+  # lks forwards this string as-is; discover keys from target docs/source (§4.0).
   # dispatch_metadata: '{"yourConsumerKey":"value"}'
   agent_join_timeout_ms: 25000
 
@@ -280,7 +281,7 @@ More consumer wiring notes: [portability.md](../portability.md).
 
 ### 4.0 Discover consumer repo (before `AskQuestion`)
 
-`lk-sim` is **target-agnostic**. Each consumer defines its own dispatch metadata keys, data topics, and docs layout. **Do not hardcode paths or field names from one repo** (e.g. `bootstrap/job-metadata.ts`, `customAgentId`) in this guide or in setup steps.
+`lks` is **target-agnostic**. Each consumer defines its own dispatch metadata keys, data topics, and docs layout. **Do not hardcode paths or field names from one repo** (e.g. `bootstrap/job-metadata.ts`, `customAgentId`) in this guide or in setup steps.
 
 Read-only discovery in `TARGET_ROOT` (in order):
 
@@ -291,11 +292,11 @@ Read-only discovery in `TARGET_ROOT` (in order):
    - `dispatch_metadata`, `job.metadata`, `parseMetadata`, `RoomAgentDispatch`
    - `data_topics`, `publishData`, topic names the agent emits
    - `agent_name`, `agentName`, worker registration / dispatch name
-5. **Portability** — [portability.md](../portability.md) for how lk-sim forwards opaque JSON and observes data topics.
+5. **Portability** — [portability.md](../portability.md) for how lks forwards opaque JSON and observes data topics.
 
 **Infer wiring from discovery:**
 
-| Finding | lk-sim action |
+| Finding | lks action |
 |---------|----------------|
 | Worker reads JSON from dispatch/job metadata | Set `livekit.dispatch_metadata` and/or per-scenario `Dispatch.metadata` with the **same key names** found in docs/search (values from user or existing config — never invent) |
 | Agent publishes named data topics | Set `observe.data_topics` to those topic strings (or `[]` to record all) |
@@ -323,7 +324,7 @@ Rules:
 
 ```json
 {
-  "title": "lk-sim setup",
+  "title": "lks setup",
   "questions": [
     {
       "id": "target_root",
@@ -345,7 +346,7 @@ Rules:
     },
     {
       "id": "record_audio",
-      "prompt": "Enable local call recording for lk-sim web replay?",
+      "prompt": "Enable local call recording for lks web replay?",
       "options": [
         {"id": "yes", "label": "Yes — observe.record_audio: true (Recommended)"},
         {"id": "no", "label": "No — skip conversation.wav"}
@@ -367,7 +368,7 @@ Skip questions already answered by §4.0 (e.g. skip dispatch-metadata question i
 
 ```json
 {
-  "title": "lk-sim setup (optional)",
+  "title": "lks setup (optional)",
   "questions": [
     {
       "id": "language",
@@ -427,13 +428,13 @@ observe:
   timezone: "Asia/Ho_Chi_Minh"
 ```
 
-More on dispatch / data topics: [portability.md](../portability.md). Voice / cues / plugins after setup: `lk-sim guide`.
+More on dispatch / data topics: [portability.md](../portability.md). Voice / cues / plugins after setup: `lks guide`.
 
 ---
 
 ## 5. MCP registration (coding agents)
 
-Default installer registers MCP server name **`livekit-agent-simulator`** → command `lk-sim mcp` into detected tools (Claude Code, Cursor, Cline, Windsurf, VS Code Copilot, Gemini CLI, Amazon Q, OpenCode, Codex, Warp).
+Default installer registers MCP server name **`livekit-agent-simulator`** → command `lks mcp` into detected tools (Claude Code, Cursor, Cline, Windsurf, VS Code Copilot, Gemini CLI, Amazon Q, OpenCode, Codex, Warp).
 
 If the user skipped MCP or tools were installed later, manual MCP config example:
 
@@ -441,7 +442,7 @@ If the user skipped MCP or tools were installed later, manual MCP config example
 {
   "mcpServers": {
     "livekit-agent-simulator": {
-      "command": "lk-sim",
+      "command": "lks",
       "args": ["mcp"]
     }
   }
@@ -455,7 +456,7 @@ Dev checkout (package not on PATH):
   "mcpServers": {
     "livekit-agent-simulator": {
       "command": "uv",
-      "args": ["run", "--directory", "/abs/path/livekit-agent-simulator", "lk-sim", "mcp"]
+      "args": ["run", "--directory", "/abs/path/livekit-agent-simulator", "lks", "mcp"]
     }
   }
 }
@@ -477,9 +478,9 @@ Typical MCP flow:
 ## 6. Preflight (must pass before promising a full call)
 
 ```bash
-lk-sim preflight --root "$TARGET_ROOT"
+lks preflight --root "$TARGET_ROOT"
 # offline config-only:
-lk-sim preflight --no-connectivity --root "$TARGET_ROOT"
+lks preflight --no-connectivity --root "$TARGET_ROOT"
 ```
 
 **Success:** JSON `ok: true` with checks for config, livekit.url, folders, google key, and (if connectivity on) `livekit.api` list_rooms.
@@ -488,7 +489,7 @@ Common failures:
 
 | Symptom | Fix |
 |---------|-----|
-| config missing | `lk-sim init --root …` first |
+| config missing | `lks init --root …` first |
 | livekit.api 401 | Wrong URL / api_key / api_secret |
 | agent timeout later | Worker not running or `agent_name` mismatch |
 | Windows: `No module named 'encodings'` / `Could not find platform independent libraries` | Broken portable layout from older installer — run `install.ps1 -Repair -Verify` or reinstall with latest `install.ps1` |
@@ -500,25 +501,42 @@ Common failures:
 List / scaffold:
 
 ```bash
-lk-sim scenarios --root "$TARGET_ROOT"
-lk-sim scenario-init my-case --root "$TARGET_ROOT"   # // guide lines in JSONL
-lk-sim validate smoke-hello --root "$TARGET_ROOT"
+lks scenarios --root "$TARGET_ROOT"
+lks scenario-init my-case --root "$TARGET_ROOT"   # // guide lines in JSONL
+lks validate smoke-hello --root "$TARGET_ROOT"
 ```
+
+### Scenario knobs after setup (STT / dead-air / noise / authoring)
+
+These are **not** required for install — use when writing scenarios under `.agent-sim/scenarios/`:
+
+| Knob | Purpose |
+|------|---------|
+| `Persona.speech_conditions.voice_gain` (`0.0`–`1.0`) | Quiet-caller STT stress (scales speech PCM after Gemini Live; not noise beds) |
+| `Persona.speech_conditions.silent_mode: true` | Unresponsive / dead-air caller (no freestyle, no nudge, no auto barge/noise) |
+| `noise_when: "background"` / Script `"loop": true` | Continuous ambient noise under the call |
+| `lks validate` → `authoring.tier` / `warning_codes` | Soft authoring quality gate (no LLM; does not flip `valid`) |
+
+Package examples: `templates/examples/quiet-caller-confirm.jsonl`, `silent-caller-dead-air.jsonl`, `ambient-loop-office.jsonl`.
+
+Ops detail: **`lks guide`** (or `lk-sim guide`).
+
+
 
 **Worker must be running** and registered with the same `livekit.agent_name` before execute.
 
 ```bash
-lk-sim execute smoke-hello --root "$TARGET_ROOT"
+lks execute smoke-hello --root "$TARGET_ROOT"
 # → .agent-sim/reports/001-smoke-hello-YYYYMMDD-HHMMSS-xxxx/  (NNN + UTC stamp; unique vs SQLite)
 
-lk-sim execute smoke-hello --name demo --root "$TARGET_ROOT"
+lks execute smoke-hello --name demo --root "$TARGET_ROOT"
 # → .agent-sim/reports/002-demo-YYYYMMDD-HHMMSS-xxxx/  (--name overrides the slug after the seq prefix)
 
 # flake control (each iteration gets its own NNN folder):
-lk-sim execute smoke-hello --root "$TARGET_ROOT" --repeat 3 --pass-at-k 2
+lks execute smoke-hello --root "$TARGET_ROOT" --repeat 3 --pass-at-k 2
 # suite:
-lk-sim execute-all --tag smoke --root "$TARGET_ROOT"
-# lk-sim execute-all --tag smoke --parallel 2 --root "$TARGET_ROOT"
+lks execute-all --tag smoke --root "$TARGET_ROOT"
+# lks execute-all --tag smoke --parallel 2 --root "$TARGET_ROOT"
 ```
 
 `run_id` format: `{NNN}-{slug}-{YYYYMMDD}-{HHMMSS}-{xxxx}` — default slug is the scenario id;
@@ -528,20 +546,20 @@ Timestamp + hex keep ids unique when a report folder was deleted but SQLite stil
 Inspect:
 
 ```bash
-lk-sim runs --root "$TARGET_ROOT"
-lk-sim report 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"
-lk-sim log 001-smoke-hello-20260716-144623-a1b2 --kind "transcript.*" --root "$TARGET_ROOT"
+lks runs --root "$TARGET_ROOT"
+lks report 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"
+lks log 001-smoke-hello-20260716-144623-a1b2 --kind "transcript.*" --root "$TARGET_ROOT"
 # --kind accepts one kind or one prefix (e.g. sim.script*); not a comma list
-lk-sim web --root "$TARGET_ROOT"    # http://127.0.0.1:8765 — list auto-updates ~3s; Ctrl+C to stop
+lks web --root "$TARGET_ROOT"    # http://127.0.0.1:8765 — list auto-updates ~3s; Ctrl+C to stop
 # CI golden gate (exit 1 on regression):
-# lk-sim compare <baseline-run> <candidate-run> --baseline --root "$TARGET_ROOT"
+# lks compare <baseline-run> <candidate-run> --baseline --root "$TARGET_ROOT"
 ```
 
 Promote a failure to a draft regression case:
 
 ```bash
-lk-sim scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"           # dry-run
-lk-sim scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT" --write  # write JSONL
+lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"           # dry-run
+lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT" --write  # write JSONL
 # then human/agent reviews Persona + Assert before treating as golden
 ```
 
@@ -562,7 +580,7 @@ The caller must work through all goals; early `[END_CALL]` causes a failed test.
 {"kind":"Assert","spec":{"tool_order":["lookup","book"],"outcomes":[{"id":"no_card","type":"constraint_respected","must_not_phrases":["4111"]}]}}
 ```
 
-PassCriteria can use flat `criteria[]` or multi-judge `judges[]` + `mode` (`all` \| `majority` \| `any`). Full recipes: `lk-sim guide`.
+PassCriteria can use flat `criteria[]` or multi-judge `judges[]` + `mode` (`all` \| `majority` \| `any`). Full recipes: `lks guide`.
 
 Script action `hang_up` makes the sim caller leave the room (hard hangup).
 
@@ -576,13 +594,13 @@ Package templates (copy into `.agent-sim/scenarios/`):
 
 ```bash
 # After telephony: block in config.yaml (trunk + dial_in / sim_inbound_number):
-lk-sim validate inbound-caller-sim --root "$TARGET_ROOT"
-# lk-sim execute inbound-caller-sim --root "$TARGET_ROOT"   # needs real trunk + DID routing
+lks validate inbound-caller-sim --root "$TARGET_ROOT"
+# lks execute inbound-caller-sim --root "$TARGET_ROOT"   # needs real trunk + DID routing
 ```
 
 Mode is **only** in scenario `Caller` — never in `config.yaml`.  
 Guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/telephony.md  
-Ops detail: `lk-sim guide` (templates/GUIDE.md).
+Ops detail: `lks guide` (templates/GUIDE.md).
 
 SIP asserts: `Assert.spec.sip.participant_present` / `dial_answered` / `call_status_any`.
 
@@ -592,15 +610,15 @@ SIP asserts: `Assert.spec.sip.participant_present` / `dial_answered` / `call_sta
 
 Mark setup complete only when **all** of these are true:
 
-- [ ] `lk-sim --help` works on PATH
+- [ ] `lks --help` works on PATH
 - [ ] `$TARGET_ROOT/.agent-sim/config.yaml` exists with LiveKit + `agent_name` + Gemini key set
 - [ ] `.agent-sim/` is gitignored
-- [ ] `lk-sim preflight --root "$TARGET_ROOT"` → `ok: true`
+- [ ] `lks preflight --root "$TARGET_ROOT"` → `ok: true`
 - [ ] User knows the worker must be running before `execute`
 - [ ] Consumer dispatch metadata / `data_topics` set when discovery (§4.0) shows they are required
 - [ ] (Tool scenarios) report contains `tool.*` and `session.chat_history`, with no `tool_events` observe gap
 - [ ] (Optional) MCP `livekit-agent-simulator` registered if they use a coding agent
-- [ ] (Optional) `lk-sim execute smoke-hello --root "$TARGET_ROOT"` → `status: done` or a clear next fix (agent timeout / Gemini quota)
+- [ ] (Optional) `lks execute smoke-hello --root "$TARGET_ROOT"` → `status: done` or a clear next fix (agent timeout / Gemini quota)
 - [ ] (Optional SIP) `telephony:` trunk/DID filled when testing `inbound_sip` / `outbound_human_pickup` / `outbound_sim_callee`; scenarios validated
 
 **Do not claim “fully working E2E”** if preflight failed or the worker is not registered.
@@ -626,16 +644,16 @@ export PATH="$HOME/.local/bin:$PATH"
 TARGET_ROOT="$(pwd)"   # change if needed
 
 # 1) Install CLI (skip if already present)
-if ! command -v lk-sim >/dev/null 2>&1; then
+if ! command -v lks >/dev/null 2>&1; then
   curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
     | bash -s -- --verify
   export PATH="$HOME/.local/bin:$PATH"
   hash -r 2>/dev/null || true
 fi
-lk-sim --help >/dev/null
+lks --help >/dev/null
 
 # 2) Scaffold target project
-lk-sim init --root "$TARGET_ROOT"
+lks init --root "$TARGET_ROOT"
 
 # 3) STOP: discover TARGET_ROOT (§4.0), then fill $TARGET_ROOT/.agent-sim/config.yaml
 #    livekit.url / api_key / api_secret / agent_name
@@ -643,10 +661,10 @@ lk-sim init --root "$TARGET_ROOT"
 #    optional: livekit.dispatch_metadata, observe.data_topics (from consumer docs/search)
 #    Then continue:
 
-lk-sim preflight --root "$TARGET_ROOT"
+lks preflight --root "$TARGET_ROOT"
 # 4) Ensure voice agent worker is running with matching agent_name
-# lk-sim execute smoke-hello --root "$TARGET_ROOT"
-# lk-sim web --root "$TARGET_ROOT"
+# lks execute smoke-hello --root "$TARGET_ROOT"
+# lks web --root "$TARGET_ROOT"
 ```
 
 ### Windows (PowerShell)
@@ -657,15 +675,15 @@ $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
 $TARGET_ROOT = (Get-Location).Path   # change if needed
 
 # 1) Install CLI (skip if already present)
-if (-not (Get-Command lk-sim -ErrorAction SilentlyContinue)) {
+if (-not (Get-Command lks -ErrorAction SilentlyContinue; Get-Command lks -ErrorAction SilentlyContinue)) {
   irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lk-sim-install.ps1"
   powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps1" -Verify
   $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
 }
-lk-sim --help | Out-Null
+lks --help | Out-Null
 
 # 2) Scaffold target project
-lk-sim init --root $TARGET_ROOT
+lks init --root $TARGET_ROOT
 
 # 3) STOP: discover TARGET_ROOT (§4.0), then fill $TARGET_ROOT\.agent-sim\config.yaml
 #    livekit.url / api_key / api_secret / agent_name
@@ -673,10 +691,10 @@ lk-sim init --root $TARGET_ROOT
 #    optional: livekit.dispatch_metadata, observe.data_topics (from consumer docs/search)
 #    Then continue:
 
-lk-sim preflight --root $TARGET_ROOT
+lks preflight --root $TARGET_ROOT
 # 4) Ensure voice agent worker is running with matching agent_name
-# lk-sim execute smoke-hello --root $TARGET_ROOT
-# lk-sim web --root $TARGET_ROOT
+# lks execute smoke-hello --root $TARGET_ROOT
+# lks web --root $TARGET_ROOT
 ```
 
 ---
@@ -689,10 +707,10 @@ lk-sim preflight --root $TARGET_ROOT
 | Installer (macOS/Linux) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh |
 | Installer (Windows) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1 |
 | This guide (raw) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md |
-| Ops guide | package `lk-sim guide` or `templates/GUIDE.md` (voice, cues, plugins) |
+| Ops guide | package `lks guide` or `templates/GUIDE.md` (voice, cues, plugins) |
 | Portability | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md |
 | Telephony (SIP modes) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/telephony.md |
 | Smoke notes | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/smoke-test.md |
 | L3 observer design | `docs/plans/PLAN-20260713-lk-agent-session-observer.md` |
 
-When instructions conflict: **this file + `lk-sim guide`** beat outdated blog snippets. Prefer latest release unless the user pins a tag.
+When instructions conflict: **this file + `lks guide`** beat outdated blog snippets. Prefer latest release unless the user pins a tag.
