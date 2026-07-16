@@ -29,8 +29,8 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 3. `init` on the target repo → fill credentials in `.agent-sim/config.yaml`.
 4. `preflight` until `ok: true`.
 5. `scenario-init <id>` → edit the JSONL (`//` lines are guides; delete unused kinds).
-6. `validate <id>` then `execute <id>` (add ``--repeat N --pass-at-k K`` for flake control).
-7. `report <run-id>` and/or **`web`** (browser: play audio + highlight transcript).
+6. `validate <id>` then `execute <id>` (optional ``--name``, ``--repeat N --pass-at-k K``).
+7. `report <run-id>` and/or **`web`** (browser: play audio + highlight transcript; list auto-updates).
 8. If a run fails, promote it to a permanent test: ``scenario-from-run <run-id> --write``, review, add to suite.
 
 ```bash
@@ -43,8 +43,8 @@ lk-sim init --root /path/to/target   # safe to re-run; does not overwrite existi
 lk-sim preflight --root /path/to/target
 lk-sim scenario-init smoke-hello --root /path/to/target   # skip if file already exists
 lk-sim validate smoke-hello --root /path/to/target
-lk-sim execute smoke-hello --root /path/to/target
-lk-sim report <run-id> --root /path/to/target
+lk-sim execute smoke-hello --root /path/to/target         # → reports/001-smoke-hello/
+lk-sim report 001-smoke-hello --root /path/to/target
 lk-sim web --root /path/to/target                         # Ctrl+C to stop server
 ```
 
@@ -285,17 +285,30 @@ Ship plugins from an installable package via `[project.entry-points."lk_sim.plug
 
 ```bash
 lk-sim validate my-case --root /path/to/target
-lk-sim execute my-case --root /path/to/target
+lk-sim execute my-case --root /path/to/target                    # → reports/001-my-case/
+lk-sim execute my-case --name demo --root /path/to/target        # → reports/002-demo/
 lk-sim execute my-case --repeat 5 --pass-at-k 3   # pass@k flake control
 lk-sim execute-all --tag smoke --root /path/to/target
 lk-sim execute-all --tag smoke --repeat 3 --pass-at-k 2   # flake in batch
 lk-sim execute-all --tag smoke --parallel 3 --root /path/to/target  # up to 3 scenarios at once
-# In-memory (CI / agents): MCP execute_scenario_dict or CLI execute-dict -f file.json
+# In-memory (CI / agents): MCP execute_scenario_dict or CLI execute-dict -f file.json [--name]
 ```
+
+**Run folder name (`--name`):** each execute gets an auto sequence prefix from existing
+folders under `.agent-sim/reports/` (`001`, `002`, …). Default slug is the scenario id;
+``--name`` replaces that slug only (scenario id stays in `meta.json`).
+
+| Command | Report dir |
+|---------|------------|
+| `execute sp-vad-rt-barge-early` | `001-sp-vad-rt-barge-early/` |
+| `execute sp-vad-rt-barge-early --name demo` | `001-demo/` (or next free seq) |
+
+MCP: `execute_scenario(..., run_name="demo")` / `execute_scenario_dict(..., run_name=…)`.
 
 **Flake control (pass@k):** run the same scenario N times; CI gate (hard: status / assert / script)
 passes only if ≥ K iterations are green. Judge verdicts remain soft unless ``--strict-judge``.
 Useful for barge / latency / noise scenarios where Gemini behavior varies.
+Each iteration still allocates its own ``{NNN}-…`` folder.
 
 ```bash
 lk-sim execute my-barge-case --repeat 7 --pass-at-k 5 --root /path/to/target
@@ -383,9 +396,9 @@ Full guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/doc
 | `validate` | `validate_scenario` |
 | `export` | `export_scenario` |
 | `scenario-init` | `init_scenario` |
-| `execute` | `execute_scenario` (flags: ``--repeat N --pass-at-k K``) |
-| `execute-all` | `execute_scenarios` (suite matrix + CI gate; flags: ``--repeat --pass-at-k --parallel N``) |
-| `execute-dict` | `execute_scenario_dict` |
+| `execute` | `execute_scenario` (flags: ``--name``, ``--repeat N --pass-at-k K``, ``--strict-judge``) |
+| `execute-all` | `execute_scenarios` (suite matrix + CI gate; flags: ``--repeat --pass-at-k --parallel N``, ``--strict-judge``) |
+| `execute-dict` | `execute_scenario_dict` (flag: ``--name`` / MCP ``run_name``) |
 | `scenario-from-run` | `scenario_from_run` |
 | `status` | `get_run_status` |
 | `log` | `get_run_log` |
@@ -425,14 +438,19 @@ MCP for coding agents (Claude, Cursor, Windsurf, VS Code, …):
 
 Directory: `.agent-sim/reports/<run-id>/`
 
-`run_id` = `{scenario_id}-{YYYYMMDD-HHMMSS}-{hex4}` (UTC), e.g. `smoke-hello-20260711-103045-a3f2`.
+`run_id` = `{NNN}-{slug}` where:
+
+- **`NNN`** — auto sequence (`001`, `002`, …) from existing folders under `reports/` (parallel-safe)
+- **`slug`** — scenario id by default, or ``--name`` / MCP ``run_name`` override
+
+Examples: `001-smoke-hello`, `002-demo`. Suite matrices still write `suite-YYYYMMDD-HHMMSS.{json,md}` beside run folders (not a run_id).
 
 | File | Contents |
 |------|----------|
 | `events.jsonl` | Canonical event stream |
 | `timeline.md` | Human narrative table |
 | `summary.json` | Duration, turns, **`metrics`** (TTFW / turn p50-p99 / recovery / barge rate / talk_ratio), judge, **`caller.behavior_summary`**, `script_verify`, `assert_verify` |
-| `meta.json` | Scenario, room, config snapshot (no secrets) |
+| `meta.json` | `run_id`, `scenario_id`, optional `run_name`, room, config snapshot (no secrets) |
 | `conversation.wav` | Stereo PCM if `observe.record_audio: true` |
 | `cues.json` | Built on demand by `web` for transcript↔audio sync + markers |
 
@@ -441,15 +459,17 @@ L3 standard LiveKit Agents session events. L3 records `tool.*` and `session.*`
 automatically for SDK agents; custom `tool_event_patterns` remain a fallback.
 
 ```bash
-lk-sim report <run-id> --root /path/to/target   # full summary (includes caller.behavior_summary)
-lk-sim log <run-id> --kind "transcript.*" --root /path/to/target
-lk-sim log <run-id> --kind "sim.script*" --root /path/to/target
+lk-sim report 001-smoke-hello --root /path/to/target   # full summary (includes caller.behavior_summary)
+lk-sim log 001-smoke-hello --kind "transcript.*" --root /path/to/target
+lk-sim log 001-smoke-hello --kind "sim.script*" --root /path/to/target
+# --kind: one kind or one prefix (trailing *); not a comma-separated list
 lk-sim runs --root /path/to/target
-lk-sim web --root /path/to/target              # home list of all scenarios/runs
-lk-sim web <run-id> --root /path/to/target     # deep-link a specific run
+lk-sim web --root /path/to/target              # home list of all scenarios/runs (auto-updates ~3s)
+lk-sim web 001-smoke-hello --root /path/to/target     # deep-link a specific run
 # Opens http://127.0.0.1:8765 — stereo L=sim R=agent; timeline bands + chips for
 # barge / backchannel / false_interrupt / dtmf / silence / recovery / tools
 # Middle column shows agent actions (script cues + tool cards with args/output when L3 enabled)
+# Home list + player sidebar poll GET /api/runs; open player cues stay one-shot until you re-open a run
 ```
 
 No Node/Vite on the user machine. Player assets ship inside the wheel (built in CI from `web/dist/`).

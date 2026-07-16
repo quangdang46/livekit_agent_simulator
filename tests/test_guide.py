@@ -11,3 +11,6 @@ def test_guide_returns_markdown() -> None:
     assert "config.yaml" in text
     assert "conversation.wav" in text
     assert "run_id" in text
+    assert "{NNN}-{slug}" in text or "001-smoke-hello" in text
+    assert "--name" in text
+    assert "YYYYMMDD-HHMMSS}-{hex4}" not in text

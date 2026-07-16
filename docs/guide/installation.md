@@ -468,8 +468,8 @@ Typical MCP flow:
 1. `guide`
 2. `init_project` → `preflight`
 3. `list_scenarios` / `init_scenario` / `validate_scenario`
-4. `execute_scenario` (or `execute_scenarios` with `repeat` / `pass_at_k`)
-5. `get_run_report` / `get_run_log` / `web`
+4. `execute_scenario` (optional `run_name`, `repeat` / `pass_at_k`) or `execute_scenarios`
+5. `get_run_report` / `get_run_log` / `web` (report dirs look like `001-smoke-hello`)
 6. On failure: `scenario_from_run` → review draft → re-run
 
 ---
@@ -509,19 +509,29 @@ lk-sim validate smoke-hello --root "$TARGET_ROOT"
 
 ```bash
 lk-sim execute smoke-hello --root "$TARGET_ROOT"
-# flake control:
+# → .agent-sim/reports/001-smoke-hello/  (NNN auto-increments from existing report folders)
+
+lk-sim execute smoke-hello --name demo --root "$TARGET_ROOT"
+# → .agent-sim/reports/002-demo/  (--name overrides the slug after the seq prefix)
+
+# flake control (each iteration gets its own NNN folder):
 lk-sim execute smoke-hello --root "$TARGET_ROOT" --repeat 3 --pass-at-k 2
 # suite:
 lk-sim execute-all --tag smoke --root "$TARGET_ROOT"
+# lk-sim execute-all --tag smoke --parallel 2 --root "$TARGET_ROOT"
 ```
+
+`run_id` format: `{NNN}-{slug}` — default slug is the scenario id; `--name` / MCP `run_name`
+replaces the slug only (`scenario_id` remains in `meta.json`).
 
 Inspect:
 
 ```bash
 lk-sim runs --root "$TARGET_ROOT"
-lk-sim report <run-id> --root "$TARGET_ROOT"
-lk-sim log <run-id> --kind "transcript.*" --root "$TARGET_ROOT"
-lk-sim web --root "$TARGET_ROOT"    # http://127.0.0.1:8765 — Ctrl+C to stop
+lk-sim report 001-smoke-hello --root "$TARGET_ROOT"
+lk-sim log 001-smoke-hello --kind "transcript.*" --root "$TARGET_ROOT"
+# --kind accepts one kind or one prefix (e.g. sim.script*); not a comma list
+lk-sim web --root "$TARGET_ROOT"    # http://127.0.0.1:8765 — list auto-updates ~3s; Ctrl+C to stop
 # CI golden gate (exit 1 on regression):
 # lk-sim compare <baseline-run> <candidate-run> --baseline --root "$TARGET_ROOT"
 ```
@@ -529,8 +539,8 @@ lk-sim web --root "$TARGET_ROOT"    # http://127.0.0.1:8765 — Ctrl+C to stop
 Promote a failure to a draft regression case:
 
 ```bash
-lk-sim scenario-from-run <run-id> --root "$TARGET_ROOT"           # dry-run
-lk-sim scenario-from-run <run-id> --root "$TARGET_ROOT" --write  # write JSONL
+lk-sim scenario-from-run 001-smoke-hello --root "$TARGET_ROOT"           # dry-run
+lk-sim scenario-from-run 001-smoke-hello --root "$TARGET_ROOT" --write  # write JSONL
 # then human/agent reviews Persona + Assert before treating as golden
 ```
 
