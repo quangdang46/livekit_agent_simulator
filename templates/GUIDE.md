@@ -399,6 +399,48 @@ Full guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/doc
 | `plugins` | `list_plugins` |
 | `cues` | `list_cues` |
 | `validate` | `validate_scenario` |
+
+### Authoring quality gate (`validate`)
+
+**Rule-based soft checks — no LLM.** `lks validate` always returns `valid: true` when schema parses;
+authoring findings are **warnings only** (never fail CI by default).
+
+```bash
+lks validate my-case --root /path/to/target
+```
+
+Response includes:
+
+| Field | Meaning |
+|-------|---------|
+| `warnings[]` | Flat human messages (schema + authoring) |
+| `authoring.scorecard` | Dimensions 0–2 each: goals, constraints, behavior, assertion, risk_tags, interaction_proof (max 12) |
+| `authoring.tier` | Soft suite hint: `blocking` \| `scheduled` \| `exploratory` |
+| `authoring.warning_codes[]` | Machine codes (e.g. `empty_goals`, `barge_without_recovery`, `constraint_without_assert`) |
+| `authoring.warnings[]` | `{code, message, severity}` structured |
+
+Common codes:
+
+| Code | Fix |
+|------|-----|
+| `empty_goals` | Add `Persona.goals[]` job-to-be-done |
+| `barge_without_recovery` | Assert `type: recovery` (or script_verify min after barge) |
+| `constraint_without_assert` | Assert `type: constraint_respected` |
+| `stress_trait_without_interaction` | Add Script/Behavior/speech_conditions for interrupt stress |
+| `hang_up_without_ended_by` | Assert `type: ended_by` |
+| `no_risk_tag` / `no_tags` | Tag `smoke` \| `regression` \| `draft` \| `blocking` \| … |
+
+**Suite tiers (Cekura/Hamming-inspired, soft):**
+
+| Tier | When |
+|------|------|
+| `blocking` | High score, no critical wiring gaps — OK for PR CI subset |
+| `scheduled` | Mid quality — nightly / wider suite |
+| `exploratory` | Empty goals / barge without recovery / stress traits soft-only |
+
+Authoring quality ≠ execute hard gate (status/assert/script_verify after a run).
+
+
 | `export` | `export_scenario` |
 | `scenario-init` | `init_scenario` |
 | `execute` | `execute_scenario` (flags: ``--name``, ``--repeat N --pass-at-k K``, ``--strict-judge``) |

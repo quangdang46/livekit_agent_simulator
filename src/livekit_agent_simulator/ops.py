@@ -204,10 +204,11 @@ def validate_scenario(project_root: Path | str, scenario_id: str) -> dict[str, A
                 warnings.append(f"verify plugin {name!r} is not registered (load errors: {load_info.get('errors')})")
         if load_info.get("errors"):
             warnings.extend(f"plugin load: {e}" for e in load_info["errors"])
-    from .authoring import authoring_scorecard, collect_authoring_warnings
+    from .authoring import build_authoring_report, collect_authoring_warnings
 
+    # Flat messages stay in warnings[] for humans/agents; structured codes in authoring.
     warnings.extend(collect_authoring_warnings(s))
-    scorecard = authoring_scorecard(s)
+    authoring = build_authoring_report(s)
     return {
         "valid": True,
         "id": s.id,
@@ -219,7 +220,7 @@ def validate_scenario(project_root: Path | str, scenario_id: str) -> dict[str, A
         "has_dispatch": s.dispatch is not None and bool(s.dispatch.metadata),
         "pass_criteria": s.pass_criteria,
         "warnings": warnings,
-        "authoring": scorecard,
+        "authoring": authoring,
     }
 
 
