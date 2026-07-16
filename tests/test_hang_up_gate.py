@@ -178,3 +178,27 @@ def test_parse_hang_up_gate_fields():
     assert steps[0].defer_on_open_question is False
     assert steps[0].open_question_idle_ms == 5000
     assert steps[0].require_agent_reply_this_turn is False
+
+
+@pytest.mark.asyncio
+async def test_wait_agent_idle_returns_when_quiet():
+    runner = ScriptRunner(
+        steps=[ScriptStep("bye", "silence", 500, say="Bye", action="hang_up")],
+        observer=_observer(agent_is_active_speaker=False),
+        bridge=MagicMock(),
+        writer=MagicMock(),
+    )
+    await runner._wait_agent_idle(timeout_s=0.2)
+
+
+@pytest.mark.asyncio
+async def test_wait_agent_idle_times_out_while_speaking():
+    runner = ScriptRunner(
+        steps=[ScriptStep("bye", "silence", 500, say="Bye", action="hang_up")],
+        observer=_observer(agent_is_active_speaker=True),
+        bridge=MagicMock(),
+        writer=MagicMock(),
+    )
+    t0 = time.monotonic()
+    await runner._wait_agent_idle(timeout_s=0.15)
+    assert time.monotonic() - t0 >= 0.12
