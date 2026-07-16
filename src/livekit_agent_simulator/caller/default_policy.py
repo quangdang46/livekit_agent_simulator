@@ -33,12 +33,22 @@ class DefaultCallerPolicy:
         """
         cues: list[MidcallCue] = []
         if ctx.first_speaker == "user":
+            if ctx.script_steps:
+                # Script owns the first spoken line — freestyle "speak first" races the
+                # open cue and can leave Gemini in a silent / abortive turn (no mic audio).
+                boot_text = (
+                    "(The call just connected. A timed Script owns your speech. "
+                    "Stay completely silent until you receive a SIMULATOR CUE, "
+                    "then speak that cue line aloud once as the phone caller.)"
+                )
+            else:
+                boot_text = (
+                    "(The call just connected. You speak first per PERSONA: "
+                    "greet briefly and state why you are calling in one short turn.)"
+                )
             cues.append(
                 MidcallCue(
-                    text=(
-                        "(The call just connected. You speak first per PERSONA: "
-                        "greet briefly and state why you are calling in one short turn.)"
-                    ),
+                    text=boot_text,
                     kind="bootstrap",
                     label="first_speaker_user",
                 )
@@ -62,7 +72,8 @@ class DefaultCallerPolicy:
                 MidcallCue(
                     text=(
                         "(Timed Script is active. Do not say bye / goodbye / [END_CALL]. "
-                        "Stay quiet except for answering questions; the simulator will hang up.)"
+                        "Between cues, answer questions in 1–2 natural sentences; "
+                        "the simulator will hang up.)"
                     ),
                     kind="reground",
                     label="script_no_early_bye",

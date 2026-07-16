@@ -1435,3 +1435,244 @@ audio {
     padding-right: 0.75rem;
   }
 }
+
+/* —— Player layout: left run switcher + main —— */
+.app-shell {
+  display: grid;
+  grid-template-columns: minmax(14rem, 17.5rem) minmax(0, 1fr);
+  min-height: 100vh;
+  align-items: stretch;
+}
+
+.app-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.app-main {
+  min-width: 0;
+  min-height: 100vh;
+}
+
+.run-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-size: 0.8125rem;
+}
+
+.run-sidebar-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.run-sidebar-home {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.15rem 0;
+}
+
+.run-sidebar-home:hover {
+  color: var(--agent);
+}
+
+.run-sidebar-filter {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0.4rem 0.55rem;
+  font: inherit;
+}
+
+.run-sidebar-filter:focus {
+  outline: 2px solid color-mix(in srgb, var(--agent) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.run-sidebar-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.run-sidebar-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.3rem 0.35rem;
+  cursor: pointer;
+}
+
+.run-sidebar-tab:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.run-sidebar-tab.is-active {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--panel-2);
+  font-weight: 600;
+}
+
+.run-sidebar-nav {
+  flex: 1;
+  overflow: auto;
+  padding: 0.35rem 0.5rem 1rem;
+}
+
+.run-sidebar-empty {
+  margin: 0.75rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.run-sidebar-group {
+  margin: 0.35rem 0 0.65rem;
+}
+
+.run-sidebar-group > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.run-sidebar-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-sidebar-scenario {
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+  padding: 0.35rem 0.4rem;
+  border-radius: 0.3rem;
+  word-break: break-word;
+}
+
+.run-sidebar-scenario:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.run-sidebar-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.2rem;
+}
+
+.run-sidebar-item {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0.4rem 0.45rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  width: 100%;
+}
+
+.run-sidebar-item:hover {
+  background: var(--panel-2);
+}
+
+.run-sidebar-item.is-active {
+  border-color: color-mix(in srgb, var(--agent) 45%, var(--border));
+  background: color-mix(in srgb, var(--agent) 12%, var(--panel));
+}
+
+.run-sidebar-item-top {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.run-sidebar-item-title {
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-sidebar-item-meta {
+  font-size: 0.7rem;
+  padding-left: 1rem;
+}
+
+.status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--muted);
+}
+
+.status-dot.tone-ok {
+  background: var(--mk-recovery);
+}
+
+.status-dot.tone-fail,
+.status-dot.tone-error {
+  background: var(--warn);
+}
+
+.status-dot.tone-warn {
+  background: var(--active);
+}
+
+.status-dot.tone-muted {
+  background: var(--muted);
+}
+
+.app-shell .player-page {
+  max-width: none;
+  margin: 0;
+  padding: 0.85rem clamp(0.65rem, 1.5vw, 1.35rem) 2rem;
+}
+
+@media (max-width: 860px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .app-sidebar {
+    position: relative;
+    height: auto;
+    max-height: 40vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .run-sidebar-nav {
+    max-height: calc(40vh - 6rem);
+  }
+}

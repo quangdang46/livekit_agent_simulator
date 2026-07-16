@@ -167,6 +167,16 @@ class ScriptRunner:
             )
         return False
 
+    async def _wait_agent_idle(self, *, timeout_s: float = 5.0) -> None:
+        """Wait until agent stops speaking (or timeout) before Script farewell."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while time.monotonic() < deadline:
+            if self._stop.is_set():
+                return
+            if not bool(getattr(self.observer, "agent_is_active_speaker", False)):
+                return
+            await asyncio.sleep(0.05)
+
     def _trigger_active(self, step: ScriptStep) -> bool:
         if step.trigger == "agent_speaking":
             return self.observer.agent_is_active_speaker
@@ -181,13 +191,13 @@ class ScriptRunner:
     async def _fire(self, step: ScriptStep, waited_ms: int) -> None:
         if step.once:
             self._firing.add(step.id)
+        inject_error: str | None = None
         try:
             agent_active_ms = self.observer.agent_active_duration_ms() or 0
             # Strict: "cut across" only if agent is the active speaker *now*.
             # (Historical active_ms alone is not a live interrupt.)
             during_agent_speech = bool(self.observer.agent_is_active_speaker)
 
-            inject_error: str | None = None
             hold_silence_ms = int(step.silence_after_cue_ms or 0)
             if step.action == "wait":
                 kind = "sim.script.wait"
@@ -211,6 +221,9 @@ class ScriptRunner:
                         voice = getattr(sim, "voice", None) if sim is not None else None
                         lang = getattr(voice, "language", None) if voice is not None else None
                     say_text = default_hangup_farewell(lang if isinstance(lang, str) else None)
+                # Prefer a quiet gap before farewell so we do not talk over an agent
+                # re-prompt (budget may have expired while agent was mid-sentence).
+                await self._wait_agent_idle(timeout_s=5.0)
                 if hasattr(self.bridge, "begin_script_hangup_farewell"):
                     self.bridge.begin_script_hangup_farewell()
                 try:
@@ -226,11 +239,14 @@ class ScriptRunner:
                     except Exception as say_err:
                         inject_error = f"{type(say_err).__name__}: {say_err}"
                     # Let goodbye leave the room before disconnect (real human hang-up).
+                    # Scale drain with utterance length so short farewells are not cut.
+                    words = max(1, len(say_text.split()))
+                    drain_s = min(10.0, max(5.0, 1.2 + words * 0.45))
                     if hasattr(self.bridge, "drain_persona_speech"):
-                        await self.bridge.drain_persona_speech(timeout_s=4.0)
+                        await self.bridge.drain_persona_speech(timeout_s=drain_s)
                     else:
-                        await asyncio.sleep(2.5)
-                    await asyncio.sleep(0.35)
+                        await asyncio.sleep(min(4.0, drain_s))
+                    await asyncio.sleep(0.55)
                 finally:
                     if hasattr(self.bridge, "end_script_hangup_farewell"):
                         self.bridge.end_script_hangup_farewell()
@@ -374,10 +390,15 @@ class ScriptRunner:
             self._firing.discard(step.id)
             if step.once:
                 self._fired.add(step.id)
-                self._armed_step_index += 1
-                if self._armed_step_index < len(self.steps):
-                    self._await_post_cue_gap = step.trigger == "agent_speaking"
-                    self._post_cue_gap_since = None
+                # Silent/failed speak must not look like a successful cue chain — abort.
+                if inject_error and step.action == "speak":
+                    self._armed_step_index = len(self.steps)
+                    self.bridge.sim_hang_up()
+                else:
+                    self._armed_step_index += 1
+                    if self._armed_step_index < len(self.steps):
+                        self._await_post_cue_gap = step.trigger == "agent_speaking"
+                        self._post_cue_gap_since = None
                 self._trigger_since.clear()
                 self._trigger_gap_since.clear()
 

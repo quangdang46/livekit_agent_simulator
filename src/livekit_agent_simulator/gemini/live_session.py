@@ -98,6 +98,7 @@ class GeminiCallerBridge:
         # Linear gain for script-injected gemini_text playback (reset on turn_complete).
         self._inject_playback_gain: float = 1.0
         self._inject_turn_active: bool = False
+        self._agent_audio_paused: bool = False
         # Drop persona PCM after hang-up token / spoken "end call" is detected.
         self._mute_persona_audio = False
         # When Script steps remain, freestyle bye/[END_CALL] must not tear the room down.
@@ -396,6 +397,23 @@ class GeminiCallerBridge:
         self._script_hold_until_mono = None
         return False
 
+    def _allow_persona_room_audio(self) -> bool:
+        """Whether Gemini Live PCM may enter the room as caller audio.
+
+        Script still owns barge/hang-up timing, but freestyle answers between
+        cues are allowed (main-compatible). Farewell / END_CALL freestyle is
+        muted separately via ``_mute_hang_up_audio`` + deferred end_call.
+        Script inject and hang-up farewell always pass.
+        """
+        if self._script_hangup_farewell:
+            return True
+        # gemini_text Script inject drives TTS through the same PCM path.
+        if self._inject_turn_active:
+            return True
+        if self._mute_persona_audio or self._persona_output_suppressed():
+            return False
+        return True
+
     def _persona_output_suppressed(self) -> bool:
         if self._suppress_output_until_mono is None:
             return False
@@ -463,19 +481,122 @@ class GeminiCallerBridge:
             )
             return
 
+        # Prefer Gemini Live for gemini_text so Script cues match freestyle caller voice.
+        # Windows SAPI is fallback only (different timbre; used when Live stays silent).
+        if self._live_session is not None:
+            try:
+                await self._inject_gemini_text(text, label=label, delivery=delivery, gain=gain)
+                return
+            except Exception as gemini_err:  # noqa: BLE001
+                self.writer.emit(
+                    "sim.script.error",
+                    spec={
+                        "step_id": label,
+                        "label": label,
+                        "delivery": delivery,
+                        "error": (
+                            f"gemini_text primary failed ({type(gemini_err).__name__}: "
+                            f"{gemini_err}); trying sapi_fallback"
+                        ),
+                    },
+                    source="sim.script",
+                    include_dialogue=False,
+                )
+
+        if self._mixer is not None:
+            local_ms = await self._inject_sapi_fallback(text, label=label, gain=gain)
+            if local_ms > 0:
+                await self._drain_persona_speech(timeout_s=8.0)
+                await asyncio.sleep(0.2)
+                return
+
+        raise RuntimeError(
+            "gemini_text inject failed: Gemini Live unavailable/silent and no local TTS"
+        )
+
+    async def _inject_gemini_text(
+        self,
+        text: str,
+        *,
+        label: str,
+        delivery: str,
+        gain: float,
+    ) -> None:
+        """Speak a Script line via Gemini Live (same voice as freestyle caller)."""
         if self._live_session is None:
             raise RuntimeError("Gemini live session not ready for inject")
-        # Prefer room_pcm + voice.* WAVs when asserts require exact spoken interrupt words.
-        # gemini_text is realtime input to the persona — not guaranteed literal TTS.
         self._inject_playback_gain = gain
         self._inject_turn_active = True
-        await self._live_session.send_realtime_input(text=text)
+        self._agent_audio_paused = True
+        speak_directive = (
+            "SIMULATOR CUE — ignore silence rules for this one turn only. "
+            "Speak the following line aloud now as the phone caller, exactly once, "
+            "then stop and wait silently:\n"
+            f"{text}"
+        )
+        try:
+            await self._live_session.send_realtime_input(text=speak_directive)
+            self.writer.emit(
+                "sim.script_inject",
+                spec={
+                    "text": text,
+                    "label": label,
+                    "delivery": delivery,
+                    "gain": gain,
+                    "attempt": 1,
+                },
+                source="script",
+                include_dialogue=False,
+            )
+            deadline = time.monotonic() + 2.8
+            saw_ms = 0
+            while time.monotonic() < deadline:
+                if self.end_call.is_set():
+                    break
+                if self._mixer is not None:
+                    saw_ms = int(self._mixer.speech_queued_ms() or 0)
+                    if saw_ms > 0:
+                        break
+                await asyncio.sleep(0.05)
+            if saw_ms <= 0:
+                raise RuntimeError(
+                    "gemini_text inject produced no mic audio (model stayed silent)"
+                )
+            await self._drain_persona_speech(timeout_s=8.0)
+            await asyncio.sleep(0.35)
+        finally:
+            self._agent_audio_paused = False
+            self._inject_turn_active = False
+            self._inject_playback_gain = 1.0
+
+    async def _inject_sapi_fallback(
+        self, text: str, *, label: str, gain: float
+    ) -> int:
+        """Play local TTS into the sim mic when Gemini stays silent. Returns queued ms."""
+        if self._mixer is None:
+            return 0
+        from ..audio.sapi_tts import TARGET_RATE, synthesize_pcm16_mono
+
+        pcm = await asyncio.to_thread(synthesize_pcm16_mono, text, rate=TARGET_RATE)
+        if not pcm:
+            return 0
+        duration_s = max(0.05, len(pcm) / 2 / TARGET_RATE)
+        self.suppress_persona_output(int(duration_s * 1000) + 400)
+        self._mixer.push_speech(pcm, gain=gain)
         self.writer.emit(
             "sim.script_inject",
-            spec={"text": text, "label": label, "delivery": delivery, "gain": gain},
+            spec={
+                "text": text,
+                "label": label,
+                "delivery": "sapi_fallback",
+                "gain": gain,
+                "duration_ms": int(duration_s * 1000),
+            },
             source="script",
             include_dialogue=False,
         )
+        await asyncio.sleep(duration_s)
+        return int(duration_s * 1000)
 
     # -------------------------------------------------------- agent -> gemini
 
@@ -508,6 +629,8 @@ class GeminiCallerBridge:
                     )
                     if self.recorder is not None and not obs_recording:
                         self.recorder.push_agent(pcm, GEMINI_IN_RATE)
+                    if self._agent_audio_paused:
+                        continue
                     await session.send_realtime_input(
                         audio=types.Blob(
                             data=pcm,
@@ -549,7 +672,7 @@ class GeminiCallerBridge:
                     # Caller-side transcriptions: what the sim heard itself say (output)
                     # and what it heard from the agent (input).
                     if sc.output_transcription and sc.output_transcription.text:
-                        if not self._persona_output_suppressed():
+                        if self._allow_persona_room_audio():
                             self._sim_out_text += sc.output_transcription.text
                             pending = self._script_steps_pending()
                             early_bye = contains_farewell_signal(self._sim_out_text)
@@ -585,17 +708,21 @@ class GeminiCallerBridge:
                     if sc.model_turn:
                         for part in sc.model_turn.parts or []:
                             blob = part.inline_data
-                            allow_pcm = self._script_hangup_farewell or (
-                                not self._persona_output_suppressed()
-                                and not self._mute_persona_audio
-                            )
-                            if blob and blob.data and allow_pcm:
+                            if blob and blob.data and self._allow_persona_room_audio():
                                 await self._play_pcm(blob.data)
 
                     if sc.turn_complete:
-                        self._inject_turn_active = False
-                        self._inject_playback_gain = 1.0
-                        if self._persona_output_suppressed() and not self._script_hangup_farewell:
+                        inject_turn = self._inject_turn_active
+                        # inject_cue owns clearing _inject_turn_active after drain.
+                        if not inject_turn:
+                            self._inject_playback_gain = 1.0
+                        # TTL suppress / scripted silence only — do not drop freestyle
+                        # answers while Script steps remain (caller may reply to questions).
+                        if (
+                            not inject_turn
+                            and not self._script_hangup_farewell
+                            and self._persona_output_suppressed()
+                        ):
                             self._sim_out_text = ""
                             self._mute_persona_audio = False
                             continue
@@ -668,7 +795,15 @@ class GeminiCallerBridge:
 
     async def _play_pcm(self, pcm: bytes) -> None:
         """Queue Gemini TTS onto the parallel mixer (mixes with active noise layers)."""
-        if not pcm or self._mute_persona_audio:
+        if not pcm:
+            return
+        # Script inject / hang-up farewell must still reach the mic even if freestyle
+        # hang-up mute was latching from a prior deferred goodbye.
+        if (
+            self._mute_persona_audio
+            and not self._inject_turn_active
+            and not self._script_hangup_farewell
+        ):
             return
         gain = self._inject_playback_gain if self._inject_turn_active else 1.0
         if self._mixer is not None:

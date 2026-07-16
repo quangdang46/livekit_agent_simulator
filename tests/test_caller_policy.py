@@ -61,6 +61,8 @@ def test_script_timing_forbids_early_bye():
     assert "simulator-owned" in joined.lower() or "INTERACTION TIMING" in joined
     assert "Do NOT say goodbye" in joined
     assert "Freestyle farewell" in joined
+    assert "1–2 natural" in joined.lower() or "answer in 1" in joined.lower()
+    assert "SIMULATOR CUE" in joined
 
 
 def test_guardrails_script_mode_skips_freestyle_end_call_marker():
@@ -72,6 +74,19 @@ def test_guardrails_script_mode_skips_freestyle_end_call_marker():
     joined = "\n".join(GuardrailsSection().render(ctx))
     assert "A timed Script is active" in joined
     assert "append the exact harness marker" not in joined
+    assert "Natural short answers" in joined or "1–2 natural" in joined or "answer" in joined.lower()
+    assert "Ending before they are addressed is a failure" not in joined
+
+
+def test_goals_script_mode_does_not_require_full_checklist():
+    ctx = CallerPolicyContext(
+        persona={"goals": ["Ask fee", "Sign up"]},
+        locale="en",
+        script_steps=[{"id": "bye"}],
+    )
+    joined = "\n".join(GoalsSection().render(ctx))
+    assert "Goals are context for Script cues" in joined
+    assert "Work through ALL goals one by one" not in joined
 
 
 def test_build_persona_system_instruction_facade():
@@ -125,3 +140,36 @@ def test_default_policy_midcall_script_no_early_bye():
     script_rg = [c for c in cues if c.label == "script_no_early_bye"]
     assert len(script_rg) == 1
     assert "Do not say bye" in script_rg[0].text
+    assert "answer" in script_rg[0].text.lower()
+    assert "1–2" in script_rg[0].text or "1-2" in script_rg[0].text
+
+
+def test_default_policy_script_user_bootstrap_stays_silent():
+    policy = DefaultCallerPolicy()
+    ctx = CallerPolicyContext(
+        persona={"goals": ["Fee"], "brief": "test"},
+        locale="en-US",
+        first_speaker="user",
+        script_steps=[{"id": "open"}, {"id": "bye"}],
+    )
+    cues = policy.midcall_cues(ctx)
+    boot = [c for c in cues if c.kind == "bootstrap"]
+    assert len(boot) == 1
+    assert "SIMULATOR CUE" in boot[0].text
+    assert "Stay completely silent" in boot[0].text
+    assert "speak first" not in boot[0].text.lower()
+
+
+def test_first_speaker_section_defers_to_script():
+    from livekit_agent_simulator.caller.prompt_sections import FirstSpeakerSection
+
+    ctx = CallerPolicyContext(
+        persona={},
+        locale="en-US",
+        first_speaker="user",
+        script_steps=[{"id": "open"}],
+    )
+    joined = "\n".join(FirstSpeakerSection().render(ctx))
+    assert "Script owns" in joined
+    assert "SIMULATOR CUE" in joined
+    assert "You speak first" not in joined
