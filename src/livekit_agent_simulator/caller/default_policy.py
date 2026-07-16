@@ -72,7 +72,8 @@ class DefaultCallerPolicy:
                 MidcallCue(
                     text=(
                         "(Timed Script is active. Do not say bye / goodbye / [END_CALL]. "
-                        "Stay quiet except for answering questions; the simulator will hang up.)"
+                        "Between cues, answer questions in 1–2 natural sentences; "
+                        "the simulator will hang up.)"
                     ),
                     kind="reground",
                     label="script_no_early_bye",

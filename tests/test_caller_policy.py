@@ -61,7 +61,7 @@ def test_script_timing_forbids_early_bye():
     assert "simulator-owned" in joined.lower() or "INTERACTION TIMING" in joined
     assert "Do NOT say goodbye" in joined
     assert "Freestyle farewell" in joined
-    assert "answer briefly" in joined.lower()
+    assert "1–2 natural" in joined.lower() or "answer in 1" in joined.lower()
     assert "SIMULATOR CUE" in joined
 
 
@@ -74,7 +74,7 @@ def test_guardrails_script_mode_skips_freestyle_end_call_marker():
     joined = "\n".join(GuardrailsSection().render(ctx))
     assert "A timed Script is active" in joined
     assert "append the exact harness marker" not in joined
-    assert "Brief answers" in joined or "answer briefly" in joined.lower()
+    assert "Natural short answers" in joined or "1–2 natural" in joined or "answer" in joined.lower()
     assert "Ending before they are addressed is a failure" not in joined
 
 
@@ -140,7 +140,8 @@ def test_default_policy_midcall_script_no_early_bye():
     script_rg = [c for c in cues if c.label == "script_no_early_bye"]
     assert len(script_rg) == 1
     assert "Do not say bye" in script_rg[0].text
-    assert "answering questions" in script_rg[0].text.lower()
+    assert "answer" in script_rg[0].text.lower()
+    assert "1–2" in script_rg[0].text or "1-2" in script_rg[0].text
 
 
 def test_default_policy_script_user_bootstrap_stays_silent():
