@@ -25,7 +25,7 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 ## 0. If you know nothing — do this order
 
 1. `guide` (this text) — read once.
-2. Confirm the **voice agent worker is running** and registered on LiveKit with a known `agent_name`.
+2. Confirm the **agent under test is running** and registered on LiveKit with a known `agent_name`.
 3. `init` on the target repo → fill credentials in `.agent-sim/config.yaml`.
 4. `preflight` until `ok: true`.
 5. `scenario-init <id>` → edit the JSONL (`//` lines are guides; delete unused kinds).
@@ -36,7 +36,7 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 ```bash
 # Install once (optional) — full steps: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/guide/installation.md
 # curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" | bash
-# From anywhere; point --root at the LiveKit agent repo (not the dashboard)
+# From anywhere; point --root at the target LiveKit agent repo
 lks guide
 lks init --root /path/to/target   # safe to re-run; does not overwrite existing config/scenarios
 # edit /path/to/target/.agent-sim/config.yaml
@@ -61,7 +61,7 @@ Created by `init`. **Gitignored.** Paste secrets here (no env substitution in v1
 |---------|----------|---------|
 | `livekit.url` | yes | `wss://…` LiveKit Cloud or self-host |
 | `livekit.api_key` / `api_secret` | yes | Server API credentials |
-| `livekit.agent_name` | yes | Must match the worker’s registered dispatch name |
+| `livekit.agent_name` | yes | Must match the agent’s registered dispatch name |
 | `livekit.dispatch_metadata` | no | Default opaque JSON **string** for all runs |
 | `livekit.agent_join_timeout_ms` | no | Default 25000 |
 | `simulator.google_api_key` | yes | Gemini API key for sim caller (+ judge) |
@@ -121,7 +121,7 @@ observe:
   record_audio: true     # reports/<run-id>/conversation.wav — L=sim, R=agent
   timezone: "Asia/Ho_Chi_Minh"
   lk_transcription: true
-  lk_agent_session: true # default; automatic for LiveKit Agents SDK workers
+  lk_agent_session: true # default; automatic for LiveKit Agents SDK sessions
   # Optional fallback for non-SDK custom events — see portability.md:
   # https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md
   # data_topics: ["myapp.flow"]
@@ -188,15 +188,10 @@ lks scenario-init my-case --root /path/to/target
 - **speech_conditions** → auto barge / ambient / silence Script if you skip hand-written Script  
   - `barge_policy: mid_agent_turn` + optional `barge_asset: builtin:voice.barge_short` (speech WAV; `with_blip` defaults off for `voice.*`)  
   - `noise_gain` / `barge_gain` (`0.0`–`1.0`) scale auto-compiled ambient / barge cues (also per-step Script `gain` / `volume`)
-<<<<<<< HEAD
   - **Quiet caller (STT stress):** `speech_conditions.voice_gain` (`0.0`–`1.0`, default `1.0`; aliases `voice_volume` / `volume`) scales **speech** PCM after Gemini Live (freestyle + inject). Noise beds are unchanged. Gemini Live has **no** native volume/speed API.
   - **Voice speed:** not supported on Gemini Live (`SpeechConfig` is voice name + language only). Do not ship a fake `voice_speed` flag; use soft traits or pre-recorded Script WAVs. Track upstream Live `speech_rate` if Google adds it.
   - **Quiet caller (STT stress):** `speech_conditions.voice_gain` (`0.0`–`1.0`) scales speech PCM after Gemini Live (see example `quiet-caller-confirm`).
   - **Silent mode (dead air):** `speech_conditions.silent_mode: true` — caller stays mute for the whole call (Coval Silent Mode). Disables freestyle, agent-greeted nudge, auto barge/noise; hang_up is silent. Use for reprompt/timeout QA.
-=======
-  - **Quiet caller:** `speech_conditions.voice_gain` (`0.0`–`1.0`) — STT stress (PCM scale).
-  - **Silent mode:** `speech_conditions.silent_mode: true` — dead-air / unresponsive caller.
->>>>>>> 127f8ce (docs: installation lks primary + authoring validate gate for #27 PR)
   - **Continuous ambient bed:** `noise_when: "background"` (or Behavior/Script `"loop": true`) re-queues `room_pcm` noise until hang-up (parallel under speech). One-shot bursts stay default (`once` / no loop).  
 - **Behavior** kind → explicit barge/silence/ambient policies; set Script step `class` (`correction` \| `backchannel` \| `noise` \| `dtmf` \| `silence` \| `escalate`) so recovery metrics and web chips stay honest  
 - **Assert** `outcomes` type **`recovery`** → agent re-engages after barge (`min_agent_finals_after_barge_in`, optional `max_ms_after_barge_to_agent_final`)
@@ -547,8 +542,8 @@ No Node/Vite on the user machine. Player assets ship inside the wheel (built in 
 |---------|----------------|
 | `preflight` config fail | Missing `.agent-sim/config.yaml` → `init` first |
 | `livekit.api` fail | `url` / `api_key` / `api_secret` |
-| `dispatch.agent_timeout` | Worker process up? `agent_name` exact match (e.g. `…-local` vs prod)? |
-| Agent joins but silent | `Execute.first_speaker`; worker may need `Dispatch.metadata` |
+| `dispatch.agent_timeout` | Agent process up? `agent_name` exact match (e.g. `…-local` vs prod)? |
+| Agent joins but silent | `Execute.first_speaker`; agent may need opaque `Dispatch.metadata` |
 | Sim never speaks after agent | Normal nudge only when `first_speaker=agent` and no Script |
 | Judge skipped | Need `PassCriteria` **and** `judge:` block; HTTP needs `base_url`+`api_key` (or `JUDGE_*` env) |
 | Judge HTTP error | `base_url` reachable? OpenAI `/chat/completions` + `stream:false`; model id correct on gateway? |
