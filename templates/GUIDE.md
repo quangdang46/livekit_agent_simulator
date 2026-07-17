@@ -25,7 +25,7 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 ## 0. If you know nothing — do this order
 
 1. `guide` (this text) — read once.
-2. Confirm the **voice agent worker is running** and registered on LiveKit with a known `agent_name`.
+2. Confirm the **agent under test is running** and registered on LiveKit with a known `agent_name`.
 3. `init` on the target repo → fill credentials in `.agent-sim/config.yaml`.
 4. `preflight` until `ok: true`.
 5. `scenario-init <id>` → edit the JSONL (`//` lines are guides; delete unused kinds).
@@ -36,7 +36,7 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 ```bash
 # Install once (optional) — full steps: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/guide/installation.md
 # curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" | bash
-# From anywhere; point --root at the LiveKit agent repo (not the dashboard)
+# From anywhere; point --root at the target LiveKit agent repo
 lks guide
 lks init --root /path/to/target   # safe to re-run; does not overwrite existing config/scenarios
 # edit /path/to/target/.agent-sim/config.yaml
@@ -61,7 +61,7 @@ Created by `init`. **Gitignored.** Paste secrets here (no env substitution in v1
 |---------|----------|---------|
 | `livekit.url` | yes | `wss://…` LiveKit Cloud or self-host |
 | `livekit.api_key` / `api_secret` | yes | Server API credentials |
-| `livekit.agent_name` | yes | Must match the worker’s registered dispatch name |
+| `livekit.agent_name` | yes | Must match the agent’s registered dispatch name |
 | `livekit.dispatch_metadata` | no | Default opaque JSON **string** for all runs |
 | `livekit.agent_join_timeout_ms` | no | Default 25000 |
 | `simulator.google_api_key` | yes | Gemini API key for sim caller (+ judge) |
@@ -121,7 +121,7 @@ observe:
   record_audio: true     # reports/<run-id>/conversation.wav — L=sim, R=agent
   timezone: "Asia/Ho_Chi_Minh"
   lk_transcription: true
-  lk_agent_session: true # default; automatic for LiveKit Agents SDK workers
+  lk_agent_session: true # default; automatic for LiveKit Agents SDK sessions
   # Optional fallback for non-SDK custom events — see portability.md:
   # https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md
   # data_topics: ["myapp.flow"]
@@ -342,10 +342,22 @@ lks scenario-from-run <run-id> --root /path/to/target --write
 lks validate from-my-source-xxxx --root /path/to/target
 ```
 
-The draft recovers Persona, Dispatch, Execute spec, and run stats from the source report.
-It adds a basic transcript Assert + recovery Assert (when barges present).
-``Context.notes`` carries the source run_id, judge info, and metric hints.
-**Review before promoting** — the draft is a starting point, not a golden assertion.
+The draft recovers Persona, Dispatch, Execute spec, and run stats from the source report:
+
+- **Persona.brief** stays a short mission statement — caller intent goes to `goals[]`
+  (source persona goals preferred, else intent-phrased from the first user finals) and
+  `constraints[]`. The raw transcript sample lives only in `Context.notes` (author-only).
+- **Behavior stub**: if the run had a sim cut-in, one `Behavior` barge/noise/backchannel
+  entry is reconstructed from `sim.script.cue` markers (say, class, `after_agent_ms` from
+  observed agent-active time), so a barge-fail replays deterministically.
+- **Script open** (when `first_speaker=user`): a minimal silence-triggered open line is
+  added (source Script open preferred, else first user final). Without it, Behavior
+  barge alone suppresses the Gemini speak-first bootstrap and dead-airs the call.
+- **Asserts**: basic transcript Assert + recovery Assert (when barges present).
+- ``Context.notes`` carries the source run_id, judge info, and metric hints.
+
+**Review before promoting** — the draft header includes a review checklist (goals,
+Behavior timing, Assert tightening, Dispatch). It is a starting point, not a golden assertion.
 
 `first_speaker`:
 
@@ -542,8 +554,8 @@ No Node/Vite on the user machine. Player assets ship inside the wheel (built in 
 |---------|----------------|
 | `preflight` config fail | Missing `.agent-sim/config.yaml` → `init` first |
 | `livekit.api` fail | `url` / `api_key` / `api_secret` |
-| `dispatch.agent_timeout` | Worker process up? `agent_name` exact match (e.g. `…-local` vs prod)? |
-| Agent joins but silent | `Execute.first_speaker`; worker may need `Dispatch.metadata` |
+| `dispatch.agent_timeout` | Agent process up? `agent_name` exact match (e.g. `…-local` vs prod)? |
+| Agent joins but silent | `Execute.first_speaker`; agent may need opaque `Dispatch.metadata` |
 | Sim never speaks after agent | Normal nudge only when `first_speaker=agent` and no Script |
 | Judge skipped | Need `PassCriteria` **and** `judge:` block; HTTP needs `base_url`+`api_key` (or `JUDGE_*` env) |
 | Judge HTTP error | `base_url` reachable? OpenAI `/chat/completions` + `stream:false`; model id correct on gateway? |

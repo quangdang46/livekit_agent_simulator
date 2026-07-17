@@ -74,7 +74,7 @@ Update this file when gaps close or priorities change.
 | Asserts | tools, transcript, recovery, latency, ended_by, goals_met, SIP |
 | Metrics | p50/p95/p99, TTFW, recovery, barge rate |
 | pass@k / suite / parallel | `--repeat`, `--pass-at-k`, `execute-all --parallel` |
-| Fail → golden draft | `scenario-from-run` (extract quality still weak — see P1.H) |
+| Fail → golden draft | `scenario-from-run` (smart extract: goals/constraints + Behavior stub from markers — P1.J done) |
 | Forensics + web + MCP + portable install | events, WAV, report player, CLI↔ops parity |
 
 P0 “talk like a person” ≈ **done v1**.  
@@ -105,7 +105,7 @@ Ranked by ROI. Feature **and** logic gaps from research.
 | **P1.D** | **Golden baseline compare** | Feature | CI before/after | `compare --baseline <run-id\|suite>` hard-fail latency/assert deltas | F8 |
 | **P1.E** | **outbound_sim_callee reliability** | Ops | DID hairpin (`docs/PROBLEM.md`) | Preflight + DID/dispatch recipe; T6 sip-to-ai only if needed | P1.E |
 | **P1.I** | **Tool required_order ledger** | Assert | Hamming workflow | Assert tools in order (not only min_count); fail on wrong sequence | Workflow |
-| **P1.J** | **scenario-from-run extract quality** | Logic | Fail→golden flywheel | Prefer goals + constraints + 1 Behavior barge from markers; **not** transcript dump into brief | C6 / L7 |
+| **P1.J** | **scenario-from-run extract quality** ✅ | Logic | Fail→golden flywheel | Done (#34): goals/constraints preferred over transcript; brief = mission statement; 1 Behavior barge/noise/backchannel stub from `sim.script.cue` markers; transcript sample → Context.notes; Script open when `first_speaker=user`; review checklist in draft header | C6 / L7 |
 | **P1.K** | **Interruption rate timer** | ✅ done (#25) | Coval None/Low/Med/High (~never/90s/45s/30s) | `speech_conditions.interruption_rate` → parallel `InterruptRateRunner` (fires only while agent is active speaker; `interruption_*` overrides; disabled by silent_mode) | C7 / F10 |
 | **P1.L** | **Event taxonomy polish** | Events + web | Hamming interruption lifecycle | `interruption.recovered`, class on cues, behavior_summary by class; web chips | Events |
 
