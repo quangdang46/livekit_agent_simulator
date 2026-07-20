@@ -294,7 +294,14 @@ class Observer:
 
     async def finalize_session_snapshot(self) -> None:
         if self._agent_session is not None:
+            # Drain late RemoteSession frames before snapshot/request (room may already be gone).
+            await self._agent_session.drain_ingress(timeout_s=1.5)
             await self._agent_session.fetch_session_snapshot()
+
+    async def drain_session_ingress(self, *, timeout_s: float = 1.5) -> None:
+        """Public drain hook for post-disconnect grace (room-teardown tool race)."""
+        if self._agent_session is not None:
+            await self._agent_session.drain_ingress(timeout_s=timeout_s)
 
     async def detach(self) -> None:
         for t in self._record_tasks:

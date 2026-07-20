@@ -695,6 +695,9 @@ async def _conversation_loop(
         if bridge.end_call.is_set():
             return "sim_end_call"
         if observer.agent_disconnected.is_set():
+            # Short grace so late RemoteSession tool frames (room-teardown race) can land
+            # before we finalize / detach and cancel ingress tasks.
+            await observer.drain_session_ingress(timeout_s=1.5)
             return "agent_disconnected"
         if observer.turn >= run.max_turns and observer.agent_replied_this_turn:
             return "max_turns"

@@ -96,7 +96,30 @@ class AgentSessionObserver:
         self.room.register_byte_stream_handler(TOPIC_SESSION_MESSAGES, self._on_byte_stream)
         self._attached = True
 
+    async def drain_ingress(self, *, timeout_s: float = 1.5) -> None:
+        """Wait for in-flight RemoteSession byte streams instead of cancelling them.
+
+        Tools that delete the room often publish ``function_tools_*`` /
+        ``tool_execution_updated`` as the peer disconnects. Returning on
+        ``agent_disconnected`` and immediately cancelling ingress tasks drops
+        those frames → false-negative ``tool.start`` / ``tool.end``.
+        """
+        if not self._tasks:
+            return
+        pending = tuple(self._tasks)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=max(0.0, timeout_s),
+            )
+        except asyncio.TimeoutError:
+            # Leave unfinished tasks for detach() to cancel.
+            pass
+
     async def detach(self) -> None:
+        # Prefer draining late tool events before tearing the handler down.
+        await self.drain_ingress(timeout_s=0.75)
+
         if self._attached:
             try:
                 self.room.unregister_byte_stream_handler(TOPIC_SESSION_MESSAGES)
@@ -164,13 +187,10 @@ class AgentSessionObserver:
             self._handle_tools_executed(event.function_tools_executed)
             return
         if event_type == "tool_execution_updated":
-            update = event.tool_execution_updated
-            self.writer.emit(
-                "session.tool_execution",
-                spec=_message_dict(update),
-                source=_SOURCE,
-                include_dialogue=False,
-            )
+            self._handle_tool_execution_updated(event.tool_execution_updated)
+            return
+        if event_type == "conversation_item_added":
+            self._handle_conversation_item_added(event.conversation_item_added)
             return
         if event_type == "agent_state_changed":
             changed = event.agent_state_changed
@@ -217,6 +237,61 @@ class AgentSessionObserver:
             return
         self._last_usage = usage
         self._emit_session("session.usage", usage)
+
+    def _handle_tool_execution_updated(
+        self, update: agent_pb.AgentSessionEvent.ToolExecutionUpdated
+    ) -> None:
+        """Promote progress events to tool.start/end so teardown races still record tools.
+
+        Some agent SDKs emit ``tool_execution_updated`` before ``function_tools_executed``.
+        When the room dies during tool teardown, the executed event (and chat-history
+        reconcile) may never arrive — but ``started`` / ``ended`` often already did.
+        """
+        self.writer.emit(
+            "session.tool_execution",
+            spec=_message_dict(update),
+            source=_SOURCE,
+            include_dialogue=False,
+        )
+        update_kind = update.WhichOneof("update")
+        if update_kind == "started" and update.HasField("started"):
+            call = update.started.function_call
+            if call.name or call.call_id or call.id:
+                self._emit_tool_start(call)
+            return
+        if update_kind == "ended" and update.HasField("ended"):
+            ended = update.ended
+            call_id = ended.call_id or None
+            item_id = ended.id or None
+            key = self._tool_key(call_id, item_id)
+            if key and key in self._completed_call_ids:
+                return
+            start = self._open_tools.get(key) if key else None
+            name = None
+            if start is not None:
+                name = start.get("spec", {}).get("name")
+            status_name = _enum_name(ended, "status")
+            is_error = status_name in ("TC_ERROR", "TC_CANCELLED")
+            output = agent_pb.FunctionCallOutput(
+                id=ended.id or "",
+                call_id=ended.call_id or "",
+                name=name or "",
+                output=ended.message or status_name or "",
+                is_error=is_error,
+            )
+            self._emit_tool_output(output, paired_start=start, paired_key=key)
+            return
+
+    def _handle_conversation_item_added(
+        self, added: agent_pb.AgentSessionEvent.ConversationItemAdded
+    ) -> None:
+        """Surface function_call chat items as tool.start when started events were dropped."""
+        if not added.HasField("item"):
+            return
+        item = added.item
+        if item.WhichOneof("item") != "function_call":
+            return
+        self._emit_tool_start(item.function_call)
 
     def _tool_key(self, call_id: str | None, item_id: str | None) -> str | None:
         return call_id or item_id or None
