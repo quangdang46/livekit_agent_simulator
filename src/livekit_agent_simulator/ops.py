@@ -414,6 +414,7 @@ async def execute_scenarios(
     repeat: int = 1,
     pass_at_k: int | None = None,
     parallel: int = 1,
+    wait_s: float = 0.0,
 ) -> dict[str, Any]:
     """Run multiple scenarios + suite matrix / CI gate.
 
@@ -423,6 +424,12 @@ async def execute_scenarios(
     ``repeat`` / ``pass_at_k`` propagate to each scenario (pass@k).
     ``parallel`` runs up to N scenarios concurrently (default 1 = sequential).
     Within a scenario, ``repeat`` iterations stay sequential.
+
+    ``wait_s`` is a cooldown (seconds) after each scenario finishes before the
+    next one may start on that concurrency slot (or before the next sequential
+    run). The first scenario(s) of the suite start immediately. Default 0 —
+    this is an optional load knob for the target agent worker, not a substitute
+    for per-run ``wait_for_agent`` / ``agent_join_timeout_ms``.
     """
     import asyncio
 
@@ -430,6 +437,8 @@ async def execute_scenarios(
 
     if parallel < 1:
         raise ValueError(f"parallel must be >= 1, got {parallel}")
+    if wait_s < 0:
+        raise ValueError(f"wait_s must be >= 0, got {wait_s}")
 
     cfg = load_config(project_root)
     listed = _list_scenarios(cfg.scenarios_dir)
@@ -454,14 +463,20 @@ async def execute_scenarios(
                 "error": f"{type(e).__name__}: {e}",
             }
 
+    async def _cooldown() -> None:
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+
     if parallel == 1 or len(targets) <= 1:
         results: list[dict[str, Any]] = []
-        for sid in targets:
+        for i, sid in enumerate(targets):
             # Cooperative cancel: do not start the next scenario after Ctrl+C.
             task = asyncio.current_task()
             cancelling = getattr(task, "cancelling", None) if task is not None else None
             if callable(cancelling) and cancelling():
                 raise asyncio.CancelledError()
+            if i > 0:
+                await _cooldown()
             results.append(await _one(sid))
     else:
         # Admit at most ``parallel`` workers. Do NOT spawn one task per scenario
@@ -487,7 +502,10 @@ async def execute_scenarios(
                 if stop.is_set():
                     return
                 try:
+                    # Hold the worker slot through cooldown so the next admitted
+                    # scenario cannot start until wait_s after this finish.
                     out = await _one(sid)
+                    await _cooldown()
                 except asyncio.CancelledError:
                     stop.set()
                     raise
@@ -522,6 +540,7 @@ async def execute_scenarios(
         "ok": suite["ok"],
         "exit_code": suite["exit_code"],
         "parallel": parallel,
+        "wait_s": wait_s,
     }
     if write_report:
         paths = write_suite_report(suite, cfg.reports_dir)
