@@ -243,12 +243,29 @@ class StyleTraitsSection:
 
 
 class NaturalSpeechSection:
-    """Occasional fillers / hesitation — natural and chatty bands only."""
+    """Natural speech, re-engagement, anti-repetition — for natural and chatty bands."""
 
     def render(self, ctx: CallerPolicyContext) -> list[str]:
         if ctx.resolved_verbosity() == "quiet":
             return []
-        return [
+        verbosity = ctx.resolved_verbosity()
+        lines = [
+            "",
+            "## DRIVING THE CONVERSATION",
+            "You are a real human caller — not a passive questionnaire respondent.",
+            "If the assistant takes longer than a few seconds to respond, you may:",
+            "- Say 'Hello?' or 'Are you still there?' to re-engage after 5+ seconds of silence.",
+            "- Repeat or rephrase your question if the assistant didn't seem to catch it.",
+            "- Add more context unprompted: 'I'm just trying to figure out... because...'",
+            "- Express impatience or confusion naturally: 'Sorry, did I lose you?'",
+            "A real caller does NOT sit in dead silence waiting. If you hear nothing for several seconds, speak up.",
+        ]
+        if verbosity == "chatty":
+            lines.append(
+                "If the assistant is being slow, fill the gap with extra context or ask "
+                "'Are you still looking that up?'"
+            )
+        lines.extend([
             "",
             "## NATURAL SPEECH",
             "Sound like a real caller: occasional brief hesitation sounds are OK "
@@ -263,7 +280,21 @@ class NaturalSpeechSection:
             'or "The order never showed up, so I\'m calling to track it and figure out '
             'if I should wait or reorder."',
             "Stay goal-bound; do not invent goodbye while Script steps remain.",
-        ]
+        ])
+        lines.extend([
+            "",
+            "## ANTI-REPETITION",
+            "IMPORTANT: Never repeat the same exact phrase or idea across consecutive turns.",
+            "Real callers naturally advance the conversation — they do not echo themselves.",
+            "- If you already said 'thanks for the info, I appreciate it' and the assistant "
+            "keeps selling, do NOT say the same thing again.",
+            "- Instead, either: re-engage with what the assistant said ('Yeah, but as I said "
+            "I need to think about it first'), or escalate ('Look, I've given you my answer')",
+            "- If you are ready to end the call, say a clear goodbye and stop.",
+            "- A real person does not repeat themselves hoping the other person will listen — "
+            "they either insist with fresh words or disengage.",
+        ])
+        return lines
 
 
 class ConstraintsSection:
@@ -380,7 +411,7 @@ class ScriptTimingSection:
         n_fix = sum(1 for s in ctx.script_steps if _step_overlay(s) == "fixture")
         n_line = sum(1 for s in ctx.script_steps if _step_overlay(s) == "line")
         verbosity = ctx.resolved_verbosity()
-        return [
+        lines = [
             "",
             "## SCRIPT OVERLAY (simulator-owned timing)",
             f"This call has {n} timed Script step(s) "
@@ -392,9 +423,12 @@ class ScriptTimingSection:
             between_cues_answer_guidance(verbosity),
             "If the assistant asks a question or checks whether you are still on the line, "
             "answer as the caller — do not wait for another simulator injection.",
+            "If the assistant goes silent for several seconds: re-engage naturally. "
+            "Do not just wait passively — say 'Are you still there?' or repeat yourself.",
             "Do NOT freestyle barge-ins or goodbye / [END_CALL] while Script steps remain.",
             "Only the final Script hang-up step ends the call. Freestyle farewell will FAIL the test.",
         ]
+        return lines
 
 
 class FirstSpeakerSection:
@@ -407,6 +441,13 @@ class FirstSpeakerSection:
             return [
                 "Silent mode: produce zero speech for the entire call. "
                 "Do not open, greet, or answer — stay mute.",
+            ]
+        if ctx.script_steps and ctx.first_speaker == "agent":
+            return [
+                "Opening: the assistant will greet you first. Stay silent after their greeting. "
+                "The simulator will inject your first line as a timed cue. "
+                "Wait for that cue before speaking — do not respond to the assistant's greeting yourself. "
+                "After that first injected line, you may talk freely again until the next cue.",
             ]
         if ctx.script_steps:
             return [
@@ -479,6 +520,11 @@ class GuardrailsSection:
             ),
             "If you say goodbye or [END_CALL] early, the automated test will FAIL.",
             between,
+            (
+                "The assistant may pause for several seconds. That is NOT a cue to end the call. "
+                "Instead, re-engage: say 'Hello?' or repeat your question. "
+                "A real caller does not hang up after every pause."
+            ),
         ]
         if has_script:
             lines.extend(
@@ -494,6 +540,16 @@ class GuardrailsSection:
                     "say ONE short goodbye in your language and stop speaking. "
                     "A clear bye/goodbye ends the call — do not linger in thank-you loops. "
                     "Optionally append [END_CALL] once for the harness (do not read brackets aloud).",
+                    "",
+                    "IMPORTANT: If you already said a clear goodbye or signal that you are done, "
+                    "and the assistant ignores it and keeps talking:",
+                    "- Do NOT repeat your goodbye phrase. Do NOT say the same thing again.",
+                    "- A real caller either stays silent, or says something firm exactly once: "
+                    "'Look, I've given you my answer. Thanks. Bye.'",
+                    "- If you say 'I'll think about it, thanks' and the agent still pushes, "
+                    "you may say more firmly: 'I said I'll think about it. I'll call if I'm keen. Bye.'",
+                    "- Never repeat yourself across consecutive turns with the same thought.",
+                    "- After a clear goodbye, you are done. Stay silent and wait for the agent to hang up.",
                 ]
             )
         lines.extend(
