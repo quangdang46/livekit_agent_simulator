@@ -195,6 +195,12 @@ def export_scenario_dict(scenario: Scenario) -> dict[str, Any]:
                     "delivery": s.delivery,
                     "asset": s.asset,
                     "silence_after_cue_ms": s.silence_after_cue_ms,
+                    "action": s.action,
+                    **(
+                        {"mute_persona": s.mute_persona}
+                        if s.mute_persona is not None
+                        else {}
+                    ),
                     "barge_in": s.barge_in,
                     "class": s.interrupt_class,
                     "with_blip": s.with_blip,

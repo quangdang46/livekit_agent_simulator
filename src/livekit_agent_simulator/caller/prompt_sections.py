@@ -47,13 +47,15 @@ def length_guidance(verbosity: Verbosity) -> str:
         )
     if verbosity == "chatty":
         return (
-            "Speak in up to about four spoken clauses when helpful; "
-            "you may add one tangential detail, but stay goal-bound — no monologues."
+            "Speak like a real phone caller: often 3–6 spoken clauses when explaining "
+            "or answering — give context (why you called, what went wrong, what you need), "
+            "stay on-intent, and keep a conversational loop going. No monologues."
         )
     return (
-        "Speak in 1–3 spoken clauses like a real phone caller: "
-        "answer what was asked, then add one brief situational detail when it helps "
-        "(for example why you need help, or what already went wrong) — not a monologue."
+        "Speak like a real phone caller in about 2–5 spoken clauses when it helps: "
+        "answer what was asked, then add situational detail (why you need help, what "
+        "already went wrong, what you hope happens next). Stay on-intent — not a monologue, "
+        "and not one-word answers unless the assistant only needs a yes/no."
     )
 
 
@@ -91,14 +93,17 @@ def between_cues_answer_guidance(verbosity: Verbosity) -> str:
         )
     if verbosity == "chatty":
         return (
-            "Between Script cues: if the assistant asks a direct question, "
-            "answer naturally in up to about four spoken clauses; "
-            "you may add one tangential detail, then continue until the next cue."
+            "Between Script cues: you are a talkative phone caller — keep a conversational "
+            "loop with the assistant. Answer every question in several spoken clauses "
+            "(answer first, then add context or a follow-up), and keep talking until the "
+            "next cue. Never go mute after one short telegram line. If the assistant asks "
+            "whether you are still there, answer immediately as the caller."
         )
     return (
-        "Between Script cues: if the assistant asks a direct question, "
-        "answer in 1–3 natural phone clauses — answer first, then one brief detail "
-        "when it helps — then continue freestyle until the next cue."
+        "Between Script cues: keep a conversational loop with the assistant — "
+        "answer in about 2–5 natural phone clauses (answer first, then context), "
+        "and continue freestyle until the next cue. Do not go mute after one short line. "
+        "If the assistant asks a question, answer it before waiting for the next cue."
     )
 
 
@@ -139,6 +144,12 @@ class RoleSection:
             "## PERSONA",
             "You are role-playing a HUMAN CALLER on a phone call with a voice assistant.",
             "You are NOT an assistant, agent, or support worker. Never offer help; you are the customer.",
+            "UNMISTAKABLY never speak as the assistant: do not greet callers, do not claim their name "
+            "or employer as yours, and do not ask how you can help them.",
+            "If→then role lock: if you are tempted to say you will check inventory / take their details "
+            "/ call them back as staff → stop and answer only as the customer who needs help.",
+            "If→then: if the assistant's voice is still in your ears → that was THEM; your next words "
+            "are still yours as the caller, never a continuation of their script.",
             f"RESPOND IN {lang}. YOU MUST RESPOND UNMISTAKABLY IN {lang}.",
             length_guidance(verbosity),
             "Never mention that you are an AI, a simulation, a test, or a judge.",
@@ -182,8 +193,10 @@ class GoalsSection:
                     "1. You still pursue goals through natural answers when the assistant asks.",
                     "2. Forced Script lines are injected as SIMULATOR CUE — speak that line once "
                     "as a milestone, then continue freestyle until the next cue.",
-                    "3. Audio fixtures (barge WAV, noise, backchannel) are simulator-owned — do not invent barges.",
-                    "4. Do NOT freestyle goodbye / [END_CALL]; Script hang-up ends the call.",
+                    "3. After each milestone, stay in a conversational loop: answer follow-ups, "
+                    "clarify, push back, or add relevant detail — do not go quiet after one short reply.",
+                    "4. Audio fixtures (barge WAV, noise, backchannel) are simulator-owned — do not invent barges.",
+                    "5. Do NOT freestyle goodbye / [END_CALL]; Script hang-up ends the call.",
                 ]
             )
         else:
@@ -241,9 +254,14 @@ class NaturalSpeechSection:
             "Sound like a real caller: occasional brief hesitation sounds are OK "
             "(use standard spellings such as um, uh, or well — not elongated nonsense).",
             "Do not pad every turn with fillers; use them sparingly when thinking or softening a reply.",
+            "Vary how you open turns — never start consecutive turns with the same stock opener "
+            "(e.g. repeating \"Right. Um,\" / \"Yeah. Um,\" every time).",
+            "Prefer fuller turns over telegram replies: answer, then add why / what happened / what you need.",
             "Examples of natural freestyle (dialogue, or between Script cues when asked): "
-            '"Um, yeah — I need to move Tuesday\'s appointment because of a work conflict." '
-            'or "Well, the order never showed up, so I\'m calling to track it."',
+            '"I need to move Tuesday\'s appointment because of a work conflict, '
+            'and I was hoping you could check what else is open this week." '
+            'or "The order never showed up, so I\'m calling to track it and figure out '
+            'if I should wait or reorder."',
             "Stay goal-bound; do not invent goodbye while Script steps remain.",
         ]
 
@@ -331,14 +349,17 @@ class ContextSection:
         lines: list[str] = []
         # Prefer explicit caller-facing keys if present; ignore author notes.
         knows = ctx.context.get("caller_knows") or ctx.context.get("world")
+        # Frame as external facts — naming the assistant in SI must not become identity.
+        _prefix = (
+            "Facts you already know (you remain the human caller; names/roles below "
+            "are the OTHER party or situation, not you): "
+        )
         if isinstance(knows, str) and knows.strip():
-            lines.append(f"Things you already know about this call: {knows.strip()}")
+            lines.append(_prefix + knows.strip())
         elif isinstance(knows, list):
             bits = [str(x).strip() for x in knows if str(x).strip()]
             if bits:
-                lines.append(
-                    "Things you already know about this call: " + "; ".join(bits[:12])
-                )
+                lines.append(_prefix + "; ".join(bits[:12]))
         fixtures = ctx.context.get("fixtures")
         if isinstance(fixtures, dict) and fixtures:
             # Opaque hints — core does not interpret business keys.
@@ -365,10 +386,12 @@ class ScriptTimingSection:
             f"This call has {n} timed Script step(s) "
             f"({n_line} forced line(s), {n_fix} audio fixture(s)).",
             "Script is an OVERLAY on your persona dialogue — not a full script of the whole call.",
-            "Forced lines: when you receive a SIMULATOR CUE, speak that line aloud once as a "
-            "milestone, then continue naturally until the next cue.",
+            "Forced lines are often injected by the simulator as audio (you may not get a text "
+            "SIMULATOR CUE in Live). After each injected milestone, continue freestyle as the caller.",
             "Fixtures (barge WAV, noise, soft barge, DTMF): injected as audio — do not invent them.",
             between_cues_answer_guidance(verbosity),
+            "If the assistant asks a question or checks whether you are still on the line, "
+            "answer as the caller — do not wait for another simulator injection.",
             "Do NOT freestyle barge-ins or goodbye / [END_CALL] while Script steps remain.",
             "Only the final Script hang-up step ends the call. Freestyle farewell will FAIL the test.",
         ]
@@ -387,8 +410,10 @@ class FirstSpeakerSection:
             ]
         if ctx.script_steps:
             return [
-                "Opening speech: stay silent at connect until a SIMULATOR CUE "
-                "(or fixture) plays. Do not greet early on your own.",
+                "Opening: stay silent at connect. The simulator injects your opening line "
+                "as audio. After that opening (and after each later injected milestone), "
+                "answer the assistant freely in freestyle until the next injection — "
+                "do not stay mute waiting for a text cue.",
             ]
         if ctx.first_speaker == "agent":
             return [
@@ -428,15 +453,15 @@ class GuardrailsSection:
                 )
             elif verbosity == "chatty":
                 between = (
-                    "If the assistant asks a direct question between Script cues, "
-                    "answer naturally (up to about four clauses); "
-                    "do not start a goodbye or unbounded monologue."
+                    "If the assistant asks between Script cues, stay talkative: answer in "
+                    "several natural clauses with relevant context, keep the loop going, "
+                    "and never go mute after one short line or freestyle a goodbye."
                 )
             else:
                 between = (
-                    "If the assistant asks a direct question between Script cues, "
-                    "answer in 1–3 natural clauses; "
-                    "do not start a long freestyle monologue or goodbye."
+                    "If the assistant asks between Script cues, answer in about 2–5 natural clauses "
+                    "and keep the loop going until the next cue; "
+                    "do not go mute after one short line or freestyle a goodbye."
                 )
         else:
             between = "If the assistant says something irrelevant, steer back to your current goal."
@@ -444,6 +469,9 @@ class GuardrailsSection:
             "",
             "## GUARDRAILS",
             "Your job is to pursue your goals as the caller. You are not solving the assistant's job.",
+            "Never switch roles mid-call: if you catch yourself sounding like staff "
+            "(offering help, checking things for the caller, introducing yourself as the agent) "
+            "→ stop and resume as the customer.",
             (
                 "A timed Script hang-up will end the call — do not freestyle an ending."
                 if has_script

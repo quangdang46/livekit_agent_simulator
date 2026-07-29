@@ -102,8 +102,14 @@ def _mostly_script_say(text: str, say: str) -> bool:
         if len(content) >= 2 or len(extras) > max(24, int(len(ns) * 0.45)):
             return False
         return True
-    if nt in ns and len(ns) - len(nt) <= 20:
-        return True
+    if nt in ns:
+        # STT often splits a multi-clause Script say into separate finals
+        # ("…Mazda CX-5 actually." then "Is that one still available?").
+        content = [w for w in nt.split() if len(w) >= 4 and w not in _CONTENT_STOP]
+        if len(content) >= 2 or len(nt) >= 12:
+            return True
+        if len(ns) - len(nt) <= 20:
+            return True
     # Word-overlap only if lengths are similar (avoid tagging long freestyle).
     if not _text_overlap(text, say):
         return False

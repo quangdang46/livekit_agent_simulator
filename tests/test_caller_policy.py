@@ -24,6 +24,16 @@ def test_role_section_includes_locale():
     assert "RESPOND IN vi-VN" in joined
     assert "HUMAN" in joined
     assert "Sam" in joined
+    assert "If→then" in joined or "role lock" in joined.lower()
+
+
+def test_guardrails_block_role_flip():
+    joined = "\n".join(
+        GuardrailsSection().render(
+            CallerPolicyContext(persona={"goals": ["Ask fee"]}, locale="en")
+        )
+    )
+    assert "Never switch roles" in joined or "sounding like staff" in joined
 
 
 def test_role_section_situation_and_outcome():
@@ -84,7 +94,8 @@ def test_script_timing_forbids_early_bye():
     assert "Freestyle farewell" in joined
     assert "1–3 natural" in joined or "continue freestyle" in joined.lower()
     assert "milestone" in joined.lower()
-    assert "SIMULATOR CUE" in joined
+    assert "freestyle" in joined.lower()
+    assert "do not wait for another simulator injection" in joined.lower()
     # Natural default must not lock the old hard 1–2 ceiling as sole length rule
     assert "1–2 natural phone sentences" not in joined
     assert "answer in 1–2 natural" not in joined.lower()
@@ -193,7 +204,8 @@ def test_first_speaker_section_defers_to_script():
         script_steps=[{"id": "open"}],
     )
     joined = "\n".join(FirstSpeakerSection().render(ctx))
-    assert "SIMULATOR CUE" in joined
+    assert "stay silent at connect" in joined.lower()
+    assert "freestyle" in joined.lower()
     assert "You speak first" not in joined
 
 
@@ -280,7 +292,7 @@ def test_default_si_natural_band_no_hard_one_two_ceiling():
         persona={"name": "Sam", "goals": ["Ask fee"]},
         locale="en-US",
     )
-    assert "1–3 spoken clauses" in prompt
+    assert "2–5 spoken clauses" in prompt or "2-5 spoken clauses" in prompt
     assert "NATURAL SPEECH" in prompt
     assert "um" in prompt.lower() or "uh" in prompt.lower()
     assert "Keep every utterance short and natural like real phone speech (1-2 sentences)." not in prompt
@@ -314,7 +326,7 @@ def test_verbosity_chatty_si_longer_band_and_fillers():
         },
         locale="en-US",
     )
-    assert "four spoken clauses" in prompt.lower() or "about four" in prompt.lower()
+    assert "3–6 spoken clauses" in prompt.lower() or "several spoken" in prompt.lower() or "3-6" in prompt.lower()
     assert "NATURAL SPEECH" in prompt
 
 
@@ -331,7 +343,7 @@ def test_trait_quiet_and_chatty_si_bands():
         locale="en-US",
     )
     assert "NATURAL SPEECH" in chatty_prompt
-    assert "four" in chatty_prompt.lower()
+    assert "3–6" in chatty_prompt or "3-6" in chatty_prompt or "conversational loop" in chatty_prompt.lower()
 
 
 def test_explicit_verbosity_overrides_traits_in_si():

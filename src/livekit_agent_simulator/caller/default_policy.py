@@ -76,13 +76,13 @@ class DefaultCallerPolicy:
                 between = "answer questions in one short spoken clause;"
             elif verbosity == "chatty":
                 between = (
-                    "answer questions in up to about four spoken clauses "
-                    "(one tangential detail OK);"
+                    "keep a conversational loop — answer in several spoken clauses "
+                    "with context when helpful; do not go mute after one short line;"
                 )
             else:
                 between = (
-                    "answer questions in 1–3 natural spoken clauses "
-                    "(one brief detail OK);"
+                    "keep a conversational loop — answer in about 2–5 natural spoken clauses "
+                    "with context when helpful; do not go mute after one short line;"
                 )
             cues.append(
                 MidcallCue(

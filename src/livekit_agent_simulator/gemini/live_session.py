@@ -15,7 +15,9 @@ LiveKit side:
 
 from __future__ import annotations
 
+import array
 import asyncio
+import math
 import time
 from pathlib import Path
 from collections.abc import Callable
@@ -45,7 +47,109 @@ if TYPE_CHECKING:
 GEMINI_IN_RATE = 16_000
 GEMINI_OUT_RATE = 24_000
 
-__all__ = ["END_CALL_TOKEN", "GeminiCallerBridge", "resolve_voice_gain"]
+# Gate agent→Gemini PCM and commit turns with activity_start/activity_end.
+# Auto VAD stays OFF: continuous WebRTC silence + auto VAD never reliably
+# committed agent turns for freestyle; audio_stream_end alone unlocked hearing
+# (017) but not talkativeness. Manual activity markers are the Live API
+# contract for forcing generation (ai.google.dev Live capabilities).
+_AGENT_SPEECH_RMS_THRESHOLD = 100.0
+# Docs: ≥500ms end-of-speech for manual client VAD quality.
+_AGENT_STREAM_END_SILENCE_MS = 650
+_AGENT_SPEECH_START_FRAMES = 1
+_AGENT_TRAILING_PAD_MS = 120.0
+
+__all__ = [
+    "END_CALL_TOKEN",
+    "GeminiCallerBridge",
+    "pcm16_mono_rms",
+    "resolve_voice_gain",
+    "script_speak_directive",
+]
+
+
+def pcm16_mono_rms(pcm: bytes) -> float:
+    """RMS of little-endian PCM16 mono bytes (0.0 if empty)."""
+    if len(pcm) < 2:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if not samples:
+        return 0.0
+    acc = 0.0
+    for s in samples:
+        acc += float(s) * float(s)
+    return math.sqrt(acc / len(samples))
+
+
+def script_speak_directive(text: str, *, hangup_farewell: bool = False) -> str:
+    """Realtime-input text that drives a Script ``say`` through Gemini Live TTS.
+
+    Keep this message to a single job: speak the milestone line verbatim.
+    Freestyle-after-cue belongs in system instruction only — putting "continue
+    naturally" in the same realtime turn made Gemini paraphrase/expand the line
+    (and inflated natural_* metrics when say-matching failed).
+    Hang-up farewell is the exception: speak once, then stay quiet for disconnect.
+
+    Role lock matters: agent audio is bridged into Live as input, so a bare
+    "speak this" kick often continues in the *assistant* persona. Explicitly
+    separate "the other party you just heard" from "you (the caller)".
+    """
+    line = str(text or "").strip()
+    if hangup_farewell:
+        return (
+            "SIMULATOR CUE — ignore silence rules for this one turn only. "
+            "You are the HUMAN CALLER (not the assistant). "
+            "Speak the following goodbye aloud now as the phone caller, exactly once, "
+            "then stop and wait silently for disconnect:\n"
+            f"{line}"
+        )
+    return (
+        "PRIVATE SIMULATOR CUE — do not read these instructions aloud. "
+        "You are UNMISTAKABLY the HUMAN CALLER on this phone call. "
+        "Any other voice you just heard is the assistant (the other party) — "
+        "never speak as them, never greet callers, never offer to help or check "
+        "availability for someone else. "
+        "Ignore silence rules for this one turn only. "
+        "Speak aloud now, exactly once, ONLY the caller line between <<< and >>>. "
+        "Verbatim: no paraphrase, no extra words before or after, no added fillers.\n"
+        f"<<<\n{line}\n>>>\n"
+        # Do not say "stay silent" / "end immediately" — that over-conditioned Live
+        # into cue-only mute between milestones. Freestyle-after lives in SI.
+        "After that exact line, stop this cue turn."
+    )
+
+
+def _inject_matches_say(heard: str, say: str) -> bool:
+    """True when Live output transcription is close enough to the Script say."""
+    from ..web.speech_origin import _mostly_script_say
+
+    return _mostly_script_say(heard, say)
+
+
+# Freestyle bleed: Live sometimes continues as the assistant after hearing them.
+# Portable English staff-cues — not product-specific names.
+_ASSISTANT_PERSONA_CUES = (
+    "thanks for calling",
+    "thank you for calling",
+    "how can i help",
+    "how may i help",
+    "let me check that for you",
+    "let me check on that for you",
+    "i'd be happy to help",
+    "i would be happy to help",
+    "we're here to help",
+    "we are here to help",
+    "i'll check that for you",
+    "i will check that for you",
+)
+
+
+def looks_like_assistant_persona(text: str) -> bool:
+    """True when caller STT looks like staff/assistant speech (role-flip)."""
+    t = " ".join(str(text or "").lower().split())
+    if not t:
+        return False
+    return any(cue in t for cue in _ASSISTANT_PERSONA_CUES)
 
 
 def _is_voice_cue_asset(asset: str | None) -> bool:
@@ -135,7 +239,12 @@ class GeminiCallerBridge:
         # Linear gain for script-injected gemini_text playback (reset on turn_complete).
         self._inject_playback_gain: float = 1.0
         self._inject_turn_active: bool = False
+        self._inject_heard_text: str = ""
         self._agent_audio_paused: bool = False
+        # Agent→Gemini stream gate (manual VAD): True while activity_start is open.
+        self._agent_stream_open: bool = False
+        self._agent_speech_frames: int = 0
+        self._agent_silence_ms: float = 0.0
         # Drop persona PCM after hang-up token / spoken "end call" is detected.
         self._mute_persona_audio = False
         # When Script steps remain, freestyle bye/[END_CALL] must not tear the room down.
@@ -304,10 +413,17 @@ class GeminiCallerBridge:
         client = genai.Client(api_key=self.cfg.simulator.google_api_key)
         voice = self.cfg.simulator.voice
 
+        # Manual activity markers (auto VAD disabled). Speech-gated PCM +
+        # activity_end commits the agent turn so Live generates caller freestyle.
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],  # AUDIO only — TEXT → 1011 close
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=True,
+                ),
+            ),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice.voice)
@@ -344,6 +460,9 @@ class GeminiCallerBridge:
             try:
                 await self.end_call.wait()
             finally:
+                await self._flush_agent_audio_stream(
+                    session, reason="session_teardown"
+                )
                 self._live_session = None
                 for t in self._tasks:
                     t.cancel()
@@ -352,6 +471,35 @@ class GeminiCallerBridge:
                     await self._mixer.aclose()
                     self._mixer = None
 
+    async def _flush_agent_audio_stream(self, session: Any, *, reason: str) -> None:
+        """End agent activity with ``activity_end`` (manual VAD) so Live generates."""
+        if not self._agent_stream_open or session is None:
+            self._agent_stream_open = False
+            self._agent_speech_frames = 0
+            self._agent_silence_ms = 0.0
+            return
+        try:
+            await session.send_realtime_input(activity_end=types.ActivityEnd())
+            self.writer.emit(
+                "sim.gemini_activity",
+                spec={"edge": "activity_end", "reason": reason},
+                source="sim",
+                include_dialogue=False,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.writer.emit(
+                "sim.error",
+                spec={
+                    "where": "flush_agent_audio_stream",
+                    "error": f"{type(e).__name__}: {e}",
+                    "reason": reason,
+                },
+                source="sim",
+                include_dialogue=False,
+            )
+        self._agent_stream_open = False
+        self._agent_speech_frames = 0
+        self._agent_silence_ms = 0.0
 
     async def _emit_bootstrap_cues(self, session: Any) -> None:
         """Emit connect-time midcall texts (``kind=bootstrap`` only).
@@ -401,6 +549,50 @@ class GeminiCallerBridge:
             )
             return
 
+    async def release_after_milestone(self) -> None:
+        """No-op placeholder — do not send midcall text after Script says.
+
+        Earlier versions sent a 'resume conversation' realtime text after each
+        milestone. On Gemini Live that text is a user turn and frequently caused
+        role-flip (caller speaking as the agent) or double-opens. Freestyle after
+        cues is owned by SI + ``nudge_freestyle_answer`` on unanswered questions.
+        """
+        return
+
+    async def nudge_freestyle_answer(self, agent_hint: str = "") -> None:
+        """Non-text activation: ``activity_end`` so manual VAD commits the agent turn.
+
+        Midcall ``send_realtime_input(text=...)`` restores talkativeness but
+        role-flips the caller into the assistant. Ending an *open* agent activity
+        asks Live to generate from audio context only — no persona text.
+
+        No-op when the stream is already closed (redundant ends caused Live 1006).
+        """
+        _ = agent_hint
+        if self._live_session is None:
+            return
+        if self._silent_mode or self._script_hangup_farewell:
+            return
+        if self._inject_turn_active or self._agent_audio_paused:
+            return
+        if self._persona_output_suppressed():
+            return
+        if not self._agent_stream_open:
+            return
+        session = self._live_session
+        try:
+            await self._flush_agent_audio_stream(session, reason="freestyle_nudge")
+        except Exception as e:  # noqa: BLE001 — pacing must not die on nudge
+            self.writer.emit(
+                "sim.error",
+                spec={
+                    "where": "nudge_freestyle_answer",
+                    "error": f"{type(e).__name__}: {e}",
+                },
+                source="sim",
+                include_dialogue=False,
+            )
+
     def stop(self) -> None:
         self.end_call.set()
         if self._mixer is not None:
@@ -427,15 +619,26 @@ class GeminiCallerBridge:
         prev = self._suppress_output_until_mono
         self._suppress_output_until_mono = until if prev is None else max(prev, until)
 
-    def begin_scripted_user_silence(self, duration_ms: int, *, grace_s: float = 20.0) -> None:
-        """Mark intentional user silence so dead_call does not kill mid-hold / early recovery."""
+    def begin_scripted_user_silence(
+        self,
+        duration_ms: int,
+        *,
+        grace_s: float = 20.0,
+        mute_persona: bool = False,
+    ) -> None:
+        """Hold dead_call grace for a wait step; optionally mute freestyle TTS.
+
+        Default ``mute_persona=False`` is pacing without forcing the caller mute.
+        Pass ``mute_persona=True`` for intentional dead-air / unresponsive tests.
+        """
         if duration_ms <= 0:
             return
         until = time.monotonic() + duration_ms / 1000
         prev = self._script_hold_until_mono
         self._script_hold_until_mono = until if prev is None else max(prev, until)
         self._script_hold_grace_s = max(self._script_hold_grace_s, float(grace_s))
-        self.suppress_persona_output(duration_ms)
+        if mute_persona:
+            self.suppress_persona_output(duration_ms)
 
     def scripted_silence_active(self) -> bool:
         """True while scripted silence is holding or within post-hold grace (agent may re-engage)."""
@@ -565,8 +768,18 @@ class GeminiCallerBridge:
             )
             return
 
-        # Prefer Gemini Live for gemini_text so Script cues match freestyle caller voice.
-        # Windows SAPI is fallback only (different timbre; used when Live stays silent).
+        # Script say lines: local TTS primary. Gemini Live realtime-text kicks
+        # for milestones caused role-flip and left the session passive so
+        # between-cue freestyle never answered agent questions. Keep Live free
+        # for freestyle; use SAPI for verbatim Script identity.
+        # Hang-up farewell still prefers Live when available (same voice as chat).
+        if self._mixer is not None and not self._script_hangup_farewell:
+            local_ms = await self._inject_sapi_fallback(text, label=label, gain=gain)
+            if local_ms > 0:
+                await self._drain_persona_speech(timeout_s=8.0)
+                await asyncio.sleep(0.2)
+                return
+
         if self._live_session is not None:
             try:
                 await self._inject_gemini_text(text, label=label, delivery=delivery, gain=gain)
@@ -579,7 +792,7 @@ class GeminiCallerBridge:
                         "label": label,
                         "delivery": delivery,
                         "error": (
-                            f"gemini_text primary failed ({type(gemini_err).__name__}: "
+                            f"gemini_text failed ({type(gemini_err).__name__}: "
                             f"{gemini_err}); trying sapi_fallback"
                         ),
                     },
@@ -595,7 +808,7 @@ class GeminiCallerBridge:
                 return
 
         raise RuntimeError(
-            "gemini_text inject failed: Gemini Live unavailable/silent and no local TTS"
+            "gemini_text inject failed: local TTS unavailable and Gemini Live failed"
         )
 
     async def _inject_gemini_text(
@@ -611,15 +824,22 @@ class GeminiCallerBridge:
             raise RuntimeError("Gemini live session not ready for inject")
         self._inject_playback_gain = max(0.0, min(1.0, float(gain) * self._voice_gain))
         self._inject_turn_active = True
+        self._inject_heard_text = ""
         self._agent_audio_paused = True
-        speak_directive = (
-            "SIMULATOR CUE — ignore silence rules for this one turn only. "
-            "Speak the following line aloud now as the phone caller, exactly once, "
-            "then stop and wait silently:\n"
-            f"{text}"
+        speak_directive = script_speak_directive(
+            text, hangup_farewell=bool(self._script_hangup_farewell)
         )
         try:
+            # Brief settle so Live is not mid-agent-audio when the cue arrives.
+            # Manual VAD: wrap the cue text in activity_start/end so Live generates TTS.
+            await asyncio.sleep(0.15)
+            await self._live_session.send_realtime_input(
+                activity_start=types.ActivityStart()
+            )
             await self._live_session.send_realtime_input(text=speak_directive)
+            await self._live_session.send_realtime_input(
+                activity_end=types.ActivityEnd()
+            )
             self.writer.emit(
                 "sim.script_inject",
                 spec={
@@ -636,6 +856,7 @@ class GeminiCallerBridge:
             )
             deadline = time.monotonic() + 2.8
             saw_ms = 0
+            mismatch = False
             while time.monotonic() < deadline:
                 if self.end_call.is_set():
                     break
@@ -643,22 +864,119 @@ class GeminiCallerBridge:
                     saw_ms = int(self._mixer.speech_queued_ms() or 0)
                     if saw_ms > 0:
                         break
+                heard = " ".join(self._inject_heard_text.split())
+                if len(heard.split()) >= 5 and not _inject_matches_say(heard, text):
+                    mismatch = True
+                    break
                 await asyncio.sleep(0.05)
+            if mismatch:
+                if self._mixer is not None:
+                    self._mixer.clear_speech()
+                self.writer.emit(
+                    "sim.script.error",
+                    spec={
+                        "step_id": label,
+                        "label": label,
+                        "delivery": delivery,
+                        "error": "gemini_text inject role/say mismatch; aborting for sapi_fallback",
+                        "heard": self._inject_heard_text[:240],
+                        "expected": text[:240],
+                    },
+                    source="sim.script",
+                    include_dialogue=False,
+                )
+                raise RuntimeError(
+                    "gemini_text inject spoke off-script (likely role-flip)"
+                )
             if saw_ms <= 0:
                 raise RuntimeError(
                     "gemini_text inject produced no mic audio (model stayed silent)"
                 )
-            await self._drain_persona_speech(timeout_s=8.0)
-            await asyncio.sleep(0.35)
+            # Drain while watching STT — abort early if Live role-flips mid-utterance.
+            drain_deadline = time.monotonic() + 8.0
+            while time.monotonic() < drain_deadline:
+                if self.end_call.is_set():
+                    break
+                heard_mid = " ".join(self._inject_heard_text.split())
+                if len(heard_mid.split()) >= 5 and not _inject_matches_say(heard_mid, text):
+                    if self._mixer is not None:
+                        self._mixer.clear_speech()
+                    self.writer.emit(
+                        "sim.script.error",
+                        spec={
+                            "step_id": label,
+                            "label": label,
+                            "delivery": delivery,
+                            "error": "gemini_text inject mid-utterance off-script; sapi_fallback",
+                            "heard": heard_mid[:240],
+                            "expected": text[:240],
+                        },
+                        source="sim.script",
+                        include_dialogue=False,
+                    )
+                    raise RuntimeError(
+                        "gemini_text inject mid-utterance off-script (likely role-flip)"
+                    )
+                if self._mixer is not None and self._mixer.speech_queued_ms() <= 0:
+                    # Wait for trailing output transcription (often lags audio).
+                    stt_deadline = time.monotonic() + 1.6
+                    while time.monotonic() < stt_deadline:
+                        heard_wait = " ".join(self._inject_heard_text.split())
+                        if heard_wait:
+                            break
+                        await asyncio.sleep(0.05)
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                await self._drain_persona_speech(timeout_s=0.5)
+            await asyncio.sleep(0.15)
+            heard_final = " ".join(self._inject_heard_text.split())
+            if not heard_final:
+                if self._mixer is not None:
+                    self._mixer.clear_speech()
+                self.writer.emit(
+                    "sim.script.error",
+                    spec={
+                        "step_id": label,
+                        "label": label,
+                        "delivery": delivery,
+                        "error": "gemini_text inject STT missing after audio; sapi_fallback",
+                        "expected": text[:240],
+                    },
+                    source="sim.script",
+                    include_dialogue=False,
+                )
+                raise RuntimeError(
+                    "gemini_text inject STT missing (cannot verify caller identity)"
+                )
+            if not _inject_matches_say(heard_final, text):
+                if self._mixer is not None:
+                    self._mixer.clear_speech()
+                self.writer.emit(
+                    "sim.script.error",
+                    spec={
+                        "step_id": label,
+                        "label": label,
+                        "delivery": delivery,
+                        "error": "gemini_text inject final STT off-script; sapi_fallback",
+                        "heard": heard_final[:240],
+                        "expected": text[:240],
+                    },
+                    source="sim.script",
+                    include_dialogue=False,
+                )
+                raise RuntimeError(
+                    "gemini_text inject final STT off-script (likely role-flip)"
+                )
         finally:
             self._agent_audio_paused = False
             self._inject_turn_active = False
             self._inject_playback_gain = 1.0
-
+            self._inject_heard_text = ""
     async def _inject_sapi_fallback(
         self, text: str, *, label: str, gain: float
     ) -> int:
-        """Play local TTS into the sim mic when Gemini stays silent. Returns queued ms."""
+        """Play local TTS into the sim mic for Script says. Returns queued ms."""
         if self._mixer is None:
             return 0
         from ..audio.sapi_tts import TARGET_RATE, synthesize_pcm16_mono
@@ -677,7 +995,7 @@ class GeminiCallerBridge:
             spec={
                 "text": text,
                 "label": label,
-                "delivery": "sapi_fallback",
+                "delivery": "sapi",
                 "gain": gain,
                 "voice_gain": self._voice_gain,
                 "effective_gain": speech_gain,
@@ -698,6 +1016,10 @@ class GeminiCallerBridge:
         We still push_agent here as a fallback for single-room WebRTC when Observer
         and bridge share the same track path (duplicate pushes are fine — wall-clock
         recorder pads gaps; overlapping audio is rare because only one pump runs).
+
+        Auto VAD is disabled. We speech-gate frames and bookend agent speech with
+        ``activity_start`` / ``activity_end`` so Live commits the turn and generates
+        caller freestyle (see Live API capabilities — custom VAD).
         """
         while True:
             track = await self._agent_track_queue.get()
@@ -721,13 +1043,59 @@ class GeminiCallerBridge:
                     if self.recorder is not None and not obs_recording:
                         self.recorder.push_agent(pcm, GEMINI_IN_RATE)
                     if self._agent_audio_paused:
+                        if self._agent_stream_open:
+                            await self._flush_agent_audio_stream(
+                                session, reason="agent_audio_paused"
+                            )
                         continue
-                    await session.send_realtime_input(
-                        audio=types.Blob(
-                            data=pcm,
-                            mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
-                        )
+                    samples = max(1, len(pcm) // 2)
+                    frame_ms = 1000.0 * samples / float(GEMINI_IN_RATE)
+                    rms = pcm16_mono_rms(pcm)
+                    obs_speaking = bool(
+                        getattr(self.observer, "agent_is_active_speaker", False)
                     )
+                    energy_speaking = rms >= _AGENT_SPEECH_RMS_THRESHOLD
+                    speaking = obs_speaking or energy_speaking
+                    if speaking:
+                        self._agent_speech_frames += 1
+                        self._agent_silence_ms = 0.0
+                        if self._agent_speech_frames >= _AGENT_SPEECH_START_FRAMES:
+                            if not self._agent_stream_open:
+                                await session.send_realtime_input(
+                                    activity_start=types.ActivityStart()
+                                )
+                                self._agent_stream_open = True
+                                self.writer.emit(
+                                    "sim.gemini_activity",
+                                    spec={
+                                        "edge": "activity_start",
+                                        "reason": "agent_speech",
+                                    },
+                                    source="sim",
+                                    include_dialogue=False,
+                                )
+                            await session.send_realtime_input(
+                                audio=types.Blob(
+                                    data=pcm,
+                                    mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
+                                )
+                            )
+                    elif self._agent_stream_open:
+                        self._agent_silence_ms += frame_ms
+                        # Brief trailing pad only — then activity_end.
+                        if self._agent_silence_ms <= _AGENT_TRAILING_PAD_MS:
+                            await session.send_realtime_input(
+                                audio=types.Blob(
+                                    data=pcm,
+                                    mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}",
+                                )
+                            )
+                        if self._agent_silence_ms >= _AGENT_STREAM_END_SILENCE_MS:
+                            await self._flush_agent_audio_stream(
+                                session, reason="agent_silence"
+                            )
+                    else:
+                        self._agent_speech_frames = 0
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -739,6 +1107,7 @@ class GeminiCallerBridge:
                 )
             finally:
                 await stream.aclose()
+                await self._flush_agent_audio_stream(session, reason="agent_track_ended")
 
     # -------------------------------------------------------- gemini -> livekit
 
@@ -764,7 +1133,31 @@ class GeminiCallerBridge:
                     # and what it heard from the agent (input).
                     if sc.output_transcription and sc.output_transcription.text:
                         if self._allow_persona_room_audio():
-                            self._sim_out_text += sc.output_transcription.text
+                            chunk = sc.output_transcription.text
+                            if self._inject_turn_active:
+                                self._inject_heard_text += chunk
+                            self._sim_out_text += chunk
+                            # Freestyle role-flip: Live continues as the assistant after
+                            # hearing them. Cut mic ASAP — midcall text kicks make it worse.
+                            if (
+                                not self._inject_turn_active
+                                and not self._script_hangup_farewell
+                                and looks_like_assistant_persona(self._sim_out_text)
+                            ):
+                                if self._mixer is not None:
+                                    self._mixer.clear_speech()
+                                self.suppress_persona_output(4000)
+                                self.writer.emit(
+                                    "sim.caller_role_flip_suppressed",
+                                    spec={
+                                        "heard": self._sim_out_text.strip()[:240],
+                                        "note": "freestyle matched assistant-persona cues",
+                                    },
+                                    source="sim",
+                                    include_dialogue=False,
+                                )
+                                self._sim_out_text = ""
+                                continue
                             pending = self._script_steps_pending()
                             early_bye = contains_farewell_signal(self._sim_out_text)
                             scripted_farewell = self._script_hangup_farewell

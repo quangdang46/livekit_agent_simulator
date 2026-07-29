@@ -36,13 +36,22 @@ class ScriptRunner:
         self._firing: set[str] = set()
         self._trigger_since: dict[str, float] = {}
         self._trigger_gap_since: dict[str, float] = {}
-        self._active_speaker_gap_tolerance_ms = 600
+        # Room active-speaker can flicker mid-utterance; require sustained gaps.
+        self._active_speaker_gap_tolerance_ms = 1200
         self._armed_step_index = 0
         self._await_post_cue_gap = False
         self._post_cue_gap_since: float | None = None
+        # After a spoken milestone, wait for the agent to answer before the next
+        # Script step — otherwise wait/speak races overlap the agent reply and
+        # starve between-cue freestyle.
+        self._await_agent_reply_since: float | None = None
+        self._post_speak_settle_ms = 900
+        self._post_speak_reply_budget_s = 45.0
         self._hang_up_defer_emitted: set[str] = set()
         # Wall-clock when hang_up first hit a defer reason (do not reset on new agent finals).
         self._hang_up_defer_since: dict[str, float] = {}
+        # Last freestyle audio_stream_end nudge (repeat during long between-cue gaps).
+        self._last_freestyle_nudge_mono: float | None = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -64,6 +73,34 @@ class ScriptRunner:
                     continue
                 if step.id in self._firing:
                     continue
+                if self._await_agent_reply_since is not None:
+                    if self._stop.is_set():
+                        return
+                    aged = time.monotonic() - self._await_agent_reply_since
+                    if aged >= self._post_speak_reply_budget_s:
+                        self._await_agent_reply_since = None
+                        self._post_cue_gap_since = None
+                    else:
+                        # Freestyle window: kick Live when agent asked and caller is mute.
+                        await self._maybe_nudge_freestyle(min_quiet_ms=1600)
+                        agent_t = getattr(self.observer, "last_agent_final_mono", None)
+                        if agent_t is None or float(agent_t) < self._await_agent_reply_since:
+                            continue
+                        if self.observer.agent_is_active_speaker:
+                            self._post_cue_gap_since = None
+                            continue
+                        if self._post_cue_gap_since is None:
+                            self._post_cue_gap_since = time.monotonic()
+                            continue
+                        settle_ms = int(
+                            (time.monotonic() - self._post_cue_gap_since) * 1000
+                        )
+                        if settle_ms < self._post_speak_settle_ms:
+                            continue
+                        self._await_agent_reply_since = None
+                        self._post_cue_gap_since = None
+                        self._trigger_since.pop(step.id, None)
+                        self._trigger_gap_since.pop(step.id, None)
                 if self._await_post_cue_gap:
                     if self.observer.agent_is_active_speaker:
                         self._post_cue_gap_since = None
@@ -177,6 +214,53 @@ class ScriptRunner:
                 return
             await asyncio.sleep(0.05)
 
+    async def _maybe_nudge_freestyle(self, *, min_quiet_ms: int = 1600) -> bool:
+        """Non-text kick: ``audio_stream_end`` when agent left an unanswered question.
+
+        Midcall text role-flips; stream-end flush only re-commits the agent audio
+        turn so Live can generate a caller reply from SI.
+        """
+        if self.observer.agent_is_active_speaker:
+            return False
+        if not hasattr(self.bridge, "nudge_freestyle_answer"):
+            return False
+        agent_text = getattr(self.observer, "last_agent_final_text", None)
+        if not agent_left_open_turn(agent_text):
+            return False
+        agent_t = getattr(self.observer, "last_agent_final_mono", None)
+        user_t = getattr(self.observer, "last_user_final_mono", None)
+        if agent_t is None:
+            return False
+        if user_t is not None and float(user_t) >= float(agent_t):
+            return False
+        quiet_ms = int((time.monotonic() - float(agent_t)) * 1000)
+        if quiet_ms < min_quiet_ms:
+            return False
+        last = self._last_freestyle_nudge_mono
+        if last is not None and (time.monotonic() - last) < 3.5:
+            return False
+        try:
+            await self.bridge.nudge_freestyle_answer(str(agent_text or ""))
+        except Exception:  # noqa: BLE001 — pacing / arm loop must not die
+            return False
+        self._last_freestyle_nudge_mono = time.monotonic()
+        return True
+
+    async def _pace_hold(
+        self, hold_silence_ms: int, *, allow_freestyle_nudge: bool
+    ) -> None:
+        """Sleep a pacing wait in slices; optionally nudge when agent asks unanswered."""
+        deadline = time.monotonic() + max(0.0, hold_silence_ms) / 1000.0
+        while time.monotonic() < deadline:
+            if self._stop.is_set():
+                return
+            if allow_freestyle_nudge:
+                await self._maybe_nudge_freestyle(min_quiet_ms=1600)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.25, remaining))
+
     def _trigger_active(self, step: ScriptStep) -> bool:
         if step.trigger == "agent_speaking":
             return self.observer.agent_is_active_speaker
@@ -201,13 +285,26 @@ class ScriptRunner:
             hold_silence_ms = int(step.silence_after_cue_ms or 0)
             if step.action == "wait":
                 kind = "sim.script.wait"
-                # User long-silence: suppress persona TTS, pause dead_call, hold duration.
+                # User long-silence hold. Default keeps freestyle (human caller).
+                # mute_persona=true → intentional dead-air / unresponsive tests.
                 if hold_silence_ms > 0:
+                    mute = False if step.mute_persona is None else bool(step.mute_persona)
                     if hasattr(self.bridge, "begin_scripted_user_silence"):
-                        self.bridge.begin_scripted_user_silence(hold_silence_ms)
-                    else:
+                        try:
+                            self.bridge.begin_scripted_user_silence(
+                                hold_silence_ms, mute_persona=mute
+                            )
+                        except TypeError:
+                            if mute:
+                                self.bridge.begin_scripted_user_silence(hold_silence_ms)
+                    elif mute and hasattr(self.bridge, "suppress_persona_output"):
                         self.bridge.suppress_persona_output(hold_silence_ms)
-                    await asyncio.sleep(hold_silence_ms / 1000.0)
+                    await self._pace_hold(
+                        hold_silence_ms,
+                        # audio_stream_end nudge (not midcall text) — safe for identity.
+                        # mute_persona waits still skip via begin_scripted_user_silence mute.
+                        allow_freestyle_nudge=not mute,
+                    )
             elif step.action == "hang_up":
                 kind = "sim.script.hang_up"
                 # Silent mode: hard mute hang-up — no farewell speech (dead-air caller).
@@ -300,6 +397,9 @@ class ScriptRunner:
             else:
                 kind = "sim.script.cue"
                 try:
+                    # Non-barge lines: do not talk over the agent (silent Gemini inject).
+                    if not step.barge_in:
+                        await self._wait_agent_idle(timeout_s=6.0)
                     # Hard barge-in: always mix a short PCM blip into the mic first so
                     # the agent STT / stereo L channel actually "cuts across" speech.
                     # gemini_text alone is delayed TTS and rarely sounds like an interrupt.
@@ -410,8 +510,14 @@ class ScriptRunner:
                 else:
                     self._armed_step_index += 1
                     if self._armed_step_index < len(self.steps):
-                        self._await_post_cue_gap = step.trigger == "agent_speaking"
-                        self._post_cue_gap_since = None
+                        if step.action == "speak" and not step.barge_in:
+                            # Freestyle window: agent answers the milestone first.
+                            self._await_agent_reply_since = time.monotonic()
+                            self._await_post_cue_gap = False
+                            self._post_cue_gap_since = None
+                        else:
+                            self._await_post_cue_gap = step.trigger == "agent_speaking"
+                            self._post_cue_gap_since = None
                 self._trigger_since.clear()
                 self._trigger_gap_since.clear()
 

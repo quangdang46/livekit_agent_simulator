@@ -104,6 +104,30 @@ def test_user_words_natural_excludes_script_say_matches():
     assert m["user_words_p50"] is not None
 
 
+def test_user_words_natural_excludes_script_clause_stt_splits():
+    """Trailing STT fragment of a multi-clause Script say is not freestyle."""
+    say = (
+        "I was looking at the 2022 Mazda CX-5 actually. "
+        "Is that one still available?"
+    )
+    events = [
+        _ev("sim.script_inject", 1000, text=say, label="name_car"),
+        _ev("transcript.user.final", 2500, text="I was looking at the 2022 Mazda CX-5, actually."),
+        _ev("transcript.user.final", 4200, text="Is that one still available?"),
+        _ev(
+            "transcript.user.final",
+            8000,
+            text="Yeah this is for myself, I'm calling from near the city.",
+        ),
+    ]
+    m = compute_voice_metrics(events)
+    assert m["user_words_script_count"] == 2
+    assert m["user_words_natural_count"] == 1
+    assert m["user_words_natural_p50"] == float(
+        len("Yeah this is for myself, I'm calling from near the city.".split())
+    )
+
+
 def test_ttfw_from_preamble():
     events = [
         _ev("transcript.agent.preamble", 400, text="Welcome!"),

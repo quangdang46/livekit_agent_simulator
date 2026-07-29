@@ -80,6 +80,9 @@ class ScriptStep:
     asset: str | None = None
     silence_after_cue_ms: int = 0
     action: str = "speak"
+    # wait + silence_after_cue_ms: None/False = pace only (caller keeps answering).
+    # True = mute freestyle (intentional dead-air / unresponsive tests).
+    mute_persona: bool | None = None
 
     # Continuous ambient bed for room_pcm noise (re-queues until hang-up).
     # Distinct from once= (fire this step once). Only valid with delivery=room_pcm.

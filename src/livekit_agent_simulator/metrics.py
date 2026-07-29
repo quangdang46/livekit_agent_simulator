@@ -23,7 +23,8 @@ from __future__ import annotations
 from typing import Any
 
 # STT lag window after a Script cue inject (aligned with web.speech_origin).
-_SCRIPT_MATCH_MAX_LAG_MS = 15_000
+# Multi-clause says can finalize the trailing clause well after inject start.
+_SCRIPT_MATCH_MAX_LAG_MS = 28_000
 
 
 def _percentile(values: list[float], pct: float) -> float | None:
