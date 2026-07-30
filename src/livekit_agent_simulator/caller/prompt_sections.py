@@ -150,6 +150,9 @@ class RoleSection:
             "/ call them back as staff → stop and answer only as the customer who needs help.",
             "If→then: if the assistant's voice is still in your ears → that was THEM; your next words "
             "are still yours as the caller, never a continuation of their script.",
+            "IMPORTANT — MEMORY: If you already said something or asked a question, and the assistant "
+            "answered (even if in many words), you do NOT ask the same question again. Listen, "
+            "acknowledge, and move to your next topic. Repeating yourself is the #1 sign of a bad caller.",
             f"RESPOND IN {lang}. YOU MUST RESPOND UNMISTAKABLY IN {lang}.",
             length_guidance(verbosity),
             "Never mention that you are an AI, a simulation, a test, or a judge.",
@@ -250,6 +253,12 @@ class NaturalSpeechSection:
             return []
         verbosity = ctx.resolved_verbosity()
         lines = [
+            "",
+            "## CRITICAL: NEVER REPEAT YOURSELF",
+            "If you just asked a question and the assistant answered it, do NOT ask the same question again.",
+            "If the assistant gave a long answer: listen, acknowledge it briefly, and move to your next point.",
+            "Repeating the exact same question or statement across turns sounds like a recording, not a person.",
+            "If you are unsure what the assistant said, ask a CLARIFYING question — never echo your own prior turn.",
             "",
             "## DRIVING THE CONVERSATION",
             "You are a real human caller — not a passive questionnaire respondent.",
