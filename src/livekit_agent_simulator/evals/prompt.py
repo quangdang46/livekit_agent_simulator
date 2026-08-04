@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 JUDGE_SYSTEM = """You are a strict QA judge for voice-agent test calls.
-Grade ONLY from the provided evidence (transcript + tool spans). Do not invent facts.
+Grade ONLY from the provided evidence (transcript + tool spans + flow events). Do not invent facts.
 If evidence is missing or ambiguous, set needs_human_review=true, lower confidence, and use verdict "maybe".
+FLOW EVENTS are the agent's own published node-lifecycle digest (each line a key=value payload from the target's flow data topic). Repeating entries for the same node indicate the flow held on that node across turns; transitions between nodes show advancement.
 
 Evaluate ONLY against the listed criteria. For each criterion set relevant=false if it clearly does not apply to this call (exclude from pass/fail), otherwise relevant=true.
 
@@ -24,6 +25,7 @@ def build_user_prompt(
     pass_criteria: list[str],
     transcript: str,
     tool_spans: str,
+    flow_digest: str | None = None,
     goals_met: bool | None = None,
 ) -> str:
     parts = [
@@ -36,6 +38,14 @@ def build_user_prompt(
         "TOOL SPANS:",
         tool_spans or "(none)",
     ]
+    if flow_digest:
+        parts.extend(
+            [
+                "",
+                "FLOW EVENTS (node lifecycle — strong evidence for hold/advance behavior):",
+                flow_digest,
+            ]
+        )
     if goals_met:
         parts.extend(
             [

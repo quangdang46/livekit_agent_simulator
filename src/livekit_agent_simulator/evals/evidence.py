@@ -36,11 +36,33 @@ def format_tool_spans(tool_events: list[dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "(none)"
 
 
+def format_flow_digest(flow_events: list[dict[str, Any]]) -> str:
+    """Render a compact, generic digest of flow-lifecycle events.
+
+    ``flow_events`` are opaque payloads the target publishes on the data topics
+    configured in ``observe.flow_topics``. Core never interprets the payload
+    shape (no hardcoded type names) — each event is rendered as a flat
+    ``key=value`` list so the soft LLM judge can reason about node
+    hold/advance behavior without the transcript.
+    """
+    lines: list[str] = []
+    for e in flow_events:
+        payload = (e.get("spec") or {}).get("payload") or {}
+        if isinstance(payload, dict):
+            bits = [f"{k}={v}" for k, v in payload.items() if k not in ("_seq", "ts")]
+            lines.append(" | ".join(bits) if bits else json.dumps(payload, ensure_ascii=False))
+        else:
+            lines.append(json.dumps(payload, ensure_ascii=False))
+    return "\n".join(lines) if lines else "(none)"
+
+
 def build_evidence_packet(
     turns: list[dict[str, Any]],
     tool_events: list[dict[str, Any]],
+    flow_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     return {
         "transcript": format_transcript(turns),
         "tool_spans": format_tool_spans(tool_events),
+        "flow_digest": format_flow_digest(flow_events or []),
     }

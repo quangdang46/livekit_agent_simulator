@@ -122,6 +122,33 @@ def allocate_run_dir(
     raise RuntimeError(f"Could not allocate a free report dir under {reports_dir}")
 
 
+def _collect_flow_events(
+    events: list[dict[str, Any]],
+    flow_topics: list[str],
+) -> list[dict[str, Any]]:
+    """Collect opaque flow-lifecycle payloads published on configured topics.
+
+    The target decides which data topics carry flow/node-lifecycle events via
+    ``observe.flow_topics``; core stays repo-agnostic and never interprets the
+    payload keys. Payloads keep their ``source``/``spec.payload`` envelope so
+    the judge digest and verify plugins can render them generically.
+    """
+    if not flow_topics:
+        return []
+    topics = set(flow_topics)
+    out: list[dict[str, Any]] = []
+    for e in events:
+        if e.get("kind") != "data.message":
+            continue
+        if (e.get("source") or "") not in topics:
+            continue
+        payload = (e.get("spec") or {}).get("payload")
+        if not isinstance(payload, dict) or not payload:
+            continue
+        out.append(e)
+    return out
+
+
 async def run_scenario(
     cfg: SimConfig,
     scenario_id: str,
@@ -521,6 +548,10 @@ async def run_scenario_instance(
     if status in ("done", "failed") and cfg.judge is not None and scenario.pass_criteria:
         try:
             tool_events = [e for e in writer.events if e["kind"].startswith("tool.")]
+            # Flow-lifecycle events published on the target's configured flow
+            # data topics (observe.flow_topics) prove node hold/advance — the
+            # soft judge surfaces them as flow evidence.
+            flow_events = _collect_flow_events(writer.events, cfg.observe.flow_topics)
             # Include llm_bool outcome prompts as extra criteria when present.
             criteria = list(scenario.pass_criteria)
             if scenario.asserts:
@@ -537,6 +568,7 @@ async def run_scenario_instance(
                     getattr(scenario, "pass_criteria_mode", None) or "all",
                     writer.turn_metrics(),
                     tool_events,
+                    flow_events,
                 )
             else:
                 verdict = await judge_run(
@@ -545,6 +577,7 @@ async def run_scenario_instance(
                     criteria,
                     writer.turn_metrics(),
                     tool_events,
+                    flow_events,
                 )
         except Exception as e:
             verdict = {

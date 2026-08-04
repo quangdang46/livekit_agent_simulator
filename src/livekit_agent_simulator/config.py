@@ -81,6 +81,10 @@ class ObserveConfig:
     record_audio: bool = True
     data_topics: list[str] = field(default_factory=list)
     tool_event_patterns: list[ToolEventPattern] = field(default_factory=list)
+    # Data topics whose payloads describe the agent's flow/node lifecycle
+    # (e.g. node active / transition events). Targets opt in here; the soft
+    # LLM judge surfaces these as flow evidence. Empty = no flow evidence.
+    flow_topics: list[str] = field(default_factory=list)
     # Sim wire format: payload `type` values treated as transcript turns on data topics.
     transcript_payload_types: list[str] = field(default_factory=lambda: ["transcript_turn"])
     transcript_dedupe_window_ms: int = 15_000
@@ -247,6 +251,7 @@ def load_config(project_root: Path | str) -> SimConfig:
         lk_agent_session=bool(obs_raw.get("lk_agent_session", True)),
         record_audio=bool(obs_raw.get("record_audio", True)),
         data_topics=[str(t) for t in (obs_raw.get("data_topics") or [])],
+        flow_topics=[str(t) for t in (obs_raw.get("flow_topics") or [])],
         tool_event_patterns=patterns,
         transcript_payload_types=[
             str(t) for t in (obs_raw.get("transcript_payload_types") or ["transcript_turn"])

@@ -44,6 +44,7 @@ async def _judge(
     turns: list[dict[str, Any]],
     tool_events: list[dict[str, Any]],
     *,
+    flow_events: list[dict[str, Any]] | None = None,
     goals_met: bool | None = None,
 ) -> dict[str, Any]:
     if not pass_criteria:
@@ -54,11 +55,12 @@ async def _judge(
     except KeyError as e:
         return JudgmentResult(verdict="error", notes=str(e)).to_dict()
 
-    packet = build_evidence_packet(turns, tool_events)
+    packet = build_evidence_packet(turns, tool_events, flow_events or [])
     user = build_user_prompt(
         pass_criteria=criteria,
         transcript=packet["transcript"],
         tool_spans=packet["tool_spans"],
+        flow_digest=packet["flow_digest"],
         goals_met=goals_met,
     )
     try:
@@ -79,6 +81,7 @@ async def judge_run(
     pass_criteria: list[str],
     turns: list[dict[str, Any]],
     tool_events: list[dict[str, Any]],
+    flow_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_judge(judge_cfg, google_api_key=google_api_key)
     if not resolved.ready:
@@ -100,7 +103,8 @@ async def judge_run(
             "notes": resolved.skip_reason or "Judge backend unavailable.",
         }
     return await _judge(
-        backend, pass_criteria, turns, tool_events, goals_met=None
+        backend, pass_criteria, turns, tool_events,
+        flow_events=flow_events, goals_met=None,
     )
 
 
@@ -147,6 +151,7 @@ async def judge_run_multi(
     mode: str,
     turns: list[dict[str, Any]],
     tool_events: list[dict[str, Any]],
+    flow_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run one LLM judge per group; aggregate by mode all|majority|any."""
     if not judges:
@@ -181,7 +186,8 @@ async def judge_run_multi(
         jid = str(group.get("id") or "judge")
         criteria = list(group.get("criteria") or [])
         one = await _judge(
-            backend, criteria, turns, tool_events, goals_met=None
+            backend, criteria, turns, tool_events,
+            flow_events=flow_events, goals_met=None,
         )
         one = dict(one or {})
         one["judge_id"] = jid

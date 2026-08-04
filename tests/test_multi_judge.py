@@ -64,6 +64,7 @@ async def test_aggregate_all_majority_any(monkeypatch: pytest.MonkeyPatch):
         turns: list,
         tools: list,
         *,
+        flow_events=None,
         goals_met=None,
     ):
         text = " ".join(criteria)
