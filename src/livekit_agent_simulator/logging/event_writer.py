@@ -227,41 +227,88 @@ class EventWriter:
     # ---------------------------------------------------------------- timeline
 
     def _render_review(self, verdict: dict[str, Any] | None) -> str:
-        """Generate a human-readable review.md from judge verdict + conversation_feedback."""
+        """Generate a human-readable review.md from judge verdict.
+
+        Produces review.md when ANY of these exist:
+        1. conversation_feedback (structured human-like issues)
+        2. Failed criteria evidence (from judges[].criteria)
+        3. Verdict notes
+        """
         if not verdict:
             return ""
+
         feedback = verdict.get("conversation_feedback", [])
-        if not feedback:
+        notes = verdict.get("notes", "")
+
+        # Flatten criteria from nested judges[] (multi-judge mode)
+        all_criteria = list(verdict.get("criteria", []))
+        for judge_group in verdict.get("judges", []):
+            all_criteria.extend(judge_group.get("criteria", []))
+
+        has_feedback = len(feedback) > 0
+        has_failed_criteria = any(
+            c.get("met") is False and c.get("relevant", True)
+            for c in all_criteria
+        )
+        has_notes = bool(notes.strip())
+
+        if not has_feedback and not has_failed_criteria and not has_notes:
             return ""
+
+        score = verdict.get("score")
         lines = [
-            "# Review — Conversational Quality",
+            "# Review — Conversation Quality",
             "",
             f"**Verdict:** {verdict.get('verdict', 'n/a')}  ",
-            f"**Score:** {verdict.get('score', 'n/a')}  ",
+            f"**Score:** {score if score is not None else 'n/a'}  ",
             f"**Confidence:** {verdict.get('confidence', 'n/a')}",
             "",
-            "## Issues found",
-            "",
         ]
-        for f in feedback:
-            severity = f.get("severity", "low")
-            icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(severity, "")
-            issue = f.get("issue", "")
-            agent_line = f.get("agent_line", "")
-            why = f.get("why", "")
-            lines.append(f"### {icon} {issue} ({severity})")
+
+        if has_feedback:
+            lines.append("## Issues found")
             lines.append("")
-            if agent_line:
-                lines.append(f"> Agent: {agent_line}")
+            for f in feedback:
+                severity = f.get("severity", "low")
+                icon = {
+                    "high": "\U0001f534",
+                    "medium": "\U0001f7e1",
+                    "low": "\U0001f7e2",
+                }.get(severity, "")
+                issue = f.get("issue", "")
+                agent_line = f.get("agent_line", "")
+                why = f.get("why", "")
+                lines.append(f"### {icon} {issue} ({severity})")
                 lines.append("")
-            lines.append(f"{why}")
+                if agent_line:
+                    lines.append(f"> Agent: {agent_line}")
+                    lines.append("")
+                lines.append(f"{why}")
+                lines.append("")
+
+        if has_failed_criteria:
+            lines.append("## Criteria review")
+            lines.append("")
+            for c in all_criteria:
+                met = c.get("met", False)
+                rel = c.get("relevant", True)
+                if not rel:
+                    continue
+                evidence = c.get("evidence", "")
+                criterion = c.get("criterion", "")
+                if not met:
+                    lines.append(f"- **FAIL:** {criterion}")
+                    if evidence:
+                        lines.append(f"  Evidence: {evidence}")
+                    lines.append("")
+            met_count = sum(
+                1 for c in all_criteria if c.get("met") and c.get("relevant", True)
+            )
+            total_relevant = sum(1 for c in all_criteria if c.get("relevant", True))
+            lines.append(f"*{met_count}/{total_relevant} criteria met.*")
             lines.append("")
 
-        # Also include per-criterion notes
-        notes = verdict.get("notes", "")
-        if notes:
-            lines.append("---")
-            lines.append("")
+        if has_notes:
             lines.append("## Notes")
             lines.append("")
             lines.append(notes)
