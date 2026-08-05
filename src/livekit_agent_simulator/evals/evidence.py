@@ -6,16 +6,34 @@ import json
 from typing import Any
 
 
+def _ms_to_mmss(ms: float) -> str:
+    """Convert milliseconds to mm:ss.x timestamp string."""
+    total_s = ms / 1000.0
+    minutes = int(total_s) // 60
+    seconds = total_s % 60
+    return f"{minutes}:{seconds:05.2f}"
+
+
 def format_transcript(turns: list[dict[str, Any]]) -> str:
     lines: list[str] = []
+    elapsed_ms = 0.0
     for t in turns:
-        lines.append(f"Turn {t.get('turn')}:")
+        start = _ms_to_mmss(elapsed_ms)
+        ttm = t.get("turn_taking_ms") or 0
+        elapsed_ms += ttm
+        end = _ms_to_mmss(elapsed_ms)
+        time_range = f"{start} - {end}"
+
         if t.get("user_text"):
-            lines.append(f"  CALLER: {t['user_text']}")
+            lines.append(f"Caller")
+            lines.append(time_range)
+            lines.append(t["user_text"])
+            lines.append("")
         if t.get("agent_text"):
-            lines.append(f"  AGENT: {t['agent_text']}")
-        if t.get("tool_errors"):
-            lines.append(f"  (tool errors this turn: {t['tool_errors']})")
+            lines.append(f"Agent")
+            lines.append(time_range)
+            lines.append(t["agent_text"])
+            lines.append("")
     return "\n".join(lines) if lines else "(empty)"
 
 

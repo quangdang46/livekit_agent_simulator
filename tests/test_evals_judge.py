@@ -101,7 +101,7 @@ def test_evidence_packet():
         [{"turn": 1, "user_text": "hi", "agent_text": "hello"}],
         [{"kind": "tool.end", "turn": 1, "spec": {"name": "book", "error": None}}],
     )
-    assert "CALLER: hi" in p["transcript"]
+    assert "Caller" in p["transcript"] and "hi" in p["transcript"]
     assert "book" in p["tool_spans"]
 
 
