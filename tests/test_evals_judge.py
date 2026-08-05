@@ -175,6 +175,102 @@ def test_parse_conversation_feedback_empty_omitted():
     assert "conversation_feedback" not in j.to_dict()
 
 
+def test_parse_free_style_review_round_trip():
+    """Generic free-style review fields must survive parse → to_dict."""
+    j = parse_judgment_payload(
+        {
+            "verdict": "fail",
+            "score": 62,
+            "overall_summary": "The call achieved its goal but with notable friction.",
+            "strengths": [{"point": "Clear greeting"}],
+            "issues": [
+                {
+                    "title": "Two questions stacked in one turn",
+                    "severity": "Critical",
+                    "evidence": "緊急連絡先の氏名と、折り返しの時間帯を教えてください",
+                    "impact": "The caller loses track of which to answer.",
+                    "recommendation": "Ask one question at a time.",
+                }
+            ],
+            "missing_checks": [{"item": "No call-back time was agreed"}],
+            "language_naturalness": [{"issue": "Rushed pacing on turn 3"}],
+            "final_assessment": {
+                "goal_achievement": "7/10",
+                "understanding": "8/10",
+                "conversation_flow": "5/10",
+                "clarity": "6/10",
+                "user_experience": "5/10",
+                "conclusion": "Workable but rough.",
+            },
+        }
+    )
+    assert j.overall_summary.startswith("The call achieved")
+    assert j.strengths == ["Clear greeting"]
+    assert len(j.issues) == 1
+    assert j.issues[0].title == "Two questions stacked in one turn"
+    assert j.issues[0].severity == "Critical"
+    assert j.issues[0].recommendation == "Ask one question at a time."
+    assert j.missing_checks == ["No call-back time was agreed"]
+    assert j.language_naturalness == ["Rushed pacing on turn 3"]
+    assert j.final_assessment["goal_achievement"] == "7/10"
+
+    d = j.to_dict()
+    assert d["overall_summary"] == j.overall_summary
+    assert d["issues"][0]["evidence"].startswith("緊急")
+    assert d["issues"][0]["recommendation"] == "Ask one question at a time."
+    assert d["final_assessment"]["user_experience"] == "5/10"
+
+
+def test_parse_free_style_legacy_aliases():
+    """Tolerate old field names (works / issue / agent_line / improvement)."""
+    j = parse_judgment_payload(
+        {
+            "verdict": "maybe",
+            "works": [{"point": "Politeness"}],
+            "issues": [
+                {
+                    "issue": "Repeated re-ask",
+                    "severity": "Major",
+                    "agent_line": "Could you repeat the address?",
+                    "why": "Already answered twice.",
+                    "improvement": "Honor the earlier answer.",
+                }
+            ],
+        }
+    )
+    assert j.strengths == ["Politeness"]
+    assert j.issues[0].title == "Repeated re-ask"
+    assert j.issues[0].recommendation == "Honor the earlier answer."
+
+
+def test_parse_free_style_empty_fields_omitted():
+    j = parse_judgment_payload({"verdict": "pass", "score": 90})
+    assert j.overall_summary == ""
+    assert j.issues == []
+    assert "issues" not in j.to_dict()
+    assert "strengths" not in j.to_dict()
+
+
+def test_relevancy_preserves_free_style_review():
+    """Relevancy rewrite must not drop the free-style review content."""
+    j = parse_judgment_payload(
+        {
+            "verdict": "fail",
+            "score": 40,
+            "overall_summary": "summary",
+            "issues": [{"title": "t", "severity": "Major", "evidence": "e"}],
+            "criteria": [
+                {"criterion": "A", "met": True, "relevant": True, "evidence": "ok"},
+                {"criterion": "B", "met": False, "relevant": False, "evidence": "n/a"},
+            ],
+        }
+    )
+    out = apply_relevancy(j)
+    assert out.verdict == "pass"
+    assert out.overall_summary == "summary"
+    assert len(out.issues) == 1
+
+
 @pytest.mark.asyncio
 async def test_judge_run_with_mock_backend(monkeypatch: pytest.MonkeyPatch):
     class MockBackend:

@@ -226,11 +226,20 @@ class EventWriter:
 
     # ---------------------------------------------------------------- timeline
 
+    # Free-style review categories (generic rubric — same as the judge prompt)
+    _FINAL_ASSESS_CATS = [
+        "goal_achievement",
+        "understanding",
+        "conversation_flow",
+        "clarity",
+        "user_experience",
+    ]
+
     def _render_review(self, verdict: dict[str, Any] | None) -> str:
-        """Generate a human-readable review.md from judge verdict.
+        """Generate a human-readable review.md from the judge verdict.
 
         Produces review.md when ANY of these exist:
-        1. overall_summary / works / issues (rich verdict)
+        1. Free-style review content (overall_summary / strengths / issues / ...)
         2. conversation_feedback (legacy format)
         3. Failed criteria evidence
         4. Verdict notes
@@ -238,65 +247,137 @@ class EventWriter:
         if not verdict:
             return ""
 
-        # Collect data sources
-        overall_summary = verdict.get("overall_summary", "")
-        works = verdict.get("works", [])
-        issues = verdict.get("issues", [])
-        missing_checks = verdict.get("missing_checks", [])
-        lang_issues = verdict.get("language_naturalness", [])
-        final_assess = verdict.get("final_assessment", {})
-        feedback = verdict.get("conversation_feedback", [])  # legacy format
-        notes = verdict.get("notes", "")
+        judges = verdict.get("judges") or []  # multi-judge aggregate
 
         # Flatten criteria from nested judges[] (multi-judge mode)
         all_criteria = list(verdict.get("criteria", []))
-        for judge_group in verdict.get("judges", []):
+        for judge_group in judges:
             all_criteria.extend(judge_group.get("criteria", []))
 
-        has_rich = bool(overall_summary or works or issues)
-        has_legacy_feedback = len(feedback) > 0 and not has_rich
-        has_failed_criteria = any(
-            c.get("met") is False and c.get("relevant", True)
-            for c in all_criteria
-        )
-        has_final = bool(final_assess.get("conclusion"))
-        has_notes = bool(notes.strip())
+        blocks = []  # (heading, verdict_dict) rendered in order
+        if judges:
+            blocks = [(f"Judge: {jg.get('judge_id') or 'n/a'}", jg) for jg in judges]
+        else:
+            blocks = [("", verdict)]
 
-        if not has_rich and not has_legacy_feedback and not has_failed_criteria and not has_notes:
+        has_content = any(
+            self._review_has_content(v) or bool(v.get("conversation_feedback"))
+            for _, v in blocks
+        )
+        has_failed_criteria = any(
+            c.get("met") is False and c.get("relevant", True) for c in all_criteria
+        )
+        has_notes = bool(str(verdict.get("notes") or "").strip())
+        if not has_content and not has_failed_criteria and not has_notes:
             return ""
 
-        score = verdict.get("score")
-        lines = []
+        lines: list[str] = []
+        if judges:
+            lines.append("# Review")
+            lines.append("")
+            lines.append(
+                f"Verdict: {verdict.get('verdict', 'n/a')}"
+                f" | Score: {verdict.get('score') if verdict.get('score') is not None else 'n/a'}"
+                f" | Confidence: {verdict.get('confidence', 'n/a')}"
+                f" | Mode: {verdict.get('mode', 'all')}"
+            )
+            lines.append("")
+
+        for heading, v in blocks:
+            self._render_review_block(lines, v, heading=heading)
+            # Legacy conversation_feedback (only when the block has no rich content)
+            feedback = v.get("conversation_feedback") or []
+            if feedback and not self._review_has_content(v):
+                self._render_legacy_feedback(lines, feedback)
+
+        # ── Criteria review (from all judges)
+        if has_failed_criteria:
+            met_count = sum(1 for c in all_criteria if c.get("met") and c.get("relevant", True))
+            total_relevant = sum(1 for c in all_criteria if c.get("relevant", True))
+            lines.append(f"*{met_count}/{total_relevant} criteria met.*")
+            lines.append("")
+
+        # ── Notes
+        if has_notes:
+            lines.append("## Notes")
+            lines.append("")
+            lines.append(str(verdict.get("notes") or ""))
+            lines.append("")
+
+        return "\n".join(lines)
+
+    @classmethod
+    def _review_has_content(cls, v: dict[str, Any]) -> bool:
+        return any(
+            bool(v.get(key))
+            for key in (
+                "overall_summary",
+                "strengths",
+                "issues",
+                "missing_checks",
+                "language_naturalness",
+                "final_assessment",
+            )
+        )
+
+    def _render_review_block(
+        self,
+        lines: list[str],
+        v: dict[str, Any],
+        *,
+        heading: str = "",
+    ) -> None:
+        """Render one verdict dict's free-style review sections into ``lines``.
+
+        ``heading`` is non-empty only for per-judge blocks in multi-judge mode;
+        in that case sections use ``###`` (under a ``## Judge: …`` title).
+        """
+        h1 = "###" if heading else "#"
+        if heading:
+            lines.append(f"## {heading}")
+            lines.append("")
+
+        overall_summary = str(v.get("overall_summary") or "")
+        strengths = v.get("strengths") or []
+        issues = v.get("issues") or []
+        missing_checks = v.get("missing_checks") or []
+        lang_issues = v.get("language_naturalness") or []
+        final_assess = v.get("final_assessment") or {}
+        score = v.get("score")
 
         # ── Overall
-        lines.append("# Overall")
-        lines.append("")
-        if overall_summary:
-            lines.append(overall_summary)
-        else:
-            lines.append(f"Verdict: {verdict.get('verdict', 'n/a')} | Score: {score if score is not None else 'n/a'} | Confidence: {verdict.get('confidence', 'n/a')}")
-        lines.append("")
-
-        # ── ✅ What Works
-        if works:
-            lines.append("# ✅ What Works")
+        if overall_summary or not heading:
+            lines.append(f"{h1} Overall")
             lines.append("")
-            for w in works:
-                point = w.get("point", "") if isinstance(w, dict) else str(w)
-                lines.append(f"- {point}")
+            if overall_summary:
+                lines.append(overall_summary)
+            else:
+                lines.append(
+                    f"Verdict: {v.get('verdict', 'n/a')}"
+                    f" | Score: {score if score is not None else 'n/a'}"
+                    f" | Confidence: {v.get('confidence', 'n/a')}"
+                )
             lines.append("")
 
-        # ── Issues (rich format with severity/evidence/impact/improvement)
+        # ── Strengths
+        if strengths:
+            lines.append(f"{h1} Strengths")
+            lines.append("")
+            for s in strengths:
+                lines.append(f"- {s}")
+            lines.append("")
+
+        # ── Findings (issues, one per finding)
         if issues:
-            lines.append("# Issues")
+            lines.append(f"{h1} Findings")
             lines.append("")
             for iss in issues:
                 title = iss.get("title", iss.get("issue", ""))
                 severity = iss.get("severity", "Minor")
                 evidence = iss.get("evidence", iss.get("agent_line", ""))
                 impact = iss.get("impact", iss.get("why", ""))
-                improvement = iss.get("improvement", "")
-                lines.append(f"## {title}")
+                improvement = iss.get("recommendation", iss.get("improvement", ""))
+                lines.append(f"### {title}")
                 lines.append("")
                 lines.append(f"Severity: {severity}")
                 lines.append("")
@@ -306,72 +387,41 @@ class EventWriter:
                     lines.append(evidence)
                     lines.append("")
                 if impact:
-                    lines.append("Why it matters")
+                    lines.append("Impact")
                     lines.append("")
                     lines.append(impact)
                     lines.append("")
                 if improvement:
-                    lines.append("Suggested improvement")
+                    lines.append("Recommendation")
                     lines.append("")
                     lines.append(improvement)
                     lines.append("")
 
-        # ── Legacy conversation_feedback (if no rich format)
-        if has_legacy_feedback and not has_rich:
-            lines.append("# Issues")
-            lines.append("")
-            for f in feedback:
-                severity = f.get("severity", "Minor")
-                title = f.get("issue", "")
-                evidence = f.get("agent_line", "")
-                why = f.get("why", "")
-                lines.append(f"## {title}")
-                lines.append("")
-                lines.append(f"Severity: {severity}")
-                lines.append("")
-                if evidence:
-                    lines.append("Evidence")
-                    lines.append("")
-                    lines.append(f"> Agent: {evidence}")
-                    lines.append("")
-                if why:
-                    lines.append("Why it matters")
-                    lines.append("")
-                    lines.append(why)
-                    lines.append("")
-
-        # ── Missing Checks
+        # ── Missing or Unclear Information
         if missing_checks:
-            lines.append("# Missing Checks")
+            lines.append(f"{h1} Missing or Unclear Information")
             lines.append("")
             for item in missing_checks:
-                text = item.get("item", "") if isinstance(item, dict) else str(item)
+                text = item.get("item", item.get("issue", "")) if isinstance(item, dict) else str(item)
                 lines.append(f"- {text}")
             lines.append("")
 
-        # ── Language / Naturalness
+        # ── Language and Conversation Quality
         if lang_issues:
-            lines.append("# Language / Naturalness")
+            lines.append(f"{h1} Language and Conversation Quality")
             lines.append("")
             for li in lang_issues:
                 text = li.get("issue", "") if isinstance(li, dict) else str(li)
                 lines.append(f"- {text}")
             lines.append("")
 
-        # ── Criteria review (from judges)
-        if has_failed_criteria:
-            met_count = sum(1 for c in all_criteria if c.get("met") and c.get("relevant", True))
-            total_relevant = sum(1 for c in all_criteria if c.get("relevant", True))
-            lines.append(f"*{met_count}/{total_relevant} criteria met.*")
-            lines.append("")
-
         # ── Final Assessment
-        if has_final:
-            lines.append("# Final Assessment")
+        if final_assess:
+            lines.append(f"{h1} Final Assessment")
             lines.append("")
             lines.append("| Category | Score |")
             lines.append("|----------|------:|")
-            for cat in ["flow", "task_completion", "slot_collection", "naturalness", "instruction_following", "robustness"]:
+            for cat in self._FINAL_ASSESS_CATS:
                 lines.append(f"| {cat.replace('_', ' ').title()} | {final_assess.get(cat, 'N/A')} |")
             lines.append("")
             conclusion = final_assess.get("conclusion", "")
@@ -379,14 +429,28 @@ class EventWriter:
                 lines.append(conclusion)
                 lines.append("")
 
-        # ── Notes
-        if has_notes:
-            lines.append("## Notes")
+    def _render_legacy_feedback(self, lines: list[str], feedback: list[dict[str, Any]]) -> None:
+        lines.append("# Issues")
+        lines.append("")
+        for f in feedback:
+            severity = f.get("severity", "Minor")
+            title = f.get("issue", "")
+            evidence = f.get("agent_line", "")
+            why = f.get("why", "")
+            lines.append(f"### {title}")
             lines.append("")
-            lines.append(notes)
+            lines.append(f"Severity: {severity}")
             lines.append("")
-
-        return "\n".join(lines)
+            if evidence:
+                lines.append("Evidence")
+                lines.append("")
+                lines.append(f"> Agent: {evidence}")
+                lines.append("")
+            if why:
+                lines.append("Why it matters")
+                lines.append("")
+                lines.append(why)
+                lines.append("")
 
     def render_timeline(self) -> str:
         lines = [

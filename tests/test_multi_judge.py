@@ -105,3 +105,43 @@ def test_aggregate_all_errors_is_error():
         "all",
     )
     assert out["verdict"] == "error"
+
+
+def test_aggregate_preserves_free_style_review():
+    """Multi-judge aggregate must merge per-judge free-style review fields."""
+    out = aggregate.aggregate_judges(
+        [
+            {
+                "verdict": "pass",
+                "score": 90,
+                "overall_summary": "Task completed.",
+                "strengths": [{"point": "Correct result"}],
+                "issues": [
+                    {
+                        "title": "Slow TTFW",
+                        "severity": "Minor",
+                        "evidence": "6s",
+                        "impact": "Wait.",
+                        "recommendation": "Speed up.",
+                    }
+                ],
+                "missing_checks": [{"item": "No follow-up"}],
+            },
+            {
+                "verdict": "pass",
+                "score": 85,
+                "overall_summary": "Tone professional.",
+                "strengths": [{"point": "No rudeness"}],
+            },
+        ],
+        "all",
+    )
+    assert out["verdict"] == "pass"
+    assert "Task completed." in out["overall_summary"]
+    assert "Tone professional." in out["overall_summary"]
+    assert out["strengths"] == ["Correct result", "No rudeness"]
+    assert out["issues"][0]["title"] == "Slow TTFW"
+    assert out["issues"][0]["recommendation"] == "Speed up."
+    assert out["missing_checks"] == ["No follow-up"]
+    # Per-judge details stay intact for per-judge review.md sections
+    assert out["judges"][0]["overall_summary"] == "Task completed."
