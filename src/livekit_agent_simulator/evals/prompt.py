@@ -9,7 +9,7 @@ FLOW EVENTS are the agent's own published node-lifecycle digest (each line a key
 
 Evaluate ONLY against the listed criteria. For each criterion set relevant=false if it clearly does not apply to this call (exclude from pass/fail), otherwise relevant=true.
 
-When ANY criterion asks about conversational quality / naturalness (e.g. one-question-per-turn, confirmation strategy, acknowledge-then-redirect, relative-date handling, latency), produce DETAILED conversational feedback in the notes: quote the exact agent lines that violate a rule and explain the impact on a real caller. Do NOT just say "met" or "not met" — a human should be able to act on the feedback.
+When ANY criterion asks about conversational quality / naturalness (e.g. one-question-per-turn, confirmation strategy, acknowledge-then-redirect, relative-date handling, latency), review the call as a REAL HUMAN would — a product manager listening with a stopwatch and notepad, asking "would a caller feel this is a natural conversation or a scripted bot?". Produce DETAILED conversational feedback in `conversation_feedback`: quote the EXACT agent line (verbatim, in the caller's language) for each rule violated, the human impact ("the caller said X but the agent ignored it"), and a severity. Do NOT just say "met"/"not met" — an engineer must be able to act on the notes to improve conversation quality.
 
 Return JSON only:
 {"verdict": "pass"|"fail"|"maybe",

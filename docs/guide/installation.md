@@ -592,6 +592,43 @@ The caller must work through all goals; early `[END_CALL]` causes a failed test.
 
 PassCriteria can use flat `criteria[]` or multi-judge `judges[]` + `mode` (`all` \| `majority` \| `any`). Full recipes: `lks guide`.
 
+#### Judge builtin presets
+
+Instead of writing a criterion from scratch, reference a builtin dimension:
+
+```jsonl
+{"kind":"PassCriteria","spec":{"judges":[{"id":"task","builtin":"task_completion"},{"id":"flow","builtin":"conversation_flow"}]}}
+{"kind":"PassCriteria","spec":{"criteria":["builtin:conversation_naturalness"]}}
+```
+
+Available presets (package `src/livekit_agent_simulator/evals/presets.py`, `lks plugins`/`list_presets`):
+
+| builtin key | What it grades |
+|---|---|
+| `task_completion` | Caller's goal finished with the correct final state (completed / handed off / declined) |
+| `factual_accuracy` | Facts, prices, dates, policy consistent with tool outputs; flag contradictions/hallucinations |
+| `policy_compliance` | Required disclosures, refusals, consent, restricted topics handled when applicable |
+| `conversation_flow` | Avoids useless loops, ignored context, excessive dead-air / overtalk |
+| `conversation_naturalness` | **Voice UX review as a real human** — see below |
+| `empathy` | Tone appropriate to the caller's situation |
+| `escalation` | Transfer / handoff / refuse at the right time |
+| `accuracy` | Agent grounds claims in tool outputs (LiveKit-style) |
+| `coherence` | Responses follow a logical structure, stay on-topic (LiveKit-style) |
+
+#### `conversation_naturalness` — real-reviewer feedback
+
+The `conversation_naturalness` preset grades the call as a **real human reviewer** would — a product manager listening with a stopwatch and notepad, asking "would a caller feel this is a natural phone conversation, or a scripted bot?". It checks:
+
+1. **One question per turn** — the agent asks a single question and waits; stacking Q1+Q2 reads as rushed.
+2. **Minimal confirmation** — confirm only genuinely risky values (phone, email, ambiguous date/time); a per-field thank-you/echo/"is that correct?" loop feels mechanical.
+3. **Acknowledge-then-redirect** — when the caller volunteers a later field, the agent acknowledges it and steers back to the missing required field; ignoring the caller's input feels like the agent isn't listening.
+4. **Relative dates** — the agent echoes a relative date as stated, never invents an absolute date unless the system is known to have resolved it.
+5. **Turn latency** — under ~3s natural, 3–5s acceptable, over 5s feels stuck; the judge quotes turn numbers/timings for any slow turn.
+
+When any naturalness criterion is present, the judge returns a structured `conversation_feedback` list — `[{issue, severity, agent_line, why}]` with the **exact verbatim agent line** that violates a rule and the human impact — in addition to the per-criterion `criteria` array. An engineer can act directly on the notes. The preset is **language-neutral** (no hardcoded product/business strings in core); targets opt in per scenario via `builtin:conversation_naturalness`, and may add their own domain examples in the scenario's `PassCriteria` text.
+
+Judge verdicts (`pass`/`fail`/`maybe`) are **soft** unless `--strict-judge` is passed; hard CI gates are status / assert / script verify.
+
 Script action `hang_up` makes the sim caller leave the room (hard hangup).
 
 ### Telephony scenarios (optional)
