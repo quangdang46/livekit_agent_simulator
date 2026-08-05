@@ -230,14 +230,22 @@ class EventWriter:
         """Generate a human-readable review.md from judge verdict.
 
         Produces review.md when ANY of these exist:
-        1. conversation_feedback (structured human-like issues)
-        2. Failed criteria evidence (from judges[].criteria)
-        3. Verdict notes
+        1. overall_summary / works / issues (rich verdict)
+        2. conversation_feedback (legacy format)
+        3. Failed criteria evidence
+        4. Verdict notes
         """
         if not verdict:
             return ""
 
-        feedback = verdict.get("conversation_feedback", [])
+        # Collect data sources
+        overall_summary = verdict.get("overall_summary", "")
+        works = verdict.get("works", [])
+        issues = verdict.get("issues", [])
+        missing_checks = verdict.get("missing_checks", [])
+        lang_issues = verdict.get("language_naturalness", [])
+        final_assess = verdict.get("final_assessment", {})
+        feedback = verdict.get("conversation_feedback", [])  # legacy format
         notes = verdict.get("notes", "")
 
         # Flatten criteria from nested judges[] (multi-judge mode)
@@ -245,69 +253,133 @@ class EventWriter:
         for judge_group in verdict.get("judges", []):
             all_criteria.extend(judge_group.get("criteria", []))
 
-        has_feedback = len(feedback) > 0
+        has_rich = bool(overall_summary or works or issues)
+        has_legacy_feedback = len(feedback) > 0 and not has_rich
         has_failed_criteria = any(
             c.get("met") is False and c.get("relevant", True)
             for c in all_criteria
         )
+        has_final = bool(final_assess.get("conclusion"))
         has_notes = bool(notes.strip())
 
-        if not has_feedback and not has_failed_criteria and not has_notes:
+        if not has_rich and not has_legacy_feedback and not has_failed_criteria and not has_notes:
             return ""
 
         score = verdict.get("score")
-        lines = [
-            "# Review — Conversation Quality",
-            "",
-            f"**Verdict:** {verdict.get('verdict', 'n/a')}  ",
-            f"**Score:** {score if score is not None else 'n/a'}  ",
-            f"**Confidence:** {verdict.get('confidence', 'n/a')}",
-            "",
-        ]
+        lines = []
 
-        if has_feedback:
-            lines.append("## Issues found")
+        # ── Overall
+        lines.append("# Overall")
+        lines.append("")
+        if overall_summary:
+            lines.append(overall_summary)
+        else:
+            lines.append(f"Verdict: {verdict.get('verdict', 'n/a')} | Score: {score if score is not None else 'n/a'} | Confidence: {verdict.get('confidence', 'n/a')}")
+        lines.append("")
+
+        # ── ✅ What Works
+        if works:
+            lines.append("# ✅ What Works")
+            lines.append("")
+            for w in works:
+                point = w.get("point", "") if isinstance(w, dict) else str(w)
+                lines.append(f"- {point}")
+            lines.append("")
+
+        # ── Issues (rich format with severity/evidence/impact/improvement)
+        if issues:
+            lines.append("# Issues")
+            lines.append("")
+            for iss in issues:
+                title = iss.get("title", iss.get("issue", ""))
+                severity = iss.get("severity", "Minor")
+                evidence = iss.get("evidence", iss.get("agent_line", ""))
+                impact = iss.get("impact", iss.get("why", ""))
+                improvement = iss.get("improvement", "")
+                lines.append(f"## {title}")
+                lines.append("")
+                lines.append(f"Severity: {severity}")
+                lines.append("")
+                if evidence:
+                    lines.append("Evidence")
+                    lines.append("")
+                    lines.append(evidence)
+                    lines.append("")
+                if impact:
+                    lines.append("Why it matters")
+                    lines.append("")
+                    lines.append(impact)
+                    lines.append("")
+                if improvement:
+                    lines.append("Suggested improvement")
+                    lines.append("")
+                    lines.append(improvement)
+                    lines.append("")
+
+        # ── Legacy conversation_feedback (if no rich format)
+        if has_legacy_feedback and not has_rich:
+            lines.append("# Issues")
             lines.append("")
             for f in feedback:
-                severity = f.get("severity", "low")
-                icon = {
-                    "high": "\U0001f534",
-                    "medium": "\U0001f7e1",
-                    "low": "\U0001f7e2",
-                }.get(severity, "")
-                issue = f.get("issue", "")
-                agent_line = f.get("agent_line", "")
+                severity = f.get("severity", "Minor")
+                title = f.get("issue", "")
+                evidence = f.get("agent_line", "")
                 why = f.get("why", "")
-                lines.append(f"### {icon} {issue} ({severity})")
+                lines.append(f"## {title}")
                 lines.append("")
-                if agent_line:
-                    lines.append(f"> Agent: {agent_line}")
+                lines.append(f"Severity: {severity}")
+                lines.append("")
+                if evidence:
+                    lines.append("Evidence")
                     lines.append("")
-                lines.append(f"{why}")
-                lines.append("")
+                    lines.append(f"> Agent: {evidence}")
+                    lines.append("")
+                if why:
+                    lines.append("Why it matters")
+                    lines.append("")
+                    lines.append(why)
+                    lines.append("")
 
-        if has_failed_criteria:
-            lines.append("## Criteria review")
+        # ── Missing Checks
+        if missing_checks:
+            lines.append("# Missing Checks")
             lines.append("")
-            for c in all_criteria:
-                met = c.get("met", False)
-                rel = c.get("relevant", True)
-                if not rel:
-                    continue
-                evidence = c.get("evidence", "")
-                criterion = c.get("criterion", "")
-                if not met:
-                    lines.append(f"- **FAIL:** {criterion}")
-                    if evidence:
-                        lines.append(f"  Evidence: {evidence}")
-                    lines.append("")
-            met_count = sum(
-                1 for c in all_criteria if c.get("met") and c.get("relevant", True)
-            )
+            for item in missing_checks:
+                text = item.get("item", "") if isinstance(item, dict) else str(item)
+                lines.append(f"- {text}")
+            lines.append("")
+
+        # ── Language / Naturalness
+        if lang_issues:
+            lines.append("# Language / Naturalness")
+            lines.append("")
+            for li in lang_issues:
+                text = li.get("issue", "") if isinstance(li, dict) else str(li)
+                lines.append(f"- {text}")
+            lines.append("")
+
+        # ── Criteria review (from judges)
+        if has_failed_criteria:
+            met_count = sum(1 for c in all_criteria if c.get("met") and c.get("relevant", True))
             total_relevant = sum(1 for c in all_criteria if c.get("relevant", True))
             lines.append(f"*{met_count}/{total_relevant} criteria met.*")
             lines.append("")
 
+        # ── Final Assessment
+        if has_final:
+            lines.append("# Final Assessment")
+            lines.append("")
+            lines.append("| Category | Score |")
+            lines.append("|----------|------:|")
+            for cat in ["flow", "task_completion", "slot_collection", "naturalness", "instruction_following", "robustness"]:
+                lines.append(f"| {cat.replace('_', ' ').title()} | {final_assess.get(cat, 'N/A')} |")
+            lines.append("")
+            conclusion = final_assess.get("conclusion", "")
+            if conclusion:
+                lines.append(conclusion)
+                lines.append("")
+
+        # ── Notes
         if has_notes:
             lines.append("## Notes")
             lines.append("")
