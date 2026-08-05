@@ -9,7 +9,7 @@ Mode **`outbound_sim_callee`**: `call_to` must be a **sim DID** that routes into
 Calling a **real PSTN number** without that DID:
 
 ```
-lk-sim dial +84xxxxxxxxx  ──►  Cloud Trunk  ──►  PSTN  ──►  Real phone rings
+lks dial +84xxxxxxxxx  ──►  Cloud Trunk  ──►  PSTN  ──►  Real phone rings
                                                               │
                                                             Human picks up
                                                               │
@@ -41,9 +41,9 @@ See: `docs/telephony.md`
 - Telephony docs: `docs/telephony.md`
 - Cloned ref: `references/sip-to-ai/` (Apache-2.0 licensed SIP/RTP stack)
 
-### Preflight (lk-sim)
+### Preflight (lks)
 
-`lk-sim preflight --root <target>` reports:
+`lks preflight --root <target>` reports:
 
 | Check | Meaning |
 |---|---|

@@ -2,11 +2,11 @@
 
 export type ListViewMode = "recents" | "scenario";
 
-const HOME_MODE = "lk-sim.home.viewMode";
-const HOME_FILTER = "lk-sim.home.filter";
-const SIDEBAR_MODE = "lk-sim.sidebar.viewMode";
-const SIDEBAR_FILTER = "lk-sim.sidebar.filter";
-const SIDEBAR_OPEN = "lk-sim.sidebar.openScenarios";
+const HOME_MODE = "lks.home.viewMode";
+const HOME_FILTER = "lks.home.filter";
+const SIDEBAR_MODE = "lks.sidebar.viewMode";
+const SIDEBAR_FILTER = "lks.sidebar.filter";
+const SIDEBAR_OPEN = "lks.sidebar.openScenarios";
 
 function read(key: string): string | null {
   try {

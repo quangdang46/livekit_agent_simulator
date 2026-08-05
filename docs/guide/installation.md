@@ -1,8 +1,8 @@
-# Agent install guide — livekit-agent-simulator (`lks`, alias: `lk-sim`)
+# Agent install guide — livekit-agent-simulator (`lks`)
 
 **Audience:** coding agents (Claude Code, Cursor, Codex, AmpCode, Windsurf, …) and humans who paste this URL into an agent.
 
-**Goal:** install the `lks` CLI (alias: `lk-sim`) on the user’s machine, scaffold `.agent-sim/` inside **the user’s project repo** (the LiveKit voice agent under test), fill config safely, register MCP if useful, and prove the setup with `preflight` (and optionally a smoke run).
+**Goal:** install the `lks` CLI on the user’s machine, scaffold `.agent-sim/` inside **the user’s project repo** (the LiveKit voice agent under test), fill config safely, register MCP if useful, and prove the setup with `preflight` (and optionally a smoke run).
 
 **Hard rules for the agent:**
 
@@ -12,7 +12,7 @@
 4. **Discover before `AskQuestion`.** Read target docs and existing `.agent-sim/` (read-only). Do not assume consumer-specific file paths or metadata keys (e.g. one repo’s `job-metadata.ts` or `yourProjectKey` is not universal).
 5. Prefer **non-interactive** commands. Use `--root <absolute-path>` always.
 6. Prefer the **portable installer** (no uv/pip on the user machine) unless the user is developing the simulator package itself.
-7. **Primary CLI is `lks`** (short). **`lk-sim` remains a supported alias** for scripts and older docs. Runtime IDs stay `lk-sim-caller` / room prefix `lk-sim-<run-id>`.
+7. **CLI is `lks`**. Runtime IDs: sim participant `lks-caller` / room prefix `lks-<run-id>`.
 
 ---
 
@@ -20,11 +20,11 @@
 
 | Piece | Purpose |
 |-------|---------|
-| CLI `lks` (alias: `lk-sim`) | Black-box LiveKit room tester + report player |
-| MCP server `livekit-agent-simulator` | Same ops for coding agents (`lks mcp` / alias `lk-sim mcp`) |
+| CLI `lks` | Black-box LiveKit room tester + report player |
+| MCP server `livekit-agent-simulator` | Same ops for coding agents (`lks mcp`) |
 | Target folder `.agent-sim/` | Config, scenarios, reports, local cues/plugins (gitignored) |
 
-The simulator joins LiveKit as `lk-sim-caller`, talks to the user’s already-running agent under test via Gemini Live, and writes forensic reports.
+The simulator joins LiveKit as `lks-caller`, talks to the user’s already-running agent under test via Gemini Live, and writes forensic reports.
 
 **Prerequisites the agent must verify or ask for:**
 
@@ -48,8 +48,8 @@ macOS / Linux (bash):
 
 ```bash
 uname -s
-which lks || which lk-sim || true
-lks --help 2>/dev/null | head -5 || lk-sim --help 2>/dev/null | head -5 || true
+which lks || true
+lks --help 2>/dev/null | head -5 || true
 pwd
 # If the user said "this project", use the current workspace root as TARGET_ROOT
 ```
@@ -57,8 +57,8 @@ pwd
 Windows (PowerShell — note: plain `cmd.exe` has no `Set-Location`/`&&`; prefer PowerShell):
 
 ```powershell
-Get-Command lks -ErrorAction SilentlyContinue; Get-Command lk-sim -ErrorAction SilentlyContinue
-lks --help 2>$null | Select-Object -First 5; if (-not $?) { lk-sim --help 2>$null | Select-Object -First 5 }
+Get-Command lks -ErrorAction SilentlyContinue
+lks --help 2>$null | Select-Object -First 5
 Get-Location
 ```
 
@@ -77,11 +77,11 @@ $TARGET_ROOT = (Get-Location).Path   # or the path the user named
 # Optional pin: $env:LK_SIM_REF = "v0.1.0"
 ```
 
-If `lks --help` or `lk-sim --help` already works, skip §2 install and go to §3 init.
+If `lks --help` already works, skip §2 install and go to §3 init.
 
 ---
 
-## 2. Install `lks` (portable; alias `lk-sim`)
+## 2. Install `lks` (portable)
 
 ### macOS / Linux
 
@@ -101,43 +101,43 @@ Flags:
 
 | Flag | Meaning |
 |------|---------|
-| `--verify` | Run post-install check (`lks --help` / alias `lk-sim --help`) |
+| `--verify` | Run post-install check (`lks --help`) |
 | `--ref vX.Y.Z` / `--version` | Pin release tag (default: latest) |
 | `--no-mcp` | Skip auto MCP registration |
 | `--easy-mode` | Append install dir to shell PATH in rc files |
 | `--uninstall` | Remove install |
 
-Default binary locations: `$HOME/.local/bin/lks` and alias `$HOME/.local/bin/lk-sim`  
-If `lks` / `lk-sim` is not found after install, ensure `~/.local/bin` is on `PATH` for this shell:
+Default binary location: `$HOME/.local/bin/lks`  
+If `lks` is not found after install, ensure `~/.local/bin` is on `PATH` for this shell:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 hash -r 2>/dev/null || true
-command -v lks || command -v lk-sim
+command -v lks
 lks --help | head -20
 ```
 
 ### Windows PowerShell
 
 ```powershell
-irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lk-sim-install.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps1" -Verify
+irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
 # Optional pin:
-# ... -File "$env:TEMP\lk-sim-install.ps1" -Ref v0.1.0 -Verify
+# ... -File "$env:TEMP\lks-install.ps1" -Ref v0.1.0 -Verify
 ```
 
 `install.ps1` flags (differ slightly from `install.sh`):
 
 | Flag | Meaning |
 |------|---------|
-| `-Verify` | Run post-install check (`lks --help` / alias `lk-sim --help`) |
+| `-Verify` | Run post-install check (`lks --help`) |
 | `-Ref vX.Y.Z` / `-Version` | Pin release tag (default: latest) |
 | `-NoMcp` | Skip auto MCP registration |
 | `-Uninstall` | Remove install |
-| `-Repair` | Fix broken nested layout (`current/lk-sim-windows-x64/`) without re-download |
+| `-Repair` | Fix broken nested layout (`current/lks-windows-x64/`) without re-download |
 | `-Quiet` | Suppress info logs |
 
-Install locations: pack under `%LOCALAPPDATA%\lk-sim\current`, shims `lks` + alias `lk-sim` under `%USERPROFILE%\.local\bin`.
+Install locations: pack under `%LOCALAPPDATA%\lks\current`, shims `lks` under `%USERPROFILE%\.local\bin`.
 The installer prepends that dir to the **user** `PATH` automatically — but already-open terminals do not see it.
 If `lks` / `lks` is not found after install, open a **new** terminal, or for the current session:
 
@@ -149,7 +149,7 @@ lks --help | Select-Object -First 20
 
 ### Installer success criteria
 
-- `command -v lks` (or alias `lk-sim`) / `Get-Command lks` resolves
+- `command -v lks` / `Get-Command lks` resolves
 - `lks --help` exits 0 and lists: `init`, `preflight`, `execute`, `scenario-from-run`, `web`, `mcp`, …
 - Prefer not to use `uv run` / `pip install` for end users
 
@@ -525,7 +525,7 @@ These are **not** required for install — use when writing scenarios under `.ag
 
 Package examples: `templates/examples/quiet-caller-confirm.jsonl`, `silent-caller-dead-air.jsonl`, `ambient-loop-office.jsonl`, `interrupt-rate-medium.jsonl`, `hold-timeout-agent-stall.jsonl`.
 
-Ops detail: **`lks guide`** (or `lk-sim guide`).
+Ops detail: **`lks guide`**.
 
 
 
@@ -723,8 +723,8 @@ $TARGET_ROOT = (Get-Location).Path   # change if needed
 
 # 1) Install CLI (skip if already present)
 if (-not (Get-Command lks -ErrorAction SilentlyContinue; Get-Command lks -ErrorAction SilentlyContinue)) {
-  irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lk-sim-install.ps1"
-  powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps1" -Verify
+  irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+  powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
   $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
 }
 lks --help | Out-Null

@@ -1,7 +1,7 @@
 # Plan Report
 
 ## Summary (read this first)
-- **You asked:** Go deeper — make `lk-sim` feel like a **real human caller**, driven by the scenario, then develop the conversation with the agent (Exa research OK). Follow-up: **research thêm kỹ**.
+- **You asked:** Go deeper — make `lks` feel like a **real human caller**, driven by the scenario, then develop the conversation with the agent (Exa research OK). Follow-up: **research thêm kỹ**.
 - **What is going on:** Today we mix three jobs in one Gemini Live session: (1) Persona freestyle, (2) Script timing/barge fixtures, (3) midcall text that accidentally **triggers speech**. Industry tools split these: **goal/persona-driven caller** vs **deterministic interaction fixtures**.
 - **We recommend:** Evolve toward a **Persona-led dialogue mode** (situation + goals + constraints + outcome) as the default “human call,” and keep **Script** as an optional **interaction overlay** (noise / barge WAV / forced fee ask) — not as the only mouth of the caller. Fix bootstrap (no speak-inducing text) first.
 - **Risk:** Medium (product split of modes; scenario authoring changes). Low if we stage: bootstrap fix → persona-dialogue mode → Script overlays.
@@ -70,7 +70,7 @@ Scenario
 
 Verified from [Coval Personas](https://docs.coval.ai/concepts/personas/overview) + [Simulations](https://docs.coval.ai/concepts/simulations/overview) + [Test sets](https://docs.coval.ai/concepts/test-sets/overview):
 
-| Block | Question | lk-sim today | Gap |
+| Block | Question | lks today | Gap |
 |-------|----------|--------------|-----|
 | **Agent** | Who is under test? | opaque Dispatch / target worker | OK (boundary) |
 | **Persona** | Who is calling / how they sound? | `Persona` kind + traits + voice | Missing knobs: initiator, interruption rate, silent mode (Coval has these as **settings**, not prompt prose) |
@@ -103,9 +103,9 @@ Persona(name=..., situation="...", outcome="...")
 - **outcome** = success criteria for **eval** (task_completion maps situation → transcript).
 - Separate `SimulatorAgentDefinition` for sim customer model/voice.
 
-**Map to lk-sim (minimal schema change):**
+**Map to lks (minimal schema change):**
 
-| Future AGI | lk-sim |
+| Future AGI | lks |
 |------------|--------|
 | `situation` | `Persona.brief` **or** new `Persona.situation` (prefer explicit field later) |
 | `outcome` | PassCriteria / Assert `llm_bool` / `goals_met` — **not** only Script bye |
@@ -121,7 +121,7 @@ From Hamming persona template + our `docs/caller-behavior-research.md`:
 
 ### D. Gemini Live — non-negotiable wire rules
 
-| Rule | Source | Implication for lk-sim |
+| Rule | Source | Implication for lks |
 |------|--------|------------------------|
 | SI order: persona → conversational rules → guardrails | [Google best practices](https://ai.google.dev/gemini-api/docs/live-api/best-practices) | Keep `prompt_sections` order; split dialogue vs script rule blocks |
 | One SI per role | same | Caller SI only; never mix agent instructions |
@@ -152,7 +152,7 @@ Phase 0 fix: **omit bootstrap MidcallCue entirely** when Script owns first speec
 
 [IVR navigator recipe](https://docs.livekit.io/reference/recipes/ivr-navigator/): agent role-plays **human caller with a task goal** — goal in instructions, not a line script. Same pattern we want for dialogue mode.
 
-**Boundary (keep):** lk-sim = black-box room caller; do not replace worker pytest.
+**Boundary (keep):** lks = black-box room caller; do not replace worker pytest.
 
 ### F. GitHub prior art — what to reuse / avoid
 
@@ -221,6 +221,6 @@ After Phase 0–2, a `dialogue-signup-basic` run should show:
 ## If you want more detail
 **Why Script-only feels “ít nói + ngắn”:** Interaction tests optimize for **reproducible audio events**, not rapport. A real human answers name, clarifies plan, pushes back on fee — that is **goal-seeking freestyle**, which Script hard-silence was designed to suppress.
 
-**lk-sim unique value to keep:** LiveKit room + Gemini Live voice + Script fixtures for barge/noise + stereo player. Do **not** become a text-only chat sim; keep audio-native, but let Persona drive most words.
+**lks unique value to keep:** LiveKit room + Gemini Live voice + Script fixtures for barge/noise + stereo player. Do **not** become a text-only chat sim; keep audio-native, but let Persona drive most words.
 
 **Status:** Waiting for your OK — reply **go ahead** to implement (recommend Phase 0 first).

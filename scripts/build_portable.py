@@ -3,14 +3,13 @@
 
 Layout (example windows-x64)::
 
-    dist/portable/lk-sim-windows-x64/
+    dist/portable/lks-windows-x64/
       python/          # full CPython from uv (relocatable standalone)
-      lks.cmd / lks-mcp.cmd / lks / lks-mcp   # primary
-      lk-sim.cmd / lk-sim-mcp.cmd / lk-sim / lk-sim-mcp  # alias
+      lks.cmd / lks-mcp.cmd / lks / lks-mcp
       README.txt
 
 CI zips the directory; installers only download + extract + PATH.
-No uv/pip on the user machine. Asset folder names stay ``lk-sim-*`` for release stability.
+No uv/pip on the user machine. Asset folder names stay ``lks-*`` for release stability.
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ def _asset_name() -> str:
         arch = "arm64"
     else:
         arch = machine
-    return f"lk-sim-{os_part}-{arch}"
+    return f"lks-{os_part}-{arch}"
 
 
 def _uv() -> str:
@@ -73,7 +72,7 @@ def _remove_uv_trampolines(py_dest: Path) -> None:
     scripts = py_dest / "Scripts"
     if not scripts.is_dir():
         return
-    for name in ("lks.exe", "lks-mcp.exe", "lk-sim.exe", "lk-sim-mcp.exe"):
+    for name in ("lks.exe", "lks-mcp.exe"):
         target = scripts / name
         if target.exists():
             print(f"removing broken uv trampoline {target}", flush=True)
@@ -81,9 +80,8 @@ def _remove_uv_trampolines(py_dest: Path) -> None:
 
 
 def _write_launchers(root: Path, is_windows: bool) -> None:
-    # Primary + alias names share the same modules.
-    cli_names = ("lks", "lk-sim")
-    mcp_names = ("lks-mcp", "lk-sim-mcp")
+    cli_names = ("lks",)
+    mcp_names = ("lks-mcp",)
 
     if is_windows:
         # Always python -m: uv trampoline .exe embeds CI absolute paths (see uv #3669).
@@ -123,9 +121,7 @@ def _write_launchers(root: Path, is_windows: bool) -> None:
     # - Prefer `python -m` over entrypoint scripts (shebangs embed CI absolute paths)
     for name, mod in (
         ("lks", "livekit_agent_simulator"),
-        ("lk-sim", "livekit_agent_simulator"),
         ("lks-mcp", "livekit_agent_simulator.mcp_server"),
-        ("lk-sim-mcp", "livekit_agent_simulator.mcp_server"),
     ):
         body = f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -275,7 +271,6 @@ def build(wheel: Path, out_dir: Path) -> Path:
             [
                 "lks portable pack (CI-built).",
                 "Primary: ./lks (Unix) or lks.cmd (Windows).",
-                "Alias:   ./lk-sim (Unix) or lk-sim.cmd (Windows).",
                 "No uv/pip install required on the user machine.",
                 "",
             ]

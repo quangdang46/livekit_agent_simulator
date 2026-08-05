@@ -1,6 +1,6 @@
 # WIP — roadmap toward replacing “open mic and talk to the agent”
 
-**Goal:** `lk-sim` is the day-to-day black-box QA loop for LiveKit voice agents — real room (WebRTC or SIP), Gemini as the human, forensic report + web replay, CI-friendly gates, MCP for coding agents.
+**Goal:** `lks` is the day-to-day black-box QA loop for LiveKit voice agents — real room (WebRTC or SIP), Gemini as the human, forensic report + web replay, CI-friendly gates, MCP for coding agents.
 
 **Not the goal:** LiveKit in-process `AgentSession` unit tests; 50k concurrent load platforms; production observability SaaS (Hamming Observe / Coval online eval).
 
@@ -30,15 +30,15 @@ Update this file when gaps close or priorities change.
 | Layer | Owner | What it is |
 |---|---|---|
 | **In-process unit / session** | LiveKit Agents + pytest | Fake models, `result.expect…` — **no real room** |
-| **Black-box room / audio E2E** | Hamming, Coval, Cekura, **lk-sim** | Real room + sim caller |
+| **Black-box room / audio E2E** | Hamming, Coval, Cekura, **lks** | Real room + sim caller |
 | **Load** | `lk perf`, Hamming | Many rooms |
 | **Prod observe** | OTel, SaaS | Drift, alerts |
 
-**lk-sim complements Agents pytest; it does not replace it.**
+**lks complements Agents pytest; it does not replace it.**
 
 ### Competitive snapshot
 
-| Capability | lk-sim | Hamming / Coval / Cekura | LiveKit pytest |
+| Capability | lks | Hamming / Coval / Cekura | LiveKit pytest |
 |---|---|---|---|
 | Real LiveKit room | ✅ | ✅ | ❌ |
 | AI persona caller | ✅ Gemini Live | ✅ | ❌ |
@@ -220,9 +220,9 @@ needed:   + backchannels[], false_interrupts[], dtmf[]
 
 ---
 
-## Developer manual work vs lk-sim
+## Developer manual work vs lks
 
-| Manual developer | lk-sim today | Gap ID |
+| Manual developer | lks today | Gap ID |
 |---|---|---|
 | Open mic, greet agent | ✅ | — |
 | Happy-path flow | ✅ | — |
@@ -346,7 +346,7 @@ See `docs/PROBLEM.md`, `docs/telephony.md`. Work: **P1.E**.
 |---|---|
 | Unit tests | `uv run pytest -q` green (or scoped + full before merge) |
 | Build | package importable; web build if `web/` touched |
-| Real execute | `lk-sim execute <scenario> --root <any-target>` with **real** `reports/<run-id>/` matching expected gate — **except** pure tests/docs (no runtime surface) |
+| Real execute | `lks execute <scenario> --root <any-target>` with **real** `reports/<run-id>/` matching expected gate — **except** pure tests/docs (no runtime surface) |
 | Portable core | AGENTS.md: no hardcoding of worker/dashboard/product in `src/`; target is black-box smoke only |
 
 ### Forbidden

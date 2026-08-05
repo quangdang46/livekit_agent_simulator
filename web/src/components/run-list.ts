@@ -229,7 +229,7 @@ export function renderRunList(
     <main class="page home-page">
       <header class="header home-header">
         <div>
-          <p class="eyebrow">lk-sim</p>
+          <p class="eyebrow">lks</p>
           <h1>Reports</h1>
           <p class="muted home-sub" id="home-sub"></p>
         </div>

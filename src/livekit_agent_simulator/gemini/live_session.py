@@ -385,7 +385,7 @@ class GeminiCallerBridge:
 
     async def publish_mic(self) -> rtc.AudioSource:
         self._source = rtc.AudioSource(GEMINI_OUT_RATE, 1)
-        track = rtc.LocalAudioTrack.create_audio_track("lk-sim-mic", self._source)
+        track = rtc.LocalAudioTrack.create_audio_track("lks-mic", self._source)
         await self.room.local_participant.publish_track(
             track,
             rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE),

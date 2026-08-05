@@ -1,4 +1,4 @@
-"""FastMCP server — same public ops as `lks` CLI (alias: `lk-sim`; see ops module docstring).
+"""FastMCP server — same public ops as `lks` CLI (see ops module docstring).
 
 Every tool takes `project_root`: absolute path of the repo under test that
 contains (or will contain) the `.agent-sim/` folder.

@@ -85,7 +85,7 @@ async def test_phase_a_prefers_named_over_first(tmp_path):
     adapter = _make_adapter(
         cfg,
         {
-            "lk-sim-other": [_mk_participant("agent-AJ_a", 4)],
+            "lks-other": [_mk_participant("agent-AJ_a", 4)],
             "inbound-x": [_mk_participant("agent-AJ_b", 4)],
         },
     )
@@ -110,7 +110,7 @@ async def test_phase_b_sip_call_id(tmp_path):
                 _mk_participant("agent-AJ_x", 4),
                 _mk_participant("sip-leg", 3, sip_attrs={"sip.callID": "SCL_abc123"}),
             ],
-            "lk-sim-smoke": [_mk_participant("agent-AJ_y", 4)],
+            "lks-smoke": [_mk_participant("agent-AJ_y", 4)],
         },
     )
     name, aid = await adapter.find_agent_room(
@@ -132,9 +132,9 @@ async def test_phase_b_prefers_sip_call_id_over_wrong_name(tmp_path):
                 _mk_participant("agent-AJ_x", 4),
                 _mk_participant("sip-in", 3, sip_attrs={"sip.callID": "SCL_match"}),
             ],
-            "lk-sim-smoke-hello-abc": [
+            "lks-smoke-hello-abc": [
                 _mk_participant("agent-AJ_y", 4),
-                _mk_participant("lk-sim-caller", 0),
+                _mk_participant("lks-caller", 0),
             ],
         },
     )
@@ -152,7 +152,7 @@ async def test_phase_b_no_sip_needle_still_finds_first(tmp_path):
     adapter = _make_adapter(
         cfg,
         {
-            "lk-sim-smoke-hello-abc": [_mk_participant("agent-AJ_first", 4)],
+            "lks-smoke-hello-abc": [_mk_participant("agent-AJ_first", 4)],
             "some-other": [_mk_participant("agent-AJ_second", 4)],
         },
     )
@@ -166,9 +166,9 @@ async def test_requires_sip_filters_non_sip_rooms(tmp_path):
     adapter = _make_adapter(
         cfg,
         {
-            "lk-sim-smoke-hello": [
+            "lks-smoke-hello": [
                 _mk_participant("agent-AJ_first", 4),
-                _mk_participant("lk-sim-caller", 0),
+                _mk_participant("lks-caller", 0),
             ],
             "inbound-call-room": [
                 _mk_participant("agent-AJ_x", 4),
@@ -249,7 +249,7 @@ async def test_resolve_inbound_skips_stale_prefers_fresh(tmp_path):
         adapter,
         sip_call_id="SCL_OUTBOUND_MISMATCH",  # hairpin: outbound id ≠ inbound attrs
         dial_in="+61741581902",
-        exclude_rooms={"lk-sim-sip-run"},
+        exclude_rooms={"lks-sip-run"},
         preexisting_rooms={stale},
         created_after_ms=5_000,
         timeout_ms=500,

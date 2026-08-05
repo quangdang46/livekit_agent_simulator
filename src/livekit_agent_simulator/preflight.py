@@ -85,7 +85,7 @@ async def run_preflight(project_root: Path | str, connectivity: bool = True) -> 
                 "telephony.outbound_sim_callee",
                 "pass",
                 "trunk + sim_inbound_number present — ensure LiveKit dispatch rule routes "
-                "this DID into the lk-sim room (Cloud hairpin). Real PSTN ≠ Gemini without that rule.",
+                "this DID into the lks room (Cloud hairpin). Real PSTN ≠ Gemini without that rule.",
             )
     else:
         result.add("telephony", "pass", "not configured (WebRTC-only OK)")

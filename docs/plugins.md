@@ -46,7 +46,7 @@ Or ship plugins from an installable package:
 
 ```toml
 # pyproject.toml (your worker or test package)
-[project.entry-points."lk_sim.plugins"]
+[project.entry-points."lks.plugins"]
 worker_sim = "my_worker.sim_plugins:setup"
 ```
 

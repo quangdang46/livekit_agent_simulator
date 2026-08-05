@@ -1,7 +1,7 @@
 # livekit-agent-simulator
 
 <div align="center">
-  <img src="lk_sim_illustration.webp" alt="lks — livekit-agent-simulator: black-box LiveKit agent tests with WebRTC, Inbound, Outbound" width="720">
+  <img src="lks_illustration.webp" alt="lks — livekit-agent-simulator: black-box LiveKit agent tests with WebRTC, Inbound, Outbound" width="720">
 </div>
 
 <div align="center">
@@ -15,7 +15,7 @@
 </div>
 
 **Dial any LiveKit voice agent with an AI simulated caller — WebRTC room, inbound SIP, or outbound SIP — and keep a full forensic log.**  
-Standalone MCP server + CLI (`lks`, alias: `lk-sim`). Black-box testing: no imports from the agent under test, no edits to its code or `.env`.
+Standalone MCP server + CLI (`lks`). Black-box testing: no imports from the agent under test, no edits to its code or `.env`.
 
 <div align="center">
 <h3>Quick Install</h3>
@@ -192,8 +192,8 @@ curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulato
 
 ```powershell
 # Windows PowerShell
-irm "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.ps1" -OutFile "$env:TEMP\lk-sim-install.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps1" -Verify
+irm "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
 ```
 
 Also available from a release asset:
@@ -360,7 +360,7 @@ Dev checkout (package not installed globally):
 }
 ```
 
-Equivalent one-shot entry: `lks-mcp` (alias: `lk-sim-mcp`; same process as `lks mcp` / `lk-sim mcp`).
+Equivalent one-shot entry: `lks-mcp` (same process as `lks mcp`).
 
 ---
 

@@ -78,7 +78,7 @@ export function renderRunSidebar(
     <aside class="run-sidebar" aria-label="Report runs">
       <div class="run-sidebar-head">
         <button type="button" class="run-sidebar-home" id="sb-home" title="All reports">
-          lk-sim
+          lks
         </button>
         <input
           type="search"

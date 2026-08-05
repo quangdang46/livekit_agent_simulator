@@ -244,7 +244,7 @@ def list_plugins(project_root: Path | str) -> dict[str, Any]:
         "verify_plugins": list_verify_plugins(),
         "local_modules": local_files,
         "load": load_info,
-        "entry_point_group": "lk_sim.plugins",
+        "entry_point_group": "lks.plugins",
     }
 
 

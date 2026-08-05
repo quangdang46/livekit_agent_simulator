@@ -1,4 +1,4 @@
-"""Helpers for portable pack install layout (flatten nested lk-sim-* dirs)."""
+"""Helpers for portable pack install layout (flatten nested lks-* dirs)."""
 
 from __future__ import annotations
 
@@ -31,13 +31,13 @@ def find_nested_payload(root: Path) -> Path | None:
     if not root.is_dir():
         return None
     for child in sorted(root.iterdir()):
-        if child.is_dir() and child.name.startswith("lk-sim-") and portable_python_valid(child):
+        if child.is_dir() and child.name.startswith("lks-") and portable_python_valid(child):
             return child
     return None
 
 
 def repair_nested_portable_layout(root: Path) -> bool:
-    """Hoist current/lk-sim-*/ contents into current/ (legacy broken installs)."""
+    """Hoist current/lks-*/ contents into current/ (legacy broken installs)."""
     root = root.resolve()
     if portable_python_valid(root):
         return True

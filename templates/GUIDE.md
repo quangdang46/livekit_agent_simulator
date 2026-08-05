@@ -1,6 +1,6 @@
 # livekit-agent-simulator — setup & ops guide
 
-For coding agents and humans. **CLI (`lks`, alias: `lk-sim`) and MCP share the same ops.**
+For coding agents and humans. **CLI (`lks`) and MCP share the same ops.**
 
 Package dials **any** LiveKit voice agent with a Gemini Live simulated caller and writes
 a forensic report. The agent under test is a **black box** — never import or edit target
@@ -314,7 +314,7 @@ lks plugins --root /path/to/target
 # MCP: list_plugins(project_root=…)
 ```
 
-Ship plugins from an installable package via `[project.entry-points."lk_sim.plugins"]` — see https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md
+Ship plugins from an installable package via `[project.entry-points."lks.plugins"]` — see https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md
 
 ### Run
 

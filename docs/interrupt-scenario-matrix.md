@@ -1,4 +1,4 @@
-# Interrupt scenario matrix (lk-sim)
+# Interrupt scenario matrix (lks)
 
 Portable guidance for authoring barge-in / backchannel / noise scenarios.
 Consumer-specific agent ids and Dispatch belong in the **target** `.agent-sim/scenarios/`.

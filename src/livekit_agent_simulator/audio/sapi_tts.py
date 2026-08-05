@@ -18,7 +18,7 @@ def synthesize_pcm16_mono(text: str, *, rate: int = TARGET_RATE) -> bytes | None
     if not say or sys.platform != "win32":
         return None
     try:
-        with tempfile.TemporaryDirectory(prefix="lk-sim-sapi-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="lks-sapi-") as tmp:
             wav_path = Path(tmp) / "out.wav"
             ps = f"""
 Add-Type -AssemblyName System.Speech

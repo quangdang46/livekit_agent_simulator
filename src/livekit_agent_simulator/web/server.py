@@ -330,7 +330,7 @@ def start_web_server(
         print(f"UI assets: {player_dir}", flush=True)
         _serve_blocking(httpd)
     else:
-        thread = threading.Thread(target=httpd.serve_forever, name="lk-sim-web", daemon=True)
+        thread = threading.Thread(target=httpd.serve_forever, name="lks-web", daemon=True)
         thread.start()
         info["server"] = httpd
         info["thread"] = thread

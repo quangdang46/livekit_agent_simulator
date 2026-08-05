@@ -1,7 +1,7 @@
 # Plan Report
 
 ## Summary (read this first)
-- **You asked:** Port LiveKit evals *patterns* into lk-sim with custom LLM via OpenAI-compatible HTTP gateway; no `openai_compatible` provider enum.
+- **You asked:** Port LiveKit evals *patterns* into lks with custom LLM via OpenAI-compatible HTTP gateway; no `openai_compatible` provider enum.
 - **What is going on:** Judge was DIY Gemini-only; now `evals/` supports HTTP (`base_url`) + Gemini fallback.
 - **We recommend:** Package **`evals/`** with clean seams (types / evidence / prompt / backend Protocol / runner / aggregate / relevancy / presets). HTTP via `endpoint_type` openai|anthropic; Gemini when no `base_url`. Orchestrator only calls `evals.runner`. Do **not** depend on `livekit-agents`.
 - **Risk:** Medium
@@ -101,7 +101,7 @@ So the `${JUDGE_API_KEY}` line in an earlier plan draft was **aspirational**, no
 | Source | Pattern |
 |--------|---------|
 | [OpenAI Python](https://github.com/openai/openai-python) | Client args or env for key/base URL |
-| lk-sim LiveKit/Google | Still yaml-literal (gitignored `.agent-sim/`) — keep for room creds |
+| lks LiveKit/Google | Still yaml-literal (gitignored `.agent-sim/`) — keep for room creds |
 
 **Do not** add general `${VAR}` substitution for all of `config.yaml` (would break “secrets in file” contract + surprise expansions).  
 **Do** add a **scoped** resolver only for Judge HTTP fields at load (or first judge call).
@@ -251,9 +251,9 @@ Sources: [LLM grader rubric](https://hamming.ai/resources/llm-grader-voice-agent
 | **Cekura** | Per-metric LLM judge + optional **trigger** (relevancy); N/A/skip; scoped FAILURE CONDITIONS; spirit-vs-letter |
 | **Voicetest-style** | Per-metric analysis→score→confidence; threshold pass; separate rule/includes asserts |
 
-### Mapping → lk-sim (do / don't)
+### Mapping → lks (do / don't)
 
-| Hamming practice | lk-sim today | Plan impact |
+| Hamming practice | lks today | Plan impact |
 |------------------|--------------|-------------|
 | Deterministic vs LLM | Assert hard; PassCriteria soft | **Keep.** HTTP/Gemini only for PassCriteria / `llm_bool` / optional `goals_met` — do not move tool_order/recovery into LLM |
 | Relevancy step | Missing | Add optional per-judge `when:` / relevancy prompt or `builtin` skip-if-no-tools (Cekura trigger / Hamming step A) |

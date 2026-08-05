@@ -23,7 +23,7 @@
 1. **Our code — freestyle mute scope:** `src/livekit_agent_simulator/gemini/live_session.py` — `_persona_output_suppressed()` is TTL after cue/PCM; `_script_steps_pending()` used for farewell/[END_CALL] only, not for mute of normal `model_turn` PCM.
 2. **Our code — prompt invites answers:** `caller/prompt_sections.py` `ScriptTimingSection` — “Stay quiet … **unless you are answering a direct question**”; `GuardrailsSection` / `GoalsSection` — don’t end until **ALL goals** done.
 3. **Our code — Script soT intended but incomplete:** `inject_cue` comment: room_pcm vocal = SoT + short suppress; `gemini_text` is not literal TTS guarantee.
-4. **Events:** barge-pcm freestyle mid-dialog; soft-barge `sim.error` `APIError: 1006`; backchannel cue asset path = EN uh-huh WAV via `lk-sim cues --resolve`.
+4. **Events:** barge-pcm freestyle mid-dialog; soft-barge `sim.error` `APIError: 1006`; backchannel cue asset path = EN uh-huh WAV via `lks cues --resolve`.
 5. **GitHub prior art:** N/A for this product seam (Script vs Gemini Live caller dual control).
 
 ## Steps (simple checklist)
