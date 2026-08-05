@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
@@ -25,27 +24,38 @@ def _make_bridge() -> GeminiCallerBridge:
     return bridge
 
 
+class _FakeCM:
+    """Mimics the SDK's `_AsyncGeneratorContextManager` for `live.connect`."""
+
+    def __init__(self, fail: Exception | None = None, session: object = None):
+        self.fail = fail
+        self.session = session or object()
+        self.entered = 0
+        self.exited = 0
+
+    async def __aenter__(self):
+        self.entered += 1
+        if self.fail is not None:
+            raise self.fail
+        return self.session
+
+    async def __aexit__(self, *exc):
+        self.exited += 1
+        return False
+
+
 class _FakeClient:
-    """Simulates google.genai Client.aio.live.connect.
-
-    Fails the first `max_attempts - 1` calls with a transport error, then
-    succeeds with a sentinel session object.
-    """
-
-    def __init__(self, failures: list[Exception] | None = None, session: object = None):
-        self._failures = list(failures or [])
-        self._session = session or object()
+    def __init__(self, cms: list[_FakeCM]):
+        self._cms = list(cms)
         self._calls = 0
 
     class _Live:
         def __init__(self, owner):
             self._owner = owner
 
-        async def connect(self, *, model, config):
+        def connect(self, *, model, config):
             self._owner._calls += 1
-            if self._owner._failures:
-                raise self._owner._failures.pop(0)
-            return self._owner._session
+            return self._owner._cms.pop(0)
 
     class _Aio:
         def __init__(self, owner):
@@ -60,31 +70,27 @@ class _FakeClient:
 @pytest.mark.asyncio
 async def test_connect_retries_transport_error_then_succeeds() -> None:
     bridge = _make_bridge()
-    client = _FakeClient(
-        failures=[
-            ConnectionError("APIError: 1006 None. abnormal closure [internal]"),
-        ],
-        session="session-ok",
-    )
-    session = await bridge._connect_live_with_retry(client, "m", object())
+    cm1 = _FakeCM(fail=ConnectionError("APIError: 1006 None. abnormal closure [internal]"))
+    cm2 = _FakeCM(session="session-ok")
+    client = _FakeClient([cm1, cm2])
+
+    cm, session = await bridge._connect_live_with_retry(client, "m", object())
     assert session == "session-ok"
+    assert cm is cm2  # the succeeded manager is returned for teardown
     assert client._calls == 2
     drops = [e for e in bridge.writer.events if e[0] == "sim.gemini_socket_drop"]
     assert len(drops) == 1
     assert drops[0][1]["attempt"] == 1
     assert drops[0][1]["retryable"] is True
+    assert cm1.exited == 1  # failed manager was closed
 
 
 @pytest.mark.asyncio
 async def test_connect_gives_up_after_max_attempts() -> None:
     bridge = _make_bridge()
-    client = _FakeClient(
-        failures=[
-            ConnectionError("APIError: 1006 None. abnormal closure [internal]"),
-            ConnectionError("APIError: 1006 None. abnormal closure [internal]"),
-            ConnectionError("APIError: 1006 None. abnormal closure [internal]"),
-        ],
-    )
+    err = ConnectionError("APIError: 1006 None. abnormal closure [internal]")
+    client = _FakeClient([_FakeCM(fail=err), _FakeCM(fail=err), _FakeCM(fail=err)])
+
     with pytest.raises(ConnectionError):
         await bridge._connect_live_with_retry(client, "m", object())
     assert client._calls == 3
@@ -95,9 +101,8 @@ async def test_connect_gives_up_after_max_attempts() -> None:
 @pytest.mark.asyncio
 async def test_connect_non_transport_error_does_not_retry() -> None:
     bridge = _make_bridge()
-    client = _FakeClient(
-        failures=[ValueError("bad config")],
-    )
+    client = _FakeClient([_FakeCM(fail=ValueError("bad config"))])
+
     with pytest.raises(ValueError):
         await bridge._connect_live_with_retry(client, "m", object())
     assert client._calls == 1
@@ -129,11 +134,7 @@ async def test_pump_transport_drop_marks_bridge() -> None:
         def receive(self):
             return _RaisingIter()
 
-    # Drive the pump's exception path directly via the private catch.
-    await bridge._pump_gemini_events(
-        _RaisingSession(),
-        None,
-    )
+    await bridge._pump_gemini_events(_RaisingSession(), None)
     assert bridge.transport_dropped is True
     kinds = [e[0] for e in bridge.writer.events]
     assert "sim.gemini_socket_drop" in kinds

@@ -18,6 +18,7 @@ from __future__ import annotations
 import array
 import asyncio
 import math
+import sys
 import time
 from pathlib import Path
 from collections.abc import Callable
@@ -441,7 +442,9 @@ class GeminiCallerBridge:
 
         source = await self.publish_mic()
 
-        session = await self._connect_live_with_retry(client, voice.model, config)
+        session_cm, session = await self._connect_live_with_retry(
+            client, voice.model, config
+        )
         try:
             self._live_session = session
             self.writer.emit(
@@ -476,33 +479,38 @@ class GeminiCallerBridge:
                     await self._mixer.aclose()
                     self._mixer = None
         finally:
-            # Session is a context manager created by the SDK; closing it here
-            # releases the WebSocket + event loop resources after reconnect
-            # attempts as well as on the normal path.
-            close = getattr(session, "close", None)
-            if callable(close):
-                try:
-                    await close()
-                except Exception:
-                    pass
+            # Close the SDK context manager (releases the WebSocket + loop
+            # resources). Safe to call even if `__aenter__` failed above.
+            try:
+                await session_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
 
-    async def _connect_live_with_retry(self, client: Any, model: str, config: Any) -> Any:
+    async def _connect_live_with_retry(
+        self, client: Any, model: str, config: Any
+    ) -> tuple[Any, Any]:
         """Open the Gemini Live session, retrying transient transport drops.
 
-        The google-genai SDK's Live socket has no built-in reconnect
-        (``receive()`` TODO b/365983264) and websockets' 20s ping timeout can
-        tear the socket down with no close frame -> ``APIError 1006`` /
-        ``ConnectionClosedError`` within the first ~20-40s. We observed 3/13
-        parallel runs killed this way. Retry the *open* a bounded number of
-        times with backoff before giving up; once a session is established and
-        dialogue has begun we do not reconnect (that would drop the persona's
-        mid-call context). Each drop is emitted as a diagnostic event so
-        reports can distinguish transport failures from natural hang-ups.
+        ``client.aio.live.connect()`` returns an *async context manager*; its
+        ``__aenter__`` performs the WebSocket handshake and yields the live
+        session. We enter it exactly once (consuming the generator's first
+        yield), and return ``(cm, session)`` so the caller holds the manager for
+        teardown while using the session for dialogue. The google-genai SDK has
+        no built-in reconnect (``receive()`` TODO b/365983264) and websockets'
+        20s ping timeout can tear the socket down with no close frame ->
+        ``APIError 1006`` / ``ConnectionClosedError`` within the first ~20-40s.
+        Retry the *handshake* a bounded number of times with backoff before
+        giving up; once dialogue has begun we do not reconnect (that would drop
+        the persona's mid-call context). Each drop is emitted as a diagnostic
+        event so reports can distinguish transport failures from natural
+        hang-ups.
         """
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
+            cm = client.aio.live.connect(model=model, config=config)
             try:
-                return await client.aio.live.connect(model=model, config=config)
+                session = await cm.__aenter__()
+                return cm, session
             except Exception as e:
                 is_transport = (
                     isinstance(e, ConnectionError)
@@ -521,6 +529,10 @@ class GeminiCallerBridge:
                     source="sim",
                     include_dialogue=False,
                 )
+                try:
+                    await cm.__aexit__(*sys.exc_info())
+                except Exception:
+                    pass
                 if not is_transport or attempt == max_attempts:
                     raise
                 await asyncio.sleep(min(2.0 * attempt, 6.0))
