@@ -726,6 +726,8 @@ async def _conversation_loop(
 
     while True:
         if bridge.end_call.is_set():
+            if getattr(bridge, "transport_dropped", False):
+                return "gemini_socket_drop"
             return "sim_end_call"
         if observer.agent_disconnected.is_set():
             # Short grace so late RemoteSession tool frames (room-teardown race) can land

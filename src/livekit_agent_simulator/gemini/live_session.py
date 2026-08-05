@@ -225,6 +225,10 @@ class GeminiCallerBridge:
         self._midcall_cues = list(midcall_cues or [])
 
         self.end_call = asyncio.Event()
+        # True when the Gemini Live socket died mid-call (transport drop), so the
+        # orchestrator can distinguish a natural hang-up from a connection failure
+        # instead of masking it as `sim_end_call`.
+        self.transport_dropped = False
         self._agent_track_queue: asyncio.Queue[rtc.RemoteAudioTrack] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
         self._source: rtc.AudioSource | None = None
@@ -437,7 +441,8 @@ class GeminiCallerBridge:
 
         source = await self.publish_mic()
 
-        async with client.aio.live.connect(model=voice.model, config=config) as session:
+        session = await self._connect_live_with_retry(client, voice.model, config)
+        try:
             self._live_session = session
             self.writer.emit(
                 "sim.gemini_connected",
@@ -470,6 +475,56 @@ class GeminiCallerBridge:
                 if self._mixer is not None:
                     await self._mixer.aclose()
                     self._mixer = None
+        finally:
+            # Session is a context manager created by the SDK; closing it here
+            # releases the WebSocket + event loop resources after reconnect
+            # attempts as well as on the normal path.
+            close = getattr(session, "close", None)
+            if callable(close):
+                try:
+                    await close()
+                except Exception:
+                    pass
+
+    async def _connect_live_with_retry(self, client: Any, model: str, config: Any) -> Any:
+        """Open the Gemini Live session, retrying transient transport drops.
+
+        The google-genai SDK's Live socket has no built-in reconnect
+        (``receive()`` TODO b/365983264) and websockets' 20s ping timeout can
+        tear the socket down with no close frame -> ``APIError 1006`` /
+        ``ConnectionClosedError`` within the first ~20-40s. We observed 3/13
+        parallel runs killed this way. Retry the *open* a bounded number of
+        times with backoff before giving up; once a session is established and
+        dialogue has begun we do not reconnect (that would drop the persona's
+        mid-call context). Each drop is emitted as a diagnostic event so
+        reports can distinguish transport failures from natural hang-ups.
+        """
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await client.aio.live.connect(model=model, config=config)
+            except Exception as e:
+                is_transport = (
+                    isinstance(e, ConnectionError)
+                    or "1006" in str(e)
+                    or "abnormal closure" in str(e).lower()
+                    or "ConnectionClosed" in type(e).__name__
+                )
+                self.writer.emit(
+                    "sim.gemini_socket_drop",
+                    spec={
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "error": f"{type(e).__name__}: {e}",
+                        "retryable": is_transport,
+                    },
+                    source="sim",
+                    include_dialogue=False,
+                )
+                if not is_transport or attempt == max_attempts:
+                    raise
+                await asyncio.sleep(min(2.0 * attempt, 6.0))
+        raise RuntimeError("unreachable")  # pragma: no cover
 
     async def _flush_agent_audio_stream(self, session: Any, *, reason: str) -> None:
         """End agent activity with ``activity_end`` (manual VAD) so Live generates."""
@@ -1268,6 +1323,24 @@ class GeminiCallerBridge:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            is_transport = (
+                isinstance(e, ConnectionError)
+                or "1006" in str(e)
+                or "abnormal closure" in str(e).lower()
+                or "ConnectionClosed" in type(e).__name__
+            )
+            if is_transport:
+                self.transport_dropped = True
+                self.writer.emit(
+                    "sim.gemini_socket_drop",
+                    spec={
+                        "phase": "mid_call",
+                        "error": f"{type(e).__name__}: {e}",
+                        "retryable": False,  # dialogue already began; do not reconnect
+                    },
+                    source="sim",
+                    include_dialogue=False,
+                )
             self.writer.emit(
                 "sim.error",
                 spec={"where": "gemini->lk", "error": f"{type(e).__name__}: {e}"},
