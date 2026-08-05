@@ -12,7 +12,13 @@ from livekit_agent_simulator.evals.evidence import build_evidence_packet
 from livekit_agent_simulator.evals.presets import expand_criterion, expand_judge_group, list_presets
 from livekit_agent_simulator.evals.relevancy import apply_relevancy
 from livekit_agent_simulator.evals.resolve import resolve_judge
-from livekit_agent_simulator.evals.runner import _judge, judge_goals, judge_run
+from livekit_agent_simulator.evals.runner import (
+    _judge,
+    _parse_llm_json,
+    _repair_truncated_json,
+    judge_goals,
+    judge_run,
+)
 from livekit_agent_simulator.evals.types import CriterionScore, JudgmentResult, parse_judgment_payload
 
 
@@ -316,3 +322,84 @@ async def test_judge_once_parse_error():
 
     out = await _judge(BadBackend(), ["c"], [], [])
     assert out["verdict"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# Tolerant parsing of truncated / malformed LLM JSON (see runner.py)
+# ---------------------------------------------------------------------------
+
+
+def test_repair_truncated_summary_string():
+    """The exact failure from a real run: overall_summary cut mid-word, no closing brace."""
+    bad = (
+        '{\n  "verdict": "fail",\n  "score": 38,\n  "confidence": "high",\n'
+        '  "needs_human_review": true,\n  "critical_failure": true,\n'
+        '  "overall_summary": "The agent made polite progress, but the flow never '
+        'advanced and the call ended without confirmation. The conversation i'
+    )
+    repaired = _repair_truncated_json(bad)
+    assert repaired is not None
+    j = _parse_llm_json(bad)
+    assert j.verdict == "fail"
+    assert j.score == 38
+    assert j.overall_summary.startswith("The agent made polite progress")
+    assert j.overall_summary.endswith("The conversation i")
+
+
+def test_repair_unterminated_string_with_backslash():
+    j = _parse_llm_json('{"verdict":"fail","notes":"foo\\')
+    assert j.verdict == "fail"
+    assert j.notes == "foo"
+
+
+def test_repair_nested_object_missing_braces():
+    j = _parse_llm_json(
+        '{"verdict":"fail","final_assessment":{"goal":"7/10","conclusion":"rough'
+    )
+    assert j.verdict == "fail"
+    assert j.final_assessment.get("conclusion") == "rough"
+
+
+def test_repair_nested_array_missing_bracket():
+    j = _parse_llm_json('{"verdict":"fail","issues":[{"title":"t","severity":"Major"')
+    assert j.verdict == "fail"
+    assert len(j.issues) == 1
+    assert j.issues[0].title == "t"
+
+
+def test_repair_missing_closing_brace_after_clean_prefix():
+    j = _parse_llm_json('{"verdict":"pass","score":90')
+    assert j.verdict == "pass"
+    assert j.score == 90
+
+
+def test_repair_trailing_comma_in_array():
+    j = _parse_llm_json('{"verdict":"pass","strengths":["a","b",]')
+    assert j.verdict == "pass"
+    assert j.strengths == ["a", "b"]
+
+
+def test_repair_json_fence_and_prose_prefix():
+    j = _parse_llm_json('Sure! Here is the JSON:\n```json\n{"verdict":"maybe"}\n```')
+    assert j.verdict == "maybe"
+
+
+def test_repair_trailing_prose_after_object():
+    j = _parse_llm_json('{"verdict":"fail","score":40} I think it failed because...')
+    assert j.verdict == "fail"
+    assert j.score == 40
+
+
+def test_repair_does_not_mangle_already_valid_json():
+    j = _parse_llm_json('{"verdict":"pass","score":90}')
+    assert j.verdict == "pass"
+    assert j.score == 90
+
+
+def test_repair_rejects_unrecoverable_input():
+    assert _repair_truncated_json("not-json at all") is None
+    assert _repair_truncated_json("") is None
+    assert _repair_truncated_json("42") is None
+    j = _parse_llm_json("not-json")
+    assert j.verdict == "error"
+    assert "non-JSON" in j.notes

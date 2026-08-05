@@ -25,16 +25,120 @@ def _strip_json_fence(text: str) -> str:
     return s.strip()
 
 
-def _parse_llm_json(text: str) -> JudgmentResult:
+def _try_parse(s: str) -> dict[str, Any] | None:
+    """Parse s as a JSON object, returning None on failure."""
     try:
-        raw = json.loads(_strip_json_fence(text))
+        raw = json.loads(s)
     except json.JSONDecodeError:
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _json_string_end(s: str, i: int) -> int | None:
+    """Given s[i] == '"', return the index just past the closing quote (or None).
+
+    Handles \" escapes and skips a trailing backslash so a truncated string
+    like ``"The conversation i`` still yields a recoverable end point.
+    """
+    n = len(s)
+    j = i + 1
+    while j < n:
+        c = s[j]
+        if c == "\\":
+            j += 2  # skip the escaped char (backslash alone at EOF is fine)
+            continue
+        if c == '"':
+            return j + 1
+        j += 1
+    return None
+
+
+def _repair_truncated_json(text: str) -> str | None:
+    """Best-effort repair of an LLM JSON object that is truncated or wrapped in prose.
+
+    Handles:
+    1. JSON fences, leading prose (trim to first '{'), trailing prose after the
+       top-level object.
+    2. An unterminated trailing string (the tail is kept and the string closed).
+    3. Trailing commas before '}' / ']'.
+    4. Missing closing braces/brackets — only containers still open at the point
+       of truncation are closed (no rebalancing of nested containers).
+
+    Returns the repaired JSON, or None if it cannot be recovered.
+    """
+    s = _strip_json_fence(text)
+    start = s.find("{")
+    if start < 0:
+        return None
+    s = s[start:]
+
+    stack: list[str] = []
+    truncated_in_string = False
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == '"':
+            end = _json_string_end(s, i)
+            if end is None:
+                # Unterminated trailing string: keep the partial text and close
+                # the string after the loop.
+                truncated_in_string = True
+                break
+            i = end
+            continue
+        if c in "{[":
+            stack.append(c)
+        elif c == "}":
+            if not stack or stack[-1] != "{":
+                # Stray closer / already closed: drop everything from here.
+                s = s[:i]
+                break
+            stack.pop()
+            if not stack:
+                # Top-level object closed — drop any trailing prose.
+                s = s[: i + 1]
+                break
+        elif c == "]":
+            if not stack or stack[-1] != "[":
+                s = s[:i]
+                break
+            stack.pop()
+        i += 1
+
+    if truncated_in_string:
+        # A trailing backslash would escape the closing quote — drop it first.
+        if s.endswith("\\"):
+            s = s[:-1].rstrip()
+        s += '"'
+    # Close any containers still open at the point of truncation.
+    while stack:
+        opener = stack.pop()
+        if s.endswith(","):
+            s = s[:-1].rstrip()
+        s += "}" if opener == "{" else "]"
+
+    # Final cleanup: trailing commas (incl. inside) and stray trailing backslash.
+    s = re.sub(r",\s*([}\]])", r"\1", s)
+    s = s.rstrip()
+    while s.endswith(","):
+        s = s[:-1].rstrip()
+    if s.endswith("\\"):
+        s = s[:-1].rstrip()
+
+    return s if _try_parse(s) is not None else None
+
+
+def _parse_llm_json(text: str) -> JudgmentResult:
+    stripped = _strip_json_fence(text)
+    raw = _try_parse(stripped)
+    if raw is None:
+        raw = _try_parse(_repair_truncated_json(stripped) or "")
+    if raw is None:
         return JudgmentResult(
             verdict="error",
             notes=f"Judge returned non-JSON: {text[:500]}",
         )
-    if not isinstance(raw, dict):
-        return JudgmentResult(verdict="error", notes="Judge JSON was not an object.")
     return parse_judgment_payload(raw)
 
 
