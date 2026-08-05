@@ -180,6 +180,10 @@ class EventWriter:
             )
         (self.report_dir / "timeline.md").write_text(self.render_timeline(), encoding="utf-8")
 
+        review_md = self._render_review(verdict)
+        if review_md:
+            (self.report_dir / "review.md").write_text(review_md, encoding="utf-8")
+
         self._events_file.close()
         return summary
 
@@ -221,6 +225,49 @@ class EventWriter:
         return [by_turn[t] for t in sorted(by_turn)]
 
     # ---------------------------------------------------------------- timeline
+
+    def _render_review(self, verdict: dict[str, Any] | None) -> str:
+        """Generate a human-readable review.md from judge verdict + conversation_feedback."""
+        if not verdict:
+            return ""
+        feedback = verdict.get("conversation_feedback", [])
+        if not feedback:
+            return ""
+        lines = [
+            "# Review — Conversational Quality",
+            "",
+            f"**Verdict:** {verdict.get('verdict', 'n/a')}  ",
+            f"**Score:** {verdict.get('score', 'n/a')}  ",
+            f"**Confidence:** {verdict.get('confidence', 'n/a')}",
+            "",
+            "## Issues found",
+            "",
+        ]
+        for f in feedback:
+            severity = f.get("severity", "low")
+            icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(severity, "")
+            issue = f.get("issue", "")
+            agent_line = f.get("agent_line", "")
+            why = f.get("why", "")
+            lines.append(f"### {icon} {issue} ({severity})")
+            lines.append("")
+            if agent_line:
+                lines.append(f"> Agent: {agent_line}")
+                lines.append("")
+            lines.append(f"{why}")
+            lines.append("")
+
+        # Also include per-criterion notes
+        notes = verdict.get("notes", "")
+        if notes:
+            lines.append("---")
+            lines.append("")
+            lines.append("## Notes")
+            lines.append("")
+            lines.append(notes)
+            lines.append("")
+
+        return "\n".join(lines)
 
     def render_timeline(self) -> str:
         lines = [
