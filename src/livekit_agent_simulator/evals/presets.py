@@ -21,7 +21,32 @@ PRESETS: dict[str, str] = {
     ),
     "conversation_flow": (
         "Conversation flow: Did the agent avoid useless loops, ignored context, "
-        "and excessive dead-air or overtalk relative to the caller's needs?"
+        "and excessive dead-air or overtalk relative to the caller's needs? "
+        "Flag: repeated re-asking of the same field, long delays (>5s per turn), "
+        "and the agent talking over the caller."
+    ),
+    "conversation_naturalness": (
+        "Conversational naturalness (voice UX): Evaluate how a real human would "
+        "experience this call. Check each of these and report concrete turn quotes "
+        "in the notes when a rule is broken:\n"
+        "1. ONE question per turn — the agent must ask a single question and wait; "
+        "never stack two questions in one reply.\n"
+        "2. Minimal confirmation — the agent should confirm a value ONLY when it is "
+        "genuinely risky to mis-hear (phone, email, ambiguous date/time). It must "
+        "NOT add an excessive per-field confirmation loop (repeated thank-you / "
+        "echo / 'is that correct?') for low-risk answers.\n"
+        "3. Acknowledge-then-redirect — when the caller volunteers a later field "
+        "before being asked, the agent must briefly acknowledge it, then steer "
+        "back to the missing required field; it must NOT ignore what the caller "
+        "just said.\n"
+        "4. Relative dates — when the caller gives a relative date (e.g. next "
+        "month, next week, end of next month), the agent must echo it as stated, "
+        "NOT invent an absolute date unless the system is known to have resolved "
+        "it.\n"
+        "5. Turn latency — turns should feel natural: under ~3s is good, 3–5s is "
+        "acceptable, over 5s feels stuck. Flag any turn over 5s.\n"
+        "Score how close the call feels to a natural human conversation and report "
+        "specific examples (quote the exact agent lines) for each rule violated."
     ),
     "empathy": (
         "Empathy and professionalism: Was tone appropriate for the caller's situation "

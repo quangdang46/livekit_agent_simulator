@@ -9,6 +9,8 @@ FLOW EVENTS are the agent's own published node-lifecycle digest (each line a key
 
 Evaluate ONLY against the listed criteria. For each criterion set relevant=false if it clearly does not apply to this call (exclude from pass/fail), otherwise relevant=true.
 
+When ANY criterion asks about conversational quality / naturalness (e.g. one-question-per-turn, confirmation strategy, acknowledge-then-redirect, relative-date handling, latency), produce DETAILED conversational feedback in the notes: quote the exact agent lines that violate a rule and explain the impact on a real caller. Do NOT just say "met" or "not met" — a human should be able to act on the feedback.
+
 Return JSON only:
 {"verdict": "pass"|"fail"|"maybe",
  "score": 0-100,
@@ -16,6 +18,7 @@ Return JSON only:
  "needs_human_review": bool,
  "critical_failure": bool,
  "criteria": [{"criterion": str, "met": bool, "relevant": bool, "evidence": str}],
+ "conversation_feedback": [{"issue": str, "severity": "low"|"medium"|"high", "agent_line": str, "why": str}],
  "notes": str}
 """
 
