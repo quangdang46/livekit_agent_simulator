@@ -133,6 +133,48 @@ def test_parse_judgment_maybe():
     assert j.needs_human_review
 
 
+def test_parse_conversation_feedback_preserved():
+    """The real-reviewer feedback list must survive the LLM-JSON parse and to_dict round-trip."""
+    j = parse_judgment_payload(
+        {
+            "verdict": "fail",
+            "score": 62,
+            "notes": "review",
+            "conversation_feedback": [
+                {
+                    "issue": "Two questions stacked in one turn",
+                    "severity": "high",
+                    "agent_line": "緊急連絡先の氏名と、折り返しの時間帯を教えてください",
+                    "why": "A human caller hears two asks at once and loses track of which to answer.",
+                },
+                {
+                    "issue": "Relative date converted to absolute without confirmation",
+                    "severity": "medium",
+                    "agent_line": "来月の1日は2026年9月1日ですね。",
+                    "why": "Without current-date context this reads as a hallucination.",
+                },
+            ],
+        }
+    )
+    assert len(j.conversation_feedback) == 2
+    f = j.conversation_feedback[0]
+    assert f.issue == "Two questions stacked in one turn"
+    assert f.severity == "high"
+    assert "緊急連絡先" in f.agent_line
+    assert "human caller" in f.why.lower()
+    d = j.to_dict()
+    assert "conversation_feedback" in d
+    assert d["conversation_feedback"][0]["severity"] == "high"
+    assert "agent_line" in d["conversation_feedback"][0]
+
+
+def test_parse_conversation_feedback_empty_omitted():
+    """No feedback list → to_dict must not emit a misleading empty array."""
+    j = parse_judgment_payload({"verdict": "pass", "score": 90})
+    assert j.conversation_feedback == []
+    assert "conversation_feedback" not in j.to_dict()
+
+
 @pytest.mark.asyncio
 async def test_judge_run_with_mock_backend(monkeypatch: pytest.MonkeyPatch):
     class MockBackend:

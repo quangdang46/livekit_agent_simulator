@@ -21,6 +21,17 @@ class CriterionScore:
 
 
 @dataclass
+class ConversationFeedback:
+    issue: str = ""
+    severity: str = "low"
+    agent_line: str = ""
+    why: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class JudgmentResult:
     verdict: Verdict
     score: float | None = None
@@ -30,6 +41,7 @@ class JudgmentResult:
     critical_failure: bool = False
     notes: str = ""
     judge_id: str | None = None
+    conversation_feedback: list[ConversationFeedback] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -38,6 +50,10 @@ class JudgmentResult:
             "criteria": [c.to_dict() for c in self.criteria],
             "notes": self.notes,
         }
+        if self.conversation_feedback:
+            d["conversation_feedback"] = [
+                f.to_dict() for f in self.conversation_feedback
+            ]
         if self.confidence is not None:
             d["confidence"] = self.confidence
         if self.needs_human_review:
@@ -85,6 +101,19 @@ def parse_judgment_payload(raw: dict[str, Any]) -> JudgmentResult:
     if isinstance(conf_raw, str) and conf_raw.lower() in ("low", "medium", "high"):
         confidence = conf_raw.lower()  # type: ignore[assignment]
 
+    conversation_feedback: list[ConversationFeedback] = []
+    for item in raw.get("conversation_feedback") or []:
+        if not isinstance(item, dict):
+            continue
+        conversation_feedback.append(
+            ConversationFeedback(
+                issue=str(item.get("issue") or item.get("criterion") or ""),
+                severity=str(item.get("severity") or "low"),
+                agent_line=str(item.get("agent_line") or item.get("quote") or ""),
+                why=str(item.get("why") or item.get("impact") or ""),
+            )
+        )
+
     return JudgmentResult(
         verdict=verdict_raw,  # type: ignore[arg-type]
         score=score,
@@ -94,4 +123,5 @@ def parse_judgment_payload(raw: dict[str, Any]) -> JudgmentResult:
         critical_failure=bool(raw.get("critical_failure")),
         notes=str(raw.get("notes") or raw.get("reasoning") or ""),
         judge_id=str(raw["judge_id"]) if raw.get("judge_id") else None,
+        conversation_feedback=conversation_feedback,
     )

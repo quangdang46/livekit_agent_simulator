@@ -244,6 +244,14 @@ Builtin dimensions (Hamming/LiveKit-shaped — `evals.presets`):
 
 Or flat: `"criteria":["builtin:task_completion"]`.
 
+Available presets: `task_completion` · `factual_accuracy` · `policy_compliance` · `conversation_flow` · **`conversation_naturalness`** · `empathy` · `escalation` · `accuracy` · `coherence`.
+
+**`conversation_naturalness`** grades the call as a REAL human reviewer would (product manager with stopwatch + notepad): one question per turn, minimal confirmation (only phone/email/ambiguous dates), acknowledge-then-redirect when the caller volunteers a later field, echo relative dates as stated (never invent an absolute date), and turn latency (<3s natural, 3–5s ok, >5s stuck). When any naturalness criterion is present the judge returns a structured `conversation_feedback` list — `[{issue, severity, agent_line, why}]` with the exact verbatim agent line and human impact — plus the per-criterion `criteria` array. Language-neutral in core; opt in per scenario:
+
+```jsonl
+{"kind":"PassCriteria","spec":{"judges":[{"id":"nat","builtin":"conversation_naturalness"}]}}
+```
+
 Judge verdicts: `pass` | `fail` | `maybe` (soft unless `--strict-judge`). Criteria may mark `relevant=false` to skip irrelevant checks.
 
 `mode`: `all` (default) \| `majority` \| `any`. Still soft unless you pass `--strict-judge`. Needs `judge:` in config (Gemini or HTTP `base_url`/`api_key`).
