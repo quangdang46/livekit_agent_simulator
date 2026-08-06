@@ -94,7 +94,7 @@ curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulato
 
 # In the repo you want to test (agent worker must already be running)
 lks init --root /path/to/target
-# edit /path/to/target/.agent-sim/config.yaml  (LiveKit + Gemini keys, agent_name)
+# edit /path/to/target/.agent-sim/config.yaml  (LiveKit + active provider keys, agent_name)
 
 lks preflight --root /path/to/target
 lks execute smoke-hello --root /path/to/target
@@ -260,16 +260,33 @@ lks web --root /path/to/target
 
 ### Minimal scenario (`smoke-hello`)
 
-```jsonl
-{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"smoke-hello","locale":"en-US","tags":["smoke"]}}
-{"kind":"Persona","spec":{"name":"Alex","brief":"First-time caller; confirm you reached the right place, then end politely.","goals":["Hear the agent","Say you will call back"],"style":"polite, brief"}}
-{"kind":"Execute","spec":{"max_turns":2,"timeout_s":90,"first_speaker":"user"}}
-{"kind":"PassCriteria","spec":{"criteria":["The agent responded to the caller","The agent responded in the caller's language"]}}
+```yaml
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: smoke-hello
+  locale: en-US
+  tags: [smoke]
+persona:
+  name: Alex
+  brief: First-time caller; confirm you reached the right place, then end politely.
+  goals:
+  - Hear the agent
+  - Say you will call back
+  style: polite, brief
+execute:
+  max_turns: 2
+  timeout_s: 90
+  first_speaker: user
+pass_criteria:
+  criteria:
+  - The agent responded to the caller
+  - The agent responded in the caller's language
 ```
 
 Optional multi-judge PassCriteria: `judges[]` + `mode` (`all` \| `majority` \| `any`). Assert highlights (`tool_order`, `constraint_respected`, recovery/latency): `lks guide`.
 
-Full-line `//` comments in scaffolded JSONL are guides — runtime ignores them.
+Full-line `#` comments in scaffolded YAML are guides — runtime ignores them. Legacy `*.jsonl` scenarios are still read.
 
 ---
 
@@ -305,7 +322,7 @@ CLI and MCP share the same public ops (`ops.py`). Prefer `execute` (validate the
 | `guide` | `guide` | Setup/ops guide (markdown) |
 | `web` | `web` | Local report player |
 | `preflight` | `preflight` | Config + LiveKit connectivity |
-| `scenarios` | `list_scenarios` | List `scenarios/*.jsonl` |
+| `scenarios` | `list_scenarios` | List `scenarios/*.yaml` (legacy `*.jsonl` read) |
 | `plugins` | `list_plugins` | Verify plugins |
 | `cues` | `list_cues` | Built-in + local PCM cues |
 | `validate` | `validate_scenario` | Schema + lint |

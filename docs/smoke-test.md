@@ -10,7 +10,7 @@ transcripts + events logged → report written.
    `.agent-sim/config.yaml`.
 2. LiveKit Cloud (or self-hosted) URL + API key/secret.
 3. A Google API key with access to `gemini-3.1-flash-live-preview` (same key works
-   for the `gemini-2.5-flash` judge).
+   for the `gemini-3.1-flash-lite` judge).
 
 ## Steps
 

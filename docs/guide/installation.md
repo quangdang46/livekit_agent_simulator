@@ -216,7 +216,7 @@ Recommended defaults (already in template):
 - `simulator.voice.model`: `gemini-3.1-flash-live-preview`
 - `observe.record_audio: true` (stereo WAV L=sim R=agent)
 - `observe.lk_agent_session: true` (automatic SDK tool/session events)
-- `judge.model`: `gemini-2.5-flash` (only used if scenario has `PassCriteria`)
+- `judge.model`: `gemini-3.1-flash-lite` (only used if scenario has `PassCriteria`)
 
 Optional but common:
 
