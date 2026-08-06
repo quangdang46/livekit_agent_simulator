@@ -161,7 +161,7 @@ def init_scenario(
         "created": True,
         "overwritten": force,
         "next_steps": [
-            f"Edit {dest} — // lines are guides; remove unused kind JSON lines",
+            f"Edit {dest} — # lines are guides; remove unused sections",
             f"Validate: lks validate {scenario_id} --root {root}",
             f"Run: lks execute {scenario_id} --root {root}",
         ],

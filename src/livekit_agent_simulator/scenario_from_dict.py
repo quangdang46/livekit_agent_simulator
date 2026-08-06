@@ -204,51 +204,13 @@ def scenario_from_dict(
 
 
 def export_scenario_dict(scenario: Scenario) -> dict[str, Any]:
-    """Full structured export including script steps (for dev tooling)."""
-    base = scenario.export_dict()
-    base["persona"] = scenario.persona
-    base["context"] = scenario.context
-    base["plugin_modules"] = list(scenario.plugin_modules)
-    if scenario.dispatch and scenario.dispatch.metadata:
-        base["dispatch"] = {"metadata": scenario.dispatch.metadata}
-    if scenario.script_steps:
-        base["script"] = {
-            "steps": [
-                {
-                    "id": s.id,
-                    "trigger": s.trigger,
-                    "delay_ms": s.delay_ms,
-                    "say": s.say,
-                    "label": s.label,
-                    "once": s.once,
-                    "min_agent_active_ms": s.min_agent_active_ms,
-                    "delivery": s.delivery,
-                    "asset": s.asset,
-                    "silence_after_cue_ms": s.silence_after_cue_ms,
-                    "action": s.action,
-                    **(
-                        {"mute_persona": s.mute_persona}
-                        if s.mute_persona is not None
-                        else {}
-                    ),
-                    "barge_in": s.barge_in,
-                    "class": s.interrupt_class,
-                    "with_blip": s.with_blip,
-                    "gain": s.gain,
-                    "loop": s.loop,
-                }
-                for s in scenario.script_steps
-            ],
-            "verify": None
-            if scenario.script_verify is None
-            else {
-                "require_during_agent_speech": scenario.script_verify.require_during_agent_speech,
-                "min_agent_finals_after_first_cue": scenario.script_verify.min_agent_finals_after_first_cue,
-                "min_user_finals_after_first_cue": scenario.script_verify.min_user_finals_after_first_cue,
-                "min_interruptions": scenario.script_verify.min_interruptions,
-                "max_interruptions": scenario.script_verify.max_interruptions,
-                "plugins": list(scenario.script_verify.plugins),
-                "plugin_options": dict(scenario.script_verify.plugin_options),
-            },
-        }
-    return base
+    """Full structured export that round-trips through scenario_from_dict.
+
+    Reuses the canonical section-object builder (scenario_to_dict) so behavior,
+    the full assert (must_not_match / contains_any / prompt), caller, and
+    telephony are preserved — not a summary shape. Loaded lazily to avoid an
+    import cycle (scenario_yaml imports scenario_from_dict).
+    """
+    from .scenario_yaml import scenario_to_dict
+
+    return scenario_to_dict(scenario)

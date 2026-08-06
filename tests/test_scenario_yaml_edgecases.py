@@ -414,3 +414,46 @@ def test_scenario_from_run_redacts_before_truncate() -> None:
         import shutil
 
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_leading_zero_strings_quoted_in_output() -> None:
+    """L4: digit strings with leading zeros must be quoted so YAML 1.1 parsers
+    don't coerce them into numbers on re-parse."""
+    from livekit_agent_simulator.scenario_yaml import dump_scenario_dict
+
+    text = dump_scenario_dict(
+        {"a": "0123456789", "b": "09", "c": "007", "d": "hello", "e": "4111"}
+    )
+    # leading-zero + pure-digit strings are single-quoted
+    assert "'0123456789'" in text
+    assert "'09'" in text
+    assert "'007'" in text
+    assert "'4111'" in text
+    # normal strings stay unquoted
+    assert "d: hello" in text
+
+
+def test_export_dict_preserves_behavior_and_assert() -> None:
+    """export_scenario_dict must preserve behavior_spec and the full assert
+    (must_not_match / contains_any / sip), not a summary shape."""
+    from livekit_agent_simulator.scenario_from_dict import export_scenario_dict
+
+    # people-pleaser-refuse-card has a Behavior barge + assert with must_not_match.
+    s = parse_scenario(TEMPLATES / "examples" / "people-pleaser-refuse-card.yaml")
+    exported = export_scenario_dict(s)
+    assert "behavior" in exported
+    assert "assert" in exported
+    s2 = scenario_from_dict(exported)
+    assert s2.behavior_spec, "behavior_spec must survive export"
+    assert s2.asserts and s2.asserts.transcript
+    assert s2.asserts.transcript[0].must_not_match, "must_not_match must survive"
+
+
+def test_export_dict_preserves_caller_telephony_sip() -> None:
+    from livekit_agent_simulator.scenario_from_dict import export_scenario_dict
+
+    s = parse_scenario(TEMPLATES / "inbound-caller-sim.yaml")
+    s2 = scenario_from_dict(export_scenario_dict(s))
+    assert s2.caller and s2.caller.mode == "inbound_sip"
+    assert s2.telephony and s2.telephony.dial_in == "+15551234567"
+    assert s2.asserts and s2.asserts.sip

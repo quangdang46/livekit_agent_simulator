@@ -85,7 +85,18 @@ def _dict_representer(dumper: yaml.Dumper, data: dict) -> Any:
     return dumper.represent_mapping("tag:yaml.org,2002:map", data.items(), flow_style=False)
 
 
+def _str_representer(dumper: yaml.Dumper, data: str) -> Any:
+    # Quote digit strings that YAML 1.1 would coerce on re-parse: leading-zero
+    # values PyYAML does NOT auto-quote (e.g. "09", "0123456789") and pure-digit
+    # strings. Without this the emitted file is a latent trap for any YAML 1.1
+    # parser (or a future PyYAML change) that resolves them as numbers.
+    if data.isdigit() or (len(data) > 1 and data[0] == "0" and data[1:].isdigit()):
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="'")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
 _OrderedDumper.add_representer(dict, _dict_representer)
+_OrderedDumper.add_representer(str, _str_representer)
 
 
 def _dump_plain(data: Any) -> str:
@@ -104,13 +115,15 @@ def dump_scenario_dict(data: dict[str, Any]) -> str:
     return _dump_plain(data)
 
 
-def scenario_to_yaml_text(scenario: Scenario) -> str:
-    """Serialize a Scenario to the section-object YAML shape.
+def scenario_to_dict(scenario: Scenario) -> dict[str, Any]:
+    """Build the section-object dict for a Scenario (round-trip faithful).
 
-    Key order follows the canonical JSONL section order: Scenario header,
-    Persona, Context, Simulator/Execute, Dispatch, Caller, Telephony,
-    Behavior, Script, Assert, PassCriteria. Script steps keep their authored
-    field order (id/trigger/delay/say/…), which keeps diffs meaningful.
+    Includes every serializable section: header, persona, context,
+    execute/simulator, dispatch, caller, telephony, behavior, script + verify,
+    assert, and pass_criteria. This is the single source of truth shared by the
+    YAML writer and export_scenario_dict, so both preserve behavior_spec and
+    the full assert (must_not_match / contains_any / prompt) instead of a
+    summary shape.
     """
     data: dict[str, Any] = {
         "apiVersion": "agent-sim/v1",
@@ -162,6 +175,8 @@ def scenario_to_yaml_text(scenario: Scenario) -> str:
                 "plugin_options": dict(scenario.script_verify.plugin_options),
             }
         data["script"] = script
+    if scenario.plugin_modules:
+        data["plugin_modules"] = list(scenario.plugin_modules)
     if scenario.asserts is not None and not scenario.asserts.empty:
         data["assert"] = _as_plain(scenario.asserts)
     if scenario.pass_criteria or scenario.pass_judges:
@@ -171,7 +186,12 @@ def scenario_to_yaml_text(scenario: Scenario) -> str:
             pc["judges"] = _as_plain(scenario.pass_judges)
         data["pass_criteria"] = pc
 
-    return dump_scenario_dict(data)
+    return data
+
+
+def scenario_to_yaml_text(scenario: Scenario) -> str:
+    """Serialize a Scenario to the section-object YAML shape."""
+    return dump_scenario_dict(scenario_to_dict(scenario))
 
 
 def load_scenario_yaml(path: Path | str) -> Scenario:

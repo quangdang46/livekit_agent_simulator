@@ -28,7 +28,7 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 2. Confirm the **agent under test is running** and registered on LiveKit with a known `agent_name`.
 3. `init` on the target repo → fill credentials in `.agent-sim/config.yaml`.
 4. `preflight` until `ok: true`.
-5. `scenario-init <id>` → edit the JSONL (`//` lines are guides; delete unused kinds).
+5. `scenario-init <id>` → edit the YAML (`#` lines are guides; delete unused sections).
 6. `validate <id>` then `execute <id>` (optional ``--name``, ``--repeat N --pass-at-k K``).
 7. `report <run-id>` and/or **`web`** (browser: play audio + highlight transcript; list auto-updates).
 8. If a run fails, promote it to a permanent test: ``scenario-from-run <run-id> --write``, review, add to suite.
@@ -81,7 +81,7 @@ bootstraps from dispatch metadata, set `livekit.dispatch_metadata` or
 per-scenario `Dispatch` — see https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md .
 
 **Telephony modes** (scenario only): `webrtc_sim` (default) · `inbound_sip` · `outbound_human_pickup` · `outbound_sim_callee` · `agent_dials`.
-Templates: `outbound-human-pickup.jsonl`, `outbound-callee-sim.jsonl`, `inbound-caller-sim.jsonl`. Full guide: `docs/telephony.md`.
+Templates: `outbound-human-pickup.yaml`, `outbound-callee-sim.yaml`, `inbound-caller-sim.yaml`. Full guide: `docs/telephony.md`.
 
 ### Voice, language & call recording
 
@@ -128,8 +128,8 @@ observe:
   # tool_event_patterns: []
 ```
 
-Per-scenario language override in JSONL: `"metadata":{"locale":"vi-VN"}` and/or
-`"Persona":{"spec":{"language":"vi-VN",…}}`.
+Per-scenario language override in YAML: `metadata.locale: vi-VN` and/or
+`persona.language: vi-VN`.
 
 ### Cue library aliases (optional)
 
@@ -153,7 +153,7 @@ Scenario: `"asset":"office","delivery":"room_pcm"`. List built-ins + overrides: 
 
 ```bash
 lks scenario-init my-case --root /path/to/target
-# → .agent-sim/scenarios/my-case.jsonl
+# → .agent-sim/scenarios/my-case.yaml
 ```
 
 - Full-line `// …` comments document each kind and important fields.
@@ -220,26 +220,39 @@ Three silence concepts — do not mix them:
   - Example: `{"kind":"Assert","spec":{"tool_order":["lookup","book"]}}`
 - **Script action `hang_up`** → sim caller disconnects from room (cúp máy thật)
   - Example: `{"id":"hangup","action":"hang_up","trigger":"time","delay_ms":5000,"say":"Thôi em cúp đây"}`  
-- See https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/caller-pattern-plan.md and `templates/examples/character-impatient.jsonl` (shipped in package after `init`)
+- See https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/caller-pattern-plan.md and `templates/examples/character-impatient.yaml` (shipped in package after `init`)
 
 ### PassCriteria (soft judge)
 
 Flat list (backward compatible):
 
-```jsonl
-{"kind":"PassCriteria","spec":{"criteria":["The agent answered the caller's question"]}}
+```yaml
+pass_criteria:
+  criteria:
+    - The agent answered the caller's question
 ```
 
 Multi-judge groups (aggregate with `mode`):
 
-```jsonl
-{"kind":"PassCriteria","spec":{"mode":"majority","judges":[{"id":"task","criteria":["Task completed"]},{"id":"tone","criteria":["Polite tone"]}]}}
+```yaml
+pass_criteria:
+  mode: majority
+  judges:
+    - id: task
+      criteria: [Task completed]
+    - id: tone
+      criteria: [Polite tone]
 ```
 
 Builtin dimensions (Hamming/LiveKit-shaped — `evals.presets`):
 
-```jsonl
-{"kind":"PassCriteria","spec":{"judges":[{"id":"tc","builtin":"task_completion"},{"id":"acc","builtin":"accuracy"}]}}
+```yaml
+pass_criteria:
+  judges:
+    - id: tc
+      builtin: task_completion
+    - id: acc
+      builtin: accuracy
 ```
 
 Or flat: `"criteria":["builtin:task_completion"]`.
@@ -248,8 +261,11 @@ Available presets: `task_completion` · `factual_accuracy` · `policy_compliance
 
 **`conversation_naturalness`** grades the call as a REAL human reviewer would (product manager with stopwatch + notepad): one question per turn, minimal confirmation (only phone/email/ambiguous dates), acknowledge-then-redirect when the caller volunteers a later field, echo relative dates as stated (never invent an absolute date), and turn latency (<3s natural, 3–5s ok, >5s stuck). When any naturalness criterion is present the judge returns a structured `conversation_feedback` list — `[{issue, severity, agent_line, why}]` with the exact verbatim agent line and human impact — plus the per-criterion `criteria` array. Language-neutral in core; opt in per scenario:
 
-```jsonl
-{"kind":"PassCriteria","spec":{"judges":[{"id":"nat","builtin":"conversation_naturalness"}]}}
+```yaml
+pass_criteria:
+  judges:
+    - id: nat
+      builtin: conversation_naturalness
 ```
 
 Judge verdicts: `pass` | `fail` | `maybe` (soft unless `--strict-judge`). Criteria may mark `relevant=false` to skip irrelevant checks.
@@ -290,10 +306,11 @@ cp templates/plugins/example_verify.py /path/to/target/.agent-sim/plugins/my_che
 # or copy from the package after init: .agent-sim/plugins/example_verify.py
 ```
 
-**2. Register the module in scenario JSONL**
+**2. Register the module in scenario YAML**
 
-```jsonl
-{"kind":"Plugins","spec":{"modules":["my_checks"]}}
+```yaml
+plugins:
+  modules: [my_checks]
 ```
 
 Loading the module registers **all** verify + lifecycle hooks in that file.
@@ -301,8 +318,21 @@ Lifecycle hooks need no Script reference; only **verify** names are wired below.
 
 **3. Wire verify plugins on Script** (built-in checks still run first)
 
-```jsonl
-{"kind":"Script","spec":{"steps":[{"id":"bc","trigger":"agent_speaking","delay_ms":900,"say":"uh-huh","delivery":"gemini_text"}],"verify":{"require_during_agent_speech":true,"min_agent_finals_after_first_cue":1,"plugins":["example_backchannel_continue"],"plugin_options":{"example_backchannel_continue":{"min_agent_finals":1}}}}}
+```yaml
+script:
+  steps:
+    - id: bc
+      trigger: agent_speaking
+      delay_ms: 900
+      say: uh-huh
+      delivery: gemini_text
+  verify:
+    require_during_agent_speech: true
+    min_agent_finals_after_first_cue: 1
+    plugins: [example_backchannel_continue]
+    plugin_options:
+      example_backchannel_continue:
+        min_agent_finals: 1
 ```
 
 `plugin_options` is also passed to lifecycle hooks as `ctx.options`.
@@ -353,9 +383,9 @@ lks execute my-barge-case --repeat 7 --pass-at-k 5 --root /path/to/target
 
 ```bash
 lks scenario-from-run <run-id> --root /path/to/target
-# dry-run: prints draft JSONL. Review Persona + Assert.
+# dry-run: prints draft YAML. Review Persona + Assert.
 lks scenario-from-run <run-id> --root /path/to/target --write
-# writes .agent-sim/scenarios/from-<source>-<id>.jsonl
+# writes .agent-sim/scenarios/from-<source>-<id>.yaml
 # Then edit, validate, add to execute-all
 lks validate from-my-source-xxxx --root /path/to/target
 ```
@@ -397,13 +427,16 @@ Mode is **per scenario** (`Caller.mode`), never in `config.yaml`.
 
 Package templates (copy into target `.agent-sim/scenarios/`):
 
-- `templates/outbound-human-pickup.jsonl`
-- `templates/outbound-callee-sim.jsonl`
-- `templates/inbound-caller-sim.jsonl`
+- `templates/outbound-human-pickup.yaml`
+- `templates/outbound-callee-sim.yaml`
+- `templates/inbound-caller-sim.yaml`
 
-```jsonl
-{"kind":"Caller","spec":{"mode":"inbound_sip"}}
-{"kind":"Telephony","spec":{"dial_in":"+15551234567"}}
+```yaml
+# scenario — transport mode + telephony per scenario (never in config.yaml)
+caller:
+  mode: inbound_sip
+telephony:
+  dial_in: '+15551234567'
 ```
 
 ```yaml
@@ -601,7 +634,7 @@ LLM sim callers over-cooperate. For CI, **do not rely on traits alone**:
 
 - Script/Behavior fixed refuse lines + Assert `constraint_respected`
 - Script `hang_up` + Assert `ended_by` when testing hangup threats
-- Examples: `templates/examples/people-pleaser-refuse-card.jsonl`, `people-pleaser-hangup-threat.jsonl`
+- Examples: `templates/examples/people-pleaser-refuse-card.yaml`, `people-pleaser-hangup-threat.yaml`
 
 ## Suggested suite mix (Cekura-style)
 
