@@ -2,7 +2,34 @@
 
 import json
 from pathlib import Path
+
+import yaml
+
 from livekit_agent_simulator.scenario_from_run import build_scenario_draft_from_run
+
+_SECTION_KINDS = {
+    "persona": "Persona",
+    "context": "Context",
+    "simulator": "Simulator",
+    "execute": "Execute",
+    "dispatch": "Dispatch",
+    "caller": "Caller",
+    "telephony": "Telephony",
+    "behavior": "Behavior",
+    "script": "Script",
+    "assert": "Assert",
+    "pass_criteria": "PassCriteria",
+}
+
+
+def _sections(draft: dict) -> list[dict]:
+    """Flatten a section-object YAML draft into [{kind, spec}, ...] (canonical order)."""
+    data = yaml.safe_load(draft["yaml"])
+    out: list[dict] = []
+    for key, kind in _SECTION_KINDS.items():
+        if data.get(key) not in (None, {}):
+            out.append({"kind": kind, "spec": data[key]})
+    return out
 
 
 def _meta(run_id: str = "test-run-1234", scenario_id: str = "smoke-hello") -> dict:
@@ -113,18 +140,17 @@ def test_draft_from_basic_run(tmp_path: Path) -> None:
     assert draft["source_run_id"] == "test-run-1234"
     assert draft["kinds"] == ["Scenario", "Persona", "Context", "Execute", "Script", "Assert", "PassCriteria"]
     assert draft["stats"]["script_open"] is True
-    assert "Xin chào" in draft["jsonl"]
+    assert "Xin chào" in draft["yaml"]
     assert draft["stats"]["user_finals"] == 2
     assert draft["stats"]["agent_finals"] == 1
 
-    # validate round-trip
-    import json
-    for line in draft["jsonl"].splitlines():
-        s = line.strip()
-        if not s or s.startswith("//"):
-            continue
-        obj = json.loads(s)
-        assert "kind" in obj
+    # YAML must round-trip through the parser
+    from livekit_agent_simulator.scenario import parse_scenario
+
+    out = tmp_path / "roundtrip.yaml"
+    out.write_text(draft["yaml"], encoding="utf-8")
+    scenario = parse_scenario(out)
+    assert scenario.id == draft["scenario_id"]
 
 
 def test_draft_barge_includes_recovery_assert(tmp_path: Path) -> None:
@@ -137,7 +163,7 @@ def test_draft_barge_includes_recovery_assert(tmp_path: Path) -> None:
         ),
     )
     draft = build_scenario_draft_from_run(report_dir)
-    assert "recovered_after_barge" in draft["jsonl"]
+    assert "recovered_after_barge" in draft["yaml"]
     assert draft["latency_hint"] is not None
     assert draft["latency_hint"]["observed_turn_p95_ms"] == 7000.0
 
@@ -164,9 +190,84 @@ def test_draft_with_scenario_file(tmp_path: Path) -> None:
     assert draft["scenario_id"] == "my-promoted-v1"
     # Opaque Dispatch.metadata is passed through as a JSON string — core must not
     # interpret consumer keys (AGENTS.md). Only assert the opaque blob survived.
-    assert "agent_xxx" in draft["jsonl"]
-    loc = draft["jsonl"].splitlines()
-    assert any("agent_xxx" in line for line in loc)
+    assert "agent_xxx" in draft["yaml"]
+
+
+def test_yaml_source_dispatch_metadata_recovered(tmp_path: Path) -> None:
+    """A YAML source scenario must yield dispatch metadata in the draft (regression).
+
+    run_orchestrator records scenario_file as a .yaml path; the source readers
+    must be format-agnostic, not JSONL-only.
+    """
+    scen_dir = tmp_path / "scenarios"
+    scen_dir.mkdir()
+    scen_file = scen_dir / "my-source.yaml"
+    scen_file.write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "agent-sim/v1",
+                "kind": "Scenario",
+                "metadata": {"id": "my-source", "locale": "fr-FR", "tags": ["src"]},
+                "persona": {
+                    "name": "Camille",
+                    "brief": "Test brief",
+                    "goals": ["Get help"],
+                    "constraints": [],
+                    "traits": ["polite"],
+                    "style": "natural",
+                },
+                "dispatch": {"metadata": '{"yourProjectKey":"agent_yyy"}'},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    report_dir = _write_report(
+        tmp_path,
+        meta=_meta(scenario_id="my-source") | {"scenario_file": str(scen_file)},
+        events=_events(user_texts=["bonjour"], agent_texts=["bonjour et bienvenue"]),
+    )
+    draft = build_scenario_draft_from_run(report_dir, scenario_id="my-promoted-yaml")
+    assert draft["scenario_id"] == "my-promoted-yaml"
+    # Opaque Dispatch.metadata must survive the YAML source path, not fall back
+    # to a warning. Dispatch is also carried on the run summary.
+    assert "agent_yyy" in draft["yaml"]
+    assert "Dispatch" in draft["kinds"]
+    assert not any("Dispatch.metadata not recovered" in w for w in draft["warnings"])
+
+
+def test_yaml_source_locale_preferred(tmp_path: Path) -> None:
+    """YAML source locale must flow into the draft metadata."""
+    scen_dir = tmp_path / "scenarios"
+    scen_dir.mkdir()
+    scen_file = scen_dir / "locale-source.yaml"
+    scen_file.write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "agent-sim/v1",
+                "kind": "Scenario",
+                "metadata": {"id": "locale-source", "locale": "fr-FR", "tags": ["src"]},
+                "persona": {
+                    "name": "Camille",
+                    "brief": "Test brief",
+                    "goals": ["Get help"],
+                    "constraints": [],
+                    "traits": ["polite"],
+                    "style": "natural",
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    report_dir = _write_report(
+        tmp_path,
+        meta=_meta(scenario_id="locale-source") | {"scenario_file": str(scen_file)},
+        events=_events(user_texts=["bonjour"], agent_texts=["bonjour et bienvenue"]),
+    )
+    draft = build_scenario_draft_from_run(report_dir, locale_default="en-US")
+    data = yaml.safe_load(draft["yaml"])
+    assert data["metadata"]["locale"] == "fr-FR"
 
 
 def test_draft_missing_report_raises(tmp_path: Path) -> None:
@@ -184,19 +285,12 @@ def test_brief_is_not_transcript_paste(tmp_path: Path) -> None:
         events=_events(user_texts=[long_user, "thanks"], agent_texts=["Sure, let me check"]),
     )
     draft = build_scenario_draft_from_run(report_dir)
-    persona = next(
-        json.loads(s) for s in draft["jsonl"].splitlines()
-        if s.strip() and not s.startswith("//") and json.loads(s).get("kind") == "Persona"
-    )
-    assert long_user not in persona["spec"]["brief"]
+    sections = {s["kind"]: s["spec"] for s in _sections(draft)}
+    assert long_user not in sections["Persona"]["brief"]
     # Intent lands in goals, sample lands in Context.notes (author-only)
-    assert any("Open with the same request" in g for g in persona["spec"]["goals"])
-    ctx = next(
-        json.loads(s) for s in draft["jsonl"].splitlines()
-        if s.strip() and not s.startswith("//") and json.loads(s).get("kind") == "Context"
-    )
-    assert "transcript sample" in ctx["spec"]["notes"]
-    assert persona["spec"]["constraints"], "derived constraints must not be empty"
+    assert any("Open with the same request" in g for g in sections["Persona"]["goals"])
+    assert "transcript sample" in sections["Context"]["notes"]
+    assert sections["Persona"]["constraints"], "derived constraints must not be empty"
 
 
 def test_source_persona_goals_preferred(tmp_path: Path) -> None:
@@ -216,12 +310,9 @@ def test_source_persona_goals_preferred(tmp_path: Path) -> None:
         events=_events(user_texts=["hello there friend"], agent_texts=["hi"]),
     )
     draft = build_scenario_draft_from_run(report_dir)
-    persona = next(
-        json.loads(s) for s in draft["jsonl"].splitlines()
-        if s.strip() and not s.startswith("//") and json.loads(s).get("kind") == "Persona"
-    )
-    assert persona["spec"]["goals"] == ["Ask for a refund", "Confirm the refund timeline"]
-    assert persona["spec"]["constraints"] == ["Never share the card number"]
+    sections = {s["kind"]: s["spec"] for s in _sections(draft)}
+    assert sections["Persona"]["goals"] == ["Ask for a refund", "Confirm the refund timeline"]
+    assert sections["Persona"]["constraints"] == ["Never share the card number"]
 
 
 def test_barge_fail_run_gets_behavior_and_recovery_stub(tmp_path: Path) -> None:
@@ -239,22 +330,16 @@ def test_barge_fail_run_gets_behavior_and_recovery_stub(tmp_path: Path) -> None:
     assert "Behavior" in draft["kinds"]
     assert "Script" in draft["kinds"]  # user-first open to avoid dead-air
     assert draft["stats"]["script_open"] is True
-    behavior = next(
-        json.loads(s) for s in draft["jsonl"].splitlines()
-        if s.strip() and not s.startswith("//") and json.loads(s).get("kind") == "Behavior"
-    )
-    barge = behavior["spec"]["barge_ins"][0]
+    sections = {s["kind"]: s["spec"] for s in _sections(draft)}
+    barge = sections["Behavior"]["barge_ins"][0]
     assert barge["say"] == "Wait — actually the other one"
     assert barge["class"] == "correction"
     assert barge["after_agent_ms"] == 2400
-    assert "recovered_after_barge" in draft["jsonl"]
-    script = next(
-        json.loads(s) for s in draft["jsonl"].splitlines()
-        if s.strip() and not s.startswith("//") and json.loads(s).get("kind") == "Script"
-    )
-    assert script["spec"]["steps"][0]["id"] == "open"
-    assert script["spec"]["steps"][0]["say"] == "hello"
-    assert script["spec"]["steps"][0]["require_agent_spoke_first"] is False
+    assert "recovered_after_barge" in draft["yaml"]
+    script = sections["Script"]
+    assert script["steps"][0]["id"] == "open"
+    assert script["steps"][0]["say"] == "hello"
+    assert script["steps"][0]["require_agent_spoke_first"] is False
 
 
 def test_user_first_prefers_source_script_open(tmp_path: Path) -> None:
@@ -276,11 +361,8 @@ def test_user_first_prefers_source_script_open(tmp_path: Path) -> None:
         events=_events(user_texts=["different transcript line"], agent_texts=["hi"]),
     )
     draft = build_scenario_draft_from_run(report_dir)
-    script = next(
-        json.loads(s) for s in draft["jsonl"].splitlines()
-        if s.strip() and not s.startswith("//") and json.loads(s).get("kind") == "Script"
-    )
-    assert script["spec"]["steps"][0]["say"] == "Hi - please run a full API lookup."
+    sections = {s["kind"]: s["spec"] for s in _sections(draft)}
+    assert sections["Script"]["steps"][0]["say"] == "Hi - please run a full API lookup."
 
 
 def test_agent_first_skips_script_open(tmp_path: Path) -> None:
@@ -304,14 +386,11 @@ def test_noise_cue_becomes_false_interrupt(tmp_path: Path) -> None:
         ),
     )
     draft = build_scenario_draft_from_run(report_dir)
-    behavior = next(
-        json.loads(s) for s in draft["jsonl"].splitlines()
-        if s.strip() and not s.startswith("//") and json.loads(s).get("kind") == "Behavior"
-    )
-    fi = behavior["spec"]["false_interrupts"][0]
+    sections = {s["kind"]: s["spec"] for s in _sections(draft)}
+    fi = sections["Behavior"]["false_interrupts"][0]
     assert fi["asset"] == "builtin:noise.loud"
     # noise alone must not add the recovery Assert
-    assert "recovered_after_barge" not in draft["jsonl"]
+    assert "recovered_after_barge" not in draft["yaml"]
 
 
 def test_errored_cue_is_ignored(tmp_path: Path) -> None:
@@ -338,12 +417,9 @@ def test_interruption_marker_fallback(tmp_path: Path) -> None:
         ),
     )
     draft = build_scenario_draft_from_run(report_dir)
-    behavior = next(
-        json.loads(s) for s in draft["jsonl"].splitlines()
-        if s.strip() and not s.startswith("//") and json.loads(s).get("kind") == "Behavior"
-    )
-    assert behavior["spec"]["barge_ins"][0]["say"] == "Hang on, what?"
-    assert behavior["spec"]["barge_ins"][0]["class"] == "question"
+    sections = {s["kind"]: s["spec"] for s in _sections(draft)}
+    assert sections["Behavior"]["barge_ins"][0]["say"] == "Hang on, what?"
+    assert sections["Behavior"]["barge_ins"][0]["class"] == "question"
 
 
 def test_draft_round_trips_through_scenario_parser(tmp_path: Path) -> None:
@@ -359,8 +435,8 @@ def test_draft_round_trips_through_scenario_parser(tmp_path: Path) -> None:
         ),
     )
     draft = build_scenario_draft_from_run(report_dir, scenario_id="promoted-rt")
-    out = tmp_path / "promoted-rt.jsonl"
-    out.write_text(draft["jsonl"], encoding="utf-8")
+    out = tmp_path / "promoted-rt.yaml"
+    out.write_text(draft["yaml"], encoding="utf-8")
     scenario = parse_scenario(out)
     assert scenario.id == "promoted-rt"
     # Behavior stub compiles into a barge ScriptStep; user-first open is present

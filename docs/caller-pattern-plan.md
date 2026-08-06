@@ -162,7 +162,7 @@ Keep `Assert` + `PassCriteria`; add recovery-friendly outcomes:
 | Parse `constraints[]`, `speech_conditions` on Persona | `scenario.py`, parse path |
 | Inject constraints into `persona_system_prompt()` | `scenario.py` |
 | Expand trait library (backchannel, hangup_threat, code_switch soft) | `persona_traits.py` |
-| Scaffold + GUIDE examples | `templates/scenario-scaffold.jsonl`, `GUIDE.md` |
+| Scaffold + GUIDE examples | `templates/scenario-scaffold.yaml`, `GUIDE.md` |
 | Unit tests | `tests/test_persona_*.py` |
 
 **Done when:** old scenarios still parse; new fields appear in system prompt dump/export.
@@ -222,7 +222,7 @@ Keep `Assert` + `PassCriteria`; add recovery-friendly outcomes:
 |---|---|
 | `scenario-init` | Hamming-style commented template (goal, constraints, speech_conditions, asserts) |
 | `lks guide` section | “Caller character (Hamming-aligned)” |
-| Example suite | `templates/examples/character-impatient.jsonl` (neutral domain) |
+| Example suite | `templates/examples/character-impatient.yaml` (neutral domain) |
 
 ---
 

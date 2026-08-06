@@ -61,7 +61,7 @@ async def preflight(project_root: str, connectivity: bool = True) -> dict[str, A
 
 @mcp.tool
 def list_scenarios(project_root: str) -> list[dict[str, Any]]:
-    """List all scenarios in `.agent-sim/scenarios/*.jsonl` with id, tags, and validity."""
+    """List all scenarios in `.agent-sim/scenarios/*.yaml` (legacy `*.jsonl` still read) with id, tags, and validity."""
     return ops.list_scenarios(project_root)
 
 
@@ -91,8 +91,14 @@ def export_scenario(project_root: str, scenario_id: str) -> dict[str, Any]:
 
 @mcp.tool
 def init_scenario(project_root: str, scenario_id: str, force: bool = False) -> dict[str, Any]:
-    """Scaffold `.agent-sim/scenarios/<id>.jsonl` with `//` guide lines + example JSON kinds. Runtime skips `//` lines."""
+    """Scaffold `.agent-sim/scenarios/<id>.yaml` with `#` guide comments + example sections."""
     return ops.init_scenario(project_root, scenario_id, force=force)
+
+
+@mcp.tool
+def convert_scenario(project_root: str, scenario_id: str, force: bool = False) -> dict[str, Any]:
+    """Convert a legacy `.jsonl` scenario to `.yaml` (keeps the .jsonl, idempotent)."""
+    return ops.convert_scenario(project_root, scenario_id, force=force)
 
 
 @mcp.tool
@@ -103,7 +109,7 @@ async def execute_scenario(
     pass_at_k: int | None = None,
     run_name: str | None = None,
 ) -> dict[str, Any]:
-    """Validate then execute one scenario from `.agent-sim/scenarios/*.jsonl`.
+    """Validate then execute one scenario from `.agent-sim/scenarios/*.yaml` (legacy `*.jsonl` still read).
 
     ``repeat`` / ``pass_at_k``: flake control — run N times, require ≥ K hard-pass
     iterations (default K = N). Example: repeat=5, pass_at_k=3.
@@ -170,10 +176,10 @@ async def scenario_from_run(
     scenario_id: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
-    """Promote a finished run into a draft scenario JSONL (fail → golden).
+    """Promote a finished run into a draft scenario YAML (fail → golden).
 
-    Dry-run by default; use write=True to write the draft .jsonl
-    under .agent-sim/scenarios/. Returns the scenario_id, jsonl text,
+    Dry-run by default; use write=True to write the draft .yaml
+    under .agent-sim/scenarios/. Returns the scenario_id, yaml text,
     warnings, and stats.
     """
     return ops.scenario_from_run(

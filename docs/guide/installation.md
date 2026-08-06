@@ -177,7 +177,7 @@ This creates (if missing):
 ```text
 $TARGET_ROOT/.agent-sim/
   config.yaml          # secrets go here (gitignored)
-  scenarios/smoke-hello.jsonl
+  scenarios/smoke-hello.yaml
   reports/
   plugins/example_verify.py   # verify + optional before_run / after_run hooks
   cues/README.md
@@ -272,10 +272,11 @@ protocol. For those agents, map custom data messages with
 | `SIP_OUTBOUND_TRUNK_ID` (optional) | `telephony.outbound_trunk_id` |
 | `SIP_INBOUND_TRUNK_ID` (optional) | `telephony.inbound_trunk_id` (docs/preflight) |
 
-Per-scenario dispatch override (opaque JSON — keys are consumer-specific):
+Per-scenario dispatch override (opaque JSON string — keys are consumer-specific):
 
-```jsonl
-{"kind":"Dispatch","spec":{"metadata":"{\"yourConsumerKey\":\"value\"}"}}
+```yaml
+dispatch:
+  metadata: '{"yourConsumerKey":"value"}'
 ```
 
 More consumer wiring notes: [portability.md](../portability.md).
@@ -286,7 +287,7 @@ More consumer wiring notes: [portability.md](../portability.md).
 
 Read-only discovery in `TARGET_ROOT` (in order):
 
-1. **Existing sim scaffold** — `.agent-sim/config.yaml`, `scenarios/*.jsonl` (especially `Dispatch` lines), `cues/`, `plugins/`.
+1. **Existing sim scaffold** — `.agent-sim/config.yaml`, `scenarios/*.yaml` (legacy `*.jsonl` also read; especially `dispatch`/`Dispatch` metadata), `cues/`, `plugins/`.
 2. **Docs** — `README*`, `docs/**` — search for: `dispatch`, `metadata`, `agent_name`, `RoomAgentDispatch`, `data_topics`.
 3. **Env templates** — `.env.example`, `.env.local.example` — map only keys that exist there; do not assume a global env name for `agent_name` or metadata IDs.
 4. **Code search (read-only, no edits)** — examples:
@@ -385,9 +386,9 @@ Skip questions already answered by §4.0 (e.g. skip dispatch-metadata question i
       "id": "dispatch_metadata",
       "prompt": "Where should opaque dispatch metadata live? (Only if discovery found required keys but not where to set them)",
       "options": [
-        {"id": "none", "label": "Not needed / already in scenario JSONL (Recommended if discovery found nothing)"},
+        {"id": "none", "label": "Not needed / already in scenario YAML (Recommended if discovery found nothing)"},
         {"id": "yes_config", "label": "Default for all runs — livekit.dispatch_metadata in config.yaml"},
-        {"id": "yes_scenario", "label": "Per-scenario only — Dispatch line in JSONL"}
+        {"id": "yes_scenario", "label": "Per-scenario only — dispatch metadata in the scenario YAML"}
       ]
     },
     {
@@ -503,7 +504,7 @@ List / scaffold:
 
 ```bash
 lks scenarios --root "$TARGET_ROOT"
-lks scenario-init my-case --root "$TARGET_ROOT"   # // guide lines in JSONL
+lks scenario-init my-case --root "$TARGET_ROOT"   # scaffolds a .yaml with # guide comments
 lks validate smoke-hello --root "$TARGET_ROOT"
 ```
 
@@ -523,7 +524,7 @@ These are **not** required for install — use when writing scenarios under `.ag
 | `noise_when: "background"` / Script `"loop": true` | Continuous ambient noise under the call |
 | `lks validate` → `authoring.tier` / `warning_codes` | Soft authoring quality gate (no LLM; does not flip `valid`) |
 
-Package examples: `templates/examples/quiet-caller-confirm.jsonl`, `silent-caller-dead-air.jsonl`, `ambient-loop-office.jsonl`, `interrupt-rate-medium.jsonl`, `hold-timeout-agent-stall.jsonl`.
+Package examples: `templates/examples/quiet-caller-confirm.yaml`, `silent-caller-dead-air.yaml`, `ambient-loop-office.yaml`, `interrupt-rate-medium.yaml`, `hold-timeout-agent-stall.yaml`.
 
 Ops detail: **`lks guide`**.
 
@@ -565,7 +566,7 @@ Promote a failure to a draft regression case:
 
 ```bash
 lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"           # dry-run
-lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT" --write  # write JSONL
+lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT" --write  # write .yaml draft
 # then human/agent reviews Persona + Assert before treating as golden
 ```
 
@@ -585,9 +586,17 @@ Assert highlights (for scenario authors after setup):
 Persona prompt now uses numbered GOAL checklist + guardrails against premature end.
 The caller must work through all goals; early `[END_CALL]` causes a failed test.
 
-```jsonl
-{"kind":"Assert","spec":{"outcomes":[{"id":"caller_pursued_goals","type":"goals_met","min_goals":2,"goals":["Hear greeting","Get info"]}]}}
-{"kind":"Assert","spec":{"tool_order":["lookup","book"],"outcomes":[{"id":"no_card","type":"constraint_respected","must_not_phrases":["4111"]}]}}
+```yaml
+assert:
+  outcomes:
+    - id: caller_pursued_goals
+      type: goals_met
+      min_goals: 2
+      goals: [Hear greeting, Get info]
+    - id: no_card
+      type: constraint_respected
+      must_not_phrases: ['4111']
+  tool_order: [lookup, book]
 ```
 
 PassCriteria can use flat `criteria[]` or multi-judge `judges[]` + `mode` (`all` \| `majority` \| `any`). Full recipes: `lks guide`.
@@ -596,9 +605,16 @@ PassCriteria can use flat `criteria[]` or multi-judge `judges[]` + `mode` (`all`
 
 Instead of writing a criterion from scratch, reference a builtin dimension:
 
-```jsonl
-{"kind":"PassCriteria","spec":{"judges":[{"id":"task","builtin":"task_completion"},{"id":"flow","builtin":"conversation_flow"}]}}
-{"kind":"PassCriteria","spec":{"criteria":["builtin:conversation_naturalness"]}}
+```yaml
+pass_criteria:
+  judges:
+    - id: task
+      builtin: task_completion
+    - id: flow
+      builtin: conversation_flow
+# or flat:
+pass_criteria:
+  criteria: [builtin:conversation_naturalness]
 ```
 
 Available presets (package `src/livekit_agent_simulator/evals/presets.py`, `lks plugins`/`list_presets`):
@@ -635,9 +651,9 @@ Script action `hang_up` makes the sim caller leave the room (hard hangup).
 
 Package templates (copy into `.agent-sim/scenarios/`):
 
-- `outbound-human-pickup.jsonl` — human answers, Gemini speaks (`Caller.mode: outbound_human_pickup`)
-- `outbound-callee-sim.jsonl` — Gemini SIP callee (`Caller.mode: outbound_sim_callee`)
-- `inbound-caller-sim.jsonl` — Gemini dials agent DID (`Caller.mode: inbound_sip`)
+- `outbound-human-pickup.yaml` — human answers, Gemini speaks (`caller.mode: outbound_human_pickup`)
+- `outbound-callee-sim.yaml` — Gemini SIP callee (`caller.mode: outbound_sim_callee`)
+- `inbound-caller-sim.yaml` — Gemini dials agent DID (`caller.mode: inbound_sip`)
 
 ```bash
 # After telephony: block in config.yaml (trunk + dial_in / sim_inbound_number):

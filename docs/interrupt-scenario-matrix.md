@@ -39,13 +39,13 @@ Consumer-specific agent ids and Dispatch belong in the **target** `.agent-sim/sc
 
 ## Scaffold examples
 
-Neutral JSONL under `templates/examples/`:
+Neutral YAML under `templates/examples/`:
 
-- `interrupt-correction.jsonl`
-- `interrupt-backchannel.jsonl`
-- `interrupt-noise-resume.jsonl`
+- `interrupt-correction.yaml`
+- `interrupt-backchannel.yaml`
+- `interrupt-noise-resume.yaml`
 
-Copy into a target repo, replace Dispatch metadata / language / Assert phrases.
+Copy into a target repo, replace dispatch metadata / language / Assert phrases.
 
 ## Out of scope for core package
 

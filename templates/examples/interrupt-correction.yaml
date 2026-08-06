@@ -1,0 +1,114 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: interrupt-correction
+  locale: en-US
+  tags:
+  - interrupt
+  - correction
+  - example
+persona:
+  name: Alex
+  language: en-US
+  brief: Impatient caller who barges in mid-answer to correct or ask a fee.
+  goals:
+  - State the signup need
+  - Interrupt a long agent turn with a clear fee question
+  - Close politely
+  style: polite but impatient
+  traits:
+  - impatient
+  - interrupts
+  constraints:
+  - Do not invent card numbers
+context:
+  notes: Portable scaffold — set Dispatch.metadata for your agent. Script needs a long agent turn.
+execute:
+  max_turns: 10
+  timeout_s: 180
+  first_speaker: user
+dispatch:
+  metadata: '{"yourProjectKey":"REPLACE_ME"}'
+script:
+  steps:
+  - id: open
+    trigger: silence
+    delay_ms: 700
+    say: Hi, I want to sign up for a basic plan.
+    label: open
+    once: true
+    min_agent_active_ms: 400
+    delivery: gemini_text
+    silence_after_cue_ms: 0
+    action: speak
+    loop: false
+    require_agent_spoke_first: false
+    require_agent_reply_this_turn: true
+    defer_on_open_question: true
+    open_question_idle_ms: 20000
+    barge_in: false
+    with_blip: false
+    gain: 1.0
+  - id: real_interrupt
+    trigger: agent_speaking
+    delay_ms: 800
+    say: Wait — how much is the monthly fee?
+    label: real_interrupt
+    once: true
+    min_agent_active_ms: 400
+    delivery: gemini_text
+    silence_after_cue_ms: 2000
+    action: speak
+    loop: false
+    require_agent_spoke_first: true
+    require_agent_reply_this_turn: true
+    defer_on_open_question: true
+    open_question_idle_ms: 20000
+    barge_in: true
+    with_blip: true
+    gain: 1.0
+    interrupt_class: correction
+  - id: bye
+    trigger: silence
+    delay_ms: 2200
+    say: Thanks, that's all for now. Bye.
+    label: bye
+    once: true
+    min_agent_active_ms: 400
+    delivery: gemini_text
+    silence_after_cue_ms: 0
+    action: speak
+    loop: false
+    require_agent_spoke_first: true
+    require_agent_reply_this_turn: true
+    defer_on_open_question: true
+    open_question_idle_ms: 20000
+    barge_in: false
+    with_blip: false
+    gain: 1.0
+  verify:
+    require_during_agent_speech: true
+    min_agent_finals_after_first_cue: 0
+    min_user_finals_after_first_cue: 0
+    min_agent_finals_after_silence: 0
+    min_agent_finals_after_barge_in: 0
+assert:
+  transcript:
+  - role: user
+    contains_any:
+    - fee
+    - monthly
+  outcomes:
+  - id: agent_recovered_after_barge
+    type: recovery
+    role: any
+    min_agent_finals_after_barge_in: 1
+    min_interruptions: 0
+    require_turn_samples: 0
+    min_goals: 1
+    check_agent_transcript: false
+pass_criteria:
+  criteria:
+  - Caller barged in during agent speech with a clear fee question
+  - Agent yielded and addressed the fee
+  - Call reached a polite close
