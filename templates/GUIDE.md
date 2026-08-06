@@ -112,7 +112,7 @@ simulator:
 
 judge:
   # Gemini (default when base_url omitted) — uses simulator.api_key (provider: google)
-  model: "gemini-2.5-flash"
+  model: "gemini-3.1-flash-lite"
   temperature: 0
   # Or HTTP via OpenAI-compatible gateway. `endpoint_type` = wire format (default openai):
   # base_url: "http://localhost:8080/v1"
