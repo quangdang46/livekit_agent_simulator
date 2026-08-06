@@ -108,6 +108,18 @@ class Observer:
         self._agent_has_spoken = False
         self._user_has_spoken = False
         self._current_turn_user_norm: str | None = None
+        # Any activity (agent OR caller) — the dead-call net measures silence
+        # from this, so a caller's first turn gives the agent time to reply.
+        self.last_activity_mono: float = time.monotonic()
+        # True once the first transcript (either role) has landed; the
+        # dead-call net only arms after this.
+        self._any_activity = False
+        # (role, text) of the last interim we synthesized before a final, so the
+        # ordering guard in on_transcript never double-emits for the same turn.
+        self._last_interim_key: tuple[str, str] | None = None
+        # Roles that already emitted a final in the current turn (late interims
+        # for those roles are dropped — see on_transcript).
+        self._finalized_roles: set[str] = set()
 
         self.agent_is_active_speaker = False
         self._agent_active_since_mono: float | None = None
@@ -357,6 +369,14 @@ class Observer:
         self._recent_finals[key] = (source, now)
         return True
 
+    def _role_has_final(self, role: str) -> bool:
+        """True when this role already emitted a final in the current turn."""
+        return role in self._finalized_roles
+
+    def any_activity_occurred(self) -> bool:
+        """True once any transcript (either role) has been observed."""
+        return self._any_activity
+
     # Shared entry point — also used by the Gemini bridge (sim-side transcription).
     def on_transcript(
         self,
@@ -377,10 +397,33 @@ class Observer:
             self.last_agent_activity_mono = time.monotonic()
             if final:
                 self._agent_has_spoken = True
+        # Caller activity also counts: the dead-call net must not fire while
+        # the agent is still working on its first reply (the agent has not
+        # spoken yet, so last_agent_activity_mono would be stale).
+        self.last_activity_mono = time.monotonic()
+        self._any_activity = True
 
         if not final:
+            # Drop late interims for a role whose final already landed — async
+            # providers (OpenAI bridge) can deliver a trailing `.delta` after
+            # `.done`, which previously produced interim-after-final within a
+            # turn. Consumers must never see that inversion.
+            if self._role_has_final(role):
+                return
             self.writer.emit(f"transcript.{role}.interim", spec=spec, source=source)
             return
+
+        # Ordering guard (OpenAI bridge only): a final may arrive before the
+        # trailing interim of the same utterance (async `.delta` still pending
+        # when `.done` lands). Emit a final-flavored interim first so consumers
+        # never see interim-after-final within a turn.
+        if source == "sim.openai" and self._last_interim_key != (role, text):
+            self._last_interim_key = (role, text)
+            self.writer.emit(
+                f"transcript.{role}.interim",
+                spec={**spec, "final": False},
+                source=source,
+            )
 
         if not self._accept_final(role, text, source):
             return
@@ -403,8 +446,10 @@ class Observer:
             self.turn += 1
             self._current_turn_user_norm = norm
             self.writer.begin_turn(self.turn)
+            self._finalized_roles.clear()
             self._last_user_final_mono = time.monotonic()
             self._agent_replied_this_turn = False
+            self._finalized_roles.add("user")
             self.writer.emit("transcript.user.final", spec=spec, source=source)
         else:
             if self.turn == 0 and self.first_speaker == "user" and not self._user_has_spoken:
@@ -424,6 +469,7 @@ class Observer:
             self._agent_replied_this_turn = True
             self._last_agent_final_mono = time.monotonic()
             self._last_agent_final_text = text
+            self._finalized_roles.add("agent")
             self.writer.emit("transcript.agent.final", spec=spec, source=source)
 
     # --------------------------------------------------------------- data topics

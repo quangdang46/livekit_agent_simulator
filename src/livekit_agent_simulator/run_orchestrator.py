@@ -754,17 +754,22 @@ async def _conversation_loop(
             except Exception:  # noqa: BLE001
                 scripted_hold = False
 
-        silent_for = time.monotonic() - observer.last_agent_activity_mono
+        # Dead-call net measures silence from the last ANY activity (caller or
+        # agent). Hold-timeout (agent dead air) still measures agent-only
+        # silence and arms only after the agent has spoken.
+        last_any = getattr(observer, "last_activity_mono", None)
+        if last_any is None:
+            last_any = observer.last_agent_activity_mono
+        silent_for = time.monotonic() - last_any
+        agent_idle_for = time.monotonic() - observer.last_agent_activity_mono
 
-        # Hold timeout arms only after the agent has spoken; scripted user
-        # silence does NOT pause it (agent dead air is what we are measuring).
         hold_armed = hold_timeout_s is not None and observer.agent_has_spoken
-        if hold_armed and silent_for >= hold_timeout_s:
+        if hold_armed and agent_idle_for >= hold_timeout_s:
             writer.emit(
                 "sim.hold_timeout",
                 spec={
                     "timeout_s": hold_timeout_s,
-                    "agent_idle_ms": int(silent_for * 1000),
+                    "agent_idle_ms": int(agent_idle_for * 1000),
                     "note": "Caller gave up waiting on agent dead air (hold_music_timeout_s)",
                 },
                 source="sim",
@@ -787,7 +792,15 @@ async def _conversation_loop(
                 silence_reported_at = time.monotonic()
             # When the author set a hold timeout and it is armed, the dead-call
             # net must not preempt it (a longer hold timeout stays authoritative).
-            if silent_for >= cfg_silence_s * 3 and not scripted_hold and not hold_armed:
+            # Also: only arm after the first activity — before the caller's
+            # first turn the "silence" is just the caller booting (realtime
+            # models can take ~20 s to produce the opening line).
+            if (
+                silent_for >= cfg_silence_s * 3
+                and not scripted_hold
+                and not hold_armed
+                and observer.any_activity_occurred()
+            ):
                 return "dead_call_silence"
         else:
             silence_reported_at = None

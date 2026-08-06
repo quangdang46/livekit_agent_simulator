@@ -76,6 +76,11 @@ _AGENT_STREAM_END_SILENCE_MS = 650
 # assistant item we played before barge, in milliseconds.
 _TRUNCATE_GRACE_MS = 200
 
+# If response.audio_transcript.done does not arrive within this window after
+# output deltas started, force the manual turn hand-off anyway (observed
+# flakiness: caller output starts but `.done` never fires → dead call).
+_OUT_DONE_FALLBACK_MS = 6000
+
 
 def _openai_voice_name(voice: str | None) -> str:
     v = str(voice or "").strip().lower()
@@ -124,6 +129,15 @@ class OpenAICallerBridge:
         self._ws: Any | None = None
         self._sim_out_text = ""
         self._sim_out_item_id: str | None = None
+        # Agent (input-side) transcript accumulation.
+        self._agent_in_text = ""
+        # One-shot watchdog handle for output-done fallback (see
+        # _on_output_transcript_delta). Reset whenever the caller starts a new
+        # output item.
+        self._out_done_timer: Any | None = None
+        # True while the server has an in-flight response — response.create is
+        # rejected with "Conversation already has an active response" otherwise.
+        self._response_in_flight = False
         # Played-audio bookkeeping for `conversation.item.truncate` on barge.
         self._last_item_start_mono: float | None = None
         self._last_item_ms_played = 0
@@ -292,6 +306,14 @@ class OpenAICallerBridge:
             await self._send(ws, session_update)
             await self._emit_bootstrap_cues(ws)
 
+            # Initial kick: with VAD disabled the model never starts on its own.
+            # When the caller speaks first (or no bootstrap cue did), request a
+            # response so the simulated caller opens the conversation instead of
+            # dead air until an agent reply commits audio.
+            if self.first_speaker == "user":
+                await self._send(ws, {"type": "response.create"})
+                self._response_in_flight = True
+
             self._tasks = [
                 asyncio.create_task(self._pump_agent_audio(ws), name="agent->openai"),
                 asyncio.create_task(self._pump_openai_events(ws, source), name="openai->lk"),
@@ -332,10 +354,13 @@ class OpenAICallerBridge:
                     "input": {
                         "format": {"type": "audio/pcm", "rate": OPENAI_IN_RATE},
                         "transcription": {"model": "gpt-4o-mini-transcribe"},
-                        "turn_detection": {
-                            "type": "semantic_vad",
-                            "eagerness": "medium",
-                        },
+                        # VAD OFF (push-to-talk): we stream the agent's audio into
+                        # the input buffer; server VAD/semantic VAD would treat
+                        # that agent speech as a caller interruption, cancel the
+                        # in-flight model response, and the caller turn would
+                        # never finalize. Manual control commits + creates
+                        # responses at well-defined turn boundaries instead.
+                        "turn_detection": None,
                     },
                     "output": {
                         "format": {"type": "audio/pcm", "rate": OPENAI_OUT_RATE},
@@ -384,7 +409,13 @@ class OpenAICallerBridge:
     async def _send(self, ws: Any, payload: dict[str, Any]) -> None:
         if ws is None or not self._send_ok:
             return
+        # Central guard: the server rejects response.create while another
+        # response is in flight. Drop the request instead of erroring.
+        if payload.get("type") == "response.create" and self._response_in_flight:
+            return
         await ws.send(json.dumps(payload))
+        if payload.get("type") == "response.create":
+            self._response_in_flight = True
 
     async def _emit_bootstrap_cues(self, ws: Any) -> None:
         """Emit connect-time midcall texts (``kind=bootstrap`` only).
@@ -454,6 +485,8 @@ class OpenAICallerBridge:
             return
         if self._persona_output_suppressed():
             return
+        if self._response_in_flight:
+            return
         await self._send(
             self._ws,
             {
@@ -462,6 +495,7 @@ class OpenAICallerBridge:
             },
         )
         await self._send(self._ws, {"type": "response.create"})
+        self._response_in_flight = True
 
     def stop(self) -> None:
         self.end_call.set()
@@ -858,11 +892,36 @@ class OpenAICallerBridge:
                 self._on_output_transcript_delta(chunk)
         elif etype == "response.audio_transcript.done":
             self._on_output_transcript_done()
+        elif etype == "response.created":
+            self._response_in_flight = True
+        elif etype in ("response.cancelled", "response.failed"):
+            self._response_in_flight = False
         elif etype == "response.output_item.added":
             item = event.get("item") or {}
             if item.get("type") == "message" and item.get("role") == "assistant":
                 self._last_item_start_mono = time.monotonic()
                 self._last_item_ms_played = 0
+        elif etype == "conversation.item.input_audio_transcription.delta":
+            chunk = event.get("delta") or ""
+            if chunk:
+                self._on_agent_transcript_delta(chunk)
+        elif etype == "conversation.item.input_audio_transcription.completed":
+            transcript = (event.get("transcript") or "").strip()
+            if transcript:
+                self._on_agent_transcript_done(transcript)
+        elif etype == "conversation.item.input_audio_transcription.failed":
+            err = event.get("error") or {}
+            self.writer.emit(
+                "sim.error",
+                spec={
+                    "where": "openai_agent_transcription",
+                    "error": (err.get("message") or "transcription failed")
+                    if isinstance(err, dict)
+                    else "transcription failed",
+                },
+                source="sim",
+                include_dialogue=False,
+            )
         elif etype == "response.done":
             self._on_response_done()
 
@@ -920,6 +979,17 @@ class OpenAICallerBridge:
         self._sim_out_text += chunk
         if self._inject_turn_active:
             self._inject_heard_text += chunk
+        # Watchdog: if `.done` never arrives (observed flaky model output), the
+        # caller turn would hang forever and the agent never gets kicked. Arm a
+        # one-shot task to force the manual turn hand-off after a grace period.
+        # Guarded: unit tests drive _dispatch_event without a running loop.
+        if self._out_done_timer is None:
+            try:
+                self._out_done_timer = asyncio.create_task(
+                    self._out_done_watchdog()
+                )
+            except RuntimeError:
+                self._out_done_timer = None
         pending = self._script_steps_pending()
         early_bye = contains_farewell_signal(self._sim_out_text)
         scripted_farewell = self._script_hangup_farewell
@@ -935,10 +1005,29 @@ class OpenAICallerBridge:
         if log_text:
             self.observer.on_transcript("user", log_text, final=False, source="sim.openai")
 
+    def _on_output_done_fallback(self) -> None:
+        """Fire when output `.done` never arrives after deltas started."""
+        self._out_done_timer = None
+        if self._sim_out_text.strip():
+            # Flush the partial caller turn so the observer/agent see it, then
+            # hand off to the agent exactly like a normal `.done`.
+            self._on_output_transcript_done()
+
+    async def _out_done_watchdog(self) -> None:
+        await asyncio.sleep(_OUT_DONE_FALLBACK_MS / 1000)
+        if self._sim_out_text.strip():
+            self._on_output_done_fallback()
+
+    def _cancel_out_done_timer(self) -> None:
+        if self._out_done_timer is not None:
+            self._out_done_timer.cancel()
+            self._out_done_timer = None
+
     def _on_output_transcript_done(self) -> None:
         # Final transcript for the completed output item. Commit even when the
         # text carries a farewell / [END_CALL] (the delta handler may have muted
         # the mic already — the final turn must still reach the observer).
+        self._cancel_out_done_timer()
         text = " ".join(self._sim_out_text.split()).strip()
         if text:
             ended = contains_end_call_signal(text)
@@ -982,11 +1071,47 @@ class OpenAICallerBridge:
                 self.end_call.set()
                 return
             self._mute_persona_audio = False
+            # Manual turn hand-off (VAD disabled): the caller just finished
+            # speaking. Commit any buffered agent audio + request the next
+            # model response so the conversation advances deterministically.
+            asyncio.ensure_future(self._commit_and_respond())
         else:
             self._sim_out_text = ""
             self._mute_persona_audio = False
 
+    async def _commit_and_respond(self) -> None:
+        """Commit the input buffer (agent audio) and ask for the next response."""
+        if self._ws is None or not self._send_ok:
+            return
+        if self._script_hangup_farewell or self._mute_persona_audio:
+            return
+        # The server rejects response.create while a response is in flight
+        # ("Conversation already has an active response in progress"). Skip —
+        # the in-flight response already covers this hand-off.
+        if self._response_in_flight:
+            return
+        try:
+            await self._send(
+                self._ws,
+                {
+                    "type": "input_audio_buffer.commit",
+                    "event_id": f"evt_commit_{int(time.monotonic() * 1000)}",
+                },
+            )
+            await self._send(
+                self._ws,
+                {
+                    "type": "response.create",
+                    "event_id": f"evt_resp_{int(time.monotonic() * 1000)}",
+                },
+            )
+            self._response_in_flight = True
+        except Exception:
+            pass
+
     def _on_response_done(self) -> None:
+        self._cancel_out_done_timer()
+        self._response_in_flight = False
         if self._mixer is not None:
             self._mixer.end_speech_turn()
         if not self._inject_turn_active:
@@ -995,6 +1120,32 @@ class OpenAICallerBridge:
         self._last_item_ms_played = 0
         self._sim_out_item_id = None
         self._sim_out_text = ""
+
+    # ------------------------------------------------- agent transcript (in)
+    # Agent audio is streamed into the Realtime session (input side); its
+    # transcription arrives via conversation.item.input_audio_transcription.*.
+    # Feed it to the observer so agent turns land even when the agent under
+    # test does not publish its own transcript (voice-ai-agent flakiness).
+
+    def _on_agent_transcript_delta(self, chunk: str) -> None:
+        if not chunk.strip():
+            return
+        self._agent_in_text += chunk
+        self.observer.on_transcript(
+            "agent", self._agent_in_text, final=False, source="sim.openai"
+        )
+
+    def _on_agent_transcript_done(self, transcript: str) -> None:
+        if transcript:
+            self._agent_in_text = transcript
+        text = self._agent_in_text.strip()
+        if text:
+            self.observer.on_transcript("agent", text, final=True, source="sim.openai")
+        self._agent_in_text = ""
+        # Agent finished speaking — commit the buffered agent audio and request
+        # the next caller response. Without this the model never hears the
+        # agent's turn (VAD off) and dead air follows.
+        asyncio.ensure_future(self._commit_and_respond())
 
     # ------------------------------------------------------------- audio out
 
