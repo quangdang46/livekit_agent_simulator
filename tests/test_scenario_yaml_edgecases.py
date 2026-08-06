@@ -348,7 +348,7 @@ def test_scenario_from_run_failed_validation_leaves_no_dest(tmp_path: Path, monk
         "  api_secret: s\n"
         "  agent_name: a\n"
         "simulator:\n"
-        "  google_api_key: g\n",
+        "  api_key: g\n",
         encoding="utf-8",
     )
     report_dir = dot / "reports" / "run-abc-1"

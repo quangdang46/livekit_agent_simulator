@@ -59,10 +59,9 @@ if TYPE_CHECKING:
 OPENAI_IN_RATE = 24_000
 OPENAI_OUT_RATE = 24_000
 
-# GA Realtime voices (OpenAI docs). Voice cannot change after first audio response.
-OPENAI_VOICES = frozenset(
-    {"alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"}
-)
+# Default OpenAI Realtime voice. Voice cannot change after first audio response.
+# The caller is free to pick any voice the provider supports — we only default
+# to a sane value when the config leaves it unset.
 _OPENAI_DEFAULT_VOICE = "marin"
 
 # Agent→model speech gate mirrors Gemini's manual VAD. OpenAI's server VAD
@@ -80,13 +79,7 @@ _TRUNCATE_GRACE_MS = 200
 
 def _openai_voice_name(voice: str | None) -> str:
     v = str(voice or "").strip().lower()
-    if not v or v not in OPENAI_VOICES:
-        # Fail fast at connect with a clear, actionable error (plan risk row).
-        raise ValueError(
-            f"voice '{voice}' is not a valid OpenAI Realtime voice. "
-            f"Use one of: {', '.join(sorted(OPENAI_VOICES))}"
-        )
-    return v
+    return v or _OPENAI_DEFAULT_VOICE
 
 
 class OpenAICallerBridge:
@@ -1079,7 +1072,6 @@ def _user_text_item(text: str) -> dict[str, Any]:
 __all__ = [
     "OPENAI_IN_RATE",
     "OPENAI_OUT_RATE",
-    "OPENAI_VOICES",
     "OpenAICallerBridge",
     "_is_transport_error",
     "_openai_voice_name",

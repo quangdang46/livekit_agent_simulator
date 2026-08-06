@@ -22,6 +22,7 @@ from livekit_agent_simulator.callers import (
 )
 from livekit_agent_simulator.callers.gemini import pcm16_mono_rms
 from livekit_agent_simulator.callers.openai import (
+    _OPENAI_DEFAULT_VOICE,
     _is_transport_error,
     _openai_voice_name,
     _user_text_item,
@@ -147,11 +148,14 @@ def _sent_events(bridge, ws):
 # ---------------------------------------------------------------------------
 
 
-def test_openai_voice_name_valid_and_invalid():
+def test_openai_voice_name_normalizes_and_defaults():
     assert _openai_voice_name("marin") == "marin"
     assert _openai_voice_name("Alloy") == "alloy"
-    with pytest.raises(ValueError, match="not a valid OpenAI Realtime voice"):
-        _openai_voice_name("Puck")
+    # Unknown voices pass through (user picks any provider-supported voice);
+    # empty/unset falls back to the default.
+    assert _openai_voice_name("Puck") == "puck"
+    assert _openai_voice_name("") == _OPENAI_DEFAULT_VOICE
+    assert _openai_voice_name(None) == _OPENAI_DEFAULT_VOICE
 
 
 def test_transport_error_detection():
