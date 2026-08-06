@@ -35,13 +35,20 @@ class DefaultCallerPolicy:
         """Optional connect kicks + on-demand reground texts.
 
         **No** bootstrap when Script owns opening (realtime text would freestyle
-        before the open cue → double-open). Dialogue ``first_speaker=user``
-        without Script still needs a speak-first kick: Gemini Live waits for
-        user input before audio; SI alone often stays silent.
+        before the open cue → double-open). "Owns opening" means the script has
+        a step that fires on its own (``trigger=time`` / silence with a cue) —
+        a script that only *reacts* to the agent (``trigger=agent_speaking``,
+        e.g. compiled barge policies) does not open the call, so the caller
+        still needs a speak-first kick: Gemini Live waits for user input before
+        audio; SI alone often stays silent.
         """
         cues: list[MidcallCue] = []
         verbosity = ctx.resolved_verbosity()
-        if ctx.first_speaker == "user" and not ctx.script_steps:
+        script_owns_opening = any(
+            getattr(step, "trigger", None) in ("time", "silence") or getattr(step, "trigger", None) is None
+            for step in ctx.script_steps
+        )
+        if ctx.first_speaker == "user" and not script_owns_opening:
             if verbosity == "quiet":
                 open_hint = "greet briefly and state why you are calling in one short clause"
             elif verbosity == "chatty":

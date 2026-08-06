@@ -13,37 +13,74 @@ TARGET_RATE = 24_000
 
 
 def synthesize_pcm16_mono(text: str, *, rate: int = TARGET_RATE) -> bytes | None:
-    """Return PCM16 mono at ``rate``, or None if SAPI is unavailable."""
-    say = (text or "").strip()
-    if not say or sys.platform != "win32":
+    """Return PCM16 mono at ``rate``, or None if local TTS is unavailable.
+
+    Windows: SAPI (System.Speech). macOS: built-in ``say`` (AIFF → PCM).
+    """
+    say_text = (text or "").strip()
+    if not say_text:
         return None
     try:
-        with tempfile.TemporaryDirectory(prefix="lks-sapi-") as tmp:
-            wav_path = Path(tmp) / "out.wav"
-            ps = f"""
+        if sys.platform == "win32":
+            with tempfile.TemporaryDirectory(prefix="lks-sapi-") as tmp:
+                wav_path = Path(tmp) / "out.wav"
+                ps = f"""
 Add-Type -AssemblyName System.Speech
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
 try {{ $synth.SelectVoice('Microsoft Zira Desktop') }} catch {{ }}
 $synth.Rate = 0
 $synth.SetOutputToWaveFile('{str(wav_path).replace("'", "''")}')
-$synth.Speak('{say.replace("'", "''")}')
+$synth.Speak('{say_text.replace("'", "''")}')
 $synth.Dispose()
 """
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            with wave.open(str(wav_path), "rb") as wf:
-                if wf.getsampwidth() != 2:
-                    return None
-                pcm = wf.readframes(wf.getnframes())
-                channels = wf.getnchannels()
-                src_rate = wf.getframerate()
-            return _to_mono_rate(pcm, channels, src_rate, rate)
-    except (OSError, subprocess.SubprocessError, wave.Error, ValueError):
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                with wave.open(str(wav_path), "rb") as wf:
+                    if wf.getsampwidth() != 2:
+                        return None
+                    pcm = wf.readframes(wf.getnframes())
+                    channels = wf.getnchannels()
+                    src_rate = wf.getframerate()
+                return _to_mono_rate(pcm, channels, src_rate, rate)
+        if sys.platform == "darwin":
+            # macOS built-in TTS → AIFF → afconvert to WAV PCM16 @ rate.
+            with tempfile.TemporaryDirectory(prefix="lks-say-") as tmp:
+                aiff_path = Path(tmp) / "out.aiff"
+                wav_path = Path(tmp) / "out.wav"
+                subprocess.run(
+                    ["say", "-o", str(aiff_path), say_text],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                subprocess.run(
+                    [
+                        "afconvert",
+                        "-f", "WAVE",
+                        "-d", f"LEI16@{rate}",
+                        str(aiff_path),
+                        str(wav_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                with wave.open(str(wav_path), "rb") as wf:
+                    if wf.getsampwidth() != 2:
+                        return None
+                    pcm = wf.readframes(wf.getnframes())
+                    channels = wf.getnchannels()
+                    src_rate = wf.getframerate()
+                return _to_mono_rate(pcm, channels, src_rate, rate)
+        return None
+    except (OSError, subprocess.SubprocessError, wave.Error, ValueError, ImportError):
         return None
 
 

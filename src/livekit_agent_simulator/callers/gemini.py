@@ -245,6 +245,7 @@ class GeminiCallerBridge:
         self._inject_playback_gain: float = 1.0
         self._inject_turn_active: bool = False
         self._inject_heard_text: str = ""
+        self._inject_playout_done: asyncio.Event = asyncio.Event()
         self._agent_audio_paused: bool = False
         # Agent→Gemini stream gate (manual VAD): True while activity_start is open.
         self._agent_stream_open: bool = False
@@ -893,10 +894,20 @@ class GeminiCallerBridge:
         self._inject_turn_active = True
         self._inject_heard_text = ""
         self._agent_audio_paused = True
+        # Fired when the model's turn_complete lands for this injected turn —
+        # the only safe point to resume agent audio (earlier collides → 1007).
+        self._inject_playout_done = asyncio.Event()
         speak_directive = script_speak_directive(
             text, hangup_farewell=bool(self._script_hangup_farewell)
         )
         try:
+            # Close any open agent-audio activity first — sending activity_start
+            # while the agent stream is still open collides on the Live session
+            # and the server closes the socket with 1007 (invalid payload).
+            if self._agent_stream_open:
+                await self._flush_agent_audio_stream(
+                    self._live_session, reason="inject_before_text"
+                )
             # Brief settle so Live is not mid-agent-audio when the cue arrives.
             # Manual VAD: wrap the cue text in activity_start/end so Live generates TTS.
             await asyncio.sleep(0.15)
@@ -1036,6 +1047,15 @@ class GeminiCallerBridge:
                     "gemini_text inject final STT off-script (likely role-flip)"
                 )
         finally:
+            # Resume agent audio only after the model's turn_complete for the
+            # injected text lands — resuming earlier collides with the still-
+            # open Live activity and closes the socket (1007).
+            try:
+                await asyncio.wait_for(
+                    self._inject_playout_done.wait(), timeout=8.0
+                )
+            except asyncio.TimeoutError:
+                pass
             self._agent_audio_paused = False
             self._inject_turn_active = False
             self._inject_playback_gain = 1.0
@@ -1110,7 +1130,12 @@ class GeminiCallerBridge:
                     if self.recorder is not None and not obs_recording:
                         self.recorder.push_agent(pcm, GEMINI_IN_RATE)
                     if self._agent_audio_paused:
-                        if self._agent_stream_open:
+                        # Do NOT flush activity_end while an inject owns the
+                        # Live activity — closing it mid-inject collides with
+                        # the inject's own activity_start/end and the server
+                        # closes the socket with 1007. Just drop the frames;
+                        # the inject coroutine resumes + reflushes afterwards.
+                        if self._agent_stream_open and not self._inject_turn_active:
                             await self._flush_agent_audio_stream(
                                 session, reason="agent_audio_paused"
                             )
@@ -1268,6 +1293,10 @@ class GeminiCallerBridge:
                             self._mixer.end_speech_turn()
                         inject_turn = self._inject_turn_active
                         # inject_cue owns clearing _inject_turn_active after drain.
+                        if inject_turn:
+                            # The injected text turn fully played out — safe to
+                            # let the inject coroutine resume agent audio.
+                            self._inject_playout_done.set()
                         if not inject_turn:
                             self._inject_playback_gain = 1.0
                         # TTL suppress / scripted silence only — do not drop freestyle
