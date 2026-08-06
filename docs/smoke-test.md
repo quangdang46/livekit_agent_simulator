@@ -22,7 +22,7 @@ uv run --directory /path/to/livekit-agent-simulator lks init
 
 # 2. Fill in credentials
 #    .agent-sim/config.yaml → livekit.url / api_key / api_secret / agent_name
-#                             simulator.google_api_key
+#                             simulator.api_key (provider: google | openai)
 
 # 3. Verify connectivity BEFORE burning a run
 uv run --directory /path/to/livekit-agent-simulator lks preflight

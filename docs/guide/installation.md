@@ -34,7 +34,7 @@ The simulator joins LiveKit as `lks-caller`, talks to the user’s already-runni
 | Network access | Download release + LiveKit + Gemini |
 | A **running** LiveKit agent under test | Registered with a known `agent_name` |
 | LiveKit Cloud (or self-host) URL + API key/secret | Room create + dispatch |
-| Google API key with Gemini Live access | Simulated caller (+ optional judge) |
+| API key for the active caller provider (Google Gemini Live or OpenAI Realtime) | Simulated caller (+ optional Gemini judge) |
 
 Optional: coding tools already installed (Claude Code / Cursor / …) so the installer can auto-register MCP.
 
@@ -208,10 +208,11 @@ Open `$TARGET_ROOT/.agent-sim/config.yaml`. Required:
 | `livekit.url` | `wss://…` LiveKit Cloud or self-host |
 | `livekit.api_key` / `livekit.api_secret` | LiveKit server API credentials |
 | `livekit.agent_name` | **Exact** dispatch name the agent registers (from target docs, env, or LiveKit config — consumer-specific) |
-| `simulator.google_api_key` | Gemini API key with Live model access |
+| `simulator.api_key` | API key of the **active** provider (`google` → Gemini Live, `openai` → OpenAI Realtime) |
 
 Recommended defaults (already in template):
 
+- `simulator.provider: google`, `simulator.mode: realtime`
 - `simulator.voice.model`: `gemini-3.1-flash-live-preview`
 - `observe.record_audio: true` (stereo WAV L=sim R=agent)
 - `observe.lk_agent_session: true` (automatic SDK tool/session events)
@@ -267,7 +268,7 @@ protocol. For those agents, map custom data messages with
 | `LIVEKIT_URL` | `livekit.url` |
 | `LIVEKIT_API_KEY` | `livekit.api_key` |
 | `LIVEKIT_API_SECRET` | `livekit.api_secret` |
-| `GOOGLE_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_GENAI_API_KEY` | `simulator.google_api_key` |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_GENAI_API_KEY` | `simulator.api_key` (when `provider: google`) |
 | Consumer-specific (search docs — not one global name) | `livekit.agent_name` |
 | `SIP_OUTBOUND_TRUNK_ID` (optional) | `telephony.outbound_trunk_id` |
 | `SIP_INBOUND_TRUNK_ID` (optional) | `telephony.inbound_trunk_id` (docs/preflight) |
@@ -318,7 +319,7 @@ Rules:
 - **≤ 3 questions per `AskQuestion` call** (batch related choices).
 - Each question needs **≥ 2 options**; put the recommended default **first** and append `(Recommended)` to its label.
 - User can always pick **Other** for a custom path, `agent_name`, metadata JSON, or consumer-specific keys.
-- **Secrets** (`api_key`, `api_secret`, `google_api_key`): never list real values as options. Either read `.env` after user picks “read env”, or ask them to edit `config.yaml` / use **Other** for one-off paste.
+- **Secrets** (`livekit.api_key`/`api_secret`, `simulator.api_key`): never list real values as options. Either read `.env` after user picks “read env”, or ask them to edit `config.yaml` / use **Other** for one-off paste.
 - If the host has no `AskQuestion`, ask the same prompts in chat.
 
 #### Turn 1 — typical `AskQuestion` (after `init` + §4.0, before writing config)
@@ -411,7 +412,7 @@ If discovery found required metadata keys but not values, ask in chat or **Other
 | Bucket | Use `AskQuestion` for | Maps to / action |
 |--------|----------------------|------------------|
 | **A. Target repo** | Which folder is `TARGET_ROOT` | `--root` on every command |
-| **B. Credentials** | Read `.env` vs user edits yaml | `livekit.*`, `simulator.google_api_key` |
+| **B. Credentials** | Read `.env` vs user edits yaml | `livekit.*`, `simulator.api_key` |
 | **C. Toggles** | `record_audio`, language, timezone, judge | `observe.record_audio`, `simulator.language`, `observe.timezone`, `judge:` |
 | **D. Product wiring** | Unresolved metadata keys/values, `data_topics`, `first_speaker` (after discover) | `dispatch_metadata`, `observe.data_topics`, scenario `Execute` / `Dispatch` |
 | **E. Skip** | Worker start command, SIP, load test | Out of scope (§9) |
@@ -704,7 +705,7 @@ lks init --root "$TARGET_ROOT"
 
 # 3) STOP: discover TARGET_ROOT (§4.0), then fill $TARGET_ROOT/.agent-sim/config.yaml
 #    livekit.url / api_key / api_secret / agent_name
-#    simulator.google_api_key
+#    simulator.api_key (provider: google or openai)
 #    optional: livekit.dispatch_metadata, observe.data_topics (from consumer docs/search)
 #    Then continue:
 
@@ -734,7 +735,7 @@ lks init --root $TARGET_ROOT
 
 # 3) STOP: discover TARGET_ROOT (§4.0), then fill $TARGET_ROOT\.agent-sim\config.yaml
 #    livekit.url / api_key / api_secret / agent_name
-#    simulator.google_api_key
+#    simulator.api_key (provider: google or openai)
 #    optional: livekit.dispatch_metadata, observe.data_topics (from consumer docs/search)
 #    Then continue:
 

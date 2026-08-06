@@ -24,7 +24,7 @@ from .behavior_compile import _is_voice_asset, silent_mode_enabled, speech_condi
 from .script import normalize_interrupt_class
 
 if TYPE_CHECKING:
-    from .gemini.live_session import GeminiCallerBridge
+    from .callers.gemini import GeminiCallerBridge
     from .livekit.observer import Observer
     from .logging.event_writer import EventWriter
 

@@ -12,7 +12,7 @@ from .hang_up_gate import agent_left_open_turn
 from .models import ScriptStep, effective_overlay
 
 if TYPE_CHECKING:
-    from ..gemini.live_session import GeminiCallerBridge
+    from ..callers.base import CallerBridge
     from ..livekit.observer import Observer
     from ..logging.event_writer import EventWriter
 
@@ -21,7 +21,7 @@ class ScriptRunner:
         self,
         steps: list[ScriptStep],
         observer: "Observer",
-        bridge: "GeminiCallerBridge",
+        bridge: "CallerBridge",
         writer: "EventWriter",
         *,
         scenario_dir: Path | None = None,

@@ -25,7 +25,7 @@ from livekit_agent_simulator.evals.types import CriterionScore, JudgmentResult, 
 def test_resolve_http_from_config():
     r = resolve_judge(
         JudgeConfig(base_url="http://localhost:8080/v1", api_key="sk", model="gpt-4o-mini"),
-        google_api_key="ignored",
+        sim_api_key="ignored",
     )
     assert r.ready and r.mode == "http"
     assert r.base_url == "http://localhost:8080/v1"
@@ -40,7 +40,7 @@ def test_resolve_http_anthropic_api():
             model="m",
             endpoint_type="anthropic",
         ),
-        google_api_key="g",
+        sim_api_key="g",
     )
     assert r.ready and r.mode == "http" and r.endpoint_type == "anthropic"
 
@@ -56,7 +56,7 @@ def test_backend_for_anthropic():
             temperature=0.0,
             base_url="http://x/v1",
             api_key="k",
-            google_api_key=None,
+            sim_api_key=None,
             mode="http",
             endpoint_type="anthropic",
             ready=True,
@@ -78,19 +78,19 @@ def test_resolve_http_from_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("JUDGE_BASE_URL", "http://gw/v1")
     monkeypatch.setenv("JUDGE_API_KEY", "sk_env")
     monkeypatch.setenv("JUDGE_MODEL", "m1")
-    r = resolve_judge(JudgeConfig(), google_api_key="g")
+    r = resolve_judge(JudgeConfig(), sim_api_key="g")
     assert r.ready and r.mode == "http"
     assert r.model == "m1"
     assert r.api_key == "sk_env"
 
 
 def test_resolve_gemini_legacy():
-    r = resolve_judge(JudgeConfig(model="gemini-2.5-flash"), google_api_key="gkey")
+    r = resolve_judge(JudgeConfig(model="gemini-2.5-flash"), sim_api_key="gkey")
     assert r.ready and r.mode == "gemini"
 
 
 def test_resolve_http_missing_key():
-    r = resolve_judge(JudgeConfig(base_url="http://x/v1"), google_api_key="g")
+    r = resolve_judge(JudgeConfig(base_url="http://x/v1"), sim_api_key="g")
     assert not r.ready
 
 

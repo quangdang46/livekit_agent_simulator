@@ -415,7 +415,7 @@ class GeminiCallerBridge:
     # -------------------------------------------------------------------- run
 
     async def run(self) -> None:
-        client = genai.Client(api_key=self.cfg.simulator.google_api_key)
+        client = genai.Client(api_key=self.cfg.simulator.api_key)
         voice = self.cfg.simulator.voice
 
         # Manual activity markers (auto VAD disabled). Speech-gated PCM +

@@ -15,7 +15,11 @@ livekit:
   # dispatch_metadata: '{"yourProjectKey":"value"}'
 
 simulator:
-  google_api_key: "AIzaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  # Caller brain: provider google | openai, mode realtime (cascade reserved).
+  provider: google
+  mode: realtime
+  # API key of the ACTIVE provider (Google or OpenAI).
+  api_key: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   language: "en-US"
   voice:
     model: "gemini-3.1-flash-live-preview"

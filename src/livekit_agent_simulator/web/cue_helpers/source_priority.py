@@ -7,8 +7,11 @@ from typing import Any
 
 # Built-in lks / LiveKit sources only. Target data topics are ranked generically
 # below (any non-builtin source beats raw lk.transcription for user).
+# sim.gemini / sim.openai are the sim-provider caller transcripts (equal rank).
+_SIM_CALLER_SOURCES = ("sim.gemini", "sim.openai")
 _USER_SOURCE_RANK = {
     "sim.gemini": 0,
+    "sim.openai": 0,
     "data": 2,
     "lk.transcription": 3,
 }
@@ -16,6 +19,7 @@ _AGENT_SOURCE_RANK = {
     "data": 0,
     "lk.transcription": 1,
     "sim.gemini": 2,
+    "sim.openai": 2,
 }
 
 # Common ASR / TTS misspellings that should still collapse as one utterance.
@@ -35,7 +39,7 @@ def source_rank(source: str | None, role: str) -> int:
     table = _USER_SOURCE_RANK if role == "user" else _AGENT_SOURCE_RANK
     if s in table:
         return table[s]
-    if s and s not in ("sim.gemini", "lk.transcription"):
+    if s and s not in (*_SIM_CALLER_SOURCES, "lk.transcription"):
         # Opaque target data-topic sources (observe.data_topics) — prefer over raw LK STT.
         return 1 if role == "user" else 0
     return 9

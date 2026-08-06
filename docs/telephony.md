@@ -56,7 +56,8 @@ livekit:
   agent_name: "your-agent-name"
 
 simulator:
-  google_api_key: "AIzaxxxxxxxx"
+  provider: google
+  api_key: "AIzaxxxxxxxx"
 
 telephony:
   outbound_trunk_id: "ST_xxxxxxxxxxxx"

@@ -20,7 +20,7 @@ folder; the Python package never imports consumer application code.
 
 ## Per-target setup (in `<repo>/.agent-sim/`)
 
-1. **`config.yaml`** — LiveKit URL/key/secret, `agent_name`, `simulator.google_api_key`.
+1. **`config.yaml`** — LiveKit URL/key/secret, `agent_name`, `simulator.api_key` (+ `simulator.provider`).
 2. **Optional `livekit.dispatch_metadata`** — default opaque JSON for all runs.
 3. **Optional per-scenario `Dispatch.metadata`** — overrides config default.
 4. **`observe.data_topics`** — list topics your agent publishes (empty = record all).

@@ -29,8 +29,11 @@ ATTR_FINAL = "lk.transcription_final"
 ATTR_SEGMENT_ID = "lk.segment_id"
 
 # Lower index = higher priority when deduping finals from multiple sources.
-_USER_FINAL_PRIORITY = ("sim.gemini", "data", "lk.transcription")
-_AGENT_FINAL_PRIORITY = ("data", "lk.transcription", "sim.gemini")
+# Provider sim-transcript sources (sim.gemini / sim.openai) are the most
+# trustworthy caller transcripts; data-topic and lk.transcription are mirrors.
+_SIM_TRANSCRIPT_SOURCES = ("sim.gemini", "sim.openai")
+_USER_FINAL_PRIORITY = (*_SIM_TRANSCRIPT_SOURCES, "data", "lk.transcription")
+_AGENT_FINAL_PRIORITY = ("data", "lk.transcription", *_SIM_TRANSCRIPT_SOURCES)
 
 
 def _lookup_path(payload: dict[str, Any], dotted: str) -> Any:
@@ -58,7 +61,7 @@ def _similar_text(a: str, b: str) -> bool:
 
 
 def _canonical_source(source: str) -> str:
-    if source in ("sim.gemini", "lk.transcription"):
+    if source in (*_SIM_TRANSCRIPT_SOURCES, "lk.transcription"):
         return source
     return "data"
 

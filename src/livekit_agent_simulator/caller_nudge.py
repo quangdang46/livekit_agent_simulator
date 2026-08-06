@@ -6,7 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .gemini.live_session import GeminiCallerBridge
+    from .callers.gemini import GeminiCallerBridge
     from .livekit.observer import Observer
     from .logging.event_writer import EventWriter
 
