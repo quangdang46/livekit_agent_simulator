@@ -7,6 +7,8 @@ First-speaker / silence rules live in system instruction only.
 
 from __future__ import annotations
 
+from typing import Any
+
 from .policy import CallerPolicyContext, MidcallCue
 from .prompt_sections import PromptSection, build_default_sections
 
@@ -44,8 +46,22 @@ class DefaultCallerPolicy:
         """
         cues: list[MidcallCue] = []
         verbosity = ctx.resolved_verbosity()
+        # A script "owns the opening" only when it actively speaks first — a
+        # time/silence step whose action is hang_up (or wait) does not open the
+        # call, so the caller still needs the speak-first bootstrap. Steps may
+        # be ScriptStep objects or raw dicts (tests / legacy callers).
+        def _step_field(step: Any, key: str) -> Any:
+            if isinstance(step, dict):
+                return step.get(key)
+            return getattr(step, key, None)
+
         script_owns_opening = any(
-            getattr(step, "trigger", None) in ("time", "silence") or getattr(step, "trigger", None) is None
+            (
+                _step_field(step, "trigger") in ("time", "silence")
+                or _step_field(step, "trigger") is None
+            )
+            and _step_field(step, "action") in (None, "speak")
+            and bool(_step_field(step, "say"))
             for step in ctx.script_steps
         )
         if ctx.first_speaker == "user" and not script_owns_opening:
