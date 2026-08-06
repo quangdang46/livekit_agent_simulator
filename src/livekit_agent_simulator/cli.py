@@ -192,13 +192,27 @@ def export(scenario_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
         raise typer.Exit(1)
 
 
+@app.command()
+def convert(
+    scenario_id: str,
+    force: bool = typer.Option(False, "--force", help="Overwrite existing .yaml"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Convert a legacy .jsonl scenario to .yaml (idempotent; keeps the .jsonl)."""
+    try:
+        _print(ops.convert_scenario(_root(root), scenario_id, force=force))
+    except ConfigError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+
 @app.command("scenario-init")
 def scenario_init_cmd(
-    scenario_id: str = typer.Argument(..., help="New scenario id (filename without .jsonl)"),
+    scenario_id: str = typer.Argument(..., help="New scenario id (filename without .yaml)"),
     force: bool = typer.Option(False, "--force", help="Overwrite existing file"),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Scaffold scenario JSONL with // guide comments + examples. (MCP: init_scenario)"""
+    """Scaffold a scenario YAML with # guide comments + example sections. (MCP: init_scenario)"""
     try:
         _print(ops.init_scenario(_root(root), scenario_id, force=force))
     except ConfigError as e:
@@ -461,11 +475,11 @@ def scenario_from_run_cmd(
         False,
         "--write",
         "-w",
-        help="Write draft .jsonl to .agent-sim/scenarios/",
+        help="Write draft .yaml to .agent-sim/scenarios/",
     ),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
-    """Promote a finished run into a draft scenario JSONL (fail → golden). (MCP: scenario_from_run)"""
+    """Promote a finished run into a draft scenario YAML (fail → golden). (MCP: scenario_from_run)"""
     try:
         _print(ops.scenario_from_run(_root(root), run_id, scenario_id=scenario_id, write=write))
     except (ConfigError, FileNotFoundError) as e:

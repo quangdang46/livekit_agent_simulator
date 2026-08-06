@@ -14,19 +14,18 @@ def test_strip_extension_keys() -> None:
     }
 
 
-def test_init_scenario_writes_valid_jsonl_with_slash_comments(tmp_path: Path) -> None:
+def test_init_scenario_writes_valid_yaml(tmp_path: Path) -> None:
     result = init_scenario(tmp_path, "order-cancel")
     path = Path(result["path"])
     assert path.exists()
+    assert path.suffix == ".yaml"
     assert result["scenario_id"] == "order-cancel"
 
     text = path.read_text(encoding="utf-8")
-    assert text.lstrip().startswith("//")
-    assert '"_doc"' not in text
+    assert "apiVersion: agent-sim/v1" in text  # header survives comments
     assert "order-cancel" in text
-    assert "// === Scenario" in text
-    assert "// === Persona" in text
-    assert "// metadata.id:" in text
+    assert "persona:" in text
+    assert "#" in text  # YAML comments are native
 
     scenario = parse_scenario(path)
     assert scenario.id == "order-cancel"
@@ -64,3 +63,44 @@ def test_init_scenario_refuses_overwrite(tmp_path: Path) -> None:
 def test_init_scenario_rejects_bad_id(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="Invalid scenario_id"):
         init_scenario(tmp_path, "../evil")
+
+
+def test_convert_jsonl_to_yaml(tmp_path: Path) -> None:
+    import shutil
+
+    from livekit_agent_simulator.config import ConfigError
+    from livekit_agent_simulator.ops import convert_scenario
+
+    scen = tmp_path / ".agent-sim" / "scenarios"
+    scen.mkdir(parents=True)
+    src = Path(__file__).resolve().parents[1] / "templates" / "examples" / "constraint-no-card.jsonl"
+    dst = scen / "constraint-no-card.jsonl"
+    shutil.copyfile(src, dst)
+
+    r = convert_scenario(tmp_path, "constraint-no-card")
+    assert Path(r["written_to"]).exists()
+    assert r["written_to"].endswith(".yaml")
+    assert Path(r["source"]).exists(), "original .jsonl must be left in place"
+
+    # Both formats resolve by id.
+    s = parse_scenario(Path(r["written_to"]))
+    assert s.id == "constraint-no-card"
+    assert s.persona.get("brief")
+
+    # Idempotent: converting again is an error unless force.
+    with pytest.raises(ConfigError, match="already exists"):
+        convert_scenario(tmp_path, "constraint-no-card")
+
+
+def test_convert_jsonl_to_yaml_overwrite(tmp_path: Path) -> None:
+    import shutil
+
+    from livekit_agent_simulator.ops import convert_scenario
+
+    scen = tmp_path / ".agent-sim" / "scenarios"
+    scen.mkdir(parents=True)
+    src = Path(__file__).resolve().parents[1] / "templates" / "examples" / "constraint-no-card.jsonl"
+    shutil.copyfile(src, scen / "constraint-no-card.jsonl")
+
+    convert_scenario(tmp_path, "constraint-no-card")
+    convert_scenario(tmp_path, "constraint-no-card", force=True)  # force overwrites

@@ -1,0 +1,41 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: outbound-human-pickup
+  locale: en-US
+  tags:
+  - telephony
+  - outbound
+  - human_pickup
+persona:
+  name: Alex
+  brief: You are on a phone call with an AI agent. Speak briefly and naturally as the human callee.
+  goals:
+  - Understand why they called
+  - Answer simply
+  style: short, natural phone speech
+execute:
+  max_turns: 10
+  timeout_s: 120
+  first_speaker: user
+caller:
+  mode: outbound_human_pickup
+telephony:
+  call_to: '+15551234567'
+  handset_isolation: mute_and_unsubscribe
+assert:
+  transcript:
+  - role: agent
+    contains_any:
+    - a
+    - e
+    - i
+    - o
+    - u
+  sip:
+    participant_present: true
+    dial_answered: true
+pass_criteria:
+  criteria:
+  - The agent spoke after the call was answered
+  - The conversation was understandable

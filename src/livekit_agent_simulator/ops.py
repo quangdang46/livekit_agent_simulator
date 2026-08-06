@@ -61,9 +61,9 @@ def init_project(project_root: Path | str) -> dict[str, Any]:
         shutil.copyfile(templates / "config.yaml", config_dst)
         created.append(str(config_dst))
 
-    smoke_dst = dot / "scenarios" / "smoke-hello.jsonl"
+    smoke_dst = dot / "scenarios" / "smoke-hello.yaml"
     if not smoke_dst.exists():
-        shutil.copyfile(templates / "smoke-hello.jsonl", smoke_dst)
+        shutil.copyfile(templates / "smoke-hello.yaml", smoke_dst)
         created.append(str(smoke_dst))
 
     plugin_dst = dot / "plugins" / "example_verify.py"
@@ -116,9 +116,9 @@ def init_scenario(
     *,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Scaffold ``.agent-sim/scenarios/<id>.jsonl`` with ``//`` guide lines + example JSON.
+    """Scaffold ``.agent-sim/scenarios/<id>.yaml`` with ``#`` guide comments + example sections.
 
-    Full-line ``//`` comments are ignored at parse time. Delete unused kind lines as needed.
+    YAML comments are native (no ``//`` line-skip needed). Delete unused sections as needed.
     """
     scenario_id = scenario_id.strip()
     if not _SCENARIO_ID_RE.match(scenario_id):
@@ -135,13 +135,13 @@ def init_scenario(
         scenarios_dir = root / DOT_FOLDER / "scenarios"
         scenarios_dir.mkdir(parents=True, exist_ok=True)
 
-    dest = scenarios_dir / f"{scenario_id}.jsonl"
+    dest = scenarios_dir / f"{scenario_id}.yaml"
     if dest.exists() and not force:
         raise ConfigError(
             f"{dest} already exists. Pass force=true / --force to overwrite, or pick another id."
         )
 
-    scaffold = package_templates_dir() / "scenario-scaffold.jsonl"
+    scaffold = package_templates_dir() / "scenario-scaffold.yaml"
     if not scaffold.exists():
         raise ConfigError(f"Package scaffold missing: {scaffold}")
     text = scaffold.read_text(encoding="utf-8").replace("{{SCENARIO_ID}}", scenario_id)
@@ -167,6 +167,65 @@ def init_scenario(
     }
 
 
+def convert_scenario(
+    project_root: Path | str,
+    scenario_id: str,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Convert an existing ``.jsonl`` scenario to ``.yaml`` (idempotent).
+
+    Parses the JSONL through the normal validator, then writes the equivalent
+    section-object YAML beside it. Fails if the scenario is already ``.yaml``.
+    The original ``.jsonl`` is left in place (both formats are supported).
+    """
+    root = Path(project_root).resolve()
+    # Prefer the configured scenarios dir; else fall back to .agent-sim/scenarios.
+    try:
+        cfg = load_config(root)
+        scenarios_dir = cfg.scenarios_dir
+    except ConfigError:
+        scenarios_dir = root / DOT_FOLDER / "scenarios"
+        scenarios_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve the .jsonl directly (find_scenario prefers .yaml, so it can't see it).
+    jsonl_path = scenarios_dir / f"{scenario_id}.jsonl"
+    if not jsonl_path.exists():
+        # fall back to a metadata.id scan across .jsonl files
+        jsonl_path = None
+        for f in sorted(scenarios_dir.glob("*.jsonl")):
+            try:
+                if parse_scenario(f).id == scenario_id:
+                    jsonl_path = f
+                    break
+            except ScenarioError:
+                continue
+        if jsonl_path is None:
+            raise ConfigError(
+                f"Scenario `{scenario_id}` not found as a .jsonl in {scenarios_dir} "
+                f"(convert applies to legacy .jsonl scenarios; .yaml is already canonical)."
+            )
+
+    scenario = parse_scenario(jsonl_path)
+    dest = scenario.path.with_suffix(".yaml")
+    if dest.exists() and not force:
+        raise ConfigError(
+            f"{dest} already exists. Pass force=true / --force to overwrite, or pick another id."
+        )
+    from .scenario_yaml import scenario_to_yaml_text
+
+    text = scenario_to_yaml_text(scenario)
+    dest.write_text(text, encoding="utf-8")
+    # Round-trip through the parser to guarantee the YAML is valid.
+    parse_scenario(dest)
+    return {
+        "source": str(scenario.path),
+        "written_to": str(dest),
+        "scenario_id": scenario.id,
+        "note": "Original .jsonl left in place; both formats are supported.",
+    }
+
+
 def list_scenarios(project_root: Path | str) -> list[dict[str, Any]]:
     cfg = load_config(project_root)
     return _list_scenarios(cfg.scenarios_dir)
@@ -176,10 +235,14 @@ def validate_scenario(project_root: Path | str, scenario_id: str) -> dict[str, A
     cfg = load_config(project_root)
     try:
         # Keep validation consistent with execution: resolve by metadata.id, not filename.
-        # `find_scenario` falls back to scanning all JSONL files when `<id>.jsonl` doesn't exist.
+        # `find_scenario` falls back to scanning all scenario files when `<id>.<ext>` doesn't exist.
         s = find_scenario(cfg.scenarios_dir, scenario_id)
     except ScenarioError as e:
-        candidates = list(cfg.scenarios_dir.glob("*.jsonl"))
+        candidates = sorted(
+            list(cfg.scenarios_dir.glob("*.jsonl"))
+            + list(cfg.scenarios_dir.glob("*.yaml"))
+            + list(cfg.scenarios_dir.glob("*.yml"))
+        )
         return {
             "valid": False,
             "error": str(e),
@@ -283,7 +346,7 @@ async def _run_scenario_dict(
         failed = [c for c in pf["checks"] if c["status"] == "fail"]
         raise RuntimeError("Preflight failed: " + "; ".join(f"{c['name']}: {c['detail']}" for c in failed))
     scenario_id = str(scenario.get("id") or (scenario.get("metadata") or {}).get("id", "dynamic"))
-    s = scenario_from_dict(scenario, path=cfg.scenarios_dir / f"{scenario_id}.jsonl")
+    s = scenario_from_dict(scenario, path=cfg.scenarios_dir / f"{scenario_id}.yaml")
     return await run_orchestrator.run_scenario_instance(cfg, s, run_name=run_name)
 
 
@@ -859,13 +922,13 @@ def scenario_from_run(
     scenario_id: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
-    """Promote a finished run into a draft scenario JSONL (fail → golden).
+    """Promote a finished run into a draft scenario YAML (fail → golden).
 
     Reads ``reports/<run_id>/`` and synthesizes an agent-sim/v1 draft.
     Dry-run by default (prints to stdout); use ``write=True`` to write
-    ``.agent-sim/scenarios/<id>.jsonl``.
+    ``.agent-sim/scenarios/<id>.yaml``.
 
-    Result keys: ``scenario_id``, ``source_run_id``, ``jsonl`` (str),
+    Result keys: ``scenario_id``, ``source_run_id``, ``yaml`` (str),
     ``warnings`` (list), ``kinds``, ``latency_hint``, ``stats``.
     """
     from .scenario_from_run import build_scenario_draft_from_run
@@ -882,8 +945,8 @@ def scenario_from_run(
     )
 
     if write:
-        dest = cfg.scenarios_dir / f"{draft['scenario_id']}.jsonl"
-        dest.write_text(draft["jsonl"], encoding="utf-8")
+        dest = cfg.scenarios_dir / f"{draft['scenario_id']}.yaml"
+        dest.write_text(draft["yaml"], encoding="utf-8")
         draft["written_to"] = str(dest)
     return draft
 

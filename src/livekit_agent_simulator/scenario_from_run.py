@@ -1,4 +1,4 @@
-"""Promote a finished run into a draft scenario JSONL (fail → golden, P1.4/P2 #34).
+"""Promote a finished run into a draft scenario YAML (fail → golden, P1.4/P2 #34).
 
 Reads ``reports/<run_id>/{meta,summary,events}`` and synthesizes an agent-sim/v1
 draft. Dispatch metadata is copied from the original scenario file when still
@@ -298,7 +298,7 @@ def build_scenario_draft_from_run(
         {
           "scenario_id": str,
           "source_run_id": str,
-          "jsonl": str,           # ready to write
+          "yaml": str,            # ready to write
           "kinds": list[str],
           "warnings": list[str],
           "notes": str,
@@ -510,121 +510,75 @@ def build_scenario_draft_from_run(
             + json.dumps(latency_hint["suggested_assert_example"], ensure_ascii=False)
         )
 
-    lines: list[str] = [
-        f"// DRAFT from run {source_run_id} — review before CI",
-        "// Review checklist: 1) goals[] match the caller's real intent (not transcript echoes)",
-        "// 2) Behavior barge/noise timing (after_agent_ms) fits your agent  3) tighten Assert",
-        "// outcomes beyond the weak agent_spoke stub  4) confirm Dispatch metadata.",
-        json.dumps(
-            {
-                "apiVersion": "agent-sim/v1",
-                "kind": "Scenario",
-                "metadata": {
-                    "id": sid,
-                    "locale": locale,
-                    "tags": ["promoted", "from-run", source_scenario[:32]],
-                },
+    data: dict[str, Any] = {
+        "apiVersion": "agent-sim/v1",
+        "kind": "Scenario",
+        "metadata": {
+            "id": sid,
+            "locale": locale,
+            "tags": ["promoted", "from-run", source_scenario[:32]],
+        },
+        "persona": {
+            "name": name,
+            "language": language,
+            "brief": brief,
+            "goals": goals,
+            "style": str(src_persona.get("style") or "natural spoken language, concise"),
+            "traits": traits,
+            "constraints": constraints,
+        },
+        "context": {
+            "notes": notes,
+            "fixtures": {
+                "source_run_id": source_run_id,
+                "source_scenario_id": source_scenario,
             },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-        json.dumps(
-            {
-                "kind": "Persona",
-                "spec": {
-                    "name": name,
-                    "language": language,
-                    "brief": brief,
-                    "goals": goals,
-                    "style": str(src_persona.get("style") or "natural spoken language, concise"),
-                    "traits": traits,
-                    "constraints": constraints,
-                },
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-        json.dumps(
-            {
-                "kind": "Context",
-                "spec": {
-                    "notes": notes,
-                    "fixtures": {
-                        "source_run_id": source_run_id,
-                        "source_scenario_id": source_scenario,
-                    },
-                },
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-        json.dumps(
-            {
-                "kind": "Execute",
-                "spec": {
-                    "max_turns": max_turns,
-                    "timeout_s": timeout_s,
-                    "first_speaker": first_speaker,
-                },
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-    ]
+        },
+        "execute": {
+            "max_turns": max_turns,
+            "timeout_s": timeout_s,
+            "first_speaker": first_speaker,
+        },
+    }
     if dispatch_md:
-        lines.append(
-            json.dumps(
-                {"kind": "Dispatch", "spec": {"metadata": dispatch_md}},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        )
+        data["dispatch"] = {"metadata": dispatch_md}
     if script_open:
-        lines.append(
-            json.dumps(
-                {"kind": "Script", "spec": script_open},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        )
+        data["script"] = script_open
     if behavior_spec:
-        lines.append(
-            json.dumps(
-                {"kind": "Behavior", "spec": behavior_spec},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        )
+        data["behavior"] = behavior_spec
     if outcomes:
-        lines.append(
-            json.dumps(
-                {
-                    "kind": "Assert",
-                    "spec": {"tools": [], "transcript": [], "outcomes": outcomes},
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        )
-    lines.append(
-        json.dumps(
-            {"kind": "PassCriteria", "spec": {"criteria": criteria}},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    )
+        data["assert"] = {"tools": [], "transcript": [], "outcomes": outcomes}
+    data["pass_criteria"] = {"criteria": criteria}
 
-    kinds = []
-    for line in lines:
-        if line.startswith("//"):
-            continue
-        kinds.append(json.loads(line)["kind"])
+    # ---- Serialize to the section-object YAML shape (stable order) ----
+    from .scenario_yaml import dump_scenario_dict
+
+    yaml_text = dump_scenario_dict(data)
+    yaml_text = f"# DRAFT from run {source_run_id} — review before CI\n" + yaml_text
+
+    # Presence-ordered kinds, mirroring the data dict construction above.
+    kinds: list[str] = ["Scenario"]
+    if data.get("persona"):
+        kinds.append("Persona")
+    if data.get("context"):
+        kinds.append("Context")
+    if data.get("execute"):
+        kinds.append("Execute")
+    if data.get("dispatch"):
+        kinds.append("Dispatch")
+    if data.get("script"):
+        kinds.append("Script")
+    if data.get("behavior"):
+        kinds.append("Behavior")
+    if data.get("assert"):
+        kinds.append("Assert")
+    kinds.append("PassCriteria")
 
     return {
         "scenario_id": sid,
         "source_run_id": source_run_id,
         "source_scenario_id": source_scenario,
-        "jsonl": "\n".join(lines) + "\n",
+        "yaml": yaml_text,
         "kinds": kinds,
         "warnings": warnings,
         "notes": notes,

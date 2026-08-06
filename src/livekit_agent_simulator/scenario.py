@@ -305,10 +305,59 @@ class Scenario:
         )
 
 
+def parse_pass_criteria(spec: dict[str, Any], *, where: str) -> tuple[list[str], str, list[dict[str, Any]]]:
+    """Parse a PassCriteria spec → (criteria, mode, judges).
+
+    Shared by the JSONL path and the dict/YAML path so both treat
+    ``{mode, criteria, judges}`` identically. ``where`` is a human-readable
+    location (``file:line`` or a path label) for error messages.
+    """
+    criteria = [str(c) for c in (spec.get("criteria") or [])]
+    mode = str(spec.get("mode") or "all").strip().lower()
+    if mode not in ("all", "majority", "any"):
+        raise ScenarioError(f"{where}: PassCriteria.mode must be all|majority|any")
+    judges_raw = spec.get("judges") or []
+    if judges_raw and not isinstance(judges_raw, list):
+        raise ScenarioError(f"{where}: PassCriteria.judges must be an array")
+    judges: list[dict[str, Any]] = []
+    for ji, j in enumerate(judges_raw):
+        if not isinstance(j, dict):
+            raise ScenarioError(f"{where}: PassCriteria.judges[{ji}] must be object")
+        jid = str(j.get("id") or j.get("name") or f"judge-{ji}")
+        builtin = j.get("builtin")
+        jc = j.get("criteria") or []
+        if isinstance(jc, str):
+            jc = [jc]
+        if not isinstance(jc, list):
+            raise ScenarioError(f"{where}: PassCriteria.judges[{ji}].criteria must be array")
+        if not jc and not builtin:
+            raise ScenarioError(f"{where}: PassCriteria.judges[{ji}] needs criteria[] and/or builtin")
+        entry: dict[str, Any] = {"id": jid, "criteria": [str(c) for c in jc]}
+        if builtin:
+            entry["builtin"] = str(builtin).strip()
+        judges.append(entry)
+    # Backward compatible: flat criteria still used when no judges
+    if judges and not criteria:
+        flat: list[str] = []
+        for j in judges:
+            if j.get("builtin"):
+                flat.append(f"[{j['id']}] builtin:{j['builtin']}")
+            for c in j.get("criteria") or []:
+                flat.append(f"[{j['id']}] {c}")
+        criteria = flat
+    return criteria, mode, judges
+
+
 def parse_scenario(path: Path | str) -> Scenario:
     path = Path(path)
     if not path.exists():
         raise ScenarioError(f"Scenario file not found: {path}")
+
+    # YAML/yml → dict transport → same validator. JSONL path stays as-is.
+    if path.suffix.lower() in (".yaml", ".yml"):
+        from .scenario_yaml import load_scenario_yaml
+
+        return load_scenario_yaml(path)
 
     lines = [ln for ln in path.read_text(encoding="utf-8").splitlines()]
     records: list[tuple[int, dict[str, Any]]] = []
@@ -421,56 +470,9 @@ def parse_scenario(path: Path | str) -> Scenario:
                 handset_isolation=handset_iso,
             )
         elif kind == "PassCriteria":
-            scenario.pass_criteria = [str(c) for c in (spec.get("criteria") or [])]
-            mode = str(spec.get("mode") or "all").strip().lower()
-            if mode not in ("all", "majority", "any"):
-                raise ScenarioError(
-                    f"{path}:{line_no}: PassCriteria.spec.mode must be all|majority|any"
-                )
-            scenario.pass_criteria_mode = mode
-            judges_raw = spec.get("judges") or []
-            if judges_raw and not isinstance(judges_raw, list):
-                raise ScenarioError(
-                    f"{path}:{line_no}: PassCriteria.spec.judges must be an array"
-                )
-            judges: list[dict[str, Any]] = []
-            for ji, j in enumerate(judges_raw):
-                if not isinstance(j, dict):
-                    raise ScenarioError(
-                        f"{path}:{line_no}: PassCriteria.spec.judges[{ji}] must be object"
-                    )
-                jid = str(j.get("id") or j.get("name") or f"judge-{ji}")
-                builtin = j.get("builtin")
-                jc = j.get("criteria") or []
-                if isinstance(jc, str):
-                    jc = [jc]
-                if not isinstance(jc, list):
-                    raise ScenarioError(
-                        f"{path}:{line_no}: PassCriteria.judges[{ji}].criteria must be array"
-                    )
-                if not jc and not builtin:
-                    raise ScenarioError(
-                        f"{path}:{line_no}: PassCriteria.judges[{ji}] needs "
-                        f"criteria[] and/or builtin"
-                    )
-                entry: dict[str, Any] = {
-                    "id": jid,
-                    "criteria": [str(c) for c in jc],
-                }
-                if builtin:
-                    entry["builtin"] = str(builtin).strip()
-                judges.append(entry)
-            scenario.pass_judges = judges
-            # Backward compatible: flat criteria still used when no judges
-            if judges and not scenario.pass_criteria:
-                # Flatten for list_scenarios / export that only show count
-                flat: list[str] = []
-                for j in judges:
-                    if j.get("builtin"):
-                        flat.append(f"[{j['id']}] builtin:{j['builtin']}")
-                    for c in j.get("criteria") or []:
-                        flat.append(f"[{j['id']}] {c}")
-                scenario.pass_criteria = flat
+            scenario.pass_criteria, scenario.pass_criteria_mode, scenario.pass_judges = parse_pass_criteria(
+                spec, where=f"{path}:{line_no}"
+            )
         elif kind == "Script":
             from .script_parse import parse_script_steps, parse_script_verify
 
@@ -664,10 +666,20 @@ def validate_telephony_for_mode(scenario: Scenario, cfg: Any) -> None:
         )
 
 
+def _iter_scenario_files(scenarios_dir: Path):
+    """Yield *.jsonl then *.yaml/yml so legacy files keep their sort position."""
+    seen: set[Path] = set()
+    for pattern in ("*.jsonl", "*.yaml", "*.yml"):
+        for f in sorted(scenarios_dir.glob(pattern)):
+            if f not in seen:
+                seen.add(f)
+                yield f
+
+
 def list_scenarios(scenarios_dir: Path) -> list[dict[str, Any]]:
     """Best-effort listing — invalid files are included with an `error` field."""
     out: list[dict[str, Any]] = []
-    for f in sorted(scenarios_dir.glob("*.jsonl")):
+    for f in _iter_scenario_files(scenarios_dir):
         try:
             s = parse_scenario(f)
             out.append(
@@ -691,10 +703,12 @@ def list_scenarios(scenarios_dir: Path) -> list[dict[str, Any]]:
 
 
 def find_scenario(scenarios_dir: Path, scenario_id: str) -> Scenario:
-    direct = scenarios_dir / f"{scenario_id}.jsonl"
-    if direct.exists():
-        return parse_scenario(direct)
-    for f in scenarios_dir.glob("*.jsonl"):
+    # YAML is the canonical format — prefer it when both exist.
+    for ext in ("yaml", "yml", "jsonl"):
+        direct = scenarios_dir / f"{scenario_id}.{ext}"
+        if direct.exists():
+            return parse_scenario(direct)
+    for f in _iter_scenario_files(scenarios_dir):
         try:
             s = parse_scenario(f)
         except ScenarioError:
@@ -703,5 +717,5 @@ def find_scenario(scenarios_dir: Path, scenario_id: str) -> Scenario:
             return s
     raise ScenarioError(
         f"Scenario `{scenario_id}` not found in {scenarios_dir} "
-        f"(looked for {scenario_id}.jsonl and metadata.id match)"
+        f"(looked for {scenario_id}.jsonl/.yaml/.yml and metadata.id match)"
     )
