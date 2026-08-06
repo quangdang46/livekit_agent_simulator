@@ -283,8 +283,9 @@ Target-only data lives under `<target>/.agent-sim/` (**gitignored**). Created by
 | `livekit.api_key` / `api_secret` | yes | Server API credentials |
 | `livekit.agent_name` | yes | Must match worker dispatch name |
 | `livekit.dispatch_metadata` | no | Default opaque JSON **string** for all runs |
-| `simulator.google_api_key` | yes | Gemini key for sim caller (+ judge) |
-| `simulator.voice.model` / `voice` / `language` | no | Defaults: flash-live, Puck, `en-US` |
+| `simulator.api_key` | yes | Key of the **active** caller provider (`google` → Gemini, `openai` → OpenAI) |
+| `simulator.provider` / `mode` | no | Caller brain: `google` (default) or `openai`; `realtime` mode (cascade reserved) |
+| `simulator.voice.model` / `voice` / `language` | no | Provider-neutral voice bag; defaults flash-live, Puck, `en-US` |
 | `judge.model` | no | If set + PassCriteria → post-run LLM judge |
 | `observe.record_audio` | no (default `true`) | Local stereo WAV (L=sim, R=agent); no Egress |
 | `observe.data_topics` | no | Empty = all topics |
@@ -429,7 +430,7 @@ lks preflight --no-connectivity --root /path/to/target
 
 ### Gemini / simulator auth errors
 
-Set `simulator.google_api_key` in `.agent-sim/config.yaml`. The sim caller uses Gemini Live (`gemini-3.1-flash-live-preview` by default).
+Set `simulator.api_key` in `.agent-sim/config.yaml` for the active `simulator.provider` (`google` → Gemini Live, `openai` → OpenAI Realtime).
 
 ### No audio in report player
 

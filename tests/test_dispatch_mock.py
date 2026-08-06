@@ -30,7 +30,7 @@ def make_cfg(tmp_path, join_timeout_ms=800):
             room_prepare_ms=0,
             agent_join_timeout_ms=join_timeout_ms,
         ),
-        simulator=SimulatorConfig(google_api_key="AIzaTest", voice=SimulatorVoiceConfig()),
+        simulator=SimulatorConfig(api_key="AIzaTest", voice=SimulatorVoiceConfig()),
         observe=ObserveConfig(),
     )
 

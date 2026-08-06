@@ -64,8 +64,9 @@ Created by `init`. **Gitignored.** Paste secrets here (no env substitution in v1
 | `livekit.agent_name` | yes | Must match the agent’s registered dispatch name |
 | `livekit.dispatch_metadata` | no | Default opaque JSON **string** for all runs |
 | `livekit.agent_join_timeout_ms` | no | Default 25000 |
-| `simulator.google_api_key` | yes | Gemini API key for sim caller (+ judge) |
-| `simulator.voice.model` / `voice` / `language` | no | Defaults: flash-live model, Puck, `en-US` |
+| `simulator.api_key` | yes | API key of the **active** provider (`google` → Gemini, `openai` → OpenAI) |
+| `simulator.provider` / `mode` | no | Defaults `google` / `realtime`; `openai` also realtime today (cascade reserved) |
+| `simulator.voice.model` / `voice` / `language` | no | Provider-neutral voice bag; defaults flash-live model, Puck, `en-US` |
 | `judge.model` / `base_url` / `api_key` | no | Soft LLM judge; HTTP OpenAI chat when `base_url` set, else Gemini |
 
 | `observe.record_audio` | no | `true` → local stereo WAV (L=sim, R=agent), no Egress |
@@ -85,12 +86,12 @@ Templates: `outbound-human-pickup.yaml`, `outbound-callee-sim.yaml`, `inbound-ca
 
 ### Voice, language & call recording
 
-The sim caller is **always voice** when `simulator.google_api_key` is set (Gemini Live TTS in the room).
-There is no separate “enable voice” toggle — only **which voice/language** and **whether to save WAV**.
+The sim caller is **always voice** when `simulator.api_key` is set (Gemini Live or OpenAI Realtime TTS in the room, per `simulator.provider`).
+There is no separate “enable voice” toggle — only **which provider/voice/language** and **whether to save WAV**.
 
 | Layer | What it does | Where to set |
 |-------|----------------|--------------|
-| **Sim speech** | Gemini Live speaks as the caller | `simulator.voice.*`, `simulator.language` |
+| **Sim speech** | Active provider (Gemini Live / OpenAI Realtime) speaks as the caller | `simulator.provider`, `simulator.voice.*`, `simulator.language` |
 | **Persona locale** | Prompt + scenario language hint | `Scenario.metadata.locale`, optional `Persona.spec.language` |
 | **Vocal barge / backchannel** | Real speech WAV into sim mic (STT hears it) | Script `delivery: room_pcm` + `asset: voice.*` or `.agent-sim/cues/*.wav` |
 | **Call recording** | Stereo `conversation.wav` for replay (`lks web`) | `observe.record_audio: true` |
@@ -100,7 +101,9 @@ Example — Vietnamese caller + local recording (template defaults are `en-US` /
 
 ```yaml
 simulator:
-  google_api_key: "…"
+  provider: google
+  mode: realtime
+  api_key: "…"            # key of the active provider (Google or OpenAI)
   language: "vi-VN"
   voice:
     model: "gemini-3.1-flash-live-preview"
@@ -108,7 +111,7 @@ simulator:
     language: "vi-VN"
 
 judge:
-  # Gemini (default when base_url omitted) — uses simulator.google_api_key
+  # Gemini (default when base_url omitted) — uses simulator.api_key (provider: google)
   model: "gemini-2.5-flash"
   temperature: 0
   # Or HTTP via OpenAI-compatible gateway. `endpoint_type` = wire format (default openai):

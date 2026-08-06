@@ -125,7 +125,7 @@ async def test_wait_mute_persona_false_paces_without_suppress() -> None:
 
 
 def test_script_speak_directive_verbatim_only_no_freestyle_tail() -> None:
-    from livekit_agent_simulator.gemini.live_session import script_speak_directive
+    from livekit_agent_simulator.callers.gemini import script_speak_directive
 
     d = script_speak_directive("Is that still available?")
     assert "Is that still available?" in d
@@ -145,7 +145,7 @@ async def test_nudge_freestyle_answer_sends_audio_stream_end_not_text() -> None:
     """Non-text freestyle kick: activity_end only while agent stream is open."""
     from google.genai import types
 
-    from livekit_agent_simulator.gemini.live_session import GeminiCallerBridge
+    from livekit_agent_simulator.callers.gemini import GeminiCallerBridge
 
     bridge = object.__new__(GeminiCallerBridge)
     bridge._inject_turn_active = False
@@ -183,7 +183,7 @@ async def test_nudge_freestyle_answer_sends_audio_stream_end_not_text() -> None:
 
 
 def test_pcm16_mono_rms_silence_and_tone() -> None:
-    from livekit_agent_simulator.gemini.live_session import pcm16_mono_rms
+    from livekit_agent_simulator.callers.gemini import pcm16_mono_rms
 
     silence = b"\x00\x00" * 160
     assert pcm16_mono_rms(silence) == 0.0
@@ -193,7 +193,7 @@ def test_pcm16_mono_rms_silence_and_tone() -> None:
 
 
 def test_looks_like_assistant_persona_detects_staff_cues() -> None:
-    from livekit_agent_simulator.gemini.live_session import looks_like_assistant_persona
+    from livekit_agent_simulator.callers.gemini import looks_like_assistant_persona
 
     assert looks_like_assistant_persona(
         "Hi, thanks for calling Vehicle Wholesales. I'd be happy to check that for you."
@@ -210,7 +210,7 @@ def test_looks_like_assistant_persona_detects_staff_cues() -> None:
 
 
 def test_script_speak_directive_hangup_stays_quiet_after() -> None:
-    from livekit_agent_simulator.gemini.live_session import script_speak_directive
+    from livekit_agent_simulator.callers.gemini import script_speak_directive
 
     d = script_speak_directive("Thanks, bye.", hangup_farewell=True)
     assert "Thanks, bye." in d

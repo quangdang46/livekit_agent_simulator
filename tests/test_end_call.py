@@ -1,4 +1,4 @@
-from livekit_agent_simulator.gemini.end_call import (
+from livekit_agent_simulator.callers.end_call import (
     END_CALL_TOKEN,
     contains_end_call_signal,
     contains_farewell_signal,

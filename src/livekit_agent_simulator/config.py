@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -20,6 +20,15 @@ DEFAULT_LANGUAGE = "en-US"
 DEFAULT_TIMEZONE = "UTC"
 DEFAULT_VOICE_MODEL = "gemini-3.1-flash-live-preview"
 DEFAULT_JUDGE_MODEL = "gemini-2.5-flash"
+
+# Caller brain providers (`simulator.provider`). One active provider per run.
+ProviderName = Literal["google", "openai"]
+_PROVIDER_VALUES = frozenset({"google", "openai"})
+
+# Caller brain modes (`simulator.mode`). "realtime" today; cascade (text LLM +
+# separate TTS) is a future brain family, reserved here.
+BrainMode = Literal["realtime"]
+_BRAIN_MODE_VALUES = frozenset({"realtime"})
 
 
 class ConfigError(Exception):
@@ -39,7 +48,11 @@ class LiveKitConfig:
 
 @dataclass
 class SimulatorVoiceConfig:
-    """Gemini Live voice for the simulated caller."""
+    """Voice bag for the simulated caller — provider-neutral.
+
+    ``model``/``voice``/``language`` are interpreted by the active provider
+    (``simulator.provider``). ``language`` is the authoritative sim locale.
+    """
 
     model: str = DEFAULT_VOICE_MODEL
     voice: str = "Puck"
@@ -48,7 +61,17 @@ class SimulatorVoiceConfig:
 
 @dataclass
 class SimulatorConfig:
-    google_api_key: str
+    """Sim caller brain: one active provider per run, one key for it.
+
+    ``provider`` selects the caller brain (google → Gemini Live, openai →
+    OpenAI Realtime). ``mode`` picks the brain family (``realtime`` today;
+    ``cascade`` reserved). ``api_key`` holds the active provider's key — there
+    is no per-provider key alias (AGENTS.md: one clear API, no legacy names).
+    """
+
+    provider: ProviderName = "google"
+    mode: BrainMode = "realtime"
+    api_key: str = ""
     language: str = DEFAULT_LANGUAGE
     voice: SimulatorVoiceConfig = field(default_factory=SimulatorVoiceConfig)
 
@@ -58,7 +81,7 @@ class JudgeConfig:
     # None → JUDGE_MODEL env → DEFAULT_JUDGE_MODEL at resolve time
     model: str | None = None
     temperature: float = 0.0
-    # HTTP gateway. Empty base_url → Gemini via simulator.google_api_key.
+    # HTTP gateway. Empty base_url → Gemini judge via simulator.api_key.
     base_url: str | None = None
     api_key: str | None = None
     # Wire format when base_url set: openai (/chat/completions) | anthropic (/messages)
@@ -203,7 +226,21 @@ def load_config(project_root: Path | str) -> SimConfig:
     sim_raw = raw.get("simulator")
     if not isinstance(sim_raw, dict):
         raise ConfigError(f"Missing `simulator:` section in {config_path}.")
+    provider_raw = str(sim_raw.get("provider", "google")).strip().lower()
+    if provider_raw not in _PROVIDER_VALUES:
+        raise ConfigError(
+            "`simulator.provider` must be `google` or `openai` "
+            f"(got {provider_raw!r})."
+        )
+    mode_raw = str(sim_raw.get("mode", "realtime")).strip().lower()
+    if mode_raw not in _BRAIN_MODE_VALUES:
+        raise ConfigError(
+            "`simulator.mode` must be `realtime` "
+            f"(got {mode_raw!r}); cascade is reserved for a future brain."
+        )
     voice_raw = sim_raw.get("voice") or {}
+    # `simulator.language` is the legacy default; `voice.language` is the
+    # authoritative sim locale once set (portable default en-US otherwise).
     default_lang = str(sim_raw.get("language", DEFAULT_LANGUAGE))
     voice = SimulatorVoiceConfig(
         model=str(voice_raw.get("model", DEFAULT_VOICE_MODEL)),
@@ -211,7 +248,9 @@ def load_config(project_root: Path | str) -> SimConfig:
         language=str(voice_raw.get("language", default_lang)),
     )
     simulator = SimulatorConfig(
-        google_api_key=str(_require(sim_raw, "google_api_key", "simulator")),
+        provider=provider_raw,  # type: ignore[assignment]
+        mode=mode_raw,  # type: ignore[assignment]
+        api_key=str(_require(sim_raw, "api_key", "simulator")),
         language=default_lang,
         voice=voice,
     )
@@ -333,6 +372,8 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
             "dispatch_metadata_set": bool(cfg.livekit.dispatch_metadata),
         },
         "simulator": {
+            "provider": cfg.simulator.provider,
+            "mode": cfg.simulator.mode,
             "voice_model": cfg.simulator.voice.model,
             "voice": cfg.simulator.voice.voice,
             "language": cfg.simulator.voice.language,

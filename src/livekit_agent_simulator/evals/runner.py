@@ -181,21 +181,21 @@ async def _judge(
 
 async def judge_run(
     judge_cfg: JudgeConfig | None,
-    google_api_key: str,
+    sim_api_key: str,
     pass_criteria: list[str],
     turns: list[dict[str, Any]],
     tool_events: list[dict[str, Any]],
     flow_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    resolved = resolve_judge(judge_cfg, google_api_key=google_api_key)
+    resolved = resolve_judge(judge_cfg, sim_api_key=sim_api_key)
     if not resolved.ready:
         return {
             "verdict": "skipped",
             "notes": resolved.skip_reason
-            or "Judge not ready (check judge.base_url/api_key or Google key).",
+            or "Judge not ready (check judge.base_url/api_key or simulator key).",
         }
     try:
-        backend = backend_from_config(judge_cfg or JudgeConfig(), google_api_key)
+        backend = backend_from_config(judge_cfg or JudgeConfig(), sim_api_key)
     except Exception as e:
         return {
             "verdict": "error",
@@ -214,7 +214,7 @@ async def judge_run(
 
 async def judge_goals(
     judge_cfg: JudgeConfig | None,
-    google_api_key: str,
+    sim_api_key: str,
     goals: list[str],
     min_goals: int,
     turns: list[dict[str, Any]],
@@ -226,11 +226,11 @@ async def judge_goals(
             "notes": "goals_met skipped: no judge config.",
             "score": 0,
         }
-    resolved = resolve_judge(judge_cfg, google_api_key=google_api_key)
+    resolved = resolve_judge(judge_cfg, sim_api_key=sim_api_key)
     if not resolved.ready:
         return {"verdict": "skipped", "notes": resolved.skip_reason, "score": 0}
     try:
-        backend = backend_from_config(judge_cfg, google_api_key)
+        backend = backend_from_config(judge_cfg, sim_api_key)
     except Exception as e:
         return {
             "verdict": "error",
@@ -250,7 +250,7 @@ async def judge_goals(
 
 async def judge_run_multi(
     judge_cfg: JudgeConfig | None,
-    google_api_key: str,
+    sim_api_key: str,
     judges: list[dict[str, Any]],
     mode: str,
     turns: list[dict[str, Any]],
@@ -261,11 +261,11 @@ async def judge_run_multi(
     if not judges:
         return {"verdict": "skipped", "notes": "No judges."}
 
-    resolved = resolve_judge(judge_cfg, google_api_key=google_api_key)
+    resolved = resolve_judge(judge_cfg, sim_api_key=sim_api_key)
     if not resolved.ready:
         return {"verdict": "skipped", "notes": resolved.skip_reason}
     try:
-        backend = backend_from_config(judge_cfg or JudgeConfig(), google_api_key)
+        backend = backend_from_config(judge_cfg or JudgeConfig(), sim_api_key)
     except Exception as e:
         return {
             "verdict": "error",

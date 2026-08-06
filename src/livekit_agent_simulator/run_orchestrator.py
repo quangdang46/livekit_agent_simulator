@@ -27,8 +27,9 @@ from .audio.local_recorder import DEFAULT_FILENAME, LocalConversationRecorder
 from .caller_nudge import nudge_caller_after_agent_greeting
 from .behavior_compile import silent_mode_enabled
 from .config import SimConfig, config_snapshot
-from .gemini.judge import judge_run
-from .gemini.live_session import GeminiCallerBridge, resolve_voice_gain
+from .callers.base import CallerBridge
+from .callers.factory import build_caller_bridge
+from .callers.gemini import resolve_voice_gain
 from .livekit.adapter import AgentJoinTimeout, LiveKitAdapter
 from .livekit.observer import Observer
 from .livekit.sim_leg import SimLegContext, SimLegError, SimLegHandle, sim_leg_factory
@@ -320,11 +321,11 @@ async def run_scenario_instance(
             )
             _midcall_cues = DefaultCallerPolicy().midcall_cues(_midcall_ctx)
             _silent = silent_mode_enabled(scenario.persona)
-            bridge = GeminiCallerBridge(
-                cfg,
-                leg_handle.sim_room,
-                observer,
-                writer,
+            bridge = build_caller_bridge(
+                cfg=cfg,
+                room=leg_handle.sim_room,
+                observer=observer,
+                writer=writer,
                 persona_system_prompt=scenario.persona_system_prompt(),
                 first_speaker=run.first_speaker,
                 recorder=recorder,
@@ -563,7 +564,7 @@ async def run_scenario_instance(
             if getattr(scenario, "pass_judges", None):
                 verdict = await judge_run_multi(
                     cfg.judge,
-                    cfg.simulator.google_api_key,
+                    cfg.simulator.api_key,
                     scenario.pass_judges,
                     getattr(scenario, "pass_criteria_mode", None) or "all",
                     writer.turn_metrics(),
@@ -573,7 +574,7 @@ async def run_scenario_instance(
             else:
                 verdict = await judge_run(
                     cfg.judge,
-                    cfg.simulator.google_api_key,
+                    cfg.simulator.api_key,
                     criteria,
                     writer.turn_metrics(),
                     tool_events,
@@ -600,7 +601,7 @@ async def run_scenario_instance(
                 continue
             try:
                 goals_result = await judge_goals(
-                    cfg.judge, cfg.simulator.google_api_key,
+                    cfg.judge, cfg.simulator.api_key,
                     goal_list, oc.min_goals,
                     writer.turn_metrics(),
                 )
@@ -716,7 +717,7 @@ async def _conversation_loop(
     scenario: Scenario,
     run: SimulatorSpec,
     observer: Observer,
-    bridge: GeminiCallerBridge,
+    bridge: CallerBridge,
     writer: EventWriter,
     cfg_silence_s: float,
 ) -> str:

@@ -83,7 +83,7 @@ def test_prompt_silent_mode_hard() -> None:
 
 @pytest.mark.asyncio
 async def test_bridge_blocks_freestyle_and_inject() -> None:
-    from livekit_agent_simulator.gemini.live_session import GeminiCallerBridge
+    from livekit_agent_simulator.callers.gemini import GeminiCallerBridge
 
     events: list[tuple] = []
 

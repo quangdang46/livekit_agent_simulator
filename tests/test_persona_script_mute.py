@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from livekit_agent_simulator.gemini.live_session import GeminiCallerBridge
+from livekit_agent_simulator.callers.gemini import GeminiCallerBridge
 
 
 def _bridge(**flags):

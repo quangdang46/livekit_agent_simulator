@@ -9,7 +9,7 @@ import pytest
 from livekit_agent_simulator.audio.mic_mixer import ParallelMicMixer
 from livekit_agent_simulator.caller.policy import CallerPolicyContext
 from livekit_agent_simulator.caller.prompt_sections import SpeechConditionsSection
-from livekit_agent_simulator.gemini.live_session import (
+from livekit_agent_simulator.callers.gemini import (
     GeminiCallerBridge,
     resolve_voice_gain,
 )

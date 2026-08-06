@@ -33,7 +33,7 @@ def make_cfg(tmp_path, **tel):
             room_prepare_ms=0,
             agent_join_timeout_ms=800,
         ),
-        simulator=SimulatorConfig(google_api_key="AIzaTest", voice=SimulatorVoiceConfig()),
+        simulator=SimulatorConfig(api_key="AIzaTest", voice=SimulatorVoiceConfig()),
         observe=ObserveConfig(),
         telephony=TelephonyConfig(**tel) if tel else TelephonyConfig(),
     )

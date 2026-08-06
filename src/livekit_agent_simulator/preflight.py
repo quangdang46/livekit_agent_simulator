@@ -47,11 +47,22 @@ async def run_preflight(project_root: Path | str, connectivity: bool = True) -> 
     cfg.scenarios_dir.mkdir(parents=True, exist_ok=True)
     result.add("folders", "pass", str(cfg.dot_dir))
 
-    key = cfg.simulator.google_api_key.strip()
-    if len(key) < 20:
-        result.add("simulator.google_api_key", "warn", "Key looks unusually short")
+    key = (cfg.simulator.api_key or "").strip()
+    provider = cfg.simulator.provider
+    if not key:
+        result.add(
+            f"simulator.api_key[{provider}]",
+            "fail",
+            f"missing — `simulator.api_key` required for provider {provider}",
+        )
+    elif len(key) < 20:
+        result.add(
+            f"simulator.api_key[{provider}]",
+            "warn",
+            "Key looks unusually short",
+        )
     else:
-        result.add("simulator.google_api_key", "pass", "present")
+        result.add(f"simulator.api_key[{provider}]", "pass", "present")
 
     if connectivity and result.ok:
         await _check_livekit_api(cfg, result)

@@ -29,7 +29,7 @@ livekit:
   api_secret: secretxxxxxxxxxxxxxxxx
   agent_name: test-agent
 simulator:
-  google_api_key: AIzaxxxxxxxxxxxxxxxx
+  api_key: AIzaxxxxxxxxxxxxxxxx
 """,
         encoding="utf-8",
     )
@@ -106,7 +106,7 @@ livekit:
   api_secret: secretxxxxxxxxxxxxxxxx
   agent_name: test-agent
 simulator:
-  google_api_key: AIzaxxxxxxxxxxxxxxxx
+  api_key: AIzaxxxxxxxxxxxxxxxx
 """,
         encoding="utf-8",
     )
@@ -185,7 +185,7 @@ livekit:
   api_secret: secretxxxxxxxxxxxxxxxx
   agent_name: test-agent
 simulator:
-  google_api_key: AIzaxxxxxxxxxxxxxxxx
+  api_key: AIzaxxxxxxxxxxxxxxxx
 """,
         encoding="utf-8",
     )
@@ -249,7 +249,7 @@ livekit:
   api_secret: secretxxxxxxxxxxxxxxxx
   agent_name: test-agent
 simulator:
-  google_api_key: AIzaxxxxxxxxxxxxxxxx
+  api_key: AIzaxxxxxxxxxxxxxxxx
 """,
         encoding="utf-8",
     )
