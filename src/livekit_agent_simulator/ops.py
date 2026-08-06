@@ -19,6 +19,18 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+
+def _is_transport_drop(result: dict[str, Any]) -> bool:
+    """True when a run ended because the Gemini Live socket dropped mid-call.
+
+    The orchestrator records ``summary["end_reason"] = "gemini_socket_drop"``
+    when ``bridge.transport_dropped`` was set (1006 / ConnectionClosed). These
+    are network-level failures, not real call outcomes, so the run should be
+    retried rather than counted as a genuine failure.
+    """
+    summary = result.get("summary") or {}
+    return summary.get("end_reason") == "gemini_socket_drop"
+
 from .config import DOT_FOLDER, ConfigError, load_config
 from .logging.sqlite_store import RunStore
 from .paths import package_templates_dir
@@ -350,6 +362,20 @@ async def execute_scenario(
             result["validation"] = {"valid": True, "id": scenario_id}
         except Exception as e:
             result = {"executed": True, "run_id": None, "status": "failed", "error": f"{type(e).__name__}: {e}"}
+
+        # Gemini Live transport drop (`1006 abnormal closure`) is retryable
+        # flakiness, not a real call outcome — the caller's persona context was
+        # never delivered, so re-run once instead of failing the iteration.
+        if _is_transport_drop(result):
+            try:
+                retried = await _run_scenario(project_root, scenario_id, run_name=run_name)
+                retried["executed"] = True
+                retried["validation"] = {"valid": True, "id": scenario_id}
+                retried.setdefault("retried_from_drop", True)
+                result = retried
+            except Exception as e:
+                result = {"executed": True, "run_id": None, "status": "failed", "error": f"{type(e).__name__}: {e}"}
+
         gate = evaluate_run_result(result)
         summary = result.get("summary") or {}
         mdig = metrics_digest(summary.get("metrics") if isinstance(summary.get("metrics"), dict) else None)

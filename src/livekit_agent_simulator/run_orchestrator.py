@@ -659,6 +659,11 @@ async def run_scenario_instance(
 
     summary = writer.finalize(status, meta=meta, verdict=verdict)
     summary.setdefault("caller_mode", caller_mode)
+    # Record why the call ended so run-level retries can distinguish a Gemini
+    # Live transport drop (`gemini_socket_drop`) from a real hang-up — the
+    # former is retryable flakiness, the latter is a genuine call outcome.
+    if end_reason:
+        summary["end_reason"] = end_reason
     if meta.get("dial_ms") is not None:
         summary.setdefault("dial_ms", meta.get("dial_ms"))
     if summary_extra:
