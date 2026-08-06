@@ -104,6 +104,11 @@ class _Obs:
         self.agent_replied_this_turn = False
         self.agent_has_spoken = False
         self.last_agent_activity_mono = time.monotonic()
+        self.last_activity_mono = time.monotonic()
+        self._any_activity = True  # real observer sets this on first transcript
+
+    def any_activity_occurred(self) -> bool:
+        return self._any_activity
 
 
 class _Bridge:

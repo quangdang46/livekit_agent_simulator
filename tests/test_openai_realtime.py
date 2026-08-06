@@ -183,8 +183,10 @@ async def test_session_update_payload_shape():
     assert sess["audio"]["input"]["transcription"] == {
         "model": "gpt-4o-mini-transcribe"
     }
-    td = sess["audio"]["input"]["turn_detection"]
-    assert td["type"] == "semantic_vad"
+    # VAD is disabled (push-to-talk): agent audio in the input buffer must not
+    # be mistaken for a caller interruption, which cancelled in-flight model
+    # responses and left caller turns un-finalized.
+    assert sess["audio"]["input"]["turn_detection"] is None
     assert sess["audio"]["output"]["voice"] == "marin"
     assert sess["audio"]["output"]["format"] == {"type": "audio/pcm", "rate": 24000}
     # Regression: session.audio.output.language is NOT a valid GA param — the
