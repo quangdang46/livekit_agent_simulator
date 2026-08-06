@@ -184,16 +184,33 @@ def test_default_policy_midcall_script_no_early_bye():
 
 
 def test_default_policy_script_user_no_bootstrap():
-    """Script owns open — never bootstrap (avoids double-open)."""
+    """Script actively opens (time trigger + say) — never bootstrap (avoids double-open)."""
     policy = DefaultCallerPolicy()
     ctx = CallerPolicyContext(
         persona={"goals": ["Fee"], "brief": "test"},
         locale="en-US",
         first_speaker="user",
-        script_steps=[{"id": "open"}, {"id": "bye"}],
+        script_steps=[{"id": "open", "trigger": "time", "say": "Hi, I'm calling about the fee."}],
     )
     cues = policy.midcall_cues(ctx)
     assert [c for c in cues if c.kind == "bootstrap"] == []
+
+
+def test_default_policy_script_reactive_user_still_bootstraps():
+    """Reactive-only script (agent_speaking triggers) does NOT own the opening —
+    the caller still needs the speak-first bootstrap."""
+    policy = DefaultCallerPolicy()
+    ctx = CallerPolicyContext(
+        persona={"goals": ["Fee"], "brief": "test"},
+        locale="en-US",
+        first_speaker="user",
+        script_steps=[
+            {"id": "barge", "trigger": "agent_speaking", "say": "Hold on"},
+            {"id": "hangup", "trigger": "time", "action": "hang_up"},
+        ],
+    )
+    cues = policy.midcall_cues(ctx)
+    assert any(c.kind == "bootstrap" for c in cues)
 
 
 def test_first_speaker_section_defers_to_script():

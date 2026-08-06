@@ -967,6 +967,10 @@ class GeminiCallerBridge:
                     "gemini_text inject spoke off-script (likely role-flip)"
                 )
             if saw_ms <= 0:
+                if self._script_hangup_farewell:
+                    # Farewell is best-effort — hang_up fires regardless. Don't
+                    # fail the whole script for a goodbye that never played.
+                    return
                 raise RuntimeError(
                     "gemini_text inject produced no mic audio (model stayed silent)"
                 )
@@ -1010,6 +1014,10 @@ class GeminiCallerBridge:
             await asyncio.sleep(0.15)
             heard_final = " ".join(self._inject_heard_text.split())
             if not heard_final:
+                if self._script_hangup_farewell:
+                    # Farewell: audio already played (saw_ms > 0); STT lag is
+                    # expected at teardown — do not fail the goodbye.
+                    return
                 if self._mixer is not None:
                     self._mixer.clear_speech()
                 self.writer.emit(
