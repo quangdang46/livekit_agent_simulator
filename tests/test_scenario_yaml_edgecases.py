@@ -13,7 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from livekit_agent_simulator.scenario import Scenario, ScenarioError, parse_scenario
+from livekit_agent_simulator.scenario import (
+    Scenario,
+    ScenarioError,
+    find_scenario,
+    list_scenarios,
+    parse_scenario,
+)
 from livekit_agent_simulator.scenario_from_dict import scenario_from_dict
 from livekit_agent_simulator.scenario_yaml import load_scenario_yaml, scenario_to_yaml_text
 
@@ -144,6 +150,27 @@ def test_simulator_fallback_used_when_no_execute() -> None:
     assert s2.simulator.max_turns == 9
 
 
+def test_list_scenarios_shadows_jsonl_by_yaml(tmp_path) -> None:
+    """After `lks convert`, foo.jsonl + foo.yaml share an id — YAML is canonical."""
+    yaml_text = (
+        "apiVersion: agent-sim/v1\n"
+        "kind: Scenario\n"
+        "metadata: {id: foo}\n"
+        "persona: {brief: b}\n"
+    )
+    (tmp_path / "foo.yaml").write_text(yaml_text, encoding="utf-8")
+    jsonl_text = (
+        '{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"foo"}}\n'
+        '{"kind":"Persona","spec":{"brief":"b"}}\n'
+    )
+    (tmp_path / "foo.jsonl").write_text(jsonl_text, encoding="utf-8")
+
+    entries = list_scenarios(tmp_path)
+    foo_entries = [e for e in entries if e.get("id") == "foo"]
+    assert len(foo_entries) == 1
+    assert foo_entries[0]["file"] == "foo.yaml"
+
+
 def test_bad_pass_criteria_mode_rejected() -> None:
     with pytest.raises(ScenarioError, match="mode must be all|majority|any"):
         scenario_from_dict(
@@ -236,6 +263,19 @@ def test_hold_music_timeout_invalid_rejected() -> None:
         )
 
 
+def test_convert_scenario_rejects_traversal_id(tmp_path: Path) -> None:
+    from livekit_agent_simulator.config import ConfigError
+    from livekit_agent_simulator.ops import convert_scenario
+
+    with pytest.raises(ConfigError, match="Invalid scenario_id"):
+        convert_scenario(tmp_path, "../evil")
+
+
+def test_find_scenario_rejects_traversal_id(tmp_path: Path) -> None:
+    with pytest.raises(ScenarioError, match="Invalid scenario_id"):
+        find_scenario(tmp_path, "../../victim")
+
+
 def test_script_verify_fields_survive_roundtrip() -> None:
     s = scenario_from_dict(
         {
@@ -259,3 +299,118 @@ def test_script_verify_fields_survive_roundtrip() -> None:
     assert s2.script_verify.min_agent_finals_after_barge_in == 2
     assert s2.script_verify.min_interruptions == 1
     assert s2.script_verify.max_interruptions == 3
+
+
+def _convert_fixture(tmp_path: Path) -> Path:
+    """Copy a template .jsonl into a fresh .agent-sim/scenarios dir; return the dir."""
+    import shutil
+
+    scen = tmp_path / ".agent-sim" / "scenarios"
+    scen.mkdir(parents=True)
+    src = Path(__file__).resolve().parents[1] / "templates" / "examples" / "constraint-no-card.jsonl"
+    shutil.copyfile(src, scen / "constraint-no-card.jsonl")
+    return scen
+
+
+def test_convert_scenario_failed_yaml_leaves_no_dest(tmp_path: Path, monkeypatch) -> None:
+    """A YAML that fails to re-parse must never shadow the valid .jsonl."""
+    from livekit_agent_simulator.ops import convert_scenario
+
+    scen = _convert_fixture(tmp_path)
+
+    def broken(scenario) -> str:
+        return "apiVersion: agent-sim/v1\nkind: Scenario\n  bad: [unclosed"
+
+    monkeypatch.setattr(
+        "livekit_agent_simulator.scenario_yaml.scenario_to_yaml_text", broken
+    )
+    with pytest.raises(ScenarioError):
+        convert_scenario(tmp_path, "constraint-no-card")
+
+    assert not (scen / "constraint-no-card.yaml").exists()
+    assert not list(scen.glob("*.yaml.tmp"))
+    # The source .jsonl is untouched.
+    assert (scen / "constraint-no-card.jsonl").exists()
+
+
+def test_scenario_from_run_failed_validation_leaves_no_dest(tmp_path: Path, monkeypatch) -> None:
+    """write=True must clean up when the synthesized draft fails to validate."""
+    import json
+
+    from livekit_agent_simulator.ops import scenario_from_run
+
+    dot = tmp_path / ".agent-sim"
+    (dot / "scenarios").mkdir(parents=True)
+    (dot / "config.yaml").write_text(
+        "livekit:\n"
+        "  url: wss://example.livekit.cloud\n"
+        "  api_key: k\n"
+        "  api_secret: s\n"
+        "  agent_name: a\n"
+        "simulator:\n"
+        "  google_api_key: g\n",
+        encoding="utf-8",
+    )
+    report_dir = dot / "reports" / "run-abc-1"
+    report_dir.mkdir(parents=True)
+    (report_dir / "meta.json").write_text(
+        json.dumps({"run_id": "run-abc-1", "scenario_id": "smoke-hello"}),
+        encoding="utf-8",
+    )
+    (report_dir / "summary.json").write_text(
+        json.dumps({"run_id": "run-abc-1", "status": "done", "turn_count": 3}),
+        encoding="utf-8",
+    )
+
+    def boom(*_args, **_kwargs) -> None:
+        raise ScenarioError("boom")
+
+    monkeypatch.setattr("livekit_agent_simulator.scenario_yaml.load_scenario_yaml", boom)
+    with pytest.raises(ScenarioError, match="boom"):
+        scenario_from_run(tmp_path, "run-abc-1", write=True)
+
+    assert not list((dot / "scenarios").glob("*.yaml"))
+    assert not list((dot / "scenarios").glob("*.yaml.tmp"))
+
+
+def test_group_wrapper_scalar_item_raises_scenario_error(tmp_path: Path) -> None:
+    """L3: a scalar `scenarios:` item must raise ScenarioError, not a raw ValueError."""
+    bad = tmp_path / "group-scalar.yaml"
+    bad.write_text("scenarios: [hello]\n", encoding="utf-8")
+    with pytest.raises(ScenarioError, match="scenarios"):
+        load_scenario_yaml(bad)
+
+
+def test_scenario_from_run_redacts_before_truncate() -> None:
+    """L2: a long user final with an email must be redacted even when truncated."""
+    import json
+
+    from livekit_agent_simulator.scenario_from_run import build_scenario_draft_from_run
+
+    tmp = TEMPLATES.parent / "_redact_tmp"
+    tmp.mkdir(exist_ok=True)
+    try:
+        report = tmp / "reports" / "r-r"
+        report.mkdir(parents=True, exist_ok=True)
+        (report / "meta.json").write_text(
+            json.dumps({"run_id": "r-r", "scenario_id": "s", "run_spec": {"first_speaker": "user"}}),
+            encoding="utf-8",
+        )
+        (report / "summary.json").write_text(
+            json.dumps({"run_id": "r-r", "status": "done", "turn_count": 3}), encoding="utf-8"
+        )
+        # 200-char user final with an email near the truncation boundary.
+        email = "john.doe@example.com"
+        user_text = f"I need help with order {email} " + "x" * 200
+        (report / "events.jsonl").write_text(
+            json.dumps({"kind": "transcript.user.final", "ts_mono_ms": 1000, "spec": {"text": user_text}})
+            + "\n",
+            encoding="utf-8",
+        )
+        draft = build_scenario_draft_from_run(report)
+        assert email not in draft["yaml"]
+        assert "[email]" in draft["yaml"]
+    finally:
+        import shutil
+
+        shutil.rmtree(tmp, ignore_errors=True)

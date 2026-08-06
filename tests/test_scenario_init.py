@@ -104,3 +104,23 @@ def test_convert_jsonl_to_yaml_overwrite(tmp_path: Path) -> None:
 
     convert_scenario(tmp_path, "constraint-no-card")
     convert_scenario(tmp_path, "constraint-no-card", force=True)  # force overwrites
+
+
+def test_convert_malformed_jsonl_fails_cleanly(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from livekit_agent_simulator.cli import app
+
+    scen = tmp_path / ".agent-sim" / "scenarios"
+    scen.mkdir(parents=True)
+    (scen / "broken.jsonl").write_text(
+        '{"kind":"Scenario","apiVersion":"agent-sim/v1","metadata":{"id":"broken"}}\n'
+        "this is not json\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["convert", "broken", "--root", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "invalid JSON" in result.stderr
+    assert "Traceback" not in result.stderr

@@ -201,7 +201,7 @@ def convert(
     """Convert a legacy .jsonl scenario to .yaml (idempotent; keeps the .jsonl)."""
     try:
         _print(ops.convert_scenario(_root(root), scenario_id, force=force))
-    except ConfigError as e:
+    except (ConfigError, ScenarioError) as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 

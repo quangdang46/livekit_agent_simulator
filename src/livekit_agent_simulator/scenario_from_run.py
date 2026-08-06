@@ -80,66 +80,50 @@ def _slug_id(base: str, run_id: str) -> str:
 
 
 def _dispatch_from_source_scenario(scenario_file: str | None) -> str | None:
-    if not scenario_file:
+    """Dispatch metadata from the source scenario (JSONL or YAML)."""
+    if not scenario_file or not Path(scenario_file).is_file():
         return None
-    path = Path(scenario_file)
-    if not path.is_file():
+    try:
+        from .scenario import parse_scenario, ScenarioError
+    except ImportError:
         return None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("//"):
-            continue
-        try:
-            obj = json.loads(s)
-        except json.JSONDecodeError:
-            continue
-        if obj.get("kind") == "Dispatch":
-            md = (obj.get("spec") or {}).get("metadata")
-            if isinstance(md, str) and md.strip():
-                return md.strip()
-            if isinstance(md, dict):
-                return json.dumps(md, ensure_ascii=False, separators=(",", ":"))
+    try:
+        scenario = parse_scenario(scenario_file)
+    except ScenarioError:
+        return None
+    if scenario.dispatch and scenario.dispatch.metadata:
+        return scenario.dispatch.metadata
     return None
 
 
 def _persona_from_source(scenario_file: str | None) -> dict[str, Any] | None:
-    if not scenario_file:
+    """Persona spec from the source scenario (JSONL or YAML)."""
+    if not scenario_file or not Path(scenario_file).is_file():
         return None
-    path = Path(scenario_file)
-    if not path.is_file():
+    try:
+        from .scenario import parse_scenario, ScenarioError
+    except ImportError:
         return None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("//"):
-            continue
-        try:
-            obj = json.loads(s)
-        except json.JSONDecodeError:
-            continue
-        if obj.get("kind") == "Persona" and isinstance(obj.get("spec"), dict):
-            return dict(obj["spec"])
-    return None
+    try:
+        scenario = parse_scenario(scenario_file)
+    except ScenarioError:
+        return None
+    return dict(scenario.persona) if scenario.persona else None
 
 
 def _pass_criteria_from_source(scenario_file: str | None) -> list[str]:
-    if not scenario_file:
+    """Pass criteria from the source scenario (JSONL or YAML)."""
+    if not scenario_file or not Path(scenario_file).is_file():
         return []
-    path = Path(scenario_file)
-    if not path.is_file():
+    try:
+        from .scenario import parse_scenario, ScenarioError
+    except ImportError:
         return []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("//"):
-            continue
-        try:
-            obj = json.loads(s)
-        except json.JSONDecodeError:
-            continue
-        if obj.get("kind") == "PassCriteria":
-            crit = (obj.get("spec") or {}).get("criteria") or []
-            if isinstance(crit, list):
-                return [str(c) for c in crit if str(c).strip()]
-    return []
+    try:
+        scenario = parse_scenario(scenario_file)
+    except ScenarioError:
+        return []
+    return list(scenario.pass_criteria)
 
 
 def _behavior_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -214,40 +198,29 @@ def _behavior_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None
 
 def _script_open_say_from_source(scenario_file: str | None) -> str | None:
     """First explicit Script speak open from the source scenario, if any."""
-    if not scenario_file:
+    if not scenario_file or not Path(scenario_file).is_file():
         return None
-    path = Path(scenario_file)
-    if not path.is_file():
+    try:
+        from .scenario import parse_scenario, ScenarioError
+    except ImportError:
         return None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("//"):
-            continue
-        try:
-            obj = json.loads(s)
-        except json.JSONDecodeError:
-            continue
-        if obj.get("kind") != "Script":
-            continue
-        steps = (obj.get("spec") or {}).get("steps") or []
-        if not isinstance(steps, list):
-            return None
-        for raw in steps:
-            if not isinstance(raw, dict):
-                continue
-            action = str(raw.get("action") or "speak").strip().lower()
-            if action not in ("speak", ""):
-                continue
-            say = str(raw.get("say") or "").strip()
-            if not say or say.startswith("["):
-                continue
-            # Prefer opens that do not require the agent to speak first.
-            if raw.get("require_agent_spoke_first") is True:
-                continue
-            if bool(raw.get("barge_in")):
-                continue
-            return _redact(say)[:200]
+    try:
+        scenario = parse_scenario(scenario_file)
+    except ScenarioError:
         return None
+    for step in scenario.script_steps:
+        action = str(getattr(step, "action", "speak") or "speak").strip().lower()
+        if action not in ("speak", ""):
+            continue
+        say = str(getattr(step, "say", "") or "").strip()
+        if not say or say.startswith("["):
+            continue
+        # Prefer opens that do not require the agent to speak first.
+        if getattr(step, "require_agent_spoke_first", True):
+            continue
+        if getattr(step, "barge_in", False):
+            continue
+        return _redact(say)[:200]
     return None
 
 
@@ -341,19 +314,15 @@ def build_scenario_draft_from_run(
     # Locale: prefer original scenario metadata if parseable
     locale = locale_default
     if scenario_file_s and Path(scenario_file_s).is_file():
-        for line in Path(scenario_file_s).read_text(encoding="utf-8").splitlines():
-            s = line.strip()
-            if not s or s.startswith("//"):
-                continue
+        try:
+            from .scenario import parse_scenario, ScenarioError
+        except ImportError:
+            pass
+        else:
             try:
-                obj = json.loads(s)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("kind") == "Scenario":
-                loc = (obj.get("metadata") or {}).get("locale")
-                if loc:
-                    locale = str(loc)
-                break
+                locale = parse_scenario(scenario_file_s).effective_locale()
+            except ScenarioError:
+                pass
 
     user_texts = _transcript_finals(events, "user")
     agent_texts = _transcript_finals(events, "agent")
@@ -380,7 +349,8 @@ def build_scenario_draft_from_run(
     goals: list[str] = [str(g).strip() for g in src_goals if str(g).strip()] if isinstance(src_goals, list) else []
     if not goals:
         if user_texts:
-            first = user_texts[0][:120] + ("…" if len(user_texts[0]) > 120 else "")
+            first = _redact(user_texts[0])
+            first = first[:120] + ("…" if len(first) > 120 else "")
             goals.append(f'Open with the same request as the source run: "{first}"')
             if len(user_texts) > 1:
                 goals.append("Follow up naturally, mirroring the caller path from the source run")
@@ -491,7 +461,7 @@ def build_scenario_draft_from_run(
         ]
     verdict = summary.get("verdict") if isinstance(summary.get("verdict"), dict) else {}
     if str(verdict.get("verdict") or "").lower() == "fail" and verdict.get("notes"):
-        note = _redact(str(verdict["notes"])[:240])
+        note = _redact(str(verdict["notes"]))[:240]
         criteria.append(f"Avoid the failure mode noted in source judge: {note}")
 
     status = summary.get("status")

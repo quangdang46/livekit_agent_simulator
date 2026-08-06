@@ -193,6 +193,83 @@ def test_draft_with_scenario_file(tmp_path: Path) -> None:
     assert "agent_xxx" in draft["yaml"]
 
 
+def test_yaml_source_dispatch_metadata_recovered(tmp_path: Path) -> None:
+    """A YAML source scenario must yield dispatch metadata in the draft (regression).
+
+    run_orchestrator records scenario_file as a .yaml path; the source readers
+    must be format-agnostic, not JSONL-only.
+    """
+    scen_dir = tmp_path / "scenarios"
+    scen_dir.mkdir()
+    scen_file = scen_dir / "my-source.yaml"
+    scen_file.write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "agent-sim/v1",
+                "kind": "Scenario",
+                "metadata": {"id": "my-source", "locale": "fr-FR", "tags": ["src"]},
+                "persona": {
+                    "name": "Camille",
+                    "brief": "Test brief",
+                    "goals": ["Get help"],
+                    "constraints": [],
+                    "traits": ["polite"],
+                    "style": "natural",
+                },
+                "dispatch": {"metadata": '{"yourProjectKey":"agent_yyy"}'},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    report_dir = _write_report(
+        tmp_path,
+        meta=_meta(scenario_id="my-source") | {"scenario_file": str(scen_file)},
+        events=_events(user_texts=["bonjour"], agent_texts=["bonjour et bienvenue"]),
+    )
+    draft = build_scenario_draft_from_run(report_dir, scenario_id="my-promoted-yaml")
+    assert draft["scenario_id"] == "my-promoted-yaml"
+    # Opaque Dispatch.metadata must survive the YAML source path, not fall back
+    # to a warning. Dispatch is also carried on the run summary.
+    assert "agent_yyy" in draft["yaml"]
+    assert "Dispatch" in draft["kinds"]
+    assert not any("Dispatch.metadata not recovered" in w for w in draft["warnings"])
+
+
+def test_yaml_source_locale_preferred(tmp_path: Path) -> None:
+    """YAML source locale must flow into the draft metadata."""
+    scen_dir = tmp_path / "scenarios"
+    scen_dir.mkdir()
+    scen_file = scen_dir / "locale-source.yaml"
+    scen_file.write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "agent-sim/v1",
+                "kind": "Scenario",
+                "metadata": {"id": "locale-source", "locale": "fr-FR", "tags": ["src"]},
+                "persona": {
+                    "name": "Camille",
+                    "brief": "Test brief",
+                    "goals": ["Get help"],
+                    "constraints": [],
+                    "traits": ["polite"],
+                    "style": "natural",
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    report_dir = _write_report(
+        tmp_path,
+        meta=_meta(scenario_id="locale-source") | {"scenario_file": str(scen_file)},
+        events=_events(user_texts=["bonjour"], agent_texts=["bonjour et bienvenue"]),
+    )
+    draft = build_scenario_draft_from_run(report_dir, locale_default="en-US")
+    data = yaml.safe_load(draft["yaml"])
+    assert data["metadata"]["locale"] == "fr-FR"
+
+
 def test_draft_missing_report_raises(tmp_path: Path) -> None:
     try:
         build_scenario_draft_from_run(tmp_path / "nonexistent")

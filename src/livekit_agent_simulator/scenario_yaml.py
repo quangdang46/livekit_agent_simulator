@@ -201,6 +201,10 @@ def load_scenario_yaml(path: Path | str) -> Scenario:
                 f"{path}: group wrapper with {len(raw_items)} scenarios — "
                 f"LKS uses one scenario per file; split into separate files"
             )
+        if not isinstance(raw_items[0], dict):
+            raise ScenarioError(
+                f"{path}: scenarios[0] must be an object (got {type(raw_items[0]).__name__})"
+            )
         merged = dict(raw_items[0])
         # Carry group-level metadata onto the single scenario.
         for key in ("metadata", "tags", "locale", "id"):

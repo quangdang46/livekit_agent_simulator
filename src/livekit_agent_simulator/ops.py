@@ -14,6 +14,7 @@ Internal helpers (not exposed on CLI/MCP): ``_run_scenario``, ``_run_scenario_di
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -167,6 +168,29 @@ def init_scenario(
     }
 
 
+def _write_yaml_atomic(dest: Path, text: str) -> None:
+    """Write YAML ``text`` to ``dest`` atomically, validating first.
+
+    The draft is written to a ``.yaml.tmp`` sibling and round-tripped through
+    the YAML parser BEFORE ``os.replace`` moves it into place, so a broken
+    YAML never lands on ``dest`` (e.g. shadowing a valid ``.jsonl`` that
+    ``find_scenario`` would otherwise skip). The temp file is unlinked on any
+    failure. ``parse_scenario`` is not used on the temp because its suffix
+    (``.tmp``) routes to the JSONL parser; ``load_scenario_yaml`` is the same
+    YAML branch ``parse_scenario`` dispatches to for ``.yaml`` files.
+    """
+    from .scenario_yaml import load_scenario_yaml
+
+    tmp = dest.with_suffix(".yaml.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        load_scenario_yaml(tmp)
+        os.replace(tmp, dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def convert_scenario(
     project_root: Path | str,
     scenario_id: str,
@@ -179,6 +203,10 @@ def convert_scenario(
     section-object YAML beside it. Fails if the scenario is already ``.yaml``.
     The original ``.jsonl`` is left in place (both formats are supported).
     """
+    if not _SCENARIO_ID_RE.match(scenario_id):
+        raise ConfigError(
+            f"Invalid scenario_id {scenario_id!r}: use letters/digits/[_-], start with alnum, max 64 chars"
+        )
     root = Path(project_root).resolve()
     # Prefer the configured scenarios dir; else fall back to .agent-sim/scenarios.
     try:
@@ -215,9 +243,7 @@ def convert_scenario(
     from .scenario_yaml import scenario_to_yaml_text
 
     text = scenario_to_yaml_text(scenario)
-    dest.write_text(text, encoding="utf-8")
-    # Round-trip through the parser to guarantee the YAML is valid.
-    parse_scenario(dest)
+    _write_yaml_atomic(dest, text)
     return {
         "source": str(scenario.path),
         "written_to": str(dest),
@@ -946,7 +972,7 @@ def scenario_from_run(
 
     if write:
         dest = cfg.scenarios_dir / f"{draft['scenario_id']}.yaml"
-        dest.write_text(draft["yaml"], encoding="utf-8")
+        _write_yaml_atomic(dest, draft["yaml"])
         draft["written_to"] = str(dest)
     return draft
 

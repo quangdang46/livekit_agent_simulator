@@ -19,6 +19,7 @@ a section keyed by `kind`:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from .asserts import AssertSpec, parse_assert_spec
 from .script import ScriptStep, ScriptVerifySpec
 
 API_VERSION = "agent-sim/v1"
+_SCENARIO_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 KNOWN_KINDS = {
     "Persona",
     "Context",
@@ -678,8 +680,13 @@ def _iter_scenario_files(scenarios_dir: Path):
 
 def list_scenarios(scenarios_dir: Path) -> list[dict[str, Any]]:
     """Best-effort listing — invalid files are included with an `error` field."""
+    # YAML is canonical: a .yaml shadows the .jsonl/.yml with the same stem
+    # (e.g. after `lks convert` both foo.jsonl and foo.yaml exist).
+    yaml_stems = {f.stem for f in scenarios_dir.glob("*.yaml")}
     out: list[dict[str, Any]] = []
     for f in _iter_scenario_files(scenarios_dir):
+        if f.suffix.lower() in (".jsonl", ".yml") and f.stem in yaml_stems:
+            continue
         try:
             s = parse_scenario(f)
             out.append(
@@ -703,6 +710,10 @@ def list_scenarios(scenarios_dir: Path) -> list[dict[str, Any]]:
 
 
 def find_scenario(scenarios_dir: Path, scenario_id: str) -> Scenario:
+    if not _SCENARIO_ID_RE.match(scenario_id):
+        raise ScenarioError(
+            f"Invalid scenario_id {scenario_id!r}: use letters/digits/[_-], start with alnum, max 64 chars"
+        )
     # YAML is the canonical format — prefer it when both exist.
     for ext in ("yaml", "yml", "jsonl"):
         direct = scenarios_dir / f"{scenario_id}.{ext}"
