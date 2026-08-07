@@ -148,6 +148,12 @@ class OpenAICallerBridge:
         self._inject_turn_active: bool = False
         self._inject_heard_text: str = ""
         self._agent_audio_paused: bool = False
+        # Monotonic time the agent last produced speech (RMS above threshold),
+        # used to detect the agent's turn END so we can commit + respond
+        # without waiting on input transcription (which itself needs the
+        # commit — the chicken-and-egg that dead-silenced the call).
+        self._agent_last_speech_mono: float | None = None
+        self._agent_commit_pending: bool = False
         self._mute_persona_audio = False
         self._script_pending: Callable[[], bool] | None = None
         self._script_hangup_farewell = False
@@ -800,6 +806,24 @@ class OpenAICallerBridge:
                     )
                     energy_speaking = rms >= _AGENT_SPEECH_RMS_THRESHOLD
                     speaking = obs_speaking or energy_speaking
+                    now = time.monotonic()
+                    if speaking:
+                        self._agent_last_speech_mono = now
+                        if self._agent_commit_pending:
+                            # New speech after a (possibly brief) gap — a fresh
+                            # agent turn; clear the pending-commit latch.
+                            self._agent_commit_pending = False
+                    elif self._agent_last_speech_mono is not None:
+                        # Agent just stopped speaking — after a trailing-silence
+                        # window, commit the buffered audio + request the caller
+                        # response. This is the VAD-off manual turn boundary; the
+                        # transcription-completed path can't drive it (it needs
+                        # the commit first — the deadlock that dead-silenced).
+                        since_last = (now - self._agent_last_speech_mono) * 1000.0
+                        if since_last >= _AGENT_STREAM_END_SILENCE_MS:
+                            self._agent_commit_pending = True
+                            self._agent_last_speech_mono = None
+                            asyncio.ensure_future(self._commit_and_respond())
                     if not speaking and frame_ms >= _AGENT_STREAM_END_SILENCE_MS:
                         # Long silence — skip to avoid flooding the buffer.
                         continue
@@ -1105,6 +1129,18 @@ class OpenAICallerBridge:
                     "event_id": f"evt_resp_{int(time.monotonic() * 1000)}",
                 },
             )
+            # VAD is OFF (push-to-talk): the input buffer is not auto-cleared.
+            # Clear it so the next agent turn's audio starts from an empty
+            # buffer instead of mixing with the committed turn's residual PCM.
+            # (OpenAI Realtime docs: send input_audio_buffer.clear before
+            # beginning a new user input when VAD is disabled.)
+            await self._send(
+                self._ws,
+                {
+                    "type": "input_audio_buffer.clear",
+                    "event_id": f"evt_clear_{int(time.monotonic() * 1000)}",
+                },
+            )
             self._response_in_flight = True
         except Exception:
             pass
@@ -1145,6 +1181,15 @@ class OpenAICallerBridge:
         text = self._agent_in_text.strip()
         if text:
             self.observer.on_transcript("agent", text, final=True, source="sim.openai")
+            # Agent speech as heard by the sim (mirrors the Gemini caller's
+            # `sim.heard_agent`). Drives turn-tracking / caller-policy; without
+            # it the report shows `heard=0` and the caller never appears to
+            # react to the agent's turns.
+            self.writer.emit(
+                "sim.heard_agent",
+                spec={"text": text},
+                source="sim.openai",
+            )
         self._agent_in_text = ""
         # Agent finished speaking — commit the buffered agent audio and request
         # the next caller response. Without this the model never hears the
