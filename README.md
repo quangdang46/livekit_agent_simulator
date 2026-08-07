@@ -349,6 +349,23 @@ lks web --port 8765 --root /path/to/target
 
 Every MCP tool needs `project_root` **except** `guide`.
 
+### Output format
+
+List/table-shaped commands (`scenarios`, `runs`, `plugins`, `cues`, `validate`,
+`preflight`, `execute`, `execute-all`, `execute-dict`, `compare`, `status`,
+`report`, `log`) print a **human-readable rich table** by default. Add
+`--json` to any of them for the raw machine-readable payload — the same bytes
+the MCP tools return. Single-dict commands (`init`, `export`, `convert`,
+`scenario-init`, `scenario-from-run`, `guide`, `web`) always print JSON.
+
+```bash
+lks scenarios                          # human table
+lks scenarios --json                   # raw JSON for scripts / CI / agents
+lks execute-all --json | jq '.suite'   # pipe JSON to jq
+```
+
+**Agents & CI:** use `--json` — the default table is for humans.
+
 ### MCP config examples
 
 Installer writes this when tools are detected. Manual Cursor:

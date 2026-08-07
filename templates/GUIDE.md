@@ -51,6 +51,10 @@ lks web --root /path/to/target                         # Ctrl+C to stop server
 MCP: same names as the right-hand column in §3 (`guide`, `init_project`, `preflight`, …).
 Every MCP tool needs `project_root` **except** `guide`.
 
+**Output:** list/table-shaped commands print a human table by default; add
+`--json` for the raw machine-readable payload (same bytes as the MCP tools).
+Use `--json` in scripts / CI / agents.
+
 ---
 
 ## 1. Config (`.agent-sim/config.yaml`)
