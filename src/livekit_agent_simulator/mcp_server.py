@@ -108,6 +108,7 @@ async def execute_scenario(
     repeat: int = 1,
     pass_at_k: int | None = None,
     run_name: str | None = None,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
     """Validate then execute one scenario from `.agent-sim/scenarios/*.yaml` (legacy `*.jsonl` still read).
 
@@ -124,6 +125,7 @@ async def execute_scenario(
         repeat=repeat,
         pass_at_k=pass_at_k,
         run_name=run_name,
+        agent_name=agent_name,
     )
 
 
@@ -138,6 +140,7 @@ async def execute_scenarios(
     pass_at_k: int | None = None,
     parallel: int = 1,
     wait_s: float = 0.0,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
     """Execute multiple scenarios; returns suite matrix + CI gate (hard: assert/script/status).
 
@@ -156,6 +159,7 @@ async def execute_scenarios(
         pass_at_k=pass_at_k,
         parallel=parallel,
         wait_s=wait_s,
+        agent_name=agent_name,
     )
 
 
@@ -164,9 +168,12 @@ async def execute_scenario_dict(
     project_root: str,
     scenario: dict[str, Any],
     run_name: str | None = None,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
     """Validate then run an in-memory scenario dict (no JSONL file). Same fields as export_scenario."""
-    return await ops.execute_scenario_dict(project_root, scenario, run_name=run_name)
+    return await ops.execute_scenario_dict(
+        project_root, scenario, run_name=run_name, agent_name=agent_name
+    )
 
 
 @mcp.tool
