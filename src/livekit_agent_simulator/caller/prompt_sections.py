@@ -52,10 +52,11 @@ def length_guidance(verbosity: Verbosity) -> str:
             "stay on-intent, and keep a conversational loop going. No monologues."
         )
     return (
-        "Speak like a real phone caller in about 2–5 spoken clauses when it helps: "
-        "answer what was asked, then add situational detail (why you need help, what "
-        "already went wrong, what you hope happens next). Stay on-intent — not a monologue, "
-        "and not one-word answers unless the assistant only needs a yes/no."
+        "Speak the length a real person would on the phone: answer what was asked, then "
+        "naturally add the detail that comes to mind (why you need help, what already went "
+        "wrong, what you hope happens next). Let the conversation breathe — a short answer "
+        "when the moment is short, a fuller one when you have something to say. Never a "
+        "monologue, and never a robotic telegram unless the assistant only needs a yes/no."
     )
 
 
@@ -277,17 +278,29 @@ class NaturalSpeechSection:
         lines.extend([
             "",
             "## NATURAL SPEECH",
-            "Sound like a real caller: occasional brief hesitation sounds are OK "
-            "(use standard spellings such as um, uh, or well — not elongated nonsense).",
-            "Do not pad every turn with fillers; use them sparingly when thinking or softening a reply.",
-            "Vary how you open turns — never start consecutive turns with the same stock opener "
-            "(e.g. repeating \"Right. Um,\" / \"Yeah. Um,\" every time).",
-            "Prefer fuller turns over telegram replies: answer, then add why / what happened / what you need.",
-            "Examples of natural freestyle (dialogue, or between Script cues when asked): "
-            '"I need to move Tuesday\'s appointment because of a work conflict, '
-            'and I was hoping you could check what else is open this week." '
-            'or "The order never showed up, so I\'m calling to track it and figure out '
-            'if I should wait or reorder."',
+            "You are on a phone call, NOT writing an email or chat message. Real callers "
+            "speak the way people actually talk: with filler words, restarts, soft pauses, "
+            "and sentences that meander a little. Lean into this.",
+            "Speech patterns that make you sound human:",
+            "- Start turns with natural openers: \"Yeah,\" \"So,\" \"Um, actually,\" \"Oh,\" "
+            "\"Right, well,\" \"Hang on,\" — vary them; never repeat the same opener twice in a row.",
+            "- Use occasional filler where a real person would: \"um,\" \"uh,\" \"like,\" "
+            "\"you know,\" \"I mean,\" — sparingly, when thinking or softening, not in every sentence.",
+            "- Restart mid-sentence like people do: \"I was wondering if— actually, "
+            "wait, first—\" — natural course corrections sound human.",
+            "- Use contractions always: \"I'm,\" \"that's,\" \"don't,\" \"can't,\" "
+            "\"would've\" — never \"I am going to\" or \"it is\" in spoken turns.",
+            "- Ask real follow-up questions instead of just answering: \"Oh really?\", "
+            "\"And how long would that take?\", \"Hmm, is there any way around that?\"",
+            "WHAT GOOD OUTPUT LOOKS LIKE (bad → natural):",
+            '- Bad: "I would like to inquire about the used car you have advertised."',
+            "- Natural: \"Yeah, so I saw this car on your site — the silver one? "
+            "Um, I was wondering, like, what shape it is in, and whether the price is "
+            "something we could talk about.\"",
+            '- Bad: "Could you provide information regarding financing options?"',
+            "- Natural: \"And uh, what about financing? Like, is that something you "
+            "guys do in-house, or do I need to go to a bank first?\"",
+            "The ONE rule: sound like an ordinary person on the phone, not a script.",
             "Stay goal-bound; do not invent goodbye while Script steps remain.",
         ])
         lines.extend([

@@ -309,11 +309,12 @@ def test_default_si_natural_band_no_hard_one_two_ceiling():
         persona={"name": "Sam", "goals": ["Ask fee"]},
         locale="en-US",
     )
-    assert "2–5 spoken clauses" in prompt or "2-5 spoken clauses" in prompt
     assert "NATURAL SPEECH" in prompt
     assert "um" in prompt.lower() or "uh" in prompt.lower()
+    # Natural band must NOT hard-cap utterance length
     assert "Keep every utterance short and natural like real phone speech (1-2 sentences)." not in prompt
     assert "(1-2 sentences)" not in prompt
+    assert "2–5 spoken clauses" not in prompt and "2-5 spoken clauses" not in prompt
 
 
 def test_verbosity_quiet_si_no_natural_speech_section():
@@ -394,7 +395,7 @@ def test_style_short_turns_does_not_force_quiet():
     assert "short turns" not in prompt.lower()
     assert "verbosity" in prompt.lower() or "brevity" in prompt.lower()
     assert "warm" in prompt.lower() or "everyday" in prompt.lower()
-    assert "situational detail" in prompt.lower() or "work conflict" in prompt.lower()
+    assert "ordinary person on the phone" in prompt.lower() or "real person" in prompt.lower()
 
 
 def test_style_short_turns_kept_when_quiet():
@@ -414,5 +415,7 @@ def test_natural_speech_section_has_phone_examples():
     ctx = CallerPolicyContext(persona={}, locale="en-US")
     joined = "\n".join(NaturalSpeechSection().render(ctx))
     assert "NATURAL SPEECH" in joined
-    assert "appointment" in joined.lower() or "order" in joined.lower()
+    # bad→natural example pairs with real filler patterns
+    assert "silver one" in joined.lower() or "financing" in joined.lower()
+    assert "um" in joined.lower() or "uh" in joined.lower()
     assert "goodbye" in joined.lower() or "Script" in joined

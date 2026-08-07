@@ -1110,7 +1110,11 @@ class OpenAICallerBridge:
             pass
 
     def _on_response_done(self) -> None:
-        self._cancel_out_done_timer()
+        # Do NOT cancel the output-done watchdog here: response.done fires for
+        # the *agent's* barge response too, while the caller's own `.done` may
+        # still be pending (STT lag). Cancelling would strand the caller turn
+        # un-finalized → dead call. The watchdog self-clears on the caller
+        # `.done` path (_on_output_transcript_done) and after its fallback runs.
         self._response_in_flight = False
         if self._mixer is not None:
             self._mixer.end_speech_turn()
