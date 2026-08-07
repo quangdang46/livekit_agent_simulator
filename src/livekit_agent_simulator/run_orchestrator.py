@@ -15,6 +15,7 @@ End conditions (first one wins):
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 import secrets
@@ -155,6 +156,7 @@ async def run_scenario(
     scenario_id: str,
     *,
     run_name: str | None = None,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
     """Run one scenario by id from `.agent-sim/scenarios/`."""
     preflight, _ = await run_preflight(cfg.project_root, connectivity=True)
@@ -162,7 +164,7 @@ async def run_scenario(
         failed = [c for c in preflight.checks if c["status"] == "fail"]
         raise RuntimeError("Preflight failed: " + "; ".join(f"{c['name']}: {c['detail']}" for c in failed))
     scenario = find_scenario(cfg.scenarios_dir, scenario_id)
-    return await run_scenario_instance(cfg, scenario, run_name=run_name)
+    return await run_scenario_instance(cfg, scenario, run_name=run_name, agent_name=agent_name)
 
 
 async def run_scenario_instance(
@@ -170,18 +172,27 @@ async def run_scenario_instance(
     scenario: Scenario,
     *,
     run_name: str | None = None,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
     """Run a parsed Scenario (file or in-memory). Returns {run_id, status, report_dir, summary}.
 
+    ``agent_name`` overrides ``cfg.livekit.agent_name`` for this run only —
+    dispatch targets the named worker without editing ``.agent-sim/config.yaml``
+    (enables parallel worktree workflows where each worktree registers its own
+    agent under a distinct name).
+
     Phases (in order):
       1. prepare  — plugins, report dir, event writer
-      2–3. SimLeg  — factory(mode).connect → rooms + identities
+      2-3. SimLeg  — factory(mode).connect → rooms + identities
       4. brain    — GeminiCallerBridge + optional script runner
       5. converse — turns until end condition
       6. verify   — script/assert hard checks + behavior_summary
       7. judge    — optional soft LLM verdict
       8. finalize — summary.json / sqlite / multi-room cleanup
     """
+    if agent_name:
+        cfg = dataclasses.replace(cfg, livekit=dataclasses.replace(cfg.livekit, agent_name=agent_name))
+
     # ── Phase 1: prepare ────────────────────────────────────────────────
     plugin_load = ensure_plugins_loaded(cfg.project_root, scenario.plugin_modules)
     run = scenario.run_spec

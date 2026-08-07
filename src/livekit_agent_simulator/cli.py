@@ -246,6 +246,12 @@ def execute(
         "--name",
         help="Override slug after seq prefix (e.g. demo → reports/001-demo/)",
     ),
+    agent_name: Optional[str] = typer.Option(
+        None,
+        "--agent-name",
+        help="Override the target LiveKit worker name for this run (no config edit). "
+        "Enables parallel worktree workflows.",
+    ),
 ) -> None:
     """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)"""
     result = _run(
@@ -255,6 +261,7 @@ def execute(
             repeat=repeat,
             pass_at_k=pass_at_k,
             run_name=name,
+            agent_name=agent_name,
         )
     )
     from .suite import evaluate_run_result
@@ -309,6 +316,14 @@ def execute_all_cmd(
         "on that concurrency slot (sequential: between scenarios). "
         "Default 0. Does not delay the first wave; does not replace agent-join wait.",
     ),
+    agent_name: Optional[str] = typer.Option(
+        None,
+        "--agent-name",
+        help="Override the target LiveKit worker name for this run (no config edit). "
+        "Enables parallel worktree workflows: each worktree registers its own "
+        "agent under a distinct name via VOICE_AI_AGENT_NAME and you point lks "
+        "at it per invocation.",
+    ),
     root: Optional[Path] = ROOT_OPTION,
 ) -> None:
     """Execute multiple scenarios; print suite matrix + CI gate. (MCP: execute_scenarios)"""
@@ -323,6 +338,7 @@ def execute_all_cmd(
             pass_at_k=pass_at_k,
             parallel=parallel,
             wait_s=wait,
+            agent_name=agent_name,
         )
     )
     _print(result)
@@ -344,6 +360,11 @@ def execute_dict_cmd(
         "--name",
         help="Override slug after seq prefix (e.g. demo → reports/001-demo/)",
     ),
+    agent_name: Optional[str] = typer.Option(
+        None,
+        "--agent-name",
+        help="Override the target LiveKit worker name for this run (no config edit).",
+    ),
 ) -> None:
     """Validate then run an in-memory scenario JSON. (MCP: execute_scenario_dict)"""
     try:
@@ -357,7 +378,9 @@ def execute_dict_cmd(
     if not isinstance(scenario, dict):
         typer.secho("Scenario JSON must be an object", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
-    result = _run(ops.execute_scenario_dict(_root(root), scenario, run_name=name))
+    result = _run(
+        ops.execute_scenario_dict(_root(root), scenario, run_name=name, agent_name=agent_name)
+    )
     from .suite import evaluate_run_result
 
     gate = evaluate_run_result(result, strict_judge=False)
