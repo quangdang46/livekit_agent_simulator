@@ -25,7 +25,7 @@ def _ensure_utf8_stdio() -> None:
 
 _ensure_utf8_stdio()
 
-from . import ops
+from . import cli_render, ops
 from .config import ConfigError
 from .scenario import ScenarioError
 
@@ -36,6 +36,12 @@ app = typer.Typer(
 
 ROOT_OPTION = typer.Option(None, "--root", help="Project root (default: current directory)")
 
+# Shared --json flag: raw JSON instead of a human-readable rich table.
+# The parameter name must be `as_json`, not `json` — cli.py uses the stdlib
+# `json` module in function bodies and a literal `json` param would shadow it.
+# Typer derives the flag name from the Option string, not the param name.
+JSON_OPTION = typer.Option(False, "--json", help="Emit raw JSON instead of a human-readable table")
+
 
 def _root(root: Optional[Path]) -> Path:
     return (root or Path.cwd()).resolve()
@@ -43,6 +49,14 @@ def _root(root: Optional[Path]) -> Path:
 
 def _print(data: Any) -> None:
     typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def _emit(data: Any, as_json: bool, render_fn: cli_render.RENDERER) -> None:
+    """Emit ``data`` as raw JSON (``--json``) or via a rich table renderer."""
+    if as_json:
+        _print(data)  # byte-identical JSON path — unchanged
+        return
+    render_fn(cli_render.make_console(), data)
 
 
 def _run_failed(result: dict[str, Any], *, strict_judge: bool = False) -> bool:
@@ -113,19 +127,20 @@ def web(
 def preflight(
     root: Optional[Path] = ROOT_OPTION,
     no_connectivity: bool = typer.Option(False, "--no-connectivity", help="Skip LiveKit API check"),
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Check config + LiveKit connectivity without running a scenario. (MCP: preflight)"""
     result = _run(ops.preflight(_root(root), connectivity=not no_connectivity))
-    _print(result)
+    _emit(result, as_json, cli_render.render_preflight)
     if not result.get("ok"):
         raise typer.Exit(1)
 
 
 @app.command("scenarios")
-def scenarios_cmd(root: Optional[Path] = ROOT_OPTION) -> None:
+def scenarios_cmd(root: Optional[Path] = ROOT_OPTION, as_json: bool = JSON_OPTION) -> None:
     """List scenarios. (MCP: list_scenarios)"""
     try:
-        _print(ops.list_scenarios(_root(root)))
+        _emit(ops.list_scenarios(_root(root)), as_json, cli_render.render_scenarios)
     except ConfigError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
@@ -139,6 +154,7 @@ def cues(
         "--resolve",
         help="Resolve one asset id/path and print path (builtin:voice.barge_short, builtin:noise.loud, my.wav, …)",
     ),
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """List built-in + target room_pcm cues. (MCP: list_cues)"""
     from .audio.cue_catalog import describe_resolution
@@ -157,27 +173,31 @@ def cues(
             _print(describe_resolution(asset, project_root=r if (r / ".agent-sim").is_dir() else None))
         return
     try:
-        _print(ops.list_cues(r))
+        _emit(ops.list_cues(r), as_json, cli_render.render_cues)
     except Exception as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
 
 @app.command()
-def plugins(root: Optional[Path] = ROOT_OPTION) -> None:
+def plugins(root: Optional[Path] = ROOT_OPTION, as_json: bool = JSON_OPTION) -> None:
     """List verify plugins. (MCP: list_plugins)"""
     try:
-        _print(ops.list_plugins(_root(root)))
+        _emit(ops.list_plugins(_root(root)), as_json, cli_render.render_plugins)
     except ConfigError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
 
 @app.command()
-def validate(scenario_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
+def validate(
+    scenario_id: str,
+    root: Optional[Path] = ROOT_OPTION,
+    as_json: bool = JSON_OPTION,
+) -> None:
     """Validate one scenario. (MCP: validate_scenario)"""
     result = ops.validate_scenario(_root(root), scenario_id)
-    _print(result)
+    _emit(result, as_json, cli_render.render_validate)
     if not result.get("valid"):
         raise typer.Exit(1)
 
@@ -252,6 +272,7 @@ def execute(
         help="Override the target LiveKit worker name for this run (no config edit). "
         "Enables parallel worktree workflows.",
     ),
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)"""
     result = _run(
@@ -268,7 +289,7 @@ def execute(
 
     gate = evaluate_run_result(result, strict_judge=strict_judge)
     result = {**result, "gate": gate}
-    _print(result)
+    _emit(result, as_json, cli_render.render_execute)
     if _run_failed(result, strict_judge=strict_judge):
         raise typer.Exit(1)
 
@@ -325,6 +346,7 @@ def execute_all_cmd(
         "at it per invocation.",
     ),
     root: Optional[Path] = ROOT_OPTION,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Execute multiple scenarios; print suite matrix + CI gate. (MCP: execute_scenarios)"""
     result = _run(
@@ -341,7 +363,7 @@ def execute_all_cmd(
             agent_name=agent_name,
         )
     )
-    _print(result)
+    _emit(result, as_json, cli_render.render_execute_all)
     if _run_failed(result, strict_judge=strict_judge):
         raise typer.Exit(1)
 
@@ -365,6 +387,7 @@ def execute_dict_cmd(
         "--agent-name",
         help="Override the target LiveKit worker name for this run (no config edit).",
     ),
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Validate then run an in-memory scenario JSON. (MCP: execute_scenario_dict)"""
     try:
@@ -385,15 +408,15 @@ def execute_dict_cmd(
 
     gate = evaluate_run_result(result, strict_judge=False)
     result = {**result, "gate": gate}
-    _print(result)
+    _emit(result, as_json, cli_render.render_execute)
     if _run_failed(result):
         raise typer.Exit(1)
 
 
 @app.command()
-def status(run_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
+def status(run_id: str, root: Optional[Path] = ROOT_OPTION, as_json: bool = JSON_OPTION) -> None:
     """Run status from SQLite. (MCP: get_run_status)"""
-    _print(_run(ops.get_run_status(_root(root), run_id)))
+    _emit(_run(ops.get_run_status(_root(root), run_id)), as_json, cli_render.render_status)
 
 
 @app.command()
@@ -405,10 +428,11 @@ def log(
     since_mono_ms: Optional[int] = typer.Option(None, help="Only events at/after this mono ms"),
     limit: int = typer.Option(200),
     root: Optional[Path] = ROOT_OPTION,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Filtered view of events.jsonl. (MCP: get_run_log)"""
     try:
-        _print(
+        _emit(
             ops.get_run_log(
                 _root(root),
                 run_id,
@@ -417,7 +441,9 @@ def log(
                 source=source,
                 since_mono_ms=since_mono_ms,
                 limit=limit,
-            )
+            ),
+            as_json,
+            cli_render.render_log,
         )
     except ConfigError as e:
         typer.secho(str(e), fg=typer.colors.RED, err=True)
@@ -425,9 +451,9 @@ def log(
 
 
 @app.command()
-def report(run_id: str, root: Optional[Path] = ROOT_OPTION) -> None:
+def report(run_id: str, root: Optional[Path] = ROOT_OPTION, as_json: bool = JSON_OPTION) -> None:
     """Summary + verdict + suspicious turns (includes caller.behavior_summary). (MCP: get_run_report)"""
-    _print(_run(ops.get_run_report(_root(root), run_id)))
+    _emit(_run(ops.get_run_report(_root(root), run_id)), as_json, cli_render.render_report)
 
 
 @app.command()
@@ -454,6 +480,7 @@ def compare(
         help="Max allowed barge_recovery_rate drop vs baseline (0 = no drop)",
     ),
     root: Optional[Path] = ROOT_OPTION,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Diff two runs. With --baseline, hard-fail on latency/assert regression. (MCP: compare_runs)"""
     if baseline:
@@ -468,12 +495,12 @@ def compare(
                 max_barge_recovery_drop=max_barge_recovery_drop,
             )
         )
-        _print(result)
+        _emit(result, as_json, cli_render.render_compare)
         gate = result.get("gate") if isinstance(result, dict) else None
         if isinstance(gate, dict) and not gate.get("ok", True):
             raise typer.Exit(code=1)
         return
-    _print(_run(ops.compare_runs(_root(root), run_id_a, run_id_b)))
+    _emit(_run(ops.compare_runs(_root(root), run_id_a, run_id_b)), as_json, cli_render.render_compare)
 
 
 @app.command()
@@ -481,9 +508,14 @@ def runs(
     limit: int = typer.Option(20),
     scenario_id: Optional[str] = typer.Option(None, "--scenario"),
     root: Optional[Path] = ROOT_OPTION,
+    as_json: bool = JSON_OPTION,
 ) -> None:
     """Run history, newest first. (MCP: list_runs)"""
-    _print(_run(ops.list_runs(_root(root), limit=limit, scenario_id=scenario_id)))
+    _emit(
+        _run(ops.list_runs(_root(root), limit=limit, scenario_id=scenario_id)),
+        as_json,
+        cli_render.render_runs,
+    )
 
 
 @app.command("scenario-from-run")
