@@ -129,6 +129,11 @@ class ScriptRunner:
                 need = step.delay_ms
                 if step.trigger == "agent_speaking":
                     need = step.min_agent_active_ms + step.delay_ms
+                # hang_up steps: once the defer gate has opened (budget exhausted
+                # or agent replied), fire immediately — the delay already served
+                # its purpose while we were waiting for the gate.
+                if step.action == "hang_up" and step.id in self._hang_up_defer_emitted:
+                    elapsed_ms = max(elapsed_ms, need)
                 if elapsed_ms < need:
                     continue
                 if step.action == "hang_up":
@@ -372,6 +377,45 @@ class ScriptRunner:
                             )
                         except Exception as say_err:
                             inject_error = f"{type(say_err).__name__}: {say_err}"
+                    # Emit the cue right after the farewell injects: verify must
+                    # count the hang_up step even if the drain/disconnect below
+                    # errors (observed: gemini caller 1007 during drain).
+                    hang_spec = {
+                        "step_id": step.id,
+                        "label": step.label or step.id,
+                        "say": say_text,
+                        "trigger": step.trigger,
+                        "action": step.action,
+                        "barge_in": step.barge_in,
+                        "class": step.interrupt_class,
+                        "overlay": effective_overlay(step),
+                        "delivery": step.delivery or "gemini_text",
+                        "asset": step.asset,
+                        "gain": step.gain,
+                        "waited_ms": waited_ms,
+                        "hold_silence_ms": 0,
+                        "agent_active": self.observer.agent_is_active_speaker,
+                        "agent_active_ms": agent_active_ms,
+                        "during_agent_speech": during_agent_speech,
+                        "error": inject_error,
+                    }
+                    self.writer.emit(
+                        kind,
+                        spec=hang_spec,
+                        source="sim.script",
+                        include_dialogue=False,
+                    )
+                    self.writer.emit(
+                        "sim.hang_up",
+                        spec={
+                            "step_id": step.id,
+                            "label": step.label or step.id,
+                            "say": say_text,
+                            **({"error": inject_error} if inject_error else {}),
+                        },
+                        source="sim.script",
+                        include_dialogue=False,
+                    )
                     # Let goodbye leave the room before disconnect (real human hang-up).
                     # Scale drain with utterance length so short farewells are not cut.
                     words = max(1, len(say_text.split()))
@@ -384,8 +428,6 @@ class ScriptRunner:
                 finally:
                     if hasattr(self.bridge, "end_script_hangup_farewell"):
                         self.bridge.end_script_hangup_farewell()
-                # Mark caller disconnected by triggering end_call via bridge
-                self.bridge.sim_hang_up()
                 hang_spec = {
                     "step_id": step.id,
                     "label": step.label or step.id,
@@ -423,6 +465,8 @@ class ScriptRunner:
                     source="sim.script",
                     include_dialogue=False,
                 )
+                # Mark caller disconnected by triggering end_call via bridge
+                self.bridge.sim_hang_up()
                 return
             else:
                 kind = "sim.script.cue"
