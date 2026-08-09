@@ -1,0 +1,50 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: ambient-loop-office
+  locale: en-US
+  tags:
+  - noise
+  - ambient
+  - example
+persona:
+  name: Noisy office caller
+  brief: You are calling from a busy office. Background noise is on the line; speak clearly and complete
+    your goals.
+  goals:
+  - Hear the agent greeting
+  - Ask one simple question about hours or pricing
+  - End the call politely
+  traits:
+  - polite
+  speech_conditions:
+    noise: builtin:noise.ambient
+    noise_when: background
+    noise_gain: 0.3
+    noise_delay_ms: 1500
+execute:
+  max_turns: 6
+  timeout_s: 90
+  first_speaker: agent
+script:
+  steps:
+  - id: auto-ambient
+    trigger: time
+    delay_ms: 1500
+    say: '[ambient]'
+    label: auto-ambient
+    once: true
+    min_agent_active_ms: 400
+    delivery: room_pcm
+    asset: builtin:noise.ambient
+    silence_after_cue_ms: 0
+    action: speak
+    loop: true
+    require_agent_spoke_first: true
+    require_agent_reply_this_turn: true
+    defer_on_open_question: true
+    open_question_idle_ms: 20000
+    barge_in: false
+    with_blip: true
+    gain: 0.3
+    interrupt_class: noise

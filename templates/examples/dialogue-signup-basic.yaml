@@ -1,0 +1,68 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: dialogue-signup-basic
+  locale: en-US
+  tags:
+  - example
+  - dialogue
+  - human-like
+persona:
+  name: Alex Rivera
+  language: en-US
+  situation: Small-business owner calling signup support. Interested in the basic plan but unsure about
+    the monthly fee.
+  outcome: Get either an exact monthly fee, or a concrete next step to see pricing / start signup. Give
+    name when asked. One short goodbye, then stop.
+  brief: Polite, slightly hesitant caller.
+  goals:
+  - 'Speak first: greet and say you want the basic plan'
+  - Ask what the monthly fee is
+  - If they cannot quote a fee, ask one follow-up for a concrete next step
+  - Give your name when asked
+  - After a usable answer — one short goodbye, then stop
+  style: polite, slightly hesitant, 1-2 sentence turns
+  traits:
+  - quiet
+  - polite
+  constraints:
+  - Do not invent a credit card number or OTP
+  - Do not restart from a full phone menu
+  - Do not linger in thank-you or bye loops
+context:
+  notes: 'Author note: dialogue mode, no Script; first_speaker=user when the agent waits for the caller.'
+  caller_knows: You have not signed up yet and only need the basic plan.
+execute:
+  max_turns: 12
+  timeout_s: 200
+  first_speaker: user
+assert:
+  outcomes:
+  - id: caller_asked_fee
+    type: transcript_contains
+    phrases:
+    - fee
+    - month
+    - price
+    - cost
+    - how much
+    role: user
+    min_agent_finals_after_barge_in: 1
+    min_interruptions: 0
+    require_turn_samples: 0
+    min_goals: 1
+    check_agent_transcript: false
+  - id: outcome_signup_path
+    type: llm_bool
+    prompt: Did the caller pursue signup and try to learn the monthly fee?
+    role: any
+    min_agent_finals_after_barge_in: 1
+    min_interruptions: 0
+    require_turn_samples: 0
+    min_goals: 1
+    check_agent_transcript: false
+pass_criteria:
+  criteria:
+  - Caller pursued signup naturally
+  - Caller asked about fee or pricing
+  - Call reached a polite ending without a long bye loop

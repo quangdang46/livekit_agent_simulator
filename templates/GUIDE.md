@@ -1,6 +1,6 @@
 # livekit-agent-simulator — setup & ops guide
 
-For coding agents and humans. **CLI (`lk-sim`) and MCP share the same ops.**
+For coding agents and humans. **CLI (`lks`) and MCP share the same ops.**
 
 Package dials **any** LiveKit voice agent with a Gemini Live simulated caller and writes
 a forensic report. The agent under test is a **black box** — never import or edit target
@@ -13,7 +13,7 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 | Topic | URL |
 |-------|-----|
 | First-time install + `init` + preflight | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/guide/installation.md |
-| Verify plugins (full API) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md |
+| Plugins — verify + before_run / after_run (full API) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md |
 | Consumer dispatch / data topics / tool patterns | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md |
 | Caller barge / silence / hang-up patterns | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/caller-pattern-plan.md |
 | Package rules for coding agents | https://github.com/quangdang46/livekit-agent-simulator/blob/main/AGENTS.md |
@@ -25,31 +25,35 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 ## 0. If you know nothing — do this order
 
 1. `guide` (this text) — read once.
-2. Confirm the **voice agent worker is running** and registered on LiveKit with a known `agent_name`.
+2. Confirm the **agent under test is running** and registered on LiveKit with a known `agent_name`.
 3. `init` on the target repo → fill credentials in `.agent-sim/config.yaml`.
 4. `preflight` until `ok: true`.
-5. `scenario-init <id>` → edit the JSONL (`//` lines are guides; delete unused kinds).
-6. `validate <id>` then `execute <id>` (add ``--repeat N --pass-at-k K`` for flake control).
-7. `report <run-id>` and/or **`web`** (browser: play audio + highlight transcript).
+5. `scenario-init <id>` → edit the YAML (`#` lines are guides; delete unused sections).
+6. `validate <id>` then `execute <id>` (optional ``--name``, ``--repeat N --pass-at-k K``).
+7. `report <run-id>` and/or **`web`** (browser: play audio + highlight transcript; list auto-updates).
 8. If a run fails, promote it to a permanent test: ``scenario-from-run <run-id> --write``, review, add to suite.
 
 ```bash
 # Install once (optional) — full steps: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/guide/installation.md
 # curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" | bash
-# From anywhere; point --root at the LiveKit agent repo (not the dashboard)
-lk-sim guide
-lk-sim init --root /path/to/target   # safe to re-run; does not overwrite existing config/scenarios
+# From anywhere; point --root at the target LiveKit agent repo
+lks guide
+lks init --root /path/to/target   # safe to re-run; does not overwrite existing config/scenarios
 # edit /path/to/target/.agent-sim/config.yaml
-lk-sim preflight --root /path/to/target
-lk-sim scenario-init smoke-hello --root /path/to/target   # skip if file already exists
-lk-sim validate smoke-hello --root /path/to/target
-lk-sim execute smoke-hello --root /path/to/target
-lk-sim report <run-id> --root /path/to/target
-lk-sim web --root /path/to/target                         # Ctrl+C to stop server
+lks preflight --root /path/to/target
+lks scenario-init smoke-hello --root /path/to/target   # skip if file already exists
+lks validate smoke-hello --root /path/to/target
+lks execute smoke-hello --root /path/to/target         # → reports/001-smoke-hello-YYYYMMDD-HHMMSS-xxxx/
+lks report 001-smoke-hello-… --root /path/to/target
+lks web --root /path/to/target                         # Ctrl+C to stop server
 ```
 
 MCP: same names as the right-hand column in §3 (`guide`, `init_project`, `preflight`, …).
 Every MCP tool needs `project_root` **except** `guide`.
+
+**Output:** list/table-shaped commands print a human table by default; add
+`--json` for the raw machine-readable payload (same bytes as the MCP tools).
+Use `--json` in scripts / CI / agents.
 
 ---
 
@@ -61,12 +65,14 @@ Created by `init`. **Gitignored.** Paste secrets here (no env substitution in v1
 |---------|----------|---------|
 | `livekit.url` | yes | `wss://…` LiveKit Cloud or self-host |
 | `livekit.api_key` / `api_secret` | yes | Server API credentials |
-| `livekit.agent_name` | yes | Must match the worker’s registered dispatch name |
+| `livekit.agent_name` | yes | Must match the agent’s registered dispatch name |
 | `livekit.dispatch_metadata` | no | Default opaque JSON **string** for all runs |
 | `livekit.agent_join_timeout_ms` | no | Default 25000 |
-| `simulator.google_api_key` | yes | Gemini API key for sim caller (+ judge) |
-| `simulator.voice.model` / `voice` / `language` | no | Defaults: flash-live model, Puck, `en-US` |
-| `judge.model` | no | If present + scenario PassCriteria → post-run LLM judge |
+| `simulator.api_key` | yes | API key of the **active** provider (`google` → Gemini, `openai` → OpenAI) |
+| `simulator.provider` / `mode` | no | Defaults `google` / `realtime`; `openai` also realtime today (cascade reserved) |
+| `simulator.voice.model` / `voice` / `language` | no | Provider-neutral voice bag; defaults flash-live model, Puck, `en-US` |
+| `judge.model` / `base_url` / `api_key` | no | Soft LLM judge; HTTP OpenAI chat when `base_url` set, else Gemini |
+
 | `observe.record_audio` | no | `true` → local stereo WAV (L=sim, R=agent), no Egress |
 | `observe.timezone` | no | Default `UTC` (report timestamps) |
 | `observe.lk_agent_session` | no | Default `true`; SDK tools, state, errors, usage + final chat history via `lk.agent.session` |
@@ -80,26 +86,28 @@ bootstraps from dispatch metadata, set `livekit.dispatch_metadata` or
 per-scenario `Dispatch` — see https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md .
 
 **Telephony modes** (scenario only): `webrtc_sim` (default) · `inbound_sip` · `outbound_human_pickup` · `outbound_sim_callee` · `agent_dials`.
-Templates: `outbound-human-pickup.jsonl`, `outbound-callee-sim.jsonl`, `inbound-caller-sim.jsonl`. Full guide: `docs/telephony.md`.
+Templates: `outbound-human-pickup.yaml`, `outbound-callee-sim.yaml`, `inbound-caller-sim.yaml`. Full guide: `docs/telephony.md`.
 
 ### Voice, language & call recording
 
-The sim caller is **always voice** when `simulator.google_api_key` is set (Gemini Live TTS in the room).
-There is no separate “enable voice” toggle — only **which voice/language** and **whether to save WAV**.
+The sim caller is **always voice** when `simulator.api_key` is set (Gemini Live or OpenAI Realtime TTS in the room, per `simulator.provider`).
+There is no separate “enable voice” toggle — only **which provider/voice/language** and **whether to save WAV**.
 
 | Layer | What it does | Where to set |
 |-------|----------------|--------------|
-| **Sim speech** | Gemini Live speaks as the caller | `simulator.voice.*`, `simulator.language` |
+| **Sim speech** | Active provider (Gemini Live / OpenAI Realtime) speaks as the caller | `simulator.provider`, `simulator.voice.*`, `simulator.language` |
 | **Persona locale** | Prompt + scenario language hint | `Scenario.metadata.locale`, optional `Persona.spec.language` |
 | **Vocal barge / backchannel** | Real speech WAV into sim mic (STT hears it) | Script `delivery: room_pcm` + `asset: voice.*` or `.agent-sim/cues/*.wav` |
-| **Call recording** | Stereo `conversation.wav` for replay (`lk-sim web`) | `observe.record_audio: true` |
+| **Call recording** | Stereo `conversation.wav` for replay (`lks web`) | `observe.record_audio: true` |
 | **Soft judge** | Post-run rubric (not a hard CI gate by default) | `judge:` in config **and** scenario `PassCriteria` |
 
 Example — Vietnamese caller + local recording (template defaults are `en-US` / `UTC`):
 
 ```yaml
 simulator:
-  google_api_key: "…"
+  provider: google
+  mode: realtime
+  api_key: "…"            # key of the active provider (Google or OpenAI)
   language: "vi-VN"
   voice:
     model: "gemini-3.1-flash-live-preview"
@@ -107,22 +115,28 @@ simulator:
     language: "vi-VN"
 
 judge:
-  model: "gemini-2.5-flash"
+  # Gemini (default when base_url omitted) — uses simulator.api_key (provider: google)
+  model: "gemini-3.1-flash-lite"
   temperature: 0
+  # Or HTTP via OpenAI-compatible gateway. `endpoint_type` = wire format (default openai):
+  # base_url: "http://localhost:8080/v1"
+  # api_key: "sk-..."
+  # model: "gpt-4o-mini"
+  # endpoint_type: openai   # openai → /chat/completions | anthropic → /messages
 
 observe:
   record_audio: true     # reports/<run-id>/conversation.wav — L=sim, R=agent
   timezone: "Asia/Ho_Chi_Minh"
   lk_transcription: true
-  lk_agent_session: true # default; automatic for LiveKit Agents SDK workers
+  lk_agent_session: true # default; automatic for LiveKit Agents SDK sessions
   # Optional fallback for non-SDK custom events — see portability.md:
   # https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md
   # data_topics: ["myapp.flow"]
   # tool_event_patterns: []
 ```
 
-Per-scenario language override in JSONL: `"metadata":{"locale":"vi-VN"}` and/or
-`"Persona":{"spec":{"language":"vi-VN",…}}`.
+Per-scenario language override in YAML: `metadata.locale: vi-VN` and/or
+`persona.language: vi-VN`.
 
 ### Cue library aliases (optional)
 
@@ -136,7 +150,7 @@ cues:
     office: office_loop.wav
 ```
 
-Scenario: `"asset":"office","delivery":"room_pcm"`. List built-ins + overrides: `lk-sim cues --root .`
+Scenario: `"asset":"office","delivery":"room_pcm"`. List built-ins + overrides: `lks cues --root .`
 
 ---
 
@@ -145,8 +159,8 @@ Scenario: `"asset":"office","delivery":"room_pcm"`. List built-ins + overrides: 
 ### Create
 
 ```bash
-lk-sim scenario-init my-case --root /path/to/target
-# → .agent-sim/scenarios/my-case.jsonl
+lks scenario-init my-case --root /path/to/target
+# → .agent-sim/scenarios/my-case.yaml
 ```
 
 - Full-line `// …` comments document each kind and important fields.
@@ -162,15 +176,27 @@ lk-sim scenario-init my-case --root /path/to/target
 | `Persona` | yes | Character: `brief`, `goals`, `traits`, **`constraints`**, **`speech_conditions`** |
 | `Context` | no | `notes` + optional opaque `fixtures` hints |
 | `Simulator` | no | Defaults; overridden by Execute |
-| `Execute` | recommended | `max_turns`, `timeout_s`, `first_speaker` |
+| `Execute` | recommended | `max_turns`, `timeout_s`, `first_speaker`, `hold_music_timeout_s` |
 | `Dispatch` | no | Per-scenario opaque metadata JSON string |
 | `Caller` | no | Transport mode: `webrtc_sim` (default) · `inbound_sip` · `outbound_human_pickup` · `outbound_sim_callee` · `agent_dials` |
 | `Telephony` | no if WebRTC | SIP dial params: `call_to` / `dial_in` / `sip_trunk_id` / `prepare_ms` (overrides config) |
 | `Behavior` | no | Hamming policy → auto Script (`barge_ins`, `user_silence`, `ambient`, `hang_ups`) |
 | `Script` | no | Timed cues (`speak`, `wait`, **`hang_up`**) (wins over Behavior on same step `id`) |
-| `Assert` | no | tools / transcript / **`sip`** / outcomes (`transcript_contains`, **`recovery`**, **`latency`**, **`ended_by`**, **`goals_met`**, `llm_bool`) |
-| `Plugins` | no | Load local verify modules — see **Verify plugins** below |
-| `PassCriteria` | no | Soft LLM judge rubric |
+| `Assert` | no | tools / transcript / **`sip`** / **`tool_order`** / outcomes (`transcript_contains`, **`recovery`**, **`latency`**, **`ended_by`**, **`goals_met`**, **`constraint_respected`**, `llm_bool`) |
+| `Plugins` | no | Load local modules (verify + lifecycle hooks) — see **Plugins** below |
+| `PassCriteria` | no | Soft LLM judge rubric — flat `criteria[]` **or** `judges[]` + `mode` (`all` \| `majority` \| `any`) |
+
+### Hold / agent dead-air timeout (`hold_music_timeout_s`)
+
+`Execute.spec.hold_music_timeout_s` (5–300 s; Persona alias `speech_conditions.hold_music_timeout_s`, Execute wins) — after the agent has spoken at least once, if the **agent** produces no activity for N seconds the sim caller hangs up like a real human giving up on hold. Emits `sim.hold_timeout` + `sim.hang_up`, ends the run with reason `hold_music_timeout` (`ended_by: sim`). The timer resets on any agent activity and is **not** paused by scripted caller silence (agent dead air is what it measures). See example `hold-timeout-agent-stall`.
+
+Three silence concepts — do not mix them:
+
+| Concept | Who is silent | Knob | Ends the call? |
+|---|---|---|---|
+| Caller silent mode | caller (sim) | `speech_conditions.silent_mode` | no (agent side decides) |
+| Hold / dead-air timeout | agent | `Execute.spec.hold_music_timeout_s` | yes — sim hangs up (`hold_music_timeout`) |
+| Dead-call safety net | agent | `observe.silence_threshold_ms` (× 3, global) | yes — run aborts (`dead_call_silence`); skipped while an armed hold timeout is authoritative |
 
 ### Caller character (Hamming-aligned)
 
@@ -180,7 +206,13 @@ lk-sim scenario-init my-case --root /path/to/target
 - **constraints[]** → hard rules in Gemini system prompt  
 - **speech_conditions** → auto barge / ambient / silence Script if you skip hand-written Script  
   - `barge_policy: mid_agent_turn` + optional `barge_asset: builtin:voice.barge_short` (speech WAV; `with_blip` defaults off for `voice.*`)  
-- **Behavior** kind → explicit barge/silence/ambient policies  
+  - `noise_gain` / `barge_gain` (`0.0`–`1.0`) scale auto-compiled ambient / barge cues (also per-step Script `gain` / `volume`)
+  - **Quiet caller (STT stress):** `speech_conditions.voice_gain` (`0.0`–`1.0`, default `1.0`; aliases `voice_volume` / `volume`) scales **speech** PCM after Gemini Live (freestyle + inject). Noise beds are unchanged. Gemini Live has **no** native volume/speed API (see example `quiet-caller-confirm`).
+  - **Voice speed:** not supported on Gemini Live (`SpeechConfig` is voice name + language only). Do not ship a fake `voice_speed` flag; use soft traits or pre-recorded Script WAVs. Track upstream Live `speech_rate` if Google adds it.
+  - **Silent mode (dead air):** `speech_conditions.silent_mode: true` — caller stays mute for the whole call (Coval Silent Mode). Disables freestyle, agent-greeted nudge, auto barge/noise; hang_up is silent. Use for reprompt/timeout QA.
+  - **Interruption rate (recurring cut-ins):** `speech_conditions.interruption_rate: none|low|medium|high` — parallel timer policy that barges while the agent is speaking, at most once per interval (`low`=90 s, `medium`=45 s, `high`=30 s). Fires only while the agent is the active speaker (a due interval waits for the next agent turn). Emits the same `sim.script.cue` / `interruption` events as Script barges (`class` defaults to `correction`). Overrides: `interruption_say`, `interruption_asset` (→ `room_pcm`), `interruption_class`, `interruption_gain`, `interruption_with_blip`, `interruption_min_agent_active_ms`, and `interruption_interval_ms` (≥ 5000; pins the interval for short smoke calls). Disabled by `silent_mode`. Distinct from one-shot `barge_policy` and authored `Behavior.barge_ins[]` (see example `interrupt-rate-medium`).
+  - **Continuous ambient bed:** `noise_when: "background"` (or Behavior/Script `"loop": true`) re-queues `room_pcm` noise until hang-up (parallel under speech). One-shot bursts stay default (`once` / no loop).  
+- **Behavior** kind → explicit barge/silence/ambient policies; set Script step `class` (`correction` \| `backchannel` \| `noise` \| `dtmf` \| `silence` \| `escalate`) so recovery metrics and web chips stay honest  
 - **Assert** `outcomes` type **`recovery`** → agent re-engages after barge (`min_agent_finals_after_barge_in`, optional `max_ms_after_barge_to_agent_final`)
 - **Assert** `outcomes` type **`latency`** → hard CI gates on turn p50/p95, TTFW, recovery percentiles, barge recovery rate
   - Example: `{"id":"speed","type":"latency","max_turn_p95_ms":3500,"max_ttfw_ms":5000,"require_turn_samples":1}`
@@ -189,9 +221,63 @@ lk-sim scenario-init my-case --root /path/to/target
 - **Assert** `outcomes` type **`goals_met`** → LLM judge verifies the simulated caller stated/pursued at least N persona goals before `[END_CALL]` (hard fail if not met)
   - Example: `{"id":"goals_done","type":"goals_met","min_goals":2,"goals":["Hear greeting","Ask about pricing"]}`
   - Without explicit `goals`, falls back to `Persona.spec.goals` from the scenario
+- **Assert** `outcomes` type **`constraint_respected`** → hard fail if **caller** transcript contains forbidden phrases/patterns (`must_not_phrases` and/or `must_not_match`)
+  - Example: `{"id":"no_card","type":"constraint_respected","must_not_phrases":["4111","CVV"]}`
+- **Assert** `tool_order` → required subsequence of `tool.start` names (not necessarily contiguous)
+  - Example: `{"kind":"Assert","spec":{"tool_order":["lookup","book"]}}`
 - **Script action `hang_up`** → sim caller disconnects from room (cúp máy thật)
   - Example: `{"id":"hangup","action":"hang_up","trigger":"time","delay_ms":5000,"say":"Thôi em cúp đây"}`  
-- See https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/caller-pattern-plan.md and `templates/examples/character-impatient.jsonl` (shipped in package after `init`)
+- See https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/caller-pattern-plan.md and `templates/examples/character-impatient.yaml` (shipped in package after `init`)
+
+### PassCriteria (soft judge)
+
+Flat list (backward compatible):
+
+```yaml
+pass_criteria:
+  criteria:
+    - The agent answered the caller's question
+```
+
+Multi-judge groups (aggregate with `mode`):
+
+```yaml
+pass_criteria:
+  mode: majority
+  judges:
+    - id: task
+      criteria: [Task completed]
+    - id: tone
+      criteria: [Polite tone]
+```
+
+Builtin dimensions (Hamming/LiveKit-shaped — `evals.presets`):
+
+```yaml
+pass_criteria:
+  judges:
+    - id: tc
+      builtin: task_completion
+    - id: acc
+      builtin: accuracy
+```
+
+Or flat: `"criteria":["builtin:task_completion"]`.
+
+Available presets: `task_completion` · `factual_accuracy` · `policy_compliance` · `conversation_flow` · **`conversation_naturalness`** · `empathy` · `escalation` · `accuracy` · `coherence`.
+
+**`conversation_naturalness`** grades the call as a REAL human reviewer would (product manager with stopwatch + notepad): one question per turn, minimal confirmation (only phone/email/ambiguous dates), acknowledge-then-redirect when the caller volunteers a later field, echo relative dates as stated (never invent an absolute date), and turn latency (<3s natural, 3–5s ok, >5s stuck). When any naturalness criterion is present the judge returns a structured `conversation_feedback` list — `[{issue, severity, agent_line, why}]` with the exact verbatim agent line and human impact — plus the per-criterion `criteria` array. Language-neutral in core; opt in per scenario:
+
+```yaml
+pass_criteria:
+  judges:
+    - id: nat
+      builtin: conversation_naturalness
+```
+
+Judge verdicts: `pass` | `fail` | `maybe` (soft unless `--strict-judge`). Criteria may mark `relevant=false` to skip irrelevant checks.
+
+`mode`: `all` (default) \| `majority` \| `any`. Still soft unless you pass `--strict-judge`. Needs `judge:` in config (Gemini or HTTP `base_url`/`api_key`).
 
 ### Audio cues (built-in + per-repo custom)
 
@@ -203,17 +289,22 @@ lk-sim scenario-init my-case --root /path/to/target
 | Aliases / dirs | `config.yaml` → `cues:` | short name from `cues.aliases` |
 
 ```bash
-lk-sim cues --root /path/to/target
-lk-sim cues --root /path/to/target --resolve builtin:voice.barge_short
+lks cues --root /path/to/target
+lks cues --root /path/to/target --resolve builtin:voice.barge_short
 # MCP: list_cues(project_root=…)
 ```
 
 WAV: **PCM16 mono @ 24 kHz**. Prefer `voice.*` for audible barge-in; noise for beds/bursts. Details: https://github.com/quangdang46/livekit-agent-simulator/blob/main/templates/cues/README.md
 
-### Verify plugins (custom Script checks)
+### Plugins (verify + lifecycle hooks)
 
-Extend `Script.verify` with project-specific checks on `events.jsonl` — no fork of the sim package.
-Full API: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md
+Three registration kinds (full API: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md):
+
+| Kind | When | Purpose |
+|------|------|---------|
+| **Verify** (`@verify_plugin`) | After the call, in `script_verify` | Custom checks over `events.jsonl` — referenced from `Script.verify` |
+| **before_run** (`@register_before_run`) | After prepare, **before** SimLeg connects | Enrich `meta`, set up external resources |
+| **after_run** (`@register_after_run`) | After finalize, just before execute returns | Notify CI/Slack, archive reports |
 
 **1. Copy and edit the example**
 
@@ -222,62 +313,106 @@ cp templates/plugins/example_verify.py /path/to/target/.agent-sim/plugins/my_che
 # or copy from the package after init: .agent-sim/plugins/example_verify.py
 ```
 
-**2. Register the module in scenario JSONL**
+**2. Register the module in scenario YAML**
 
-```jsonl
-{"kind":"Plugins","spec":{"modules":["my_checks"]}}
+```yaml
+plugins:
+  modules: [my_checks]
 ```
 
-**3. Wire plugins on Script verify** (built-in checks still run first)
+Loading the module registers **all** verify + lifecycle hooks in that file.
+Lifecycle hooks need no Script reference; only **verify** names are wired below.
 
-```jsonl
-{"kind":"Script","spec":{"steps":[{"id":"bc","trigger":"agent_speaking","delay_ms":900,"say":"uh-huh","delivery":"gemini_text"}],"verify":{"require_during_agent_speech":true,"min_agent_finals_after_first_cue":1,"plugins":["example_backchannel_continue"],"plugin_options":{"example_backchannel_continue":{"min_agent_finals":1}}}}}
+**3. Wire verify plugins on Script** (built-in checks still run first)
+
+```yaml
+script:
+  steps:
+    - id: bc
+      trigger: agent_speaking
+      delay_ms: 900
+      say: uh-huh
+      delivery: gemini_text
+  verify:
+    require_during_agent_speech: true
+    min_agent_finals_after_first_cue: 1
+    plugins: [example_backchannel_continue]
+    plugin_options:
+      example_backchannel_continue:
+        min_agent_finals: 1
 ```
 
-Discover loaded plugins:
+`plugin_options` is also passed to lifecycle hooks as `ctx.options`.
+
+Discover loaded **verify** plugins:
 
 ```bash
-lk-sim plugins --root /path/to/target
+lks plugins --root /path/to/target
 # MCP: list_plugins(project_root=…)
 ```
 
-Ship plugins from an installable package via `[project.entry-points."lk_sim.plugins"]` — see https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md
+Ship plugins from an installable package via `[project.entry-points."lks.plugins"]` — see https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md
 
 ### Run
 
 ```bash
-lk-sim validate my-case --root /path/to/target
-lk-sim execute my-case --root /path/to/target
-lk-sim execute my-case --repeat 5 --pass-at-k 3   # pass@k flake control
-lk-sim execute-all --tag smoke --root /path/to/target
-lk-sim execute-all --tag smoke --repeat 3 --pass-at-k 2   # flake in batch
-lk-sim execute-all --tag smoke --parallel 3 --root /path/to/target  # up to 3 scenarios at once
-# In-memory (CI / agents): MCP execute_scenario_dict or CLI execute-dict -f file.json
+lks validate my-case --root /path/to/target
+lks execute my-case --root /path/to/target                    # → reports/001-my-case/
+lks execute my-case --name demo --root /path/to/target        # → reports/002-demo/
+lks execute my-case --repeat 5 --pass-at-k 3   # pass@k flake control
+lks execute-all --tag smoke --root /path/to/target
+lks execute-all --tag smoke --repeat 3 --pass-at-k 2   # flake in batch
+lks execute-all --tag smoke --parallel 3 --root /path/to/target  # up to 3 scenarios at once
+# In-memory (CI / agents): MCP execute_scenario_dict or CLI execute-dict -f file.json [--name]
 ```
+
+**Run folder name (`--name`):** each execute gets an auto sequence prefix from existing
+folders under `.agent-sim/reports/` (`001`, `002`, …). Default slug is the scenario id;
+``--name`` replaces that slug only (scenario id stays in `meta.json`).
+
+| Command | Report dir |
+|---------|------------|
+| `execute sp-vad-rt-barge-early` | `001-sp-vad-rt-barge-early/` |
+| `execute sp-vad-rt-barge-early --name demo` | `001-demo/` (or next free seq) |
+
+MCP: `execute_scenario(..., run_name="demo")` / `execute_scenario_dict(..., run_name=…)`.
 
 **Flake control (pass@k):** run the same scenario N times; CI gate (hard: status / assert / script)
 passes only if ≥ K iterations are green. Judge verdicts remain soft unless ``--strict-judge``.
 Useful for barge / latency / noise scenarios where Gemini behavior varies.
+Each iteration still allocates its own ``{NNN}-…`` folder.
 
 ```bash
-lk-sim execute my-barge-case --repeat 7 --pass-at-k 5 --root /path/to/target
+lks execute my-barge-case --repeat 7 --pass-at-k 5 --root /path/to/target
 ```
 
 ### Promote a failed run to a permanent test (fail → golden)
 
 ```bash
-lk-sim scenario-from-run <run-id> --root /path/to/target
-# dry-run: prints draft JSONL. Review Persona + Assert.
-lk-sim scenario-from-run <run-id> --root /path/to/target --write
-# writes .agent-sim/scenarios/from-<source>-<id>.jsonl
+lks scenario-from-run <run-id> --root /path/to/target
+# dry-run: prints draft YAML. Review Persona + Assert.
+lks scenario-from-run <run-id> --root /path/to/target --write
+# writes .agent-sim/scenarios/from-<source>-<id>.yaml
 # Then edit, validate, add to execute-all
-lk-sim validate from-my-source-xxxx --root /path/to/target
+lks validate from-my-source-xxxx --root /path/to/target
 ```
 
-The draft recovers Persona, Dispatch, Execute spec, and run stats from the source report.
-It adds a basic transcript Assert + recovery Assert (when barges present).
-``Context.notes`` carries the source run_id, judge info, and metric hints.
-**Review before promoting** — the draft is a starting point, not a golden assertion.
+The draft recovers Persona, Dispatch, Execute spec, and run stats from the source report:
+
+- **Persona.brief** stays a short mission statement — caller intent goes to `goals[]`
+  (source persona goals preferred, else intent-phrased from the first user finals) and
+  `constraints[]`. The raw transcript sample lives only in `Context.notes` (author-only).
+- **Behavior stub**: if the run had a sim cut-in, one `Behavior` barge/noise/backchannel
+  entry is reconstructed from `sim.script.cue` markers (say, class, `after_agent_ms` from
+  observed agent-active time), so a barge-fail replays deterministically.
+- **Script open** (when `first_speaker=user`): a minimal silence-triggered open line is
+  added (source Script open preferred, else first user final). Without it, Behavior
+  barge alone suppresses the Gemini speak-first bootstrap and dead-airs the call.
+- **Asserts**: basic transcript Assert + recovery Assert (when barges present).
+- ``Context.notes`` carries the source run_id, judge info, and metric hints.
+
+**Review before promoting** — the draft header includes a review checklist (goals,
+Behavior timing, Assert tightening, Dispatch). It is a starting point, not a golden assertion.
 
 `first_speaker`:
 
@@ -299,13 +434,16 @@ Mode is **per scenario** (`Caller.mode`), never in `config.yaml`.
 
 Package templates (copy into target `.agent-sim/scenarios/`):
 
-- `templates/outbound-human-pickup.jsonl`
-- `templates/outbound-callee-sim.jsonl`
-- `templates/inbound-caller-sim.jsonl`
+- `templates/outbound-human-pickup.yaml`
+- `templates/outbound-callee-sim.yaml`
+- `templates/inbound-caller-sim.yaml`
 
-```jsonl
-{"kind":"Caller","spec":{"mode":"inbound_sip"}}
-{"kind":"Telephony","spec":{"dial_in":"+15551234567"}}
+```yaml
+# scenario — transport mode + telephony per scenario (never in config.yaml)
+caller:
+  mode: inbound_sip
+telephony:
+  dial_in: '+15551234567'
 ```
 
 ```yaml
@@ -345,18 +483,68 @@ Full guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/doc
 | `validate` | `validate_scenario` |
 | `export` | `export_scenario` |
 | `scenario-init` | `init_scenario` |
-| `execute` | `execute_scenario` (flags: ``--repeat N --pass-at-k K``) |
-| `execute-all` | `execute_scenarios` (suite matrix + CI gate; flags: ``--repeat --pass-at-k --parallel N``) |
-| `execute-dict` | `execute_scenario_dict` |
+| `execute` | `execute_scenario` (flags: ``--name``, ``--repeat N --pass-at-k K``, ``--strict-judge``) |
+| `execute-all` | `execute_scenarios` (suite matrix + CI gate; flags: ``--repeat --pass-at-k --parallel N``, ``--strict-judge``) |
+| `execute-dict` | `execute_scenario_dict` (flag: ``--name`` / MCP ``run_name``) |
 | `scenario-from-run` | `scenario_from_run` |
 | `status` | `get_run_status` |
 | `log` | `get_run_log` |
 | `report` | `get_run_report` |
-| `compare` | `compare_runs` |
+| `compare` | `compare_runs` (optional `--baseline` hard regression gate) |
 | `runs` | `list_runs` |
 | `mcp` | *(stdio server — all tools above)* |
 
 There is **no** separate `run` command — always validate-then-run via `execute*`.
+
+### Authoring quality gate (`validate`)
+
+**Rule-based soft checks — no LLM.** `lks validate` always returns `valid: true` when schema parses;
+authoring findings are **warnings only** (never fail CI by default).
+
+```bash
+lks validate my-case --root /path/to/target
+```
+
+Response includes:
+
+| Field | Meaning |
+|-------|---------|
+| `warnings[]` | Flat human messages (schema + authoring) |
+| `authoring.scorecard` | Dimensions 0–2 each: goals, constraints, behavior, assertion, risk_tags, interaction_proof (max 12) |
+| `authoring.tier` | Soft suite hint: `blocking` \| `scheduled` \| `exploratory` |
+| `authoring.warning_codes[]` | Machine codes (e.g. `empty_goals`, `barge_without_recovery`, `constraint_without_assert`) |
+| `authoring.warnings[]` | `{code, message, severity}` structured |
+
+Common codes:
+
+| Code | Fix |
+|------|-----|
+| `empty_goals` | Add `Persona.goals[]` job-to-be-done |
+| `barge_without_recovery` | Assert `type: recovery` (or script_verify min after barge) |
+| `constraint_without_assert` | Assert `type: constraint_respected` |
+| `stress_trait_without_interaction` | Add Script/Behavior/speech_conditions for interrupt stress |
+| `hang_up_without_ended_by` | Assert `type: ended_by` |
+| `no_risk_tag` / `no_tags` | Tag `smoke` \| `regression` \| `draft` \| `blocking` \| … |
+
+**Suite tiers (Cekura/Hamming-inspired, soft):**
+
+| Tier | When |
+|------|------|
+| `blocking` | High score, no critical wiring gaps — OK for PR CI subset |
+| `scheduled` | Mid quality — nightly / wider suite |
+| `exploratory` | Empty goals / barge without recovery / stress traits soft-only |
+
+Authoring quality ≠ execute hard gate (status/assert/script_verify after a run).
+
+Golden baseline gate (CI): treat run A as baseline, fail exit `1` if candidate regresses:
+
+```bash
+lks compare <baseline-run> <candidate-run> --baseline --root /path/to/target
+# thresholds: --max-ttfw-regression-ms · --max-turn-p95-regression-ms ·
+#             --max-duration-regression-ms · --max-barge-recovery-drop
+```
+
+Without `--baseline`, `compare` is a soft metric/assert diff only.
 
 MCP for coding agents (Claude, Cursor, Windsurf, VS Code, …):
 
@@ -364,7 +552,7 @@ MCP for coding agents (Claude, Cursor, Windsurf, VS Code, …):
 {
   "mcpServers": {
     "livekit-agent-simulator": {
-      "command": "lk-sim",
+      "command": "lks",
       "args": ["mcp"]
     }
   }
@@ -377,14 +565,20 @@ MCP for coding agents (Claude, Cursor, Windsurf, VS Code, …):
 
 Directory: `.agent-sim/reports/<run-id>/`
 
-`run_id` = `{scenario_id}-{YYYYMMDD-HHMMSS}-{hex4}` (UTC), e.g. `smoke-hello-20260711-103045-a3f2`.
+`run_id` = `{NNN}-{slug}-{YYYYMMDD}-{HHMMSS}-{xxxx}` where:
+
+- **`NNN`** — auto sequence (`001`, `002`, …) from existing folders under `reports/` (parallel-safe)
+- **`slug`** — scenario id by default, or ``--name`` / MCP ``run_name`` override
+- **timestamp + hex** — UTC stamp + 4 hex chars so ids stay unique even if a report folder was deleted but SQLite still has the old row
+
+Examples: `001-smoke-hello-20260716-144623-a1b2`, `002-demo-20260716-144630-c3d4`. Suite matrices still write `suite-YYYYMMDD-HHMMSS.{json,md}` beside run folders (not a run_id).
 
 | File | Contents |
 |------|----------|
 | `events.jsonl` | Canonical event stream |
 | `timeline.md` | Human narrative table |
 | `summary.json` | Duration, turns, **`metrics`** (TTFW / turn p50-p99 / recovery / barge rate / talk_ratio), judge, **`caller.behavior_summary`**, `script_verify`, `assert_verify` |
-| `meta.json` | Scenario, room, config snapshot (no secrets) |
+| `meta.json` | `run_id`, `scenario_id`, optional `run_name`, room, config snapshot (no secrets) |
 | `conversation.wav` | Stereo PCM if `observe.record_audio: true` |
 | `cues.json` | Built on demand by `web` for transcript↔audio sync + markers |
 
@@ -393,14 +587,17 @@ L3 standard LiveKit Agents session events. L3 records `tool.*` and `session.*`
 automatically for SDK agents; custom `tool_event_patterns` remain a fallback.
 
 ```bash
-lk-sim report <run-id> --root /path/to/target   # full summary (includes caller.behavior_summary)
-lk-sim log <run-id> --kind "transcript.*" --root /path/to/target
-lk-sim log <run-id> --kind "sim.script*" --root /path/to/target
-lk-sim runs --root /path/to/target
-lk-sim web --root /path/to/target              # home list of all scenarios/runs
-lk-sim web <run-id> --root /path/to/target     # deep-link a specific run
-# Opens http://127.0.0.1:8765 — stereo L=sim R=agent; timeline bands + chips for barge / silence / recovery / tools
+lks report 001-smoke-hello-20260716-144623-a1b2 --root /path/to/target   # full summary (includes caller.behavior_summary)
+lks log 001-smoke-hello-20260716-144623-a1b2 --kind "transcript.*" --root /path/to/target
+lks log 001-smoke-hello-20260716-144623-a1b2 --kind "sim.script*" --root /path/to/target
+# --kind: one kind or one prefix (trailing *); not a comma-separated list
+lks runs --root /path/to/target
+lks web --root /path/to/target              # home list of all scenarios/runs (auto-updates ~3s)
+lks web 001-smoke-hello-20260716-144623-a1b2 --root /path/to/target     # deep-link a specific run
+# Opens http://127.0.0.1:8765 — stereo L=sim R=agent; timeline bands + chips for
+# barge / backchannel / false_interrupt / dtmf / silence / recovery / tools
 # Middle column shows agent actions (script cues + tool cards with args/output when L3 enabled)
+# Home list + player sidebar poll GET /api/runs; open player cues stay one-shot until you re-open a run
 ```
 
 No Node/Vite on the user machine. Player assets ship inside the wheel (built in CI from `web/dist/`).
@@ -413,10 +610,12 @@ No Node/Vite on the user machine. Player assets ship inside the wheel (built in 
 |---------|----------------|
 | `preflight` config fail | Missing `.agent-sim/config.yaml` → `init` first |
 | `livekit.api` fail | `url` / `api_key` / `api_secret` |
-| `dispatch.agent_timeout` | Worker process up? `agent_name` exact match (e.g. `…-local` vs prod)? |
-| Agent joins but silent | `Execute.first_speaker`; worker may need `Dispatch.metadata` |
+| `dispatch.agent_timeout` | Agent process up? `agent_name` exact match (e.g. `…-local` vs prod)? |
+| Agent joins but silent | `Execute.first_speaker`; agent may need opaque `Dispatch.metadata` |
 | Sim never speaks after agent | Normal nudge only when `first_speaker=agent` and no Script |
-| Judge skipped | Need `PassCriteria` **and** `judge:` block in config |
+| Judge skipped | Need `PassCriteria` **and** `judge:` block; HTTP needs `base_url`+`api_key` (or `JUDGE_*` env) |
+| Judge HTTP error | `base_url` reachable? OpenAI `/chat/completions` + `stream:false`; model id correct on gateway? |
+
 | No `conversation.wav` | Set `observe.record_audio: true` |
 | Scenario JSON error | Remove `#` comments; only full-line `//` allowed |
 | scenario-from-run draft says "DRAFT — review" | The draft is a starting point; tighten Persona/Assert before promoting to CI |
@@ -435,3 +634,24 @@ No Node/Vite on the user machine. Player assets ship inside the wheel (built in 
 - Prefer `execute` / `execute_scenario` / `execute_scenario_dict` over custom Python runners.
 - Deep package rules + research loop: https://github.com/quangdang46/livekit-agent-simulator/blob/main/AGENTS.md
 - Consumer wiring examples only: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md (load when setting up a target, not for core bugs).
+
+## People-pleaser counters (sim caller)
+
+LLM sim callers over-cooperate. For CI, **do not rely on traits alone**:
+
+- Script/Behavior fixed refuse lines + Assert `constraint_respected`
+- Script `hang_up` + Assert `ended_by` when testing hangup threats
+- Examples: `templates/examples/people-pleaser-refuse-card.yaml`, `people-pleaser-hangup-threat.yaml`
+
+## Suggested suite mix (Cekura-style)
+
+For a regression suite under `.agent-sim/scenarios/`:
+
+| Share | Profile | Examples |
+|---|---|---|
+| ~60% | Standard / polite / clean | `smoke-hello`, happy-path goals |
+| ~20% | Interrupt + noise | barge recovery, `interruption_rate`, ambient noise |
+| ~10% | Non-native / confused / slow | traits `non_native`, `confused`, `amd-slow-pickup` |
+| ~10% | Edge | people-pleaser refuse/hangup, silent caller, draft telephony |
+
+Tag scenarios (`smoke`, `regression`, `draft`, `policy`) and gate CI on a small **blocking** subset first.

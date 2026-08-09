@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 SUPPORTED_TRIGGERS = frozenset({"agent_speaking", "silence", "time"})
-SUPPORTED_ACTIONS = frozenset({"speak", "wait", "hang_up"})
+SUPPORTED_ACTIONS = frozenset({"speak", "wait", "hang_up", "dtmf"})
 
 # Hamming-aligned mid-call input classes (P1.F). JSON field name: ``class``.
 INTERRUPTION_CLASSES = frozenset(
@@ -79,9 +79,25 @@ class ScriptStep:
     delivery: str = "gemini_text"  # gemini_text | room_pcm
     asset: str | None = None
     silence_after_cue_ms: int = 0
-    action: str = "speak"  # speak | wait | hang_up
+    action: str = "speak"
+    # wait + silence_after_cue_ms: None/False = pace only (caller keeps answering).
+    # True = mute freestyle (intentional dead-air / unresponsive tests).
+    mute_persona: bool | None = None
+
+    # DTMF digit string: only valid when action="dtmf".
+    # characters 0-9*#w (w = wait 120ms gap).
+    digits: str = ""
+        # Continuous ambient bed for room_pcm noise (re-queues until hang-up).
+    # Distinct from once= (fire this step once). Only valid with delivery=room_pcm.
+    loop: bool = False  # speak | wait | hang_up
     # For silence trigger: only start counting idle after agent has spoken once.
     require_agent_spoke_first: bool = True
+    # hang_up: do not fire while user spoke and agent has not answered that turn yet.
+    require_agent_reply_this_turn: bool = True
+    # hang_up: defer while last agent final still expects a caller reply (open ? / prompt).
+    # After open_question_idle_ms of no user reply, hang_up may proceed (ghost hang).
+    defer_on_open_question: bool = True
+    open_question_idle_ms: int = 20000
     barge_in: bool = False
     # When barge_in + gemini_text: play builtin noise.blip first (audible cut-in).
     with_blip: bool = True
@@ -89,6 +105,26 @@ class ScriptStep:
     gain: float = 1.0
     # Hamming class: correction | backchannel | noise | dtmf | silence | escalate
     interrupt_class: str | None = None
+    # Overlay role: fixture (PCM/barge/noise) | line (forced say) | None → auto
+    overlay: str | None = None
+
+
+OVERLAY_ROLES = frozenset({"fixture", "line"})
+
+
+def effective_overlay(step: ScriptStep) -> str:
+    """Classify Script step as audio fixture vs forced spoken line."""
+    if step.overlay in OVERLAY_ROLES:
+        return str(step.overlay)
+    if (
+        step.barge_in
+        or step.delivery == "room_pcm"
+        or (step.interrupt_class or "") in ("noise", "backchannel", "dtmf", "silence")
+    ):
+        return "fixture"
+    if step.action == "speak" and str(step.say or "").strip():
+        return "line"
+    return "fixture"
 
 
 @dataclass(frozen=True)

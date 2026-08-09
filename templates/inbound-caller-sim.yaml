@@ -1,0 +1,41 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: inbound-caller-sim
+  locale: en-US
+  tags:
+  - telephony
+  - inbound
+persona:
+  name: Jordan
+  brief: You are calling support about a recent charge on your account. Be polite and concise.
+  goals:
+  - Explain the billing question
+  - Get a clear next step
+  style: polite, short sentences
+execute:
+  max_turns: 10
+  timeout_s: 120
+  first_speaker: user
+caller:
+  mode: inbound_sip
+telephony:
+  dial_in: '+15551234567'
+assert:
+  transcript:
+  - role: agent
+    contains_any:
+    - a
+    - e
+    - i
+    - o
+    - u
+  sip:
+    participant_present: true
+    call_status_any:
+    - active
+    dial_answered: true
+pass_criteria:
+  criteria:
+  - The agent responded to the inbound caller
+  - The agent could be understood

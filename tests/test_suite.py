@@ -67,12 +67,27 @@ def test_gate_judge_soft_by_default() -> None:
     assert "judge_fail" in g["soft_reasons"]
 
 
-def test_gate_judge_hard_when_strict() -> None:
+def test_gate_judge_error_never_hard() -> None:
     r = _ok_result()
-    r["summary"]["verdict"] = {"verdict": "fail", "score": 0}
+    r["summary"]["verdict"] = {
+        "verdict": "error",
+        "notes": "HTTP judge 401: unauthorized",
+    }
     g = evaluate_run_result(r, strict_judge=True)
-    assert g["ok"] is False
-    assert "judge_fail" in g["hard_reasons"]
+    assert g["ok"] is True
+    assert "judge_error" in g["soft_reasons"]
+    assert "judge_error" not in g["hard_reasons"]
+
+
+def test_gate_judge_skipped_ignored() -> None:
+    r = _ok_result()
+    r["summary"]["verdict"] = {
+        "verdict": "skipped",
+        "notes": "HTTP judge needs judge.api_key or JUDGE_API_KEY.",
+    }
+    g = evaluate_run_result(r, strict_judge=True)
+    assert g["ok"] is True
+    assert g["soft_fail"] is False
 
 
 def test_gate_status_failed() -> None:

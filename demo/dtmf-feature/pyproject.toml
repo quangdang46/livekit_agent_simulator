@@ -1,0 +1,23 @@
+[project]
+name = "dtmf-feature-demo"
+version = "0.1.0"
+description = "Minimal LiveKit voice agent demo exercising DTMF send/receive + lks simulator scenario"
+requires-python = ">=3.12"
+dependencies = [
+    "livekit-agents>=1.2",
+    "livekit-plugins-silero>=0.7",
+    "livekit-plugins-openai>=0.11",
+    "livekit-plugins-google>=1.2",
+    "livekit-plugins-deepgram>=0.8",
+    "livekit-plugins-cartesia>=0.6",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+dtmf-agent = "dtmf_agent.agent:main"
+
+[tool.uv]
+package = false
+
+[tool.setuptools]
+py-modules = []

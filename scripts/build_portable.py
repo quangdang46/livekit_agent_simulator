@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""Build a relocatable lk-sim portable pack for the current OS/arch.
+"""Build a relocatable lks portable pack for the current OS/arch.
 
 Layout (example windows-x64)::
 
-    dist/portable/lk-sim-windows-x64/
+    dist/portable/lks-windows-x64/
       python/          # full CPython from uv (relocatable standalone)
-      lk-sim.cmd       # Windows launcher
-      lk-sim-mcp.cmd
-      lk-sim           # Unix launcher
-      lk-sim-mcp
+      lks.cmd / lks-mcp.cmd / lks / lks-mcp
       README.txt
 
 CI zips the directory; installers only download + extract + PATH.
-No uv/pip on the user machine.
+No uv/pip on the user machine. Asset folder names stay ``lks-*`` for release stability.
 """
 
 from __future__ import annotations
@@ -47,7 +44,7 @@ def _asset_name() -> str:
         arch = "arm64"
     else:
         arch = machine
-    return f"lk-sim-{os_part}-{arch}"
+    return f"lks-{os_part}-{arch}"
 
 
 def _uv() -> str:
@@ -75,7 +72,7 @@ def _remove_uv_trampolines(py_dest: Path) -> None:
     scripts = py_dest / "Scripts"
     if not scripts.is_dir():
         return
-    for name in ("lk-sim.exe", "lk-sim-mcp.exe"):
+    for name in ("lks.exe", "lks-mcp.exe"):
         target = scripts / name
         if target.exists():
             print(f"removing broken uv trampoline {target}", flush=True)
@@ -83,45 +80,48 @@ def _remove_uv_trampolines(py_dest: Path) -> None:
 
 
 def _write_launchers(root: Path, is_windows: bool) -> None:
+    cli_names = ("lks",)
+    mcp_names = ("lks-mcp",)
+
     if is_windows:
         # Always python -m: uv trampoline .exe embeds CI absolute paths (see uv #3669).
-        (root / "lk-sim.cmd").write_text(
-            "\r\n".join(
-                [
-                    "@echo off",
-                    "setlocal",
-                    'set "ROOT=%~dp0"',
-                    'set "ROOT=%ROOT:~0,-1%"',
-                    '"%ROOT%\\python\\python.exe" -m livekit_agent_simulator %*',
-                    "exit /b %ERRORLEVEL%",
-                    "",
-                ]
-            ),
-            encoding="ascii",
-            newline="\r\n",
+        cli_body = "\r\n".join(
+            [
+                "@echo off",
+                "setlocal",
+                'set "ROOT=%~dp0"',
+                'set "ROOT=%ROOT:~0,-1%"',
+                '"%ROOT%\\python\\python.exe" -m livekit_agent_simulator %*',
+                "exit /b %ERRORLEVEL%",
+                "",
+            ]
         )
-        (root / "lk-sim-mcp.cmd").write_text(
-            "\r\n".join(
-                [
-                    "@echo off",
-                    "setlocal",
-                    'set "ROOT=%~dp0"',
-                    'set "ROOT=%ROOT:~0,-1%"',
-                    '"%ROOT%\\python\\python.exe" -m livekit_agent_simulator.mcp_server %*',
-                    "exit /b %ERRORLEVEL%",
-                    "",
-                ]
-            ),
-            encoding="ascii",
-            newline="\r\n",
+        mcp_body = "\r\n".join(
+            [
+                "@echo off",
+                "setlocal",
+                'set "ROOT=%~dp0"',
+                'set "ROOT=%ROOT:~0,-1%"',
+                '"%ROOT%\\python\\python.exe" -m livekit_agent_simulator.mcp_server %*',
+                "exit /b %ERRORLEVEL%",
+                "",
+            ]
         )
+        for name in cli_names:
+            (root / f"{name}.cmd").write_text(
+                cli_body, encoding="ascii", newline="\r\n"
+            )
+        for name in mcp_names:
+            (root / f"{name}.cmd").write_text(
+                mcp_body, encoding="ascii", newline="\r\n"
+            )
     # Always write Unix-style launchers too (Git Bash / WSL friendly).
     # Critical:
-    # - Resolve symlinks so ~/.local/bin/lk-sim -> pack/current/lk-sim works
+    # - Resolve symlinks so ~/.local/bin/lks -> pack/current/lks works
     # - Prefer `python -m` over entrypoint scripts (shebangs embed CI absolute paths)
     for name, mod in (
-        ("lk-sim", "livekit_agent_simulator"),
-        ("lk-sim-mcp", "livekit_agent_simulator.mcp_server"),
+        ("lks", "livekit_agent_simulator"),
+        ("lks-mcp", "livekit_agent_simulator.mcp_server"),
     ):
         body = f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -153,7 +153,7 @@ fi
 if [ -x "$ROOT/python/Scripts/{name}.exe" ]; then
   exec "$ROOT/python/Scripts/{name}.exe" "$@"
 fi
-echo "lk-sim portable: python not found under $ROOT/python" >&2
+echo "lks portable: python not found under $ROOT/python" >&2
 exit 1
 """
         path = root / name
@@ -269,8 +269,8 @@ def build(wheel: Path, out_dir: Path) -> Path:
     (root / "README.txt").write_text(
         "\n".join(
             [
-                "lk-sim portable pack (CI-built).",
-                "Run ./lk-sim (Unix) or lk-sim.cmd (Windows).",
+                "lks portable pack (CI-built).",
+                "Primary: ./lks (Unix) or lks.cmd (Windows).",
                 "No uv/pip install required on the user machine.",
                 "",
             ]
@@ -280,10 +280,10 @@ def build(wheel: Path, out_dir: Path) -> Path:
 
     # Smoke
     if is_windows:
-        smoke = root / "lk-sim.cmd"
+        smoke = root / "lks.cmd"
         _run(["cmd", "/c", str(smoke), "--help"])
     else:
-        _run([str(root / "lk-sim"), "--help"])
+        _run([str(root / "lks"), "--help"])
 
     zip_path = out_dir / f"{asset}.zip"
     if zip_path.exists():

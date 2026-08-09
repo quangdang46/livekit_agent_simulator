@@ -1,0 +1,11 @@
+# secrets
+.env
+# lks simulator data — regenerated per run
+.agent-sim/config.yaml
+.agent-sim/reports/
+reports/
+# python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
