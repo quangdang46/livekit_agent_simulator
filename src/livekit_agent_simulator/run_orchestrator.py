@@ -167,7 +167,13 @@ async def run_scenario(
     return await run_scenario_instance(cfg, scenario, run_name=run_name, agent_name=agent_name)
 
 
-
+async def run_scenario_instance(
+    cfg: SimConfig,
+    scenario: Scenario,
+    *,
+    run_name: str | None = None,
+    agent_name: str | None = None,
+) -> dict[str, Any]:
     """Run a parsed Scenario (file or in-memory). Returns {run_id, status, report_dir, summary}.
 
     ``agent_name`` overrides ``cfg.livekit.agent_name`` for this run only —
