@@ -83,9 +83,10 @@ def test_parse_overrides() -> None:
 
 
 def test_parse_interval_floor_and_gain_bounds() -> None:
+    # floor is 1000ms (short sim calls); below that fails
     with pytest.raises(ValueError, match="interruption_interval_ms"):
         parse_interrupt_rate(
-            _persona({"interruption_rate": "high", "interruption_interval_ms": 1000})
+            _persona({"interruption_rate": "high", "interruption_interval_ms": 500})
         )
     with pytest.raises(ValueError, match="interruption_gain"):
         parse_interrupt_rate(

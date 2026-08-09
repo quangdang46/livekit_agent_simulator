@@ -219,6 +219,11 @@ class Observer:
             self.agent_is_active_speaker = agent_now
             if agent_now:
                 self.last_agent_activity_mono = time.monotonic()
+                # Active-speaker energy is the earliest reliable signal that
+                # the agent is talking (transcripts may arrive late or only as
+                # finals with realtime providers). Consumers like
+                # InterruptRateRunner gate on agent_has_spoken.
+                self._agent_has_spoken = True
             self.writer.emit(
                 "room.active_speakers",
                 spec={"identities": identities},
@@ -395,8 +400,11 @@ class Observer:
 
         if role == "agent":
             self.last_agent_activity_mono = time.monotonic()
-            if final:
-                self._agent_has_spoken = True
+            # Real-time providers (OpenAI Realtime / Gemini Live) can deliver the
+            # final transcript late, long after audio started. Mark the agent as
+            # having spoken on ANY agent transcript (interim counts) so
+            # consumers like InterruptRateRunner do not wait for the final.
+            self._agent_has_spoken = True
         # Caller activity also counts: the dead-call net must not fire while
         # the agent is still working on its first reply (the agent has not
         # spoken yet, so last_agent_activity_mono would be stale).

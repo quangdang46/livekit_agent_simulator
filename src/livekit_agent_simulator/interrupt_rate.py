@@ -36,7 +36,10 @@ INTERRUPT_RATE_INTERVALS_MS: dict[str, int | None] = {
     "high": 30_000,
 }
 
-MIN_INTERVAL_MS = 5_000
+# Sim calls are seconds-scale, not real-time minutes (Coval's 90s/45s/30s
+# maps to long phone calls). Authors may tighten the interval to 1s for
+# short stress fixtures; the runner re-arms on each new active burst.
+MIN_INTERVAL_MS = 1_000
 DEFAULT_SAY = "Sorry — one second —"
 DEFAULT_MIN_AGENT_ACTIVE_MS = 700
 
@@ -152,6 +155,7 @@ class InterruptRateRunner:
         self._stop = asyncio.Event()
         self._armed_mono: float | None = None
         self._last_fire_mono: float | None = None
+        self._was_active = False
 
     def stop(self) -> None:
         self._stop.set()
@@ -178,13 +182,32 @@ class InterruptRateRunner:
                 continue
             if self._armed_mono is None:
                 self._armed_mono = time.monotonic()
+            # Re-arm when the agent STARTS a new active-speech burst: the
+            # interval measures consecutive active speech. Without this, a
+            # realtime agent that talks, pauses, talks again never accumulates
+            # enough active time to be barged.
+            if self.observer.agent_is_active_speaker and not self._was_active:
+                self._armed_mono = time.monotonic()
+            self._was_active = self.observer.agent_is_active_speaker
             anchor = self._last_fire_mono or self._armed_mono
             if (time.monotonic() - anchor) * 1000 < self.spec.interval_ms:
                 continue
             if not self.observer.agent_is_active_speaker:
+                self.writer.emit(
+                    "sim.interrupt_rate_skip",
+                    spec={"reason": "agent_not_active", "active_ms": self.observer.agent_active_duration_ms() or 0},
+                    source="sim.interrupt_rate",
+                    include_dialogue=False,
+                )
                 continue
             active_ms = self.observer.agent_active_duration_ms() or 0
             if active_ms < self.spec.min_agent_active_ms:
+                self.writer.emit(
+                    "sim.interrupt_rate_skip",
+                    spec={"reason": "active_ms_below_min", "active_ms": active_ms, "min": self.spec.min_agent_active_ms},
+                    source="sim.interrupt_rate",
+                    include_dialogue=False,
+                )
                 continue
             waited_ms = int((time.monotonic() - anchor) * 1000)
             await self._fire(waited_ms)
