@@ -30,7 +30,7 @@ def make_cfg(tmp_path, join_timeout_ms=800):
             room_prepare_ms=0,
             agent_join_timeout_ms=join_timeout_ms,
         ),
-        simulator=SimulatorConfig(google_api_key="AIzaTest", voice=SimulatorVoiceConfig()),
+        simulator=SimulatorConfig(api_key="AIzaTest", voice=SimulatorVoiceConfig()),
         observe=ObserveConfig(),
     )
 
@@ -58,7 +58,7 @@ def agent_participant(identity="agent-AJ_xyz"):
 
 
 def test_room_name_convention():
-    assert room_name_for_run("r-20260710-101500-ab12") == "lk-sim-r-20260710-101500-ab12"
+    assert room_name_for_run("r-20260710-101500-ab12") == "lks-r-20260710-101500-ab12"
 
 
 async def test_create_room_and_dispatch(tmp_path):
@@ -67,26 +67,26 @@ async def test_create_room_and_dispatch(tmp_path):
 
     result = await adapter.create_room_and_dispatch("r-test-1")
 
-    assert result.room_name == "lk-sim-r-test-1"
+    assert result.room_name == "lks-r-test-1"
     assert result.dispatch_id == "disp-1"
     create_req = lkapi.room.create_room.call_args.args[0]
-    assert create_req.name == "lk-sim-r-test-1"
+    assert create_req.name == "lks-r-test-1"
     dispatch_req = lkapi.agent_dispatch.create_dispatch.call_args.args[0]
     assert dispatch_req.agent_name == "my-agent-local"
-    assert dispatch_req.room == "lk-sim-r-test-1"
+    assert dispatch_req.room == "lks-r-test-1"
 
 
 async def test_wait_for_agent_joins_on_second_poll(tmp_path):
     cfg = make_cfg(tmp_path)
     adapter, _ = make_adapter(cfg, [[], [agent_participant()]])
 
-    identity = await adapter.wait_for_agent("lk-sim-r-test-1", poll_ms=10)
+    identity = await adapter.wait_for_agent("lks-r-test-1", poll_ms=10)
     assert identity == "agent-AJ_xyz"
 
 
 async def test_wait_for_agent_ignores_non_agent_participants(tmp_path):
     cfg = make_cfg(tmp_path)
-    human = SimpleNamespace(identity="lk-sim-caller", kind=0)
+    human = SimpleNamespace(identity="lks-caller", kind=0)
     adapter, _ = make_adapter(cfg, [[human], [human, agent_participant("agent-worker")]])
 
     identity = await adapter.wait_for_agent("room", poll_ms=10)
@@ -104,7 +104,7 @@ async def test_wait_for_agent_timeout(tmp_path):
 def test_build_token_contains_room_grant(tmp_path):
     cfg = make_cfg(tmp_path)
     adapter = LiveKitAdapter(cfg)
-    token = adapter.build_token("lk-sim-r-1")
+    token = adapter.build_token("lks-r-1")
     assert isinstance(token, str) and token.count(".") == 2  # JWT shape
 
 

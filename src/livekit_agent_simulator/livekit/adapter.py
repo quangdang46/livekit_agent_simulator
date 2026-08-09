@@ -14,7 +14,7 @@ from livekit import api, rtc
 
 from ..config import SimConfig
 
-SIM_IDENTITY = "lk-sim-caller"
+SIM_IDENTITY = "lks-caller"
 SIM_NAME = "Agent Simulator Caller"
 
 
@@ -34,7 +34,7 @@ class DispatchResult:
 
 
 def room_name_for_run(run_id: str) -> str:
-    return f"lk-sim-{run_id}"
+    return f"lks-{run_id}"
 
 
 class LiveKitAdapter:

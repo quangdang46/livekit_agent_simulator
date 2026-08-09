@@ -4,6 +4,7 @@ import pytest
 
 from livekit_agent_simulator.audio.cue_catalog import (
     BUILTIN_ALIASES,
+    BUILTIN_CUES,
     list_all_cues,
     list_package_cues,
     resolve_cue_asset,
@@ -23,6 +24,13 @@ def test_resolve_vocal_voice_aliases() -> None:
         ("voice.barge_sorry", "barge_sorry_en.wav"),
         ("voice.backchannel", "backchannel_uhhuh_en.wav"),
         ("voice.barge_vi", "barge_wait_vi.wav"),
+        ("voice.correction", "barge_correction_en.wav"),
+        ("voice.escalate", "barge_escalate_en.wav"),
+        ("voice.soft", "barge_soft_en.wav"),
+        ("voice.backchannel_yeah", "backchannel_yeah_en.wav"),
+        ("voice.backchannel_vi", "backchannel_vi.wav"),
+        ("voice.barge_long_vi", "barge_long_vi.wav"),
+        ("voice.human", "barge_escalate_en.wav"),
     ):
         p = resolve_cue_asset(f"builtin:{alias}")
         assert p.is_file(), alias
@@ -74,6 +82,21 @@ def test_scenario_dir_wins_over_package(tmp_path: Path) -> None:
 def test_list_package_cues_nonempty() -> None:
     items = list_package_cues()
     assert any(i["id"] == "noise.loud" for i in items)
+
+
+def test_list_package_cues_includes_description() -> None:
+    items = {i["id"]: i for i in list_package_cues()}
+    barge = items["voice.barge_short"]
+    assert barge["description"]
+    assert barge["kind"] == "voice"
+    assert barge["locale"] == "en-US"
+    assert "Wait" in (barge["text"] or "")
+    loud = items["noise.loud"]
+    assert loud["kind"] == "noise"
+    assert loud["text"] is None
+    assert "voice.ask_fee_vi" not in items
+    assert "voice.bye_vi" not in items
+    assert len(BUILTIN_CUES) == len(BUILTIN_ALIASES)
 
 
 def test_list_all_cues_structure() -> None:

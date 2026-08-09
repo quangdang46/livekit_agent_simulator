@@ -22,25 +22,25 @@ def test_portable_python_exe_windows_layout(tmp_path: Path) -> None:
 
 
 def test_find_nested_payload(tmp_path: Path) -> None:
-    nested = tmp_path / "lk-sim-windows-x64"
+    nested = tmp_path / "lks-windows-x64"
     _touch(nested / "python" / "python.exe")
     _touch(nested / "python" / "Lib" / "encodings" / "__init__.py")
-    _touch(nested / "lk-sim.cmd")
+    _touch(nested / "lks.cmd")
     assert find_nested_payload(tmp_path) == nested
 
 
 def test_repair_nested_portable_layout(tmp_path: Path) -> None:
-    nested = tmp_path / "lk-sim-windows-x64"
+    nested = tmp_path / "lks-windows-x64"
     _touch(nested / "python" / "python.exe")
     _touch(nested / "python" / "Lib" / "encodings" / "__init__.py")
-    _touch(nested / "lk-sim.cmd")
+    _touch(nested / "lks.cmd")
     # Broken partial python at top level (simulates bad install)
     _touch(tmp_path / "python" / "python.exe")
 
     assert portable_python_valid(tmp_path) is False
     assert repair_nested_portable_layout(tmp_path) is True
     assert portable_python_valid(tmp_path) is True
-    assert (tmp_path / "lk-sim.cmd").is_file()
+    assert (tmp_path / "lks.cmd").is_file()
     assert not nested.exists()
 
 

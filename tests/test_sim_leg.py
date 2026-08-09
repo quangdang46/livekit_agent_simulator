@@ -33,7 +33,7 @@ def make_cfg(tmp_path, **tel):
             room_prepare_ms=0,
             agent_join_timeout_ms=800,
         ),
-        simulator=SimulatorConfig(google_api_key="AIzaTest", voice=SimulatorVoiceConfig()),
+        simulator=SimulatorConfig(api_key="AIzaTest", voice=SimulatorVoiceConfig()),
         observe=ObserveConfig(),
         telephony=TelephonyConfig(**tel) if tel else TelephonyConfig(),
     )
@@ -64,7 +64,7 @@ async def test_outbound_human_pickup_connect(tmp_path):
     room = MagicMock(name="room")
     adapter = MagicMock()
     adapter.create_room_and_dispatch = AsyncMock(
-        return_value=SimpleNamespace(room_name="lk-sim-r1", dispatch_id="d1", agent_identity="")
+        return_value=SimpleNamespace(room_name="lks-r1", dispatch_id="d1", agent_identity="")
     )
     adapter.wait_for_agent = AsyncMock(return_value="agent-xyz")
     adapter.create_sip_participant = AsyncMock(
@@ -91,9 +91,9 @@ async def test_outbound_human_pickup_connect(tmp_path):
     assert handle.mode == "outbound_human_pickup"
     assert handle.agent_room is room
     assert handle.sim_room is room
-    assert handle.sim_identity == "lk-sim-caller"
+    assert handle.sim_identity == "lks-caller"
     assert handle.gemini_listen_identity == "agent-xyz"
-    assert handle.rooms_to_delete == ["lk-sim-r1"]
+    assert handle.rooms_to_delete == ["lks-r1"]
     adapter.isolate_sip_handset.assert_awaited()
     kinds = [c.args[0] for c in writer.emit.call_args_list]
     assert "outbound.dial_answered" in kinds

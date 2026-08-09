@@ -21,7 +21,7 @@ DEFAULT_PORT = 8765
 
 
 def _player_dir() -> Path:
-    """Built static assets for ``lk-sim web`` (wheel ``web_static`` or checkout ``web/dist``)."""
+    """Built static assets for ``lks web`` (wheel ``web_static`` or checkout ``web/dist``)."""
     return package_web_dir()
 
 
@@ -116,6 +116,47 @@ class ReportUIHandler(SimpleHTTPRequestHandler):
                 tool_count = summary.get("tool_calls")
                 if tool_count is None and isinstance(summary.get("metrics"), dict):
                     tool_count = summary["metrics"].get("tool_calls")
+
+                # Live-run fallback: summary.json is only written when the run
+                # finishes, so while a run is in progress we derive status and
+                # turn/tool progress from events.jsonl (flushed per event).
+                status = summary.get("status")
+                turn_count = summary.get("turn_count")
+                if status is None:
+                    ep = rd / "events.jsonl"
+                    try:
+                        live_turns: set[int] = set()
+                        live_tools = 0
+                        live_agent_finals = 0
+                        with ep.open(encoding="utf-8") as ef:
+                            for line in ef:
+                                if not line.strip():
+                                    continue
+                                ev = json.loads(line)
+                                kind = ev.get("kind", "")
+                                if kind == "run.started":
+                                    status = "running"
+                                elif kind == "run.ended":
+                                    status = ev.get("spec", {}).get("status", "done")
+                                # Transcript finals drive the turn counter
+                                # (event kinds actually emitted by the core).
+                                if kind in ("transcript.user.final", "transcript.agent.final"):
+                                    t = ev.get("turn")
+                                    if isinstance(t, int):
+                                        live_turns.add(t)
+                                if kind == "transcript.agent.final":
+                                    live_agent_finals += 1
+                                if kind == "tool.start":
+                                    live_tools += 1
+                        if status is None:
+                            status = "running" if live_agent_finals > 0 or ep.exists() else "queued"
+                        if turn_count is None:
+                            turn_count = len(live_turns) or (1 if live_agent_finals > 0 else 0)
+                        if tool_count is None:
+                            tool_count = live_tools
+                    except (OSError, json.JSONDecodeError):
+                        pass
+
                 try:
                     mtime_ms = int(rd.stat().st_mtime * 1000)
                 except OSError:
@@ -124,9 +165,9 @@ class ReportUIHandler(SimpleHTTPRequestHandler):
                     {
                         "run_id": rid,
                         "scenario_id": scenario_id,
-                        "status": summary.get("status"),
+                        "status": status,
                         "duration_ms": summary.get("duration_ms"),
-                        "turn_count": summary.get("turn_count"),
+                        "turn_count": turn_count,
                         "tool_count": tool_count,
                         "has_audio": (rd / "conversation.wav").exists(),
                         "started_utc": started_utc,
@@ -290,7 +331,7 @@ def start_web_server(
             f"Web UI assets missing: {player_dir}/index.html — "
             "maintainers: pnpm --dir web install && pnpm --dir web build "
             "(CI attaches web/dist into the wheel as web_static; "
-            "or use pnpm --dir web dev with lk-sim web in another terminal)"
+            "or use pnpm --dir web dev with lks web in another terminal)"
         )
 
     runs = list_run_ids(reports_dir)
@@ -330,7 +371,7 @@ def start_web_server(
         print(f"UI assets: {player_dir}", flush=True)
         _serve_blocking(httpd)
     else:
-        thread = threading.Thread(target=httpd.serve_forever, name="lk-sim-web", daemon=True)
+        thread = threading.Thread(target=httpd.serve_forever, name="lks-web", daemon=True)
         thread.start()
         info["server"] = httpd
         info["thread"] = thread

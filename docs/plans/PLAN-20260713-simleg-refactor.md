@@ -2,7 +2,7 @@
 
 **ID:** PLAN-20260713-simleg-refactor  
 **Date:** 2026-07-13  
-**Repo:** livekit-agent-simulator (lk-sim)  
+**Repo:** livekit-agent-simulator (lks)  
 **Status:** Waiting for OK — reply **go ahead** to implement **R0 + R1** first  
 
 ---
@@ -142,7 +142,7 @@ Orchestrator uses **handle fields only** — delete remaining `if leg_handle.gem
 - [ ] Unit tests: `find_agent_room` / resolution with **mocked** `list_rooms` + `list_participants`:
   - [ ] A: exact `prefer_name_substr` / dial digits in room name + agent present.
   - [ ] B: `sip_call_id_substr` matches SIP attrs + agent present.
-  - [ ] Parallel trap: WebRTC room `lk-sim-smoke-*` with agent only must **not** win when `require_sip=True` and another room has SIP+agent.
+  - [ ] Parallel trap: WebRTC room `lks-smoke-*` with agent only must **not** win when `require_sip=True` and another room has SIP+agent.
   - [ ] Timeout / empty → `AgentJoinTimeout`.
 - [ ] Unit tests: outbound leg ordering (mock adapter) — `connect_participant(agent_room)` **before** `create_sip_participant` (spy call order).
 - [ ] Fixture-based test: sample `events.jsonl` snippet → `_build_transcript_cues` drops English ghost near `sim.gemini` Vietnamese final; keeps script barge `uh-huh`.
@@ -367,4 +367,4 @@ run_scenario_instance
 - Architecture plan: `docs/plans/PLAN-20260713-telephony-simleg.md`
 - User-facing telephony: `docs/telephony.md`
 - LiveKit no-buffer media: late subscriber misses PCM (known platform constraint)
-- Parallel suite race: inbound attached to `lk-sim-smoke-*` (fixed direction via A+B; R3 hardens)
+- Parallel suite race: inbound attached to `lks-smoke-*` (fixed direction via A+B; R3 hardens)

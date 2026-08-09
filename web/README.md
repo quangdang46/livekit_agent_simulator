@@ -1,4 +1,4 @@
-# lk-sim web UI (Vite + TypeScript)
+# lks web UI (Vite + TypeScript)
 
 Standard Vite layout. CI builds `web/dist/` and Hatch force-includes it into the
 wheel as `livekit_agent_simulator/web_static/`. Built assets are **not** committed.
@@ -8,7 +8,7 @@ wheel as `livekit_agent_simulator/web_static/`. Built assets are **not** committ
 Terminal 1 — API + reports:
 
 ```bash
-uv run lk-sim web --root /path/to/target
+uv run lks web --root /path/to/target
 ```
 
 Terminal 2 — frontend:
@@ -20,6 +20,9 @@ pnpm dev
 
 Open http://localhost:5173 — proxies `/api` and `/runs` to port 8765.
 
+The home list and player sidebar **poll** `GET /api/runs` every ~3s (paused when
+the tab is hidden) and re-render only when run ids / status / mtime change.
+
 ## Build (maintainers)
 
 ```bash
@@ -28,7 +31,7 @@ pnpm build          # → web/dist/
 ```
 
 Then `uv build` (or release CI) packs `web/dist` into the wheel as `web_static`.
-Editable checkouts also serve `web/dist` directly via `lk-sim web`.
+Editable checkouts also serve `web/dist` directly via `lks web`.
 
 ## Layout
 
