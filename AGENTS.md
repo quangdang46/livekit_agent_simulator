@@ -63,6 +63,25 @@ A **normal human caller** is the default product, not a special scenario case.
 
 ---
 
+## Product rule: no dead features (keep the surface lean)
+
+Do **not** add CLI commands, MCP tools, config knobs, or scenario sections that
+nobody (human or agent) actually uses. A feature that exists but is never run is
+worse than no feature: it ships bugs, bloats docs/help, and doubles review cost.
+
+| Do | Do not |
+|---|---|
+| Only implement what has a concrete user: a real run, a test, or a documented recipe | Add a feature "for completeness" or "someone might need it later" |
+| Before building, ask: *who runs this? which flow calls it?* If the answer is "nobody", skip it | Keep legacy/duplicate paths (CLI vs MCP alias) that no test exercises |
+| When a feature goes unused, remove it or fold it into the existing surface | Ship half-finished knobs (e.g. `compare --baseline` without the P1.D regression gate) |
+| Gate new CLI/MCP surface behind at least one test | Grow `lks --help` with commands that have 0 tests and no docs usage |
+
+**Smell test:** if you can't name the flow that calls it, it is dead on arrival.
+WIP.md P2.x items (OTel export, multi-party handoff, text-fast mode, …) are
+parked for a reason — don't implement them just because they are listed.
+
+---
+
 ## Research before implement or fix (mandatory)
 
 Do **not** guess SDK wire formats, Gemini Live quirks, or LiveKit dispatch behavior.
@@ -160,6 +179,7 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 - Core stays **repo-agnostic**; consumer fit only under target `.agent-sim/` (or docs examples).
 - No legacy shims / dual config names — clean breaks are fine while pre-1.0.
 - **No stubborn patches** — defaults first; do not compensate with scenario/authoring hacks (see above).
+- **No dead features** — only build what has a real user flow; don't add CLI/MCP/config surface nobody runs (see above).
 - **pytest must pass** before reporting done.
 
 ---
