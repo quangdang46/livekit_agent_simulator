@@ -69,7 +69,7 @@ class DtmfAgent(Agent):
         )
 
     @function_tool
-    async def start_ivr_menu(self, context) -> str:
+    async def start_ivr_menu(self) -> str:
         """Start the keypad menu: read the options to the caller, then wait for
         a single digit (1-4)."""
         return (
@@ -80,17 +80,17 @@ class DtmfAgent(Agent):
         )
 
     @function_tool
-    async def press_one(self, context) -> str:
+    async def press_one(self) -> str:
         """Press keypad key 1."""
         return await self._press("1")
 
     @function_tool
-    async def press_two(self, context) -> str:
+    async def press_two(self) -> str:
         """Press keypad key 2."""
         return await self._press("2")
 
     @function_tool
-    async def press_pound(self, context) -> str:
+    async def press_pound(self) -> str:
         """Press keypad key # (pound)."""
         return await self._press("#")
 
