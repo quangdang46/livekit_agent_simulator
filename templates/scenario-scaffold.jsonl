@@ -2,12 +2,12 @@
 // apiVersion: must be "agent-sim/v1"
 // metadata.id: same as this filename (without .jsonl)
 // metadata.locale: BCP-47 language for the sim persona (e.g. en-US, vi-VN, ja-JP)
-// metadata.tags: free labels; use with: lk-sim execute-all --tag smoke
+// metadata.tags: free labels; use with: lks execute-all --tag smoke
 {"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"{{SCENARIO_ID}}","locale":"en-US","tags":["draft"]}}
 // === Persona (required) — Hamming-style character ===
 // name, brief (required), goals[], style, traits[]
 // constraints[]: hard rules (no card numbers, hang up if restart menu, …)
-// speech_conditions: optional auto Script — barge_policy, interruption_rate (none|low|medium|high), noise, silence_ms
+// speech_conditions: optional auto Script — barge_policy, interruption_rate (none|low|medium|high), noise/noise_when/noise_gain, silence_ms, silent_mode (whole-call mute), voice_gain (quiet mic)
 // language: optional override of metadata.locale for speech
 {"kind":"Persona","spec":{"name":"Alex","brief":"You are calling a business for the first time. Confirm you reached the right place, answer briefly, then politely end the call when done.","goals":["Hear the agent greeting or first reply","State your reason briefly","End the call politely"],"style":"polite, brief, natural spoken language","traits":["polite"],"constraints":["Do not invent account numbers or payment details"],"speech_conditions":{"barge_policy":"","noise":"","silence_ms":0}}}
 // === Context (optional) ===
@@ -29,7 +29,7 @@
 // === Behavior (optional, Hamming policy) — compiles to Script if present ===
 // barge_ins[], user_silence[], hang_ups[], ambient{asset,delay_ms}
 // Explicit Script below wins on same step id
-// {"kind":"Behavior","spec":{"barge_ins":[{"id":"cut1","after_agent_ms":800,"say":"Wait — one second","class":"correction","with_blip":true}],"backchannels":[{"id":"uh1","after_agent_ms":1200,"asset":"builtin:voice.backchannel"}],"false_interrupts":[{"id":"n1","after_agent_ms":400,"asset":"builtin:noise.loud"}],"ambient":{"asset":"builtin:noise.ambient","delay_ms":5000}}}
+// {"kind":"Behavior","spec":{"barge_ins":[{"id":"cut1","after_agent_ms":800,"say":"Wait — one second","class":"correction","with_blip":true}],"backchannels":[{"id":"uh1","after_agent_ms":1200,"asset":"builtin:voice.backchannel"}],"false_interrupts":[{"id":"n1","after_agent_ms":400,"asset":"builtin:noise.loud"}],"ambient":{"asset":"builtin:noise.ambient","delay_ms":1500,"loop":true,"gain":0.3}}}
 // === Script (optional) — timed cues; omit if speech_conditions/Behavior enough ===
 // trigger: agent_speaking | silence | time
 // action: speak | wait | hang_up
@@ -38,8 +38,10 @@
 // speech_conditions.barge_asset: builtin:voice.barge_short (vocal; with_blip defaults off for voice.*)
 // {"kind":"Script","spec":{"steps":[],"verify":{"require_during_agent_speech":false,"min_agent_finals_after_barge_in":0}}}
 // === Assert — tools / transcript / outcomes / sip ===
+// tool_order: ["lookup_identity","list_items"]  # required subsequence of tool.start names
 // latency example: {"id":"speed","type":"latency","max_turn_p95_ms":3500,"max_ttfw_ms":5000,"require_turn_samples":1}
 // ended_by example: {"id":"caller_hung_up","type":"ended_by","who":"sim"}
+// constraint_respected: {"id":"no_card","type":"constraint_respected","must_not_phrases":["4111","card number"]}
 // sip example: "sip":{"participant_present":true,"dial_answered":true,"call_status_any":["active"]}
 {"kind":"Assert","spec":{"tools":[],"transcript":[{"role":"agent","contains_any":["help","support","hello","hi"]}],"outcomes":[{"id":"agent_spoke","type":"transcript_contains","role":"agent","phrases":["a","e","i","o","u"]}]}}
 // === PassCriteria (optional soft judge) ===

@@ -1,0 +1,5 @@
+{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"ivr-pin-dtmf","locale":"en-US","tags":["dtmf","ivr","draft"]}}
+{"kind":"Persona","spec":{"name":"IVR caller","brief":"You are navigating an automated phone menu. Follow the menu instructions and enter digits when prompted.","goals":["Enter PIN 1234 when asked","Navigate menu option 2 when offered","Reach a human agent or complete the transaction","End call politely"],"traits":["polite","patient"]}}
+{"kind":"Execute","spec":{"max_turns":12,"timeout_s":120,"first_speaker":"agent"}}
+// Sim sends DTMF PIN when asked; digits: 0-9*# w=120ms pause
+{"kind":"Script","spec":{"steps":[{"id":"pin","action":"dtmf","trigger":"time","delay_ms":500,"digits":"1234#"},{"id":"menu2","action":"dtmf","trigger":"agent_speaking","delay_ms":800,"digits":"2w1w0#","label":"option-2"}]}}

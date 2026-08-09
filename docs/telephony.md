@@ -1,6 +1,6 @@
 # Telephony (WebRTC / inbound SIP / outbound SIP)
 
-Portable transport modes for lk-sim. **Mode is never set in `config.yaml`** — put it in the scenario.
+Portable transport modes for lks. **Mode is never set in `config.yaml`** — put it in the scenario.
 
 ## Breaking (2026-07-14)
 
@@ -56,7 +56,8 @@ livekit:
   agent_name: "your-agent-name"
 
 simulator:
-  google_api_key: "AIzaxxxxxxxx"
+  provider: google
+  api_key: "AIzaxxxxxxxx"
 
 telephony:
   outbound_trunk_id: "ST_xxxxxxxxxxxx"
@@ -75,7 +76,7 @@ telephony:
 
 ### Inbound room discovery
 
-After dial answer, lk-sim resolves the agent room without latching leftovers:
+After dial answer, lks resolves the agent room without latching leftovers:
 
 1. `Telephony.agent_room` / `agent_room_name_template` (deterministic), else
 2. SIP participant attrs containing CreateSIPParticipant `sip_call_id`, else
@@ -119,3 +120,29 @@ sim-room (Gemini ready) + agent-room → dial sim DID → hairpin into sim-room
 - **Factory** — `sim_leg_factory(mode)`.
 
 Package core stays target-agnostic: no product names, agent IDs, or dashboard keys in `src/`.
+
+## Preflight checklist (outbound_sim_callee)
+
+```bash
+lks preflight --root /path/to/target
+```
+
+Expect:
+
+1. `telephony` pass/warn with `outbound_trunk=set`
+2. `telephony.outbound_sim_callee` pass when `sim_inbound_number` is set
+3. LiveKit project: inbound dispatch rule for that DID → room naming that matches the sim hairpin (see PROBLEM.md)
+
+If you only have a human handset number, use **`outbound_human_pickup`**, not `outbound_sim_callee`.
+
+## Warm transfer / SIP REFER (deferred P2)
+
+LiveKit agents may use `WarmTransferTask` / SIP REFER. **lks core does not yet** assert transfer lifecycle (second SIP participant, room move, handoff summary).
+
+Recommended until implemented:
+
+1. Keep transfer logic in the **agent under test**
+2. Use black-box asserts you already have: tools (if transfer is a tool), `ended_by`, transcript phrases
+3. Track full observe/assert work as a future portable feature (no carrier-specific REFER parsing in core without LiveKit attrs)
+
+See LiveKit docs: telephony transfers / WarmTransferTask. Product rule: Gemini remains the simulated human; transfer observe is optional forensics.

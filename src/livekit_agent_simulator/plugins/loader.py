@@ -11,7 +11,7 @@ from typing import Any
 from ..config import DOT_FOLDER
 from . import registry
 
-ENTRY_POINT_GROUP = "lk_sim.plugins"
+ENTRY_POINT_GROUP = "lks.plugins"
 
 
 def plugins_dir(project_root: Path) -> Path:
@@ -28,7 +28,7 @@ def ensure_plugins_loaded(project_root: Path | str, module_names: list[str] | No
         for err in _load_entry_points():
             errors.append(err)
         else:
-            loaded.append("entrypoints:lk_sim.plugins")
+            loaded.append("entrypoints:lks.plugins")
 
     for name in module_names or []:
         key = f"local:{project_root}:{name}"
@@ -74,7 +74,7 @@ def _load_local_module(project_root: Path, module_name: str) -> None:
     if not path.exists():
         raise FileNotFoundError(f"{path} not found")
 
-    qualname = f"lk_sim_plugin_{safe}_{abs(hash(path)) & 0xFFFFFF:x}"
+    qualname = f"lks_plugin_{safe}_{abs(hash(path)) & 0xFFFFFF:x}"
     spec = importlib.util.spec_from_file_location(qualname, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot import {path}")

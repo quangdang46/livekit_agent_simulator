@@ -1,0 +1,6 @@
+{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"quiet-caller-confirm","locale":"en-US","tags":["quiet","audio-quality","example"]}}
+// Quiet caller: Gemini Live has no native volume API — lks scales speech PCM after the model.
+// voice_gain 0.3 ≈ low mic / far-from-phone STT stress (Coval Low Volume Speaker analog).
+// voice_speed is NOT supported on Gemini Live (no speech_rate in Live SpeechConfig).
+{"kind":"Persona","spec":{"name":"Quiet caller","brief":"You are calling from a soft-spoken line. Speak your goals clearly but the mic is quiet.","goals":["Hear the agent greeting","State one short request (hours or pricing)","Confirm any important field if the agent asks you to repeat","End politely"],"traits":["polite"],"speech_conditions":{"voice_gain":0.3}}}
+{"kind":"Execute","spec":{"max_turns":8,"timeout_s":90,"first_speaker":"agent"}}

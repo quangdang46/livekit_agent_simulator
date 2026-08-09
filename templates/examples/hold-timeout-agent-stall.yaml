@@ -1,0 +1,36 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: hold-timeout-agent-stall
+  locale: en-US
+  tags:
+  - hold
+  - dead-air
+  - example
+persona:
+  name: Waiting caller
+  brief: You asked one question and are now stuck waiting while the agent goes quiet.
+  goals:
+  - Hear the agent greeting
+  - Ask one short request (hours or pricing)
+  - Hang on briefly if the agent goes quiet, then give up
+  traits:
+  - patient
+  speech_conditions:
+    silent_mode: true
+execute:
+  max_turns: 8
+  timeout_s: 120
+  first_speaker: agent
+  hold_music_timeout_s: 20.0
+assert:
+  outcomes:
+  - id: caller_gave_up
+    type: ended_by
+    role: any
+    min_agent_finals_after_barge_in: 1
+    min_interruptions: 0
+    require_turn_samples: 0
+    ended_by: sim
+    min_goals: 1
+    check_agent_transcript: false

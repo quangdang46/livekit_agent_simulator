@@ -10,7 +10,7 @@ transcripts + events logged → report written.
    `.agent-sim/config.yaml`.
 2. LiveKit Cloud (or self-hosted) URL + API key/secret.
 3. A Google API key with access to `gemini-3.1-flash-live-preview` (same key works
-   for the `gemini-2.5-flash` judge).
+   for the `gemini-3.1-flash-lite` judge).
 
 ## Steps
 
@@ -18,23 +18,23 @@ All commands run from the repo you want to test (`--root` defaults to CWD):
 
 ```powershell
 # 1. Scaffold .agent-sim/ (gitignored automatically)
-uv run --directory /path/to/livekit-agent-simulator lk-sim init
+uv run --directory /path/to/livekit-agent-simulator lks init
 
 # 2. Fill in credentials
 #    .agent-sim/config.yaml → livekit.url / api_key / api_secret / agent_name
-#                             simulator.google_api_key
+#                             simulator.api_key (provider: google | openai)
 
 # 3. Verify connectivity BEFORE burning a run
-uv run --directory /path/to/livekit-agent-simulator lk-sim preflight
+uv run --directory /path/to/livekit-agent-simulator lks preflight
 
 # 4. Run the bundled smoke scenario (2 turns, 90s cap)
-uv run --directory /path/to/livekit-agent-simulator lk-sim execute smoke-hello
+uv run --directory /path/to/livekit-agent-simulator lks execute smoke-hello
 
 # 5. Inspect
-uv run --directory /path/to/livekit-agent-simulator lk-sim report <run-id>
-uv run --directory /path/to/livekit-agent-simulator lk-sim log <run-id> --kind "transcript.*"
-uv run --directory /path/to/livekit-agent-simulator lk-sim log <run-id> --kind "tool.*"
-uv run --directory /path/to/livekit-agent-simulator lk-sim web --root .
+uv run --directory /path/to/livekit-agent-simulator lks report <run-id>
+uv run --directory /path/to/livekit-agent-simulator lks log <run-id> --kind "transcript.*"
+uv run --directory /path/to/livekit-agent-simulator lks log <run-id> --kind "tool.*"
+uv run --directory /path/to/livekit-agent-simulator lks web --root .
 # Open the run in the browser — tool cards + violet timeline bands when tool events exist
 
 ## What success looks like
