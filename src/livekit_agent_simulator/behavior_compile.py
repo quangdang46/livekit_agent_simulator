@@ -127,48 +127,9 @@ def compile_from_speech_conditions(persona: dict[str, Any]) -> list[ScriptStep]:
             )
         )
 
-    # Coval-style interruption_rate: None/Low/Med/High → recurring correction barges.
-    # Only fills if no recovery barge already compiled (barge_policy may have added one).
-    rate = str(sc.get("interruption_rate") or sc.get("interrupt_rate") or "").strip().lower()
-    rate_map = {
-        "none": 0,
-        "off": 0,
-        "0": 0,
-        "low": 1,
-        "medium": 2,
-        "med": 2,
-        "high": 3,
-    }
-    if rate in rate_map and rate_map[rate] > 0:
-        n = rate_map[rate]
-        has_recovery = any(
-            counts_for_recovery_barge(
-                barge_in=bool(s.barge_in), interrupt_class=s.interrupt_class
-            )
-            for s in steps
-        )
-        # Spacing inspired by Coval (~90s/45s/30s) but scaled for short sim calls (seconds).
-        # delay_ms is after agent starts speaking (agent_speaking trigger).
-        spacing = {"low": 2500, "medium": 1800, "med": 1800, "high": 1200}.get(rate, 2000)
-        say = str(sc.get("barge_say") or "Wait —").strip()
-        start = 1 if has_recovery else 0
-        for i in range(start, n):
-            steps.append(
-                ScriptStep(
-                    id=f"rate-auto-barge-{i+1}",
-                    trigger="agent_speaking",
-                    delay_ms=max(200, spacing * (i + 1)),
-                    say=say,
-                    label=f"rate-auto-barge-{i+1}",
-                    min_agent_active_ms=max(150, spacing // 3),
-                    delivery="gemini_text",
-                    barge_in=True,
-                    with_blip=True,
-                    once=True,
-                    interrupt_class="correction",
-                )
-            )
-
+    # interruption_rate (none|low|medium|high) is a PARALLEL runner policy
+    # (InterruptRateRunner in run_orchestrator) — NOT compiled ScriptSteps.
+    # Validation happens in apply_caller_behavior via parse_interrupt_rate.
     silence_ms = int(sc.get("silence_ms") or sc.get("user_silence_ms") or 0)
     if silence_ms >= 500:
         steps.append(

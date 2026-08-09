@@ -6,17 +6,13 @@ from livekit_agent_simulator.behavior_compile import compile_from_speech_conditi
 from livekit_agent_simulator.script.models import counts_for_recovery_barge
 
 
-def test_rate_high_adds_multiple_barges():
+def test_rate_high_is_parallel_policy_not_compiled_steps():
+    # interruption_rate is a PARALLEL runner policy (InterruptRateRunner),
+    # not compiled ScriptSteps — avoid double barges.
     steps = compile_from_speech_conditions(
         {"speech_conditions": {"interruption_rate": "high", "barge_say": "Hold on"}}
     )
-    barges = [
-        s
-        for s in steps
-        if counts_for_recovery_barge(barge_in=s.barge_in, interrupt_class=s.interrupt_class)
-    ]
-    assert len(barges) >= 3
-    assert all(s.interrupt_class == "correction" for s in barges)
+    assert not any(s.barge_in for s in steps)
 
 
 def test_rate_none_no_extra():
@@ -26,7 +22,7 @@ def test_rate_none_no_extra():
     assert not any(s.barge_in for s in steps)
 
 
-def test_rate_with_barge_policy_does_not_duplicate_first():
+def test_rate_with_barge_policy_does_not_duplicate():
     steps = compile_from_speech_conditions(
         {
             "speech_conditions": {
@@ -37,7 +33,8 @@ def test_rate_with_barge_policy_does_not_duplicate_first():
         }
     )
     barges = [s for s in steps if s.barge_in]
-    # barge_policy adds 1; medium wants 2 total → one rate barge may add
-    assert len(barges) >= 2
+    # barge_policy adds its own barge; interruption_rate is a parallel runner
+    # and must NOT add duplicate compiled steps.
+    assert len(barges) == 1
     ids = [s.id for s in barges]
     assert "auto-barge-1" in ids
