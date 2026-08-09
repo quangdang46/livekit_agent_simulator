@@ -182,17 +182,26 @@ class InterruptRateRunner:
                 continue
             if self._armed_mono is None:
                 self._armed_mono = time.monotonic()
+            # Active-speech detection: energy-based (active_speakers) is
+            # unreliable for OpenAI Realtime agents (few active events despite
+            # continuous audio). Fall back to "agent spoke within the last 3s"
+            # via transcript activity.
+            recently_spoke = (
+                self.observer.last_agent_activity_mono is not None
+                and (time.monotonic() - self.observer.last_agent_activity_mono) < 3.0
+            )
+            agent_active = self.observer.agent_is_active_speaker or recently_spoke
             # Re-arm when the agent STARTS a new active-speech burst: the
             # interval measures consecutive active speech. Without this, a
             # realtime agent that talks, pauses, talks again never accumulates
             # enough active time to be barged.
-            if self.observer.agent_is_active_speaker and not self._was_active:
+            if agent_active and not self._was_active:
                 self._armed_mono = time.monotonic()
-            self._was_active = self.observer.agent_is_active_speaker
+            self._was_active = agent_active
             anchor = self._last_fire_mono or self._armed_mono
             if (time.monotonic() - anchor) * 1000 < self.spec.interval_ms:
                 continue
-            if not self.observer.agent_is_active_speaker:
+            if not agent_active:
                 self.writer.emit(
                     "sim.interrupt_rate_skip",
                     spec={"reason": "agent_not_active", "active_ms": self.observer.agent_active_duration_ms() or 0},

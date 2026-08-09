@@ -301,7 +301,11 @@ def _transcript_texts(events: list[dict[str, Any]], role: str) -> list[str]:
     texts: list[str] = []
     for e in events:
         kind = str(e.get("kind") or "")
-        if not kind.startswith("transcript.") or not kind.endswith(".final"):
+        # Match FINAL transcripts, but also INTERIM ones for realtime agents
+        # (OpenAI Realtime / Gemini Live often emit only interim, no final).
+        if not kind.startswith("transcript."):
+            continue
+        if not (kind.endswith(".final") or kind.endswith(".interim")):
             continue
         if role == "agent" and "agent" not in kind:
             continue

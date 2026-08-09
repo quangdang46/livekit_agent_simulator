@@ -114,6 +114,8 @@ class _Obs:
         self.agent_has_spoken = False
         self.agent_is_active_speaker = False
         self.active_ms = 0
+        # transcript-activity fallback: None = no recent speech
+        self.last_agent_activity_mono = None
 
     def agent_active_duration_ms(self) -> int:
         return self.active_ms
