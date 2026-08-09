@@ -1,35 +1,70 @@
 # Scenario plugins
 
-Dev-written **verify plugins** extend `Script.verify` without forking the sim package.
-Plugins run after the built-in log checks (`min_agent_finals_after_first_cue`, etc.).
+Dev-written plugins extend the simulator without forking the package. There are
+three registration kinds:
+
+| Kind | When it runs | Purpose |
+|------|----------------|---------|
+| **Verify** | After the call, during `script_verify` | Custom checks over `events.jsonl` (referenced from `Script.verify`) |
+| **before_run** | After prepare, **before** SimLeg connects | Enrich `meta`, set up external resources |
+| **after_run** | After finalize, just before execute returns | Notify CI/Slack, archive reports, side effects |
+
+Verify plugins run after the built-in log checks (`min_agent_finals_after_first_cue`, etc.).
+Lifecycle hooks (`before_run` / `after_run`) fire for every execute once the plugin
+module is loaded (local `.agent-sim/plugins/` or entry-point `setup`).
 
 ## 1. Write a plugin
 
 Copy `templates/plugins/example_verify.py` to `<target>/.agent-sim/plugins/my_checks.py`:
 
 ```python
-from livekit_agent_simulator.plugins import VerifyContext, verify_plugin
+from livekit_agent_simulator.plugins import (
+    AfterRunContext,
+    BeforeRunContext,
+    VerifyContext,
+    register_after_run,
+    register_before_run,
+    verify_plugin,
+)
 
 @verify_plugin("adaptive_backchannel")
 def adaptive_backchannel(ctx: VerifyContext) -> dict:
     ok = ctx.finals_after_first_cue("agent") >= 1
     return {"pass": ok, "checks": [{"check": "agent_continued", "pass": ok}]}
+
+@register_before_run
+def stamp_run(ctx: BeforeRunContext) -> None:
+    # ctx.meta is a mutable dict (dataclass is frozen; dict contents are not)
+    ctx.meta["plugin_stamp"] = "my_checks"
+
+@register_after_run
+def notify_done(ctx: AfterRunContext) -> None:
+    print(f"{ctx.run_id} → {ctx.status} ({ctx.report_dir})")
 ```
 
 Or ship plugins from an installable package:
 
 ```toml
 # pyproject.toml (your worker or test package)
-[project.entry-points."lk_sim.plugins"]
+[project.entry-points."lks.plugins"]
 worker_sim = "my_worker.sim_plugins:setup"
 ```
 
 ```python
 # my_worker/sim_plugins.py
-from livekit_agent_simulator.plugins import register_verify, VerifyContext
+from livekit_agent_simulator.plugins import (
+    AfterRunContext,
+    BeforeRunContext,
+    VerifyContext,
+    register_after_run,
+    register_before_run,
+    register_verify,
+)
 
 def setup() -> None:
     register_verify("worker_flow_started", _flow_started)
+    register_before_run(_before)
+    register_after_run(_after)
 
 def _flow_started(ctx: VerifyContext) -> dict:
     flows = ctx.events_of_kind("data.message", prefix=False)
@@ -38,7 +73,18 @@ def _flow_started(ctx: VerifyContext) -> dict:
         for e in flows
     )
     return {"pass": started, "detail": "flow_started seen on data topic"}
+
+def _before(ctx: BeforeRunContext) -> None:
+    ctx.meta["worker_plugin"] = True
+
+def _after(ctx: AfterRunContext) -> None:
+    if ctx.status != "done":
+        # e.g. post to CI / Slack — keep secrets out of this module
+        pass
 ```
+
+Local modules under `.agent-sim/plugins/` may also define `setup()` — the loader
+calls it after import (in addition to any `@register_*` at module level).
 
 ## 2. Reference from JSONL
 
@@ -48,7 +94,8 @@ Load local modules (optional if plugins register via entry-points only):
 {"kind":"Plugins","spec":{"modules":["my_checks"]}}
 ```
 
-Wire verify plugins on the Script line:
+Loading the module registers **all** verify + lifecycle hooks in that file.
+Wire **verify** plugins on the Script line (lifecycle hooks need no Script reference):
 
 ```json
 {
@@ -68,6 +115,9 @@ Wire verify plugins on the Script line:
 ```
 
 Shorthand for a single plugin: `"plugin": "adaptive_backchannel"` (same as `"plugins": ["adaptive_backchannel"]`).
+
+`Script.verify.plugin_options` is also passed to lifecycle hooks as `ctx.options`
+(the full options map, not only one plugin’s slice).
 
 ## 3. Python API (CI / dynamic scenarios)
 
@@ -102,6 +152,9 @@ lks plugins --root /path/to/target
 
 MCP: `list_plugins(project_root)`.
 
+Lists **verify** plugin names. Lifecycle hooks are registered in-process when
+modules load; they are not named entries in `lks plugins`.
+
 ## VerifyContext helpers
 
 | Member | Purpose |
@@ -121,3 +174,41 @@ Return shape from a plugin:
 ```
 
 Overall `script_verify.pass` is false if **any** built-in check or plugin fails.
+
+## Lifecycle hooks (`before_run` / `after_run`)
+
+Register with `@register_before_run` / `@register_after_run` (or call
+`register_before_run(fn)` / `register_after_run(fn)` from `setup()`).
+
+| Hook | Timing in `run_orchestrator` |
+|------|------------------------------|
+| `before_run` | After prepare (meta built, plugins loaded), **before** SimLeg connects |
+| `after_run` | After SQLite finalize / report written, **just before** execute returns |
+
+Hooks return `None`. Exceptions propagate and fail the run (do not swallow silently
+unless you intend soft side effects).
+
+### BeforeRunContext
+
+| Member | Purpose |
+|--------|---------|
+| `scenario` | Parsed scenario |
+| `project_root` | Target repo root |
+| `run_id` / `run_name` | Allocated run id and optional `--name` |
+| `meta` | Mutable run meta dict (enrich before connect; written into `meta.json`) |
+| `dispatch_metadata` | Opaque dispatch dict (or `None`) |
+| `options` | `Script.verify.plugin_options` map (empty if no Script verify) |
+
+### AfterRunContext
+
+| Member | Purpose |
+|--------|---------|
+| `scenario` | Parsed scenario |
+| `project_root` | Target repo root |
+| `run_id` / `run_name` | Run identifiers |
+| `report_dir` | Path to `.agent-sim/reports/<run-id>/` |
+| `status` | Final status (`done` / `failed` / …) |
+| `summary` | Summary dict (metrics, assert/script_verify, judge, …) |
+| `events` | Event records for this run |
+| `verdict` | Soft judge verdict dict, or `None` |
+| `options` | Same `plugin_options` map as before_run |

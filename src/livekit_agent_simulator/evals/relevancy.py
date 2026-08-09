@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from .types import CriterionScore, JudgmentResult
+from dataclasses import replace
+
+from .types import JudgmentResult
 
 
 def apply_relevancy(result: JudgmentResult) -> JudgmentResult:
@@ -19,29 +21,21 @@ def apply_relevancy(result: JudgmentResult) -> JudgmentResult:
 
     relevant = [c for c in result.criteria if c.relevant]
     if not relevant:
-        return JudgmentResult(
+        return replace(
+            result,
             verdict="maybe",
-            score=result.score,
-            criteria=result.criteria,
             confidence=result.confidence or "low",
             needs_human_review=True,
-            critical_failure=result.critical_failure,
             notes=(result.notes + " All criteria marked irrelevant.").strip(),
-            judge_id=result.judge_id,
         )
 
     unmet = [c for c in relevant if not c.met]
     if unmet:
-        return JudgmentResult(
+        return replace(
+            result,
             verdict="fail",
-            score=result.score,
-            criteria=result.criteria,
-            confidence=result.confidence,
             needs_human_review=result.needs_human_review
             or (result.confidence == "low"),
-            critical_failure=result.critical_failure,
-            notes=result.notes,
-            judge_id=result.judge_id,
         )
 
     # All relevant criteria met — promote maybe→pass if model was uncertain on noise
@@ -49,15 +43,9 @@ def apply_relevancy(result: JudgmentResult) -> JudgmentResult:
     if verdict == "fail":
         # Model said fail but all relevant met (irrelevant fails) → pass
         verdict = "pass"
-    return JudgmentResult(
+    return replace(
+        result,
         verdict=verdict if verdict in ("pass", "fail", "maybe") else "pass",
-        score=result.score,
-        criteria=result.criteria,
-        confidence=result.confidence,
-        needs_human_review=result.needs_human_review,
-        critical_failure=result.critical_failure,
-        notes=result.notes,
-        judge_id=result.judge_id,
     )
 
 

@@ -1,4 +1,10 @@
-"""Resolve JudgeConfig fields: yaml literal → JUDGE_* → Gemini key."""
+"""Resolve JudgeConfig fields: yaml literal → JUDGE_* → simulator key.
+
+When no `judge.base_url` is set, the judge falls back to the *simulator* API key
+(``simulator.api_key``) as a Gemini judge credential. That key is provider-typed:
+only valid for ``provider: google`` (Gemini) — a non-google provider key cannot
+drive the Gemini fallback judge.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +20,7 @@ class ResolvedJudge:
     temperature: float
     base_url: str | None
     api_key: str | None
-    google_api_key: str | None
+    sim_api_key: str | None  # simulator credential (Gemini judge fallback)
     mode: str  # http | gemini
     endpoint_type: str  # openai | anthropic (http wire only)
     ready: bool
@@ -43,7 +49,7 @@ def _resolve_endpoint_type(judge_cfg: JudgeConfig) -> str:
 def resolve_judge(
     judge_cfg: JudgeConfig | None,
     *,
-    google_api_key: str | None = None,
+    sim_api_key: str | None = None,
 ) -> ResolvedJudge:
     if judge_cfg is None:
         return ResolvedJudge(
@@ -51,7 +57,7 @@ def resolve_judge(
             temperature=0.0,
             base_url=None,
             api_key=None,
-            google_api_key=None,
+            sim_api_key=None,
             mode="gemini",
             endpoint_type="openai",
             ready=False,
@@ -63,7 +69,7 @@ def resolve_judge(
     base_url = (judge_cfg.base_url or "").strip() or _env("JUDGE_BASE_URL")
     api_key = (judge_cfg.api_key or "").strip() or _env("JUDGE_API_KEY")
     endpoint_type = _resolve_endpoint_type(judge_cfg)
-    gkey = (google_api_key or "").strip() or None
+    gkey = (sim_api_key or "").strip() or None
 
     if base_url:
         if not api_key:
@@ -72,7 +78,7 @@ def resolve_judge(
                 temperature=temperature,
                 base_url=base_url,
                 api_key=None,
-                google_api_key=gkey,
+                sim_api_key=gkey,
                 mode="http",
                 endpoint_type=endpoint_type,
                 ready=False,
@@ -83,7 +89,7 @@ def resolve_judge(
             temperature=temperature,
             base_url=base_url.rstrip("/"),
             api_key=api_key,
-            google_api_key=gkey,
+            sim_api_key=gkey,
             mode="http",
             endpoint_type=endpoint_type,
             ready=True,
@@ -95,18 +101,18 @@ def resolve_judge(
             temperature=temperature,
             base_url=None,
             api_key=None,
-            google_api_key=None,
+            sim_api_key=None,
             mode="gemini",
             endpoint_type=endpoint_type,
             ready=False,
-            skip_reason="Gemini judge needs simulator.google_api_key (no base_url).",
+            skip_reason="Gemini judge needs a Gemini key (simulator.api_key with provider: google; no base_url).",
         )
     return ResolvedJudge(
         model=model,
         temperature=temperature,
         base_url=None,
         api_key=None,
-        google_api_key=gkey,
+        sim_api_key=gkey,
         mode="gemini",
         endpoint_type=endpoint_type,
         ready=True,

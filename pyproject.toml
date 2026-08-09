@@ -13,6 +13,7 @@ dependencies = [
     "google-genai>=1.0",
     "pyyaml>=6.0",
     "typer>=0.12",
+    "rich>=13",
     "aiosqlite>=0.20",
     "tzdata>=2024.1",
 ]
@@ -26,11 +27,8 @@ dev = [
 [project.scripts]
 # Primary CLI
 lks = "livekit_agent_simulator.cli:main"
-# Backward-compatible alias
-lk-sim = "livekit_agent_simulator.cli:main"
-# Optional one-shot MCP entries (same as `lks mcp` / `lk-sim mcp`)
+# One-shot MCP entry (same as `lks mcp`)
 lks-mcp = "livekit_agent_simulator.mcp_server:main"
-lk-sim-mcp = "livekit_agent_simulator.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]

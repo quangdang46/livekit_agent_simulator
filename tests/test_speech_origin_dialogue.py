@@ -15,6 +15,16 @@ def test_mostly_script_say_exact():
     )
 
 
+def test_mostly_script_say_clause_fragment_of_multi_clause_say():
+    """STT often splits a Script say — trailing clause must stay script, not natural."""
+    say = (
+        "I was looking at the 2022 Mazda CX-5 actually. "
+        "Is that one still available?"
+    )
+    assert _mostly_script_say("Is that one still available?", say)
+    assert _mostly_script_say("I was looking at the 2022 Mazda CX-5, actually.", say)
+
+
 def test_mostly_script_say_rejects_bootstrap_concat():
     text = (
         "Hi, I'm Alex. I was looking into the different plans you offer and wanted to ask... "

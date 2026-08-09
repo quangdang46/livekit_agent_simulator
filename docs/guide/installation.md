@@ -1,18 +1,18 @@
-# Agent install guide — livekit-agent-simulator (`lks`, alias: `lk-sim`)
+# Agent install guide — livekit-agent-simulator (`lks`)
 
 **Audience:** coding agents (Claude Code, Cursor, Codex, AmpCode, Windsurf, …) and humans who paste this URL into an agent.
 
-**Goal:** install the `lks` CLI (alias: `lk-sim`) on the user’s machine, scaffold `.agent-sim/` inside **the user’s project repo** (the LiveKit voice agent under test), fill config safely, register MCP if useful, and prove the setup with `preflight` (and optionally a smoke run).
+**Goal:** install the `lks` CLI on the user’s machine, scaffold `.agent-sim/` inside **the user’s project repo** (the LiveKit voice agent under test), fill config safely, register MCP if useful, and prove the setup with `preflight` (and optionally a smoke run).
 
 **Hard rules for the agent:**
 
-1. **Never import or edit the agent-under-test application source** (no patches to worker business code). Only create/edit files under `<target>/.agent-sim/` (gitignored).
+1. **Never import or edit the agent-under-test application source** (no patches to agent business code). Only create/edit files under `<target>/.agent-sim/` (gitignored).
 2. **Never commit secrets.** `.agent-sim/` must stay gitignored. Do not paste API keys into git-tracked files.
 3. **Do not invent LiveKit / Gemini credentials or dispatch metadata.** Discover from the target repo (§4.0) or ask the user. Read `.env` only with permission.
-4. **Discover before `AskQuestion`.** Read target docs and existing `.agent-sim/` (read-only). Do not assume consumer-specific file paths or metadata keys (e.g. one repo’s `job-metadata.ts` or `customAgentId` is not universal).
+4. **Discover before `AskQuestion`.** Read target docs and existing `.agent-sim/` (read-only). Do not assume consumer-specific file paths or metadata keys (e.g. one repo’s `job-metadata.ts` or `yourProjectKey` is not universal).
 5. Prefer **non-interactive** commands. Use `--root <absolute-path>` always.
 6. Prefer the **portable installer** (no uv/pip on the user machine) unless the user is developing the simulator package itself.
-7. **Primary CLI is `lks`** (short). **`lk-sim` remains a supported alias** for scripts and older docs. Runtime IDs stay `lk-sim-caller` / room prefix `lk-sim-<run-id>`.
+7. **CLI is `lks`**. Runtime IDs: sim participant `lks-caller` / room prefix `lks-<run-id>`.
 
 ---
 
@@ -20,11 +20,11 @@
 
 | Piece | Purpose |
 |-------|---------|
-| CLI `lks` (alias: `lk-sim`) | Black-box LiveKit room tester + report player |
-| MCP server `livekit-agent-simulator` | Same ops for coding agents (`lks mcp` / alias `lks mcp`) |
+| CLI `lks` | Black-box LiveKit room tester + report player |
+| MCP server `livekit-agent-simulator` | Same ops for coding agents (`lks mcp`) |
 | Target folder `.agent-sim/` | Config, scenarios, reports, local cues/plugins (gitignored) |
 
-The simulator joins LiveKit as `lk-sim-caller`, talks to the user’s already-running voice agent worker via Gemini Live, and writes forensic reports.
+The simulator joins LiveKit as `lks-caller`, talks to the user’s already-running agent under test via Gemini Live, and writes forensic reports.
 
 **Prerequisites the agent must verify or ask for:**
 
@@ -32,9 +32,9 @@ The simulator joins LiveKit as `lk-sim-caller`, talks to the user’s already-ru
 |------|-----|
 | macOS / Linux / Windows | Portable packs ship for these |
 | Network access | Download release + LiveKit + Gemini |
-| A **running** LiveKit voice agent worker | Registered with a known `agent_name` |
+| A **running** LiveKit agent under test | Registered with a known `agent_name` |
 | LiveKit Cloud (or self-host) URL + API key/secret | Room create + dispatch |
-| Google API key with Gemini Live access | Simulated caller (+ optional judge) |
+| API key for the active caller provider (Google Gemini Live or OpenAI Realtime) | Simulated caller (+ optional Gemini judge) |
 
 Optional: coding tools already installed (Claude Code / Cursor / …) so the installer can auto-register MCP.
 
@@ -48,8 +48,8 @@ macOS / Linux (bash):
 
 ```bash
 uname -s
-which lks || which lks || true
-lks --help 2>/dev/null | head -5 || lks --help 2>/dev/null | head -5 || true
+which lks || true
+lks --help 2>/dev/null | head -5 || true
 pwd
 # If the user said "this project", use the current workspace root as TARGET_ROOT
 ```
@@ -57,8 +57,8 @@ pwd
 Windows (PowerShell — note: plain `cmd.exe` has no `Set-Location`/`&&`; prefer PowerShell):
 
 ```powershell
-Get-Command lks -ErrorAction SilentlyContinue; Get-Command lks -ErrorAction SilentlyContinue
-lks --help 2>$null | Select-Object -First 5; if (-not $?) { lks --help 2>$null | Select-Object -First 5 }
+Get-Command lks -ErrorAction SilentlyContinue
+lks --help 2>$null | Select-Object -First 5
 Get-Location
 ```
 
@@ -77,11 +77,11 @@ $TARGET_ROOT = (Get-Location).Path   # or the path the user named
 # Optional pin: $env:LK_SIM_REF = "v0.1.0"
 ```
 
-If `lks --help` or `lks --help` already works, skip §2 install and go to §3 init.
+If `lks --help` already works, skip §2 install and go to §3 init.
 
 ---
 
-## 2. Install `lks` (portable; alias `lk-sim`)
+## 2. Install `lks` (portable)
 
 ### macOS / Linux
 
@@ -101,43 +101,43 @@ Flags:
 
 | Flag | Meaning |
 |------|---------|
-| `--verify` | Run post-install check (`lks --help` / alias `lks --help`) |
+| `--verify` | Run post-install check (`lks --help`) |
 | `--ref vX.Y.Z` / `--version` | Pin release tag (default: latest) |
 | `--no-mcp` | Skip auto MCP registration |
 | `--easy-mode` | Append install dir to shell PATH in rc files |
 | `--uninstall` | Remove install |
 
-Default binary locations: `$HOME/.local/bin/lks` and alias `$HOME/.local/bin/lks`  
-If `lks` / `lks` is not found after install, ensure `~/.local/bin` is on `PATH` for this shell:
+Default binary location: `$HOME/.local/bin/lks`  
+If `lks` is not found after install, ensure `~/.local/bin` is on `PATH` for this shell:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 hash -r 2>/dev/null || true
-command -v lks || command -v lks
+command -v lks
 lks --help | head -20
 ```
 
 ### Windows PowerShell
 
 ```powershell
-irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lk-sim-install.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps1" -Verify
+irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
 # Optional pin:
-# ... -File "$env:TEMP\lk-sim-install.ps1" -Ref v0.1.0 -Verify
+# ... -File "$env:TEMP\lks-install.ps1" -Ref v0.1.0 -Verify
 ```
 
 `install.ps1` flags (differ slightly from `install.sh`):
 
 | Flag | Meaning |
 |------|---------|
-| `-Verify` | Run post-install check (`lks --help` / alias `lks --help`) |
+| `-Verify` | Run post-install check (`lks --help`) |
 | `-Ref vX.Y.Z` / `-Version` | Pin release tag (default: latest) |
 | `-NoMcp` | Skip auto MCP registration |
 | `-Uninstall` | Remove install |
-| `-Repair` | Fix broken nested layout (`current/lk-sim-windows-x64/`) without re-download |
+| `-Repair` | Fix broken nested layout (`current/lks-windows-x64/`) without re-download |
 | `-Quiet` | Suppress info logs |
 
-Install locations: pack under `%LOCALAPPDATA%\lk-sim\current`, shims `lks` + alias `lk-sim` under `%USERPROFILE%\.local\bin`.
+Install locations: pack under `%LOCALAPPDATA%\lks\current`, shims `lks` under `%USERPROFILE%\.local\bin`.
 The installer prepends that dir to the **user** `PATH` automatically — but already-open terminals do not see it.
 If `lks` / `lks` is not found after install, open a **new** terminal, or for the current session:
 
@@ -149,7 +149,7 @@ lks --help | Select-Object -First 20
 
 ### Installer success criteria
 
-- `command -v lks` (or alias `lk-sim`) / `Get-Command lks` resolves
+- `command -v lks` / `Get-Command lks` resolves
 - `lks --help` exits 0 and lists: `init`, `preflight`, `execute`, `scenario-from-run`, `web`, `mcp`, …
 - Prefer not to use `uv run` / `pip install` for end users
 
@@ -177,13 +177,14 @@ This creates (if missing):
 ```text
 $TARGET_ROOT/.agent-sim/
   config.yaml          # secrets go here (gitignored)
-  scenarios/smoke-hello.jsonl
+  scenarios/smoke-hello.yaml
   reports/
-  plugins/example_verify.py
+  plugins/example_verify.py   # verify + optional before_run / after_run hooks
   cues/README.md
 ```
 
-And ensures `.agent-sim/` is listed in `$TARGET_ROOT/.gitignore`.
+Plugin API (verify + lifecycle): [plugins.md](../plugins.md). Ops detail: `lks guide`.
+Re-running `init` also ensures `.agent-sim/` is listed in `$TARGET_ROOT/.gitignore`.
 
 **Idempotent:** re-running `init` does **not** overwrite existing `config.yaml`, scenarios, or reports — only creates missing scaffold files.
 
@@ -206,15 +207,16 @@ Open `$TARGET_ROOT/.agent-sim/config.yaml`. Required:
 |-----|--------|
 | `livekit.url` | `wss://…` LiveKit Cloud or self-host |
 | `livekit.api_key` / `livekit.api_secret` | LiveKit server API credentials |
-| `livekit.agent_name` | **Exact** dispatch name the worker registers (from worker docs, env, or LiveKit config — consumer-specific) |
-| `simulator.google_api_key` | Gemini API key with Live model access |
+| `livekit.agent_name` | **Exact** dispatch name the agent registers (from target docs, env, or LiveKit config — consumer-specific) |
+| `simulator.api_key` | API key of the **active** provider (`google` → Gemini Live, `openai` → OpenAI Realtime) |
 
 Recommended defaults (already in template):
 
+- `simulator.provider: google`, `simulator.mode: realtime`
 - `simulator.voice.model`: `gemini-3.1-flash-live-preview`
 - `observe.record_audio: true` (stereo WAV L=sim R=agent)
 - `observe.lk_agent_session: true` (automatic SDK tool/session events)
-- `judge.model`: `gemini-2.5-flash` (only used if scenario has `PassCriteria`)
+- `judge.model`: `gemini-3.1-flash-lite` (only used if scenario has `PassCriteria`)
 
 Optional but common:
 
@@ -246,9 +248,9 @@ observe:
 
 ### Tool observability
 
-LiveKit Agents SDK workers expose tool calls, outputs, state changes, errors, usage,
+LiveKit Agents SDK sessions expose tool calls, outputs, state changes, errors, usage,
 and final chat history through the standard `lk.agent.session` RemoteSession protocol.
-It is enabled by default, so SDK workers do not need `tool_event_patterns`.
+It is enabled by default, so SDK agents do not need `tool_event_patterns`.
 
 Set `observe.lk_agent_session: false` only for agents that do not implement this
 protocol. For those agents, map custom data messages with
@@ -266,41 +268,42 @@ protocol. For those agents, map custom data messages with
 | `LIVEKIT_URL` | `livekit.url` |
 | `LIVEKIT_API_KEY` | `livekit.api_key` |
 | `LIVEKIT_API_SECRET` | `livekit.api_secret` |
-| `GOOGLE_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_GENAI_API_KEY` | `simulator.google_api_key` |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_GENAI_API_KEY` | `simulator.api_key` (when `provider: google`) |
 | Consumer-specific (search docs — not one global name) | `livekit.agent_name` |
 | `SIP_OUTBOUND_TRUNK_ID` (optional) | `telephony.outbound_trunk_id` |
 | `SIP_INBOUND_TRUNK_ID` (optional) | `telephony.inbound_trunk_id` (docs/preflight) |
 
-Per-scenario dispatch override (opaque JSON — keys are consumer-specific):
+Per-scenario dispatch override (opaque JSON string — keys are consumer-specific):
 
-```jsonl
-{"kind":"Dispatch","spec":{"metadata":"{\"yourConsumerKey\":\"value\"}"}}
+```yaml
+dispatch:
+  metadata: '{"yourConsumerKey":"value"}'
 ```
 
 More consumer wiring notes: [portability.md](../portability.md).
 
 ### 4.0 Discover consumer repo (before `AskQuestion`)
 
-`lks` is **target-agnostic**. Each consumer defines its own dispatch metadata keys, data topics, and docs layout. **Do not hardcode paths or field names from one repo** (e.g. `bootstrap/job-metadata.ts`, `customAgentId`) in this guide or in setup steps.
+`lks` is **target-agnostic**. Each consumer defines its own dispatch metadata keys, data topics, and docs layout. **Do not hardcode paths or field names from one repo** (e.g. `bootstrap/job-metadata.ts`, `yourProjectKey`) in this guide or in setup steps.
 
 Read-only discovery in `TARGET_ROOT` (in order):
 
-1. **Existing sim scaffold** — `.agent-sim/config.yaml`, `scenarios/*.jsonl` (especially `Dispatch` lines), `cues/`, `plugins/`.
+1. **Existing sim scaffold** — `.agent-sim/config.yaml`, `scenarios/*.yaml` (legacy `*.jsonl` also read; especially `dispatch`/`Dispatch` metadata), `cues/`, `plugins/`.
 2. **Docs** — `README*`, `docs/**` — search for: `dispatch`, `metadata`, `agent_name`, `RoomAgentDispatch`, `data_topics`.
 3. **Env templates** — `.env.example`, `.env.local.example` — map only keys that exist there; do not assume a global env name for `agent_name` or metadata IDs.
 4. **Code search (read-only, no edits)** — examples:
    - `dispatch_metadata`, `job.metadata`, `parseMetadata`, `RoomAgentDispatch`
    - `data_topics`, `publishData`, topic names the agent emits
-   - `agent_name`, `agentName`, worker registration / dispatch name
+   - `agent_name`, `agentName`, agent registration / dispatch name
 5. **Portability** — [portability.md](../portability.md) for how lks forwards opaque JSON and observes data topics.
 
 **Infer wiring from discovery:**
 
 | Finding | lks action |
 |---------|----------------|
-| Worker reads JSON from dispatch/job metadata | Set `livekit.dispatch_metadata` and/or per-scenario `Dispatch.metadata` with the **same key names** found in docs/search (values from user or existing config — never invent) |
+| Agent reads JSON from dispatch/job metadata | Set `livekit.dispatch_metadata` and/or per-scenario `Dispatch.metadata` with the **same key names** found in docs/search (values from user or existing config — never invent) |
 | Agent publishes named data topics | Set `observe.data_topics` to those topic strings (or `[]` to record all) |
-| Non–LiveKit Agents SDK worker | Consider `observe.lk_agent_session: false` + `tool_event_patterns` (see portability) |
+| Non–LiveKit Agents SDK agent | Consider `observe.lk_agent_session: false` + `tool_event_patterns` (see portability) |
 | Nothing requires opaque metadata | Leave `dispatch_metadata` unset |
 
 **Ask the user only for gaps** discovery cannot resolve: which agent ID / metadata value, prod vs local dispatch name, permission to read `.env`, whether to run smoke `execute`.
@@ -317,7 +320,7 @@ Rules:
 - **≤ 3 questions per `AskQuestion` call** (batch related choices).
 - Each question needs **≥ 2 options**; put the recommended default **first** and append `(Recommended)` to its label.
 - User can always pick **Other** for a custom path, `agent_name`, metadata JSON, or consumer-specific keys.
-- **Secrets** (`api_key`, `api_secret`, `google_api_key`): never list real values as options. Either read `.env` after user picks “read env”, or ask them to edit `config.yaml` / use **Other** for one-off paste.
+- **Secrets** (`livekit.api_key`/`api_secret`, `simulator.api_key`): never list real values as options. Either read `.env` after user picks “read env”, or ask them to edit `config.yaml` / use **Other** for one-off paste.
 - If the host has no `AskQuestion`, ask the same prompts in chat.
 
 #### Turn 1 — typical `AskQuestion` (after `init` + §4.0, before writing config)
@@ -328,9 +331,9 @@ Rules:
   "questions": [
     {
       "id": "target_root",
-      "prompt": "Where should .agent-sim/ live? (LiveKit worker repo, not dashboard)",
+      "prompt": "Where should .agent-sim/ live? (LiveKit agent repo under test)",
       "options": [
-        {"id": "worker", "label": "Worker repo — path with LIVEKIT_* in .env (Recommended)"},
+        {"id": "agent_repo", "label": "Agent repo — path with LIVEKIT_* in .env (Recommended)"},
         {"id": "cwd", "label": "Current workspace folder"},
         {"id": "other", "label": "Other — I'll type the absolute path in Other"}
       ]
@@ -360,7 +363,7 @@ Rules:
 
 **Gemini key hint** (chat or comment in yaml — not an `AskQuestion` option):
 
-> Create at [Google AI Studio](https://aistudio.google.com/apikey). Same key as worker `GOOGLE_API_KEY` is fine. Needs Gemini Live access for `gemini-3.1-flash-live-preview`.
+> Create at [Google AI Studio](https://aistudio.google.com/apikey). Same key as the agent under test `GOOGLE_API_KEY` is fine. Needs Gemini Live access for `gemini-3.1-flash-live-preview`.
 
 #### Turn 2 — only if still ambiguous after discover (second `AskQuestion`, optional)
 
@@ -384,16 +387,16 @@ Skip questions already answered by §4.0 (e.g. skip dispatch-metadata question i
       "id": "dispatch_metadata",
       "prompt": "Where should opaque dispatch metadata live? (Only if discovery found required keys but not where to set them)",
       "options": [
-        {"id": "none", "label": "Not needed / already in scenario JSONL (Recommended if discovery found nothing)"},
+        {"id": "none", "label": "Not needed / already in scenario YAML (Recommended if discovery found nothing)"},
         {"id": "yes_config", "label": "Default for all runs — livekit.dispatch_metadata in config.yaml"},
-        {"id": "yes_scenario", "label": "Per-scenario only — Dispatch line in JSONL"}
+        {"id": "yes_scenario", "label": "Per-scenario only — dispatch metadata in the scenario YAML"}
       ]
     },
     {
       "id": "run_smoke",
       "prompt": "Run smoke execute now?",
       "options": [
-        {"id": "preflight_only", "label": "Stop after preflight — I'll start the worker myself (Recommended)"},
+        {"id": "preflight_only", "label": "Stop after preflight — I'll start the agent myself (Recommended)"},
         {"id": "execute", "label": "Worker is already running — run execute smoke-hello"}
       ]
     }
@@ -410,11 +413,11 @@ If discovery found required metadata keys but not values, ask in chat or **Other
 | Bucket | Use `AskQuestion` for | Maps to / action |
 |--------|----------------------|------------------|
 | **A. Target repo** | Which folder is `TARGET_ROOT` | `--root` on every command |
-| **B. Credentials** | Read `.env` vs user edits yaml | `livekit.*`, `simulator.google_api_key` |
+| **B. Credentials** | Read `.env` vs user edits yaml | `livekit.*`, `simulator.api_key` |
 | **C. Toggles** | `record_audio`, language, timezone, judge | `observe.record_audio`, `simulator.language`, `observe.timezone`, `judge:` |
 | **D. Product wiring** | Unresolved metadata keys/values, `data_topics`, `first_speaker` (after discover) | `dispatch_metadata`, `observe.data_topics`, scenario `Execute` / `Dispatch` |
 | **E. Skip** | Worker start command, SIP, load test | Out of scope (§9) |
-| **F. After preflight** | `run_smoke` question or plain chat | `execute` only if user chose it or confirmed worker is up |
+| **F. After preflight** | `run_smoke` question or plain chat | `execute` only if user chose it or confirmed agent is up |
 
 Example yaml after **record_audio=yes** + **language=vi-VN**:
 
@@ -491,7 +494,7 @@ Common failures:
 |---------|-----|
 | config missing | `lks init --root …` first |
 | livekit.api 401 | Wrong URL / api_key / api_secret |
-| agent timeout later | Worker not running or `agent_name` mismatch |
+| agent timeout later | Agent not running or `agent_name` mismatch |
 | Windows: `No module named 'encodings'` / `Could not find platform independent libraries` | Broken portable layout from older installer — run `install.ps1 -Repair -Verify` or reinstall with latest `install.ps1` |
 
 ---
@@ -502,7 +505,7 @@ List / scaffold:
 
 ```bash
 lks scenarios --root "$TARGET_ROOT"
-lks scenario-init my-case --root "$TARGET_ROOT"   # // guide lines in JSONL
+lks scenario-init my-case --root "$TARGET_ROOT"   # scaffolds a .yaml with # guide comments
 lks validate smoke-hello --root "$TARGET_ROOT"
 ```
 
@@ -514,16 +517,21 @@ These are **not** required for install — use when writing scenarios under `.ag
 |------|---------|
 | `Persona.speech_conditions.voice_gain` (`0.0`–`1.0`) | Quiet-caller STT stress (scales speech PCM after Gemini Live; not noise beds) |
 | `Persona.speech_conditions.silent_mode: true` | Unresponsive / dead-air caller (no freestyle, no nudge, no auto barge/noise) |
+| `Persona.speech_conditions.interruption_rate` | Recurring barge while agent speaks (`none`/`low`/`medium`/`high`; parallel timer) |
+| `Persona.speech_conditions.verbosity` (`quiet` / `natural` / `chatty`) | Caller length band (default **`natural`** if omitted). Free-text `style` is **not** parsed for verbosity; under `natural`/`chatty`, known brevity phrases (`short turns`, …) are stripped so they cannot fight the band. Traits `quiet`/`silent`/`terse` → quiet; `chatty` → chatty; explicit `verbosity` wins. Use `quiet` for VAD/terse fixtures. |
+| `Execute.spec.hold_music_timeout_s` | Hang up after N s of **agent** dead air (5–300; Persona alias ok) |
+| Script `action: wait` + `silence_after_cue_ms` | Intentional caller silence hold (suppresses freestyle). On `action: speak`, `silence_after_cue_ms` does **not** long-mute freestyle after the line. |
+| Soft metrics `user_words_natural_*` | Freestyle word stats excluding Script-matched finals; prefer over overall `user_words_p50` for naturalness on Script-heavy packs |
 | `noise_when: "background"` / Script `"loop": true` | Continuous ambient noise under the call |
 | `lks validate` → `authoring.tier` / `warning_codes` | Soft authoring quality gate (no LLM; does not flip `valid`) |
 
-Package examples: `templates/examples/quiet-caller-confirm.jsonl`, `silent-caller-dead-air.jsonl`, `ambient-loop-office.jsonl`.
+Package examples: `templates/examples/quiet-caller-confirm.yaml`, `silent-caller-dead-air.yaml`, `ambient-loop-office.yaml`, `interrupt-rate-medium.yaml`, `hold-timeout-agent-stall.yaml`.
 
-Ops detail: **`lks guide`** (or `lk-sim guide`).
+Ops detail: **`lks guide`**.
 
 
 
-**Worker must be running** and registered with the same `livekit.agent_name` before execute.
+**Agent under test must be running** and registered with the same `livekit.agent_name` before execute.
 
 ```bash
 lks execute smoke-hello --root "$TARGET_ROOT"
@@ -559,9 +567,13 @@ Promote a failure to a draft regression case:
 
 ```bash
 lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"           # dry-run
-lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT" --write  # write JSONL
+lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT" --write  # write .yaml draft
 # then human/agent reviews Persona + Assert before treating as golden
 ```
+
+Draft extract (see `lks guide` → promote section): goals/constraints (not transcript paste into brief),
+one Behavior barge stub from run markers when present, Script open when `first_speaker=user`,
+transcript sample in `Context.notes` only.
 
 Assert highlights (for scenario authors after setup):
 
@@ -575,12 +587,64 @@ Assert highlights (for scenario authors after setup):
 Persona prompt now uses numbered GOAL checklist + guardrails against premature end.
 The caller must work through all goals; early `[END_CALL]` causes a failed test.
 
-```jsonl
-{"kind":"Assert","spec":{"outcomes":[{"id":"caller_pursued_goals","type":"goals_met","min_goals":2,"goals":["Hear greeting","Get info"]}]}}
-{"kind":"Assert","spec":{"tool_order":["lookup","book"],"outcomes":[{"id":"no_card","type":"constraint_respected","must_not_phrases":["4111"]}]}}
+```yaml
+assert:
+  outcomes:
+    - id: caller_pursued_goals
+      type: goals_met
+      min_goals: 2
+      goals: [Hear greeting, Get info]
+    - id: no_card
+      type: constraint_respected
+      must_not_phrases: ['4111']
+  tool_order: [lookup, book]
 ```
 
 PassCriteria can use flat `criteria[]` or multi-judge `judges[]` + `mode` (`all` \| `majority` \| `any`). Full recipes: `lks guide`.
+
+#### Judge builtin presets
+
+Instead of writing a criterion from scratch, reference a builtin dimension:
+
+```yaml
+pass_criteria:
+  judges:
+    - id: task
+      builtin: task_completion
+    - id: flow
+      builtin: conversation_flow
+# or flat:
+pass_criteria:
+  criteria: [builtin:conversation_naturalness]
+```
+
+Available presets (package `src/livekit_agent_simulator/evals/presets.py`, `lks plugins`/`list_presets`):
+
+| builtin key | What it grades |
+|---|---|
+| `task_completion` | Caller's goal finished with the correct final state (completed / handed off / declined) |
+| `factual_accuracy` | Facts, prices, dates, policy consistent with tool outputs; flag contradictions/hallucinations |
+| `policy_compliance` | Required disclosures, refusals, consent, restricted topics handled when applicable |
+| `conversation_flow` | Avoids useless loops, ignored context, excessive dead-air / overtalk |
+| `conversation_naturalness` | **Voice UX review as a real human** — see below |
+| `empathy` | Tone appropriate to the caller's situation |
+| `escalation` | Transfer / handoff / refuse at the right time |
+| `accuracy` | Agent grounds claims in tool outputs (LiveKit-style) |
+| `coherence` | Responses follow a logical structure, stay on-topic (LiveKit-style) |
+
+#### `conversation_naturalness` — real-reviewer feedback
+
+The `conversation_naturalness` preset grades the call as a **real human reviewer** would — a product manager listening with a stopwatch and notepad, asking "would a caller feel this is a natural phone conversation, or a scripted bot?". It checks:
+
+1. **One question per turn** — the agent asks a single question and waits; stacking Q1+Q2 reads as rushed.
+2. **Minimal confirmation** — confirm only genuinely risky values (phone, email, ambiguous date/time); a per-field thank-you/echo/"is that correct?" loop feels mechanical.
+3. **Acknowledge-then-redirect** — when the caller volunteers a later field, the agent acknowledges it and steers back to the missing required field; ignoring the caller's input feels like the agent isn't listening.
+4. **Relative dates** — the agent echoes a relative date as stated, never invents an absolute date unless the system is known to have resolved it.
+5. **Turn latency** — under ~3s natural, 3–5s acceptable, over 5s feels stuck; the judge quotes turn numbers/timings for any slow turn.
+
+When any naturalness criterion is present, the judge returns a structured `conversation_feedback` list — `[{issue, severity, agent_line, why}]` with the **exact verbatim agent line** that violates a rule and the human impact — in addition to the per-criterion `criteria` array. An engineer can act directly on the notes. The preset is **language-neutral** (no hardcoded product/business strings in core); targets opt in per scenario via `builtin:conversation_naturalness`, and may add their own domain examples in the scenario's `PassCriteria` text.
+
+Judge verdicts (`pass`/`fail`/`maybe`) are **soft** unless `--strict-judge` is passed; hard CI gates are status / assert / script verify.
 
 Script action `hang_up` makes the sim caller leave the room (hard hangup).
 
@@ -588,9 +652,9 @@ Script action `hang_up` makes the sim caller leave the room (hard hangup).
 
 Package templates (copy into `.agent-sim/scenarios/`):
 
-- `outbound-human-pickup.jsonl` — human answers, Gemini speaks (`Caller.mode: outbound_human_pickup`)
-- `outbound-callee-sim.jsonl` — Gemini SIP callee (`Caller.mode: outbound_sim_callee`)
-- `inbound-caller-sim.jsonl` — Gemini dials agent DID (`Caller.mode: inbound_sip`)
+- `outbound-human-pickup.yaml` — human answers, Gemini speaks (`caller.mode: outbound_human_pickup`)
+- `outbound-callee-sim.yaml` — Gemini SIP callee (`caller.mode: outbound_sim_callee`)
+- `inbound-caller-sim.yaml` — Gemini dials agent DID (`caller.mode: inbound_sip`)
 
 ```bash
 # After telephony: block in config.yaml (trunk + dial_in / sim_inbound_number):
@@ -614,14 +678,14 @@ Mark setup complete only when **all** of these are true:
 - [ ] `$TARGET_ROOT/.agent-sim/config.yaml` exists with LiveKit + `agent_name` + Gemini key set
 - [ ] `.agent-sim/` is gitignored
 - [ ] `lks preflight --root "$TARGET_ROOT"` → `ok: true`
-- [ ] User knows the worker must be running before `execute`
+- [ ] User knows the agent under test must be running before `execute`
 - [ ] Consumer dispatch metadata / `data_topics` set when discovery (§4.0) shows they are required
 - [ ] (Tool scenarios) report contains `tool.*` and `session.chat_history`, with no `tool_events` observe gap
 - [ ] (Optional) MCP `livekit-agent-simulator` registered if they use a coding agent
 - [ ] (Optional) `lks execute smoke-hello --root "$TARGET_ROOT"` → `status: done` or a clear next fix (agent timeout / Gemini quota)
 - [ ] (Optional SIP) `telephony:` trunk/DID filled when testing `inbound_sip` / `outbound_human_pickup` / `outbound_sim_callee`; scenarios validated
 
-**Do not claim “fully working E2E”** if preflight failed or the worker is not registered.
+**Do not claim “fully working E2E”** if preflight failed or the agent is not registered.
 
 ---
 
@@ -657,12 +721,12 @@ lks init --root "$TARGET_ROOT"
 
 # 3) STOP: discover TARGET_ROOT (§4.0), then fill $TARGET_ROOT/.agent-sim/config.yaml
 #    livekit.url / api_key / api_secret / agent_name
-#    simulator.google_api_key
+#    simulator.api_key (provider: google or openai)
 #    optional: livekit.dispatch_metadata, observe.data_topics (from consumer docs/search)
 #    Then continue:
 
 lks preflight --root "$TARGET_ROOT"
-# 4) Ensure voice agent worker is running with matching agent_name
+# 4) Ensure agent under test is running with matching agent_name
 # lks execute smoke-hello --root "$TARGET_ROOT"
 # lks web --root "$TARGET_ROOT"
 ```
@@ -676,8 +740,8 @@ $TARGET_ROOT = (Get-Location).Path   # change if needed
 
 # 1) Install CLI (skip if already present)
 if (-not (Get-Command lks -ErrorAction SilentlyContinue; Get-Command lks -ErrorAction SilentlyContinue)) {
-  irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lk-sim-install.ps1"
-  powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps1" -Verify
+  irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+  powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
   $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
 }
 lks --help | Out-Null
@@ -687,12 +751,12 @@ lks init --root $TARGET_ROOT
 
 # 3) STOP: discover TARGET_ROOT (§4.0), then fill $TARGET_ROOT\.agent-sim\config.yaml
 #    livekit.url / api_key / api_secret / agent_name
-#    simulator.google_api_key
+#    simulator.api_key (provider: google or openai)
 #    optional: livekit.dispatch_metadata, observe.data_topics (from consumer docs/search)
 #    Then continue:
 
 lks preflight --root $TARGET_ROOT
-# 4) Ensure voice agent worker is running with matching agent_name
+# 4) Ensure agent under test is running with matching agent_name
 # lks execute smoke-hello --root $TARGET_ROOT
 # lks web --root $TARGET_ROOT
 ```
@@ -708,6 +772,7 @@ lks preflight --root $TARGET_ROOT
 | Installer (Windows) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1 |
 | This guide (raw) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md |
 | Ops guide | package `lks guide` or `templates/GUIDE.md` (voice, cues, plugins) |
+| Plugins (verify + before_run / after_run) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md |
 | Portability | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md |
 | Telephony (SIP modes) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/telephony.md |
 | Smoke notes | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/smoke-test.md |

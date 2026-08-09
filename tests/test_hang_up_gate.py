@@ -19,6 +19,9 @@ from livekit_agent_simulator.script.runtime import ScriptRunner
         ("What's your full name?", True),
         ("Sure, the fee is $49 a month. May I have your name?", True),
         ("Could you please provide your phone number", True),
+        # Mid-utterance question then statement — still expects a caller reply.
+        ("Which car were you looking at? I'll check that for you now.", True),
+        ("Still there? Just checking if you can hear me?", True),
         ("Alright, thanks for calling. Goodbye!", False),
         ("The fee is forty nine dollars per month.", False),
         ("", False),

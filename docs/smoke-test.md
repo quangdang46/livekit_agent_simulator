@@ -10,7 +10,7 @@ transcripts + events logged → report written.
    `.agent-sim/config.yaml`.
 2. LiveKit Cloud (or self-hosted) URL + API key/secret.
 3. A Google API key with access to `gemini-3.1-flash-live-preview` (same key works
-   for the `gemini-2.5-flash` judge).
+   for the `gemini-3.1-flash-lite` judge).
 
 ## Steps
 
@@ -22,7 +22,7 @@ uv run --directory /path/to/livekit-agent-simulator lks init
 
 # 2. Fill in credentials
 #    .agent-sim/config.yaml → livekit.url / api_key / api_secret / agent_name
-#                             simulator.google_api_key
+#                             simulator.api_key (provider: google | openai)
 
 # 3. Verify connectivity BEFORE burning a run
 uv run --directory /path/to/livekit-agent-simulator lks preflight

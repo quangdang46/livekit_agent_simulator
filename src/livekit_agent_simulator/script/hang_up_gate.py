@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 # Closing / farewell cues: agent is wrapping up — hang_up may proceed.
 _CLOSING_MARKERS = (
     "goodbye",
@@ -25,11 +23,16 @@ _OPEN_PROMPT_MARKERS = (
     "what's your",
     "what is your",
     "what was your",
+    "which car",
+    "what sort of",
     "may i have",
     "can i have",
     "could you",
     "can you tell",
     "can you give",
+    "can you hear",
+    "still there",
+    "are you there",
     "please provide",
     "please tell",
     "your name",
@@ -43,6 +46,7 @@ _OPEN_PROMPT_MARKERS = (
     "would you like",
     "do you want",
     "are you ready",
+    "whereabouts",
 )
 
 
@@ -60,9 +64,7 @@ def agent_left_open_turn(text: str | None) -> bool:
     lower = t.lower()
     if any(m in lower for m in _CLOSING_MARKERS):
         return False
-    if t.endswith("?"):
-        return True
-    # Trailing question without terminal ? (ASR truncation).
-    if re.search(r"\?\s*$", t):
+    # Mid-utterance questions ("Which car…? I'll check…") still expect a reply.
+    if "?" in t:
         return True
     return any(m in lower for m in _OPEN_PROMPT_MARKERS)

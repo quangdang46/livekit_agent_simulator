@@ -15,7 +15,8 @@ livekit:
   api_secret: "secret"
   agent_name: "my-agent-local"
 simulator:
-  google_api_key: "AIzaTest"
+  provider: google
+  api_key: "AIzaTest"
   language: "en-US"
   voice:
     model: "gemini-3.1-flash-live-preview"
@@ -82,9 +83,56 @@ def test_missing_agent_name(tmp_path):
 
 
 def test_missing_simulator_key(tmp_path):
-    broken = VALID_CONFIG.replace('google_api_key: "AIzaTest"', "")
-    with pytest.raises(ConfigError, match="simulator.google_api_key"):
+    broken = VALID_CONFIG.replace('api_key: "AIzaTest"', "")
+    with pytest.raises(ConfigError, match="simulator.api_key"):
         load_config(_write(tmp_path, broken))
+
+
+def test_simulator_provider_defaults_google(tmp_path):
+    cfg = load_config(_write(tmp_path, VALID_CONFIG.replace("  provider: google\n", "")))
+    assert cfg.simulator.provider == "google"
+    assert cfg.simulator.mode == "realtime"
+    assert cfg.simulator.api_key == "AIzaTest"
+    snap = config_snapshot(cfg)["simulator"]
+    assert snap["provider"] == "google"
+    assert snap["mode"] == "realtime"
+    assert "AIzaTest" not in str(config_snapshot(cfg))
+
+
+def test_simulator_provider_openai(tmp_path):
+    cfg_text = VALID_CONFIG.replace("  provider: google", "  provider: openai").replace(
+        'api_key: "AIzaTest"', 'api_key: "sk-openai-test"'
+    )
+    cfg = load_config(_write(tmp_path, cfg_text))
+    assert cfg.simulator.provider == "openai"
+    assert cfg.simulator.api_key == "sk-openai-test"
+    assert config_snapshot(cfg)["simulator"]["provider"] == "openai"
+
+
+def test_simulator_provider_invalid_fails_fast(tmp_path):
+    broken = VALID_CONFIG.replace("  provider: google", "  provider: anthropic")
+    with pytest.raises(ConfigError, match="simulator.provider"):
+        load_config(_write(tmp_path, broken))
+
+
+def test_simulator_mode_invalid_fails_fast(tmp_path):
+    broken = VALID_CONFIG.replace("  provider: google", "  provider: google\n  mode: cascade")
+    with pytest.raises(ConfigError, match="simulator.mode"):
+        load_config(_write(tmp_path, broken))
+
+
+def test_voice_language_authoritative_over_simulator_language(tmp_path):
+    cfg_text = VALID_CONFIG.replace(
+        '  language: "en-US"',
+        '  language: "fr-FR"',
+        1,
+    ).replace(
+        '    voice: "Puck"',
+        '    voice: "Puck"\n    language: "vi-VN"',
+    )
+    cfg = load_config(_write(tmp_path, cfg_text))
+    assert cfg.simulator.language == "fr-FR"  # legacy default kept
+    assert cfg.simulator.voice.language == "vi-VN"  # authoritative for speech
 
 
 def test_snapshot_never_leaks_secrets(tmp_path):

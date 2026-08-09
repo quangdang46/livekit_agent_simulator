@@ -20,7 +20,7 @@ folder; the Python package never imports consumer application code.
 
 ## Per-target setup (in `<repo>/.agent-sim/`)
 
-1. **`config.yaml`** — LiveKit URL/key/secret, `agent_name`, `simulator.google_api_key`.
+1. **`config.yaml`** — LiveKit URL/key/secret, `agent_name`, `simulator.api_key` (+ `simulator.provider`).
 2. **Optional `livekit.dispatch_metadata`** — default opaque JSON for all runs.
 3. **Optional per-scenario `Dispatch.metadata`** — overrides config default.
 4. **`observe.data_topics`** — list topics your agent publishes (empty = record all).
@@ -68,6 +68,47 @@ observe:
 ```
 
 Scenario with `Execute.first_speaker: user` if the agent waits for caller audio.
+
+### Caller verbosity (portable length band)
+
+Default caller speech is **`natural`** (1–3 spoken clauses + occasional fillers). Set
+explicitly when a pack needs sparse or chatty talk:
+
+```json
+{"kind":"Persona","spec":{"speech_conditions":{"verbosity":"quiet"}}}
+```
+
+| Value | Effect |
+|-------|--------|
+| `natural` (default if omitted) | Phone-natural length; `NaturalSpeechSection` fillers on |
+| `quiet` | Short clause; no filler encouragement — use for VAD / terse fixtures |
+| `chatty` | Longer turns + fillers; still goal-bound |
+
+Trait aliases when `verbosity` is omitted: `quiet` / `silent` / `terse` → quiet;
+`chatty` → chatty. Free-text `style` (e.g. “short turns”) is **not** parsed for
+verbosity — migrate with an explicit field or trait. When verbosity is
+`natural`/`chatty`, known style length phrases (`short turns`, `terse replies`, …)
+are stripped from the SI so they cannot fight the length band.
+
+### Scenario vs Script (natural listening packs)
+
+| Mode | What it is | Word-length metrics |
+|------|------------|---------------------|
+| **Dialogue / Scenario** | Persona goals; little or no Script mouth | `user_words_*` ≈ freestyle; use `user_words_natural_*` |
+| **Hybrid** | Sparse Script **milestones** + freestyle between cues | Overall `user_words_p50` mixes Script + freestyle — **prefer `user_words_natural_p50`** |
+| **Wall-to-wall Script** | Almost every turn is a forced `say` | Overall p50 ≈ authored say length; natural count may stay ~0 |
+
+**Mute / silence knobs (portable):**
+
+| Knob | Effect |
+|------|--------|
+| `action: wait` + `silence_after_cue_ms` | **Intentional** caller silence (VAD / dead-air fixtures). Suppresses freestyle for the hold. |
+| `action: speak` + `silence_after_cue_ms` | **Does not** long-mute freestyle after the line (inject already drains TTS). Prefer `wait` for silence holds. |
+| `speech_conditions.silent_mode` | Whole-call mute |
+
+For natural listening packs: keep Script sparse (open / key correction / hang_up), set
+`verbosity` explicitly if needed, and judge soft naturalness with
+`user_words_natural_p50` / `user_words_natural_count` — not overall suite p50 alone.
 
 If the agent uses a different transcript payload type, set:
 

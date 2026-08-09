@@ -2,7 +2,7 @@
 
 **ID:** PLAN-20260713-telephony-simleg  
 **Date:** 2026-07-13 (portable rewrite)  
-**Repo:** livekit-agent-simulator (lk-sim)  
+**Repo:** livekit-agent-simulator (lks)  
 **Status:** Waiting for OK — reply **go ahead** to implement **T0 + T1** first
 
 ---
@@ -17,7 +17,7 @@
 | **Risk** | T0/T1 **Low**. T2/T3 **Med** (cross-room observe + DID/dispatch config). T6 High (deferred). |
 | **Not in T2** | In-process RTP callee as primary; licensed-or-not Go ports; personal mobile as default `call_to`. |
 
-**Portability rule (locked):** lk-sim dials **any** LiveKit voice agent. Core exposes knobs (`Caller`, `Telephony`, opaque `Dispatch.metadata`, observe config). The target fills values. If a feature only works for one monorepo, it does not belong in `src/`.
+**Portability rule (locked):** lks dials **any** LiveKit voice agent. Core exposes knobs (`Caller`, `Telephony`, opaque `Dispatch.metadata`, observe config). The target fills values. If a feature only works for one monorepo, it does not belong in `src/`.
 
 ---
 

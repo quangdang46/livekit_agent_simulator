@@ -195,6 +195,11 @@ def parse_script_steps(spec: dict[str, Any], path_label: str) -> list[ScriptStep
                 asset=asset_s,
                 silence_after_cue_ms=int(raw.get("silence_after_cue_ms", 0)),
                 action=action,
+                mute_persona=(
+                    bool(raw["mute_persona"])
+                    if "mute_persona" in raw
+                    else None
+                ),
                 require_agent_spoke_first=bool(raw.get("require_agent_spoke_first", True)),
                 require_agent_reply_this_turn=bool(
                     raw.get("require_agent_reply_this_turn", True)

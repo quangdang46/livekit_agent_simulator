@@ -47,11 +47,22 @@ async def run_preflight(project_root: Path | str, connectivity: bool = True) -> 
     cfg.scenarios_dir.mkdir(parents=True, exist_ok=True)
     result.add("folders", "pass", str(cfg.dot_dir))
 
-    key = cfg.simulator.google_api_key.strip()
-    if len(key) < 20:
-        result.add("simulator.google_api_key", "warn", "Key looks unusually short")
+    key = (cfg.simulator.api_key or "").strip()
+    provider = cfg.simulator.provider
+    if not key:
+        result.add(
+            f"simulator.api_key[{provider}]",
+            "fail",
+            f"missing — `simulator.api_key` required for provider {provider}",
+        )
+    elif len(key) < 20:
+        result.add(
+            f"simulator.api_key[{provider}]",
+            "warn",
+            "Key looks unusually short",
+        )
     else:
-        result.add("simulator.google_api_key", "pass", "present")
+        result.add(f"simulator.api_key[{provider}]", "pass", "present")
 
     if connectivity and result.ok:
         await _check_livekit_api(cfg, result)
@@ -85,7 +96,7 @@ async def run_preflight(project_root: Path | str, connectivity: bool = True) -> 
                 "telephony.outbound_sim_callee",
                 "pass",
                 "trunk + sim_inbound_number present — ensure LiveKit dispatch rule routes "
-                "this DID into the lk-sim room (Cloud hairpin). Real PSTN ≠ Gemini without that rule.",
+                "this DID into the lks room (Cloud hairpin). Real PSTN ≠ Gemini without that rule.",
             )
     else:
         result.add("telephony", "pass", "not configured (WebRTC-only OK)")

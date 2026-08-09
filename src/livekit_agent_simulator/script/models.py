@@ -80,6 +80,9 @@ class ScriptStep:
     asset: str | None = None
     silence_after_cue_ms: int = 0
     action: str = "speak"
+    # wait + silence_after_cue_ms: None/False = pace only (caller keeps answering).
+    # True = mute freestyle (intentional dead-air / unresponsive tests).
+    mute_persona: bool | None = None
 
     # DTMF digit string: only valid when action="dtmf".
     # characters 0-9*#w (w = wait 120ms gap).

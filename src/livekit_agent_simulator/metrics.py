@@ -9,6 +9,9 @@ Black-box definitions (what we can measure without agent internals):
 | ``recovery_ms`` | first barge/interruption → next agent.final | Barge-in recovery latency |
 | ``barge_recovery_rate`` | barges with ≥1 agent.final after / barges | Barge-in recovery rate |
 | ``talk_ratio`` | agent transcript chars / (agent+user) | Talk-to-listen proxy |
+| ``user_words_*`` | whitespace tokens on all deduped user.final texts (incl. Script) | Overall turn length |
+| ``user_words_natural_*`` | same, excluding finals that match Script ``say`` / cues | Freestyle naturalness |
+| ``user_words_script_*`` | finals classified as mostly-script say | Authored line sanity |
 
 Percentiles use the same nearest-rank helper as ``EventWriter``.
 Targets (Hamming production, cascading STT→LLM→TTS + telephony, 4M+ calls):
@@ -18,6 +21,10 @@ Targets (Hamming production, cascading STT→LLM→TTS + telephony, 4M+ calls):
 from __future__ import annotations
 
 from typing import Any
+
+# STT lag window after a Script cue inject (aligned with web.speech_origin).
+# Multi-clause says can finalize the trailing clause well after inject start.
+_SCRIPT_MATCH_MAX_LAG_MS = 28_000
 
 
 def _percentile(values: list[float], pct: float) -> float | None:
@@ -70,6 +77,81 @@ def _is_barge_event(e: dict[str, Any]) -> bool:
             barge_in=True, interrupt_class=str(cls) if cls else "correction"
         )
     return False
+
+
+def _script_say_catalog(events: list[dict[str, Any]]) -> list[tuple[int, str]]:
+    """(inject_mono_ms, say) from Script cue / hang_up injects."""
+    out: list[tuple[int, str]] = []
+    for e in events:
+        kind = str(e.get("kind") or "")
+        if kind not in ("sim.script.cue", "sim.script.hang_up", "sim.script_inject"):
+            continue
+        spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
+        say = str(spec.get("say") or spec.get("text") or "").strip()
+        if not say or say.startswith("["):
+            continue
+        out.append((_mono(e), say))
+    return out
+
+
+def _is_script_classified_final(
+    text: str,
+    final_ms: int,
+    catalog: list[tuple[int, str]],
+) -> bool:
+    """True when a user.final is mostly a Script say (not freestyle)."""
+    from .web.speech_origin import _mostly_script_say
+
+    if not text or not catalog:
+        return False
+    for inject_ms, say in catalog:
+        delta = final_ms - inject_ms
+        if delta < -800 or delta > _SCRIPT_MATCH_MAX_LAG_MS:
+            continue
+        if _mostly_script_say(text, say):
+            return True
+    return False
+
+
+def _deduped_user_finals(
+    events: list[dict[str, Any]],
+) -> list[tuple[int, str]]:
+    """Consecutive-deduped non-empty user.final → (mono_ms, text)."""
+    out: list[tuple[int, str]] = []
+    prev_text: str | None = None
+    for e in events:
+        if str(e.get("kind") or "") != "transcript.user.final":
+            continue
+        spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
+        text = str(spec.get("text") or "").strip()
+        if not text:
+            continue
+        if prev_text is not None and text == prev_text:
+            continue
+        prev_text = text
+        out.append((_mono(e), text))
+    return out
+
+
+def _user_word_counts(events: list[dict[str, Any]]) -> list[float]:
+    """Whitespace token counts from consecutive-deduped non-empty user.final texts."""
+    return [float(len(text.split())) for _, text in _deduped_user_finals(events)]
+
+
+def _split_user_word_counts(
+    events: list[dict[str, Any]],
+) -> tuple[list[float], list[float]]:
+    """Return (natural_counts, script_counts) splitting finals vs Script says."""
+    catalog = _script_say_catalog(events)
+    natural: list[float] = []
+    script: list[float] = []
+    for mono, text in _deduped_user_finals(events):
+        n = float(len(text.split()))
+        if _is_script_classified_final(text, mono, catalog):
+            script.append(n)
+        else:
+            natural.append(n)
+    return natural, script
 
 
 def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -157,6 +239,12 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
     slow_turns_2500 = sum(1 for v in turn_taking if v > 2500)
     slow_turns_5000 = sum(1 for v in turn_taking if v > 5000)
 
+    user_words = _user_word_counts(events)
+    user_words_mean = (sum(user_words) / len(user_words)) if user_words else None
+    natural_words, script_words = _split_user_word_counts(events)
+    natural_mean = (sum(natural_words) / len(natural_words)) if natural_words else None
+    script_mean = (sum(script_words) / len(script_words)) if script_words else None
+
     return {
         "schema": "agent-sim/metrics/v1",
         "turn_taking_ms": _pct_block(turn_taking),
@@ -176,6 +264,20 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
         "talk_ratio": talk_ratio,
         "agent_chars": agent_chars,
         "user_chars": user_chars,
+        # Overall (Script + freestyle) — not a freestyle-naturalness signal alone.
+        "user_words_count": len(user_words),
+        "user_words_p10": _percentile(user_words, 10),
+        "user_words_p50": _percentile(user_words, 50),
+        "user_words_mean": user_words_mean,
+        # Freestyle-only soft naturalness signal.
+        "user_words_natural_count": len(natural_words),
+        "user_words_natural_p10": _percentile(natural_words, 10),
+        "user_words_natural_p50": _percentile(natural_words, 50),
+        "user_words_natural_mean": natural_mean,
+        # Script-classified finals (authored say sanity).
+        "user_words_script_count": len(script_words),
+        "user_words_script_p50": _percentile(script_words, 50),
+        "user_words_script_mean": script_mean,
         "slow_turns_over_2500ms": slow_turns_2500,
         "slow_turns_over_5000ms": slow_turns_5000,
     }
@@ -192,6 +294,8 @@ def metrics_digest(metrics: dict[str, Any] | None) -> dict[str, Any]:
             "barge_count": None,
             "barge_recovery_rate": None,
             "talk_ratio": None,
+            "user_words_p50": None,
+            "user_words_natural_p50": None,
         }
     tt = metrics.get("turn_taking_ms") if isinstance(metrics.get("turn_taking_ms"), dict) else {}
     rec = metrics.get("recovery_ms") if isinstance(metrics.get("recovery_ms"), dict) else {}
@@ -203,4 +307,6 @@ def metrics_digest(metrics: dict[str, Any] | None) -> dict[str, Any]:
         "barge_count": metrics.get("barge_count"),
         "barge_recovery_rate": metrics.get("barge_recovery_rate"),
         "talk_ratio": metrics.get("talk_ratio"),
+        "user_words_p50": metrics.get("user_words_p50"),
+        "user_words_natural_p50": metrics.get("user_words_natural_p50"),
     }

@@ -1,6 +1,6 @@
 # AGENTS.md — livekit-agent-simulator
 
-Standalone Python package: MCP + `lks` CLI (alias: `lk-sim`). Dials **any** LiveKit voice agent using
+Standalone Python package: MCP + `lks` CLI. Dials **any** LiveKit voice agent using
 `.agent-sim/` in a **target repo** (config, scenarios, reports). The agent under test is a
 black box — we never import or edit target application code unless the user asks.
 
@@ -129,7 +129,7 @@ On Windows, if `uv sync` fails (MCP exe locked):
 | `logging/` | Event envelope, SQLite, reports |
 | `web/` (repo root) | Web UI — Vite/TS; `pnpm build` → `web/dist/`; CI force-includes into wheel as `web_static` |
 | `src/.../web/` | Report player API (`cues`, markers, HTTP server) |
-| `mcp_server.py` / `cli.py` | MCP tools + `lks` (alias `lk-sim`) |
+| `mcp_server.py` / `cli.py` | MCP tools + `lks` |
 | `templates/` | Init scaffolds |
 | `tests/` | pytest |
 | `docs/portability.md` | Optional consumer wiring (not default agent context) |
@@ -145,7 +145,7 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 
 - **Execute** — run params; overrides Simulator.
 - **Dispatch** — opaque metadata for `RoomAgentDispatch`.
-- **Script** — timed caller cues (`agent_speaking` + `delay_ms`); `delivery: room_pcm` plays WAV into sim mic; log verify via `script_verify` and optional **verify plugins** (`docs/plugins.md`).
+- **Script** — timed caller cues (`agent_speaking` + `delay_ms`); `delivery: room_pcm` plays WAV into sim mic; log verify via `script_verify` and optional **plugins** (verify + `before_run` / `after_run` — `docs/plugins.md`).
 - **PassCriteria** — optional LLM judge rubric.
 - **Context.notes** — author-only (reports/docs); **not** injected into the caller SI.
 - **Context.caller_knows** / **world** — optional facts the persona already knows (injected).
@@ -169,8 +169,8 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 | Item | Value |
 |---|---|
 | Package | `livekit-agent-simulator` |
-| CLI | `lks` (alias: `lk-sim`) |
-| MCP entry | `lks mcp` (alias `lk-sim mcp`; console scripts `lks-mcp` / `lk-sim-mcp`) |
+| CLI | `lks` |
+| MCP entry | `lks mcp` (console script `lks-mcp`) |
 | Dot folder (target) | `.agent-sim/` |
-| Sim participant | `lk-sim-caller` |
-| Room prefix | `lk-sim-<run-id>` |
+| Sim participant | `lks-caller` |
+| Room prefix | `lks-<run-id>` |

@@ -37,9 +37,9 @@ def backend_for(resolved: ResolvedJudge) -> JudgeBackend:
         )
     from .backends.gemini import GeminiBackend
 
-    assert resolved.google_api_key
+    assert resolved.sim_api_key
     return GeminiBackend(
-        api_key=resolved.google_api_key,
+        api_key=resolved.sim_api_key,
         model=resolved.model,
         temperature=resolved.temperature,
     )
@@ -47,9 +47,9 @@ def backend_for(resolved: ResolvedJudge) -> JudgeBackend:
 
 def backend_from_config(
     judge_cfg: JudgeConfig,
-    google_api_key: str,
+    sim_api_key: str,
 ) -> JudgeBackend | None:
-    resolved = resolve_judge(judge_cfg, google_api_key=google_api_key)
+    resolved = resolve_judge(judge_cfg, sim_api_key=sim_api_key)
     if not resolved.ready:
         return None
     return backend_for(resolved)

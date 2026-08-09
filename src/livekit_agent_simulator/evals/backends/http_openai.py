@@ -16,7 +16,7 @@ class HttpOpenAIBackend:
         api_key: str,
         model: str,
         temperature: float = 0.0,
-        timeout_s: float = 90.0,
+        timeout_s: float = 180.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key

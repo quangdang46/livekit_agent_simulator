@@ -1,0 +1,20 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: silent-caller-dead-air
+  locale: en-US
+  tags:
+  - silent
+  - dead-air
+  - example
+persona:
+  name: Silent caller
+  brief: You called but you are not speaking. Stay completely mute for the entire call.
+  goals:
+  - Remain silent while the agent handles dead air
+  speech_conditions:
+    silent_mode: true
+execute:
+  max_turns: 12
+  timeout_s: 60
+  first_speaker: agent

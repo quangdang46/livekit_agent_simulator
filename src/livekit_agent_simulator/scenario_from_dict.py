@@ -16,6 +16,8 @@ from .scenario import (
     ScenarioError,
     SimulatorSpec,
     TelephonySpec,
+    _parse_hold_timeout,
+    parse_pass_criteria,
 )
 from .script_parse import parse_script_steps, parse_script_verify
 
@@ -39,22 +41,26 @@ def scenario_from_dict(
         first_speaker=str(sim_raw.get("first_speaker", "agent")),
     )
 
+    def _parse_execute(raw: dict[str, Any], where: str) -> ExecuteSpec:
+        try:
+            hold = _parse_hold_timeout(raw.get("hold_music_timeout_s"), where)
+        except ValueError as e:
+            raise ScenarioError(f"{where}: {e}") from e
+        return ExecuteSpec(
+            max_turns=int(raw["max_turns"]) if raw.get("max_turns") is not None else None,
+            timeout_s=int(raw["timeout_s"]) if raw.get("timeout_s") is not None else None,
+            first_speaker=str(raw["first_speaker"]) if raw.get("first_speaker") else None,
+            hold_music_timeout_s=hold,
+        )
+
     execute: ExecuteSpec | None = None
     ex_raw = data.get("execute")
     if isinstance(ex_raw, dict):
-        execute = ExecuteSpec(
-            max_turns=int(ex_raw["max_turns"]) if ex_raw.get("max_turns") is not None else None,
-            timeout_s=int(ex_raw["timeout_s"]) if ex_raw.get("timeout_s") is not None else None,
-            first_speaker=str(ex_raw["first_speaker"]) if ex_raw.get("first_speaker") else None,
-        )
+        execute = _parse_execute(ex_raw, f"{path_label}: execute")
 
     run_raw = data.get("run")
     if isinstance(run_raw, dict) and execute is None:
-        execute = ExecuteSpec(
-            max_turns=int(run_raw["max_turns"]) if run_raw.get("max_turns") is not None else None,
-            timeout_s=int(run_raw["timeout_s"]) if run_raw.get("timeout_s") is not None else None,
-            first_speaker=str(run_raw["first_speaker"]) if run_raw.get("first_speaker") else None,
-        )
+        execute = _parse_execute(run_raw, f"{path_label}: run")
 
     dispatch: DispatchSpec | None = None
     disp_raw = data.get("dispatch")
@@ -125,9 +131,31 @@ def scenario_from_dict(
     if isinstance(beh_raw, dict):
         behavior_spec = dict(beh_raw)
 
+    # PassCriteria may be a list (flat criteria), a dict {mode, criteria, judges},
+    # or the export shape {pass_criteria, pass_judges, pass_criteria_mode}.
+    pass_criteria: list[str] = []
+    pass_criteria_mode = "all"
+    pass_judges: list[dict[str, Any]] = []
+    pc_raw = data.get("pass_criteria")
+    if isinstance(pc_raw, dict):
+        pass_criteria, pass_criteria_mode, pass_judges = parse_pass_criteria(
+            pc_raw, where=path_label
+        )
+    elif pc_raw is not None:
+        pass_criteria = [str(c) for c in pc_raw]
+    if data.get("pass_criteria_mode") is not None:
+        mode = str(data["pass_criteria_mode"]).strip().lower()
+        if mode not in ("all", "majority", "any"):
+            raise ScenarioError(f"{path_label}: pass_criteria_mode must be all|majority|any")
+        pass_criteria_mode = mode
+    if data.get("pass_judges"):
+        if not isinstance(data["pass_judges"], list):
+            raise ScenarioError(f"{path_label}: pass_judges must be an array")
+        pass_judges = [dict(j) for j in data["pass_judges"] if isinstance(j, dict)]
+
     scenario = Scenario(
         id=str(scenario_id),
-        path=path or Path(f"{scenario_id}.jsonl"),
+        path=path or Path(f"{scenario_id}.yaml"),
         locale=str(data.get("locale") or metadata.get("locale", "en-US")),
         tags=[str(t) for t in (data.get("tags") or metadata.get("tags") or [])],
         persona=persona,
@@ -137,7 +165,9 @@ def scenario_from_dict(
         dispatch=dispatch,
         caller=caller,
         telephony=telephony,
-        pass_criteria=[str(c) for c in (data.get("pass_criteria") or [])],
+        pass_criteria=pass_criteria,
+        pass_criteria_mode=pass_criteria_mode,
+        pass_judges=pass_judges,
         script_steps=script_steps,
         script_verify=script_verify,
         plugin_modules=plugin_modules,
@@ -174,46 +204,13 @@ def scenario_from_dict(
 
 
 def export_scenario_dict(scenario: Scenario) -> dict[str, Any]:
-    """Full structured export including script steps (for dev tooling)."""
-    base = scenario.export_dict()
-    base["persona"] = scenario.persona
-    base["context"] = scenario.context
-    base["plugin_modules"] = list(scenario.plugin_modules)
-    if scenario.dispatch and scenario.dispatch.metadata:
-        base["dispatch"] = {"metadata": scenario.dispatch.metadata}
-    if scenario.script_steps:
-        base["script"] = {
-            "steps": [
-                {
-                    "id": s.id,
-                    "trigger": s.trigger,
-                    "delay_ms": s.delay_ms,
-                    "say": s.say,
-                    "label": s.label,
-                    "once": s.once,
-                    "min_agent_active_ms": s.min_agent_active_ms,
-                    "delivery": s.delivery,
-                    "asset": s.asset,
-                    "silence_after_cue_ms": s.silence_after_cue_ms,
-                    "barge_in": s.barge_in,
-                    "class": s.interrupt_class,
-                    "with_blip": s.with_blip,
-                    "gain": s.gain,
-                    "loop": s.loop,
-                    "digits": s.digits if s.action == "dtmf" else None,
-                }
-                for s in scenario.script_steps
-            ],
-            "verify": None
-            if scenario.script_verify is None
-            else {
-                "require_during_agent_speech": scenario.script_verify.require_during_agent_speech,
-                "min_agent_finals_after_first_cue": scenario.script_verify.min_agent_finals_after_first_cue,
-                "min_user_finals_after_first_cue": scenario.script_verify.min_user_finals_after_first_cue,
-                "min_interruptions": scenario.script_verify.min_interruptions,
-                "max_interruptions": scenario.script_verify.max_interruptions,
-                "plugins": list(scenario.script_verify.plugins),
-                "plugin_options": dict(scenario.script_verify.plugin_options),
-            },
-        }
-    return base
+    """Full structured export that round-trips through scenario_from_dict.
+
+    Reuses the canonical section-object builder (scenario_to_dict) so behavior,
+    the full assert (must_not_match / contains_any / prompt), caller, and
+    telephony are preserved — not a summary shape. Loaded lazily to avoid an
+    import cycle (scenario_yaml imports scenario_from_dict).
+    """
+    from .scenario_yaml import scenario_to_dict
+
+    return scenario_to_dict(scenario)

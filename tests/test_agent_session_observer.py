@@ -178,7 +178,7 @@ def test_history_reconcile_pairs_output_even_when_it_precedes_call(tmp_path: Any
     assert tools[1]["parent_event_id"] == tools[0]["event_id"]
 
 
-def test_tool_execution_update_is_session_progress_only(tmp_path: Any) -> None:
+def test_tool_execution_update_emits_tool_start(tmp_path: Any) -> None:
     observer, writer, _ = _observer(tmp_path)
     observer.handle_message(
         agent_pb.AgentSessionMessage(
@@ -195,9 +195,117 @@ def test_tool_execution_update_is_session_progress_only(tmp_path: Any) -> None:
         )
     )
 
-    assert [event["kind"] for event in writer.events] == [
-        "session.tool_execution"
-    ]
+    kinds = [event["kind"] for event in writer.events]
+    assert kinds == ["session.tool_execution", "tool.start"]
+    assert writer.events[1]["spec"]["name"] == "lookup"
+    assert writer.events[1]["spec"]["call_id"] == "progress-1"
+
+
+def test_tool_execution_ended_emits_tool_end_after_start(tmp_path: Any) -> None:
+    observer, writer, _ = _observer(tmp_path)
+    observer.handle_message(
+        agent_pb.AgentSessionMessage(
+            event=agent_pb.AgentSessionEvent(
+                tool_execution_updated=agent_pb.AgentSessionEvent.ToolExecutionUpdated(
+                    started=agent_pb.AgentSessionEvent.ToolExecutionUpdated.Started(
+                        function_call=agent_pb.FunctionCall(
+                            call_id="teardown-1",
+                            name="delete_room",
+                        )
+                    )
+                )
+            )
+        )
+    )
+    observer.handle_message(
+        agent_pb.AgentSessionMessage(
+            event=agent_pb.AgentSessionEvent(
+                tool_execution_updated=agent_pb.AgentSessionEvent.ToolExecutionUpdated(
+                    ended=agent_pb.AgentSessionEvent.ToolExecutionUpdated.Ended(
+                        call_id="teardown-1",
+                        status=agent_pb.ToolCallStatus.TC_DONE,
+                        message="ok",
+                    )
+                )
+            )
+        )
+    )
+
+    tools = [event for event in writer.events if event["kind"].startswith("tool.")]
+    assert [event["kind"] for event in tools] == ["tool.start", "tool.end"]
+    assert tools[0]["spec"]["name"] == "delete_room"
+    assert tools[1]["parent_event_id"] == tools[0]["event_id"]
+
+
+def test_conversation_item_function_call_emits_tool_start(tmp_path: Any) -> None:
+    observer, writer, _ = _observer(tmp_path)
+    observer.handle_message(
+        agent_pb.AgentSessionMessage(
+            event=agent_pb.AgentSessionEvent(
+                conversation_item_added=agent_pb.AgentSessionEvent.ConversationItemAdded(
+                    item=agent_pb.ChatContext.ChatItem(
+                        function_call=agent_pb.FunctionCall(
+                            call_id="fc-conv",
+                            name="delete_room",
+                            arguments="{}",
+                        )
+                    )
+                )
+            )
+        )
+    )
+
+    tools = [event for event in writer.events if event["kind"] == "tool.start"]
+    assert len(tools) == 1
+    assert tools[0]["spec"]["name"] == "delete_room"
+
+
+@pytest.mark.asyncio
+async def test_drain_ingress_waits_for_in_flight_tool_frame(tmp_path: Any) -> None:
+    """Teardown race: tool frame arrives after disconnect signal; drain must keep it."""
+    observer, writer, room = _observer(tmp_path)
+    observer.attach()
+
+    started = asyncio.Event()
+
+    class _SlowReader:
+        def __aiter__(self) -> Any:
+            return self._iterate()
+
+        async def _iterate(self) -> Any:
+            started.set()
+            await asyncio.sleep(0.05)
+            payload = agent_pb.AgentSessionMessage(
+                event=agent_pb.AgentSessionEvent(
+                    function_tools_executed=agent_pb.AgentSessionEvent.FunctionToolsExecuted(
+                        function_calls=[
+                            agent_pb.FunctionCall(
+                                call_id="late-tool",
+                                name="delete_room",
+                                arguments="{}",
+                            )
+                        ],
+                        function_call_outputs=[
+                            agent_pb.FunctionCallOutput(
+                                call_id="late-tool",
+                                name="delete_room",
+                                output="",
+                            )
+                        ],
+                    )
+                )
+            ).SerializeToString()
+            yield payload
+
+    handler = room.handlers[TOPIC_SESSION_MESSAGES]
+    handler(_SlowReader(), "agent-1")
+    await started.wait()
+    await observer.drain_ingress(timeout_s=1.0)
+
+    tools = [event for event in writer.events if event["kind"].startswith("tool.")]
+    assert [event["kind"] for event in tools] == ["tool.start", "tool.end"]
+    assert tools[0]["spec"]["name"] == "delete_room"
+    await observer.detach()
 
 
 @pytest.mark.asyncio

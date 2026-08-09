@@ -1,4 +1,4 @@
-from livekit_agent_simulator.gemini.end_call import (
+from livekit_agent_simulator.callers.end_call import (
     END_CALL_TOKEN,
     contains_end_call_signal,
     contains_farewell_signal,
@@ -34,6 +34,10 @@ def test_farewell_soft_bye_detected():
     assert contains_farewell_signal("Okay, thanks. Bye.")
     assert contains_farewell_signal("Goodbye!")
     assert contains_farewell_signal("Alright, see you later")
+    assert contains_farewell_signal(
+        "I'll keep an eye on the listing and maybe I'll be back in touch. "
+        "Thanks again for your time!"
+    )
     assert not contains_farewell_signal("What's the monthly fee?")
     assert strip_farewell_signal("Okay, thanks. Bye.") == "Okay, thanks."
 

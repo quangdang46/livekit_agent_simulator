@@ -18,6 +18,33 @@ def verdict_points(verdict: str) -> float:
     return 0.0
 
 
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _flatten_str(results: list[dict[str, Any]], key: str) -> list[str]:
+    out: list[str] = []
+    for r in results:
+        for item in _as_list(r.get(key) or []):
+            text = item.get("point") or item.get("item") or item.get("issue") if isinstance(item, dict) else str(item)
+            if text:
+                out.append(text)
+    return out
+
+
+def _flatten_issues(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in results:
+        for item in _as_list(r.get("issues") or []):
+            if isinstance(item, dict):
+                out.append(item)
+    return out
+
+
 def aggregate_judges(
     results: list[JudgmentResult | dict[str, Any]],
     mode: str = "all",
@@ -111,6 +138,17 @@ def aggregate_judges(
 
     needs_review = any(bool(r.get("needs_human_review")) for r in normalized) or verdict == "maybe"
 
+    # Merge per-judge free-style review into one combined top-level view so
+    # review.md can render a single coherent document (each judge's full review
+    # stays available under ``judges[]``).
+    combined: dict[str, Any] = {"judges": normalized, "mode": mode_l}
+    summaries = [r.get("overall_summary") for r in normalized if r.get("overall_summary")]
+    combined["overall_summary"] = "\n".join(summaries)
+    combined["strengths"] = _flatten_str(normalized, "strengths")
+    combined["issues"] = _flatten_issues(normalized)
+    combined["missing_checks"] = _flatten_str(normalized, "missing_checks")
+    combined["language_naturalness"] = _flatten_str(normalized, "language_naturalness")
+
     return {
         "verdict": verdict,
         "score": avg,
@@ -121,4 +159,5 @@ def aggregate_judges(
         "maybe_count": len(maybes),
         "needs_human_review": needs_review,
         "notes": f"multi-judge mode={mode_l}: {len(passes)}/{n} passed",
+        **combined,
     }

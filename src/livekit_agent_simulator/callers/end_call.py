@@ -23,7 +23,10 @@ _SPOKEN_END_RE = re.compile(
 _FAREWELL_RE = re.compile(
     r"(?i)(?:"
     r"\bgood\s*bye\b|\bgoodbye\b|\bbye[\s\-]?bye\b|\bbye\b|"
-    r"\bsee\s+you(?:\s+later)?\b|\btalk\s+later\b|\bthat'?s\s+all\b|"
+    r"\bsee\s+you(?:\s+later)?\b|\btalk\s+later\b|\btalk\s+soon\b|\bthat'?s\s+all\b|"
+    r"\bthanks?\s+again\s+for\s+your\s+time\b|"
+    r"\bthank\s+you\s+for\s+your\s+time\b|"
+    r"\bi'?ll\s+(?:be\s+)?back\s+in\s+touch\b|"
     r"tạm\s*biệt|kết\s*thúc|cúp\s*máy"
     r")[.!?]*"
 )

@@ -19,6 +19,7 @@ a section keyed by `kind`:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from .asserts import AssertSpec, parse_assert_spec
 from .script import ScriptStep, ScriptVerifySpec
 
 API_VERSION = "agent-sim/v1"
+_SCENARIO_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 KNOWN_KINDS = {
     "Persona",
     "Context",
@@ -82,6 +84,28 @@ class ExecuteSpec:
     max_turns: int | None = None
     timeout_s: int | None = None
     first_speaker: str | None = None
+    # Hold / agent dead-air timeout (#29): sim hangs up after N s without agent
+    # activity (agent spoke at least once first). None = off.
+    hold_music_timeout_s: float | None = None
+
+
+HOLD_TIMEOUT_MIN_S = 5.0
+HOLD_TIMEOUT_MAX_S = 300.0
+
+
+def _parse_hold_timeout(raw: Any, where: str) -> float | None:
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{where}: hold_music_timeout_s must be a number") from e
+    if not HOLD_TIMEOUT_MIN_S <= value <= HOLD_TIMEOUT_MAX_S:
+        raise ValueError(
+            f"{where}: hold_music_timeout_s must be between "
+            f"{HOLD_TIMEOUT_MIN_S:g} and {HOLD_TIMEOUT_MAX_S:g} seconds (got {value:g})"
+        )
+    return value
 
 
 @dataclass
@@ -170,6 +194,22 @@ class Scenario:
             first_speaker=ex.first_speaker if ex.first_speaker is not None else self.simulator.first_speaker,
         )
 
+    def hold_music_timeout_s(self) -> float | None:
+        """Effective hold / agent dead-air timeout (#29).
+
+        ``Execute.spec.hold_music_timeout_s`` wins; Persona alias
+        ``speech_conditions.hold_music_timeout_s`` fills the gap.
+        ``None`` = disabled (only the global ``dead_call_silence`` net applies).
+        """
+        if self.execute is not None and self.execute.hold_music_timeout_s is not None:
+            return self.execute.hold_music_timeout_s
+        sc = self.persona.get("speech_conditions")
+        if isinstance(sc, dict):
+            return _parse_hold_timeout(
+                sc.get("hold_music_timeout_s"), "Persona.speech_conditions"
+            )
+        return None
+
     def dispatch_metadata(self, config_default: str | None = None) -> str | None:
         """Scenario Dispatch.metadata wins over config livekit.dispatch_metadata."""
         if self.dispatch and self.dispatch.metadata:
@@ -196,7 +236,9 @@ class Scenario:
                 "max_turns": self.execute.max_turns,
                 "timeout_s": self.execute.timeout_s,
                 "first_speaker": self.execute.first_speaker,
+                "hold_music_timeout_s": self.execute.hold_music_timeout_s,
             },
+            "hold_music_timeout_s": self.hold_music_timeout_s(),
             "dispatch": None
             if self.dispatch is None
             else {"metadata_set": bool(self.dispatch.metadata)},
@@ -265,10 +307,59 @@ class Scenario:
         )
 
 
+def parse_pass_criteria(spec: dict[str, Any], *, where: str) -> tuple[list[str], str, list[dict[str, Any]]]:
+    """Parse a PassCriteria spec → (criteria, mode, judges).
+
+    Shared by the JSONL path and the dict/YAML path so both treat
+    ``{mode, criteria, judges}`` identically. ``where`` is a human-readable
+    location (``file:line`` or a path label) for error messages.
+    """
+    criteria = [str(c) for c in (spec.get("criteria") or [])]
+    mode = str(spec.get("mode") or "all").strip().lower()
+    if mode not in ("all", "majority", "any"):
+        raise ScenarioError(f"{where}: PassCriteria.mode must be all|majority|any")
+    judges_raw = spec.get("judges") or []
+    if judges_raw and not isinstance(judges_raw, list):
+        raise ScenarioError(f"{where}: PassCriteria.judges must be an array")
+    judges: list[dict[str, Any]] = []
+    for ji, j in enumerate(judges_raw):
+        if not isinstance(j, dict):
+            raise ScenarioError(f"{where}: PassCriteria.judges[{ji}] must be object")
+        jid = str(j.get("id") or j.get("name") or f"judge-{ji}")
+        builtin = j.get("builtin")
+        jc = j.get("criteria") or []
+        if isinstance(jc, str):
+            jc = [jc]
+        if not isinstance(jc, list):
+            raise ScenarioError(f"{where}: PassCriteria.judges[{ji}].criteria must be array")
+        if not jc and not builtin:
+            raise ScenarioError(f"{where}: PassCriteria.judges[{ji}] needs criteria[] and/or builtin")
+        entry: dict[str, Any] = {"id": jid, "criteria": [str(c) for c in jc]}
+        if builtin:
+            entry["builtin"] = str(builtin).strip()
+        judges.append(entry)
+    # Backward compatible: flat criteria still used when no judges
+    if judges and not criteria:
+        flat: list[str] = []
+        for j in judges:
+            if j.get("builtin"):
+                flat.append(f"[{j['id']}] builtin:{j['builtin']}")
+            for c in j.get("criteria") or []:
+                flat.append(f"[{j['id']}] {c}")
+        criteria = flat
+    return criteria, mode, judges
+
+
 def parse_scenario(path: Path | str) -> Scenario:
     path = Path(path)
     if not path.exists():
         raise ScenarioError(f"Scenario file not found: {path}")
+
+    # YAML/yml → dict transport → same validator. JSONL path stays as-is.
+    if path.suffix.lower() in (".yaml", ".yml"):
+        from .scenario_yaml import load_scenario_yaml
+
+        return load_scenario_yaml(path)
 
     lines = [ln for ln in path.read_text(encoding="utf-8").splitlines()]
     records: list[tuple[int, dict[str, Any]]] = []
@@ -327,10 +418,17 @@ def parse_scenario(path: Path | str) -> Scenario:
                 first_speaker=str(spec.get("first_speaker", "agent")),
             )
         elif kind == "Execute":
+            try:
+                hold = _parse_hold_timeout(
+                    spec.get("hold_music_timeout_s"), "Execute.spec"
+                )
+            except ValueError as e:
+                raise ScenarioError(f"{path}:{line_no}: {e}") from e
             scenario.execute = ExecuteSpec(
                 max_turns=int(spec["max_turns"]) if spec.get("max_turns") is not None else None,
                 timeout_s=int(spec["timeout_s"]) if spec.get("timeout_s") is not None else None,
                 first_speaker=str(spec["first_speaker"]) if spec.get("first_speaker") else None,
+                hold_music_timeout_s=hold,
             )
         elif kind == "Dispatch":
             meta = spec.get("metadata")
@@ -374,56 +472,9 @@ def parse_scenario(path: Path | str) -> Scenario:
                 handset_isolation=handset_iso,
             )
         elif kind == "PassCriteria":
-            scenario.pass_criteria = [str(c) for c in (spec.get("criteria") or [])]
-            mode = str(spec.get("mode") or "all").strip().lower()
-            if mode not in ("all", "majority", "any"):
-                raise ScenarioError(
-                    f"{path}:{line_no}: PassCriteria.spec.mode must be all|majority|any"
-                )
-            scenario.pass_criteria_mode = mode
-            judges_raw = spec.get("judges") or []
-            if judges_raw and not isinstance(judges_raw, list):
-                raise ScenarioError(
-                    f"{path}:{line_no}: PassCriteria.spec.judges must be an array"
-                )
-            judges: list[dict[str, Any]] = []
-            for ji, j in enumerate(judges_raw):
-                if not isinstance(j, dict):
-                    raise ScenarioError(
-                        f"{path}:{line_no}: PassCriteria.spec.judges[{ji}] must be object"
-                    )
-                jid = str(j.get("id") or j.get("name") or f"judge-{ji}")
-                builtin = j.get("builtin")
-                jc = j.get("criteria") or []
-                if isinstance(jc, str):
-                    jc = [jc]
-                if not isinstance(jc, list):
-                    raise ScenarioError(
-                        f"{path}:{line_no}: PassCriteria.judges[{ji}].criteria must be array"
-                    )
-                if not jc and not builtin:
-                    raise ScenarioError(
-                        f"{path}:{line_no}: PassCriteria.judges[{ji}] needs "
-                        f"criteria[] and/or builtin"
-                    )
-                entry: dict[str, Any] = {
-                    "id": jid,
-                    "criteria": [str(c) for c in jc],
-                }
-                if builtin:
-                    entry["builtin"] = str(builtin).strip()
-                judges.append(entry)
-            scenario.pass_judges = judges
-            # Backward compatible: flat criteria still used when no judges
-            if judges and not scenario.pass_criteria:
-                # Flatten for list_scenarios / export that only show count
-                flat: list[str] = []
-                for j in judges:
-                    if j.get("builtin"):
-                        flat.append(f"[{j['id']}] builtin:{j['builtin']}")
-                    for c in j.get("criteria") or []:
-                        flat.append(f"[{j['id']}] {c}")
-                scenario.pass_criteria = flat
+            scenario.pass_criteria, scenario.pass_criteria_mode, scenario.pass_judges = parse_pass_criteria(
+                spec, where=f"{path}:{line_no}"
+            )
         elif kind == "Script":
             from .script_parse import parse_script_steps, parse_script_verify
 
@@ -473,6 +524,12 @@ def parse_scenario(path: Path | str) -> Scenario:
         has_dial_in = bool(scenario.telephony and scenario.telephony.dial_in)
         if not has_dial_in:
             pass  # config.telephony.dial_in may supply at run time
+
+    # Hold timeout (#29): Persona alias validates at parse (Execute already did).
+    try:
+        scenario.hold_music_timeout_s()
+    except ValueError as e:
+        raise ScenarioError(f"{path}: {e}") from e
 
     # Hamming-style: compile speech_conditions + Behavior into Script (explicit Script wins by id).
     try:
@@ -611,10 +668,25 @@ def validate_telephony_for_mode(scenario: Scenario, cfg: Any) -> None:
         )
 
 
+def _iter_scenario_files(scenarios_dir: Path):
+    """Yield *.jsonl then *.yaml/yml so legacy files keep their sort position."""
+    seen: set[Path] = set()
+    for pattern in ("*.jsonl", "*.yaml", "*.yml"):
+        for f in sorted(scenarios_dir.glob(pattern)):
+            if f not in seen:
+                seen.add(f)
+                yield f
+
+
 def list_scenarios(scenarios_dir: Path) -> list[dict[str, Any]]:
     """Best-effort listing — invalid files are included with an `error` field."""
+    # YAML is canonical: a .yaml shadows the .jsonl/.yml with the same stem
+    # (e.g. after `lks convert` both foo.jsonl and foo.yaml exist).
+    yaml_stems = {f.stem for f in scenarios_dir.glob("*.yaml")}
     out: list[dict[str, Any]] = []
-    for f in sorted(scenarios_dir.glob("*.jsonl")):
+    for f in _iter_scenario_files(scenarios_dir):
+        if f.suffix.lower() in (".jsonl", ".yml") and f.stem in yaml_stems:
+            continue
         try:
             s = parse_scenario(f)
             out.append(
@@ -638,10 +710,16 @@ def list_scenarios(scenarios_dir: Path) -> list[dict[str, Any]]:
 
 
 def find_scenario(scenarios_dir: Path, scenario_id: str) -> Scenario:
-    direct = scenarios_dir / f"{scenario_id}.jsonl"
-    if direct.exists():
-        return parse_scenario(direct)
-    for f in scenarios_dir.glob("*.jsonl"):
+    if not _SCENARIO_ID_RE.match(scenario_id):
+        raise ScenarioError(
+            f"Invalid scenario_id {scenario_id!r}: use letters/digits/[_-], start with alnum, max 64 chars"
+        )
+    # YAML is the canonical format — prefer it when both exist.
+    for ext in ("yaml", "yml", "jsonl"):
+        direct = scenarios_dir / f"{scenario_id}.{ext}"
+        if direct.exists():
+            return parse_scenario(direct)
+    for f in _iter_scenario_files(scenarios_dir):
         try:
             s = parse_scenario(f)
         except ScenarioError:
@@ -650,5 +728,5 @@ def find_scenario(scenarios_dir: Path, scenario_id: str) -> Scenario:
             return s
     raise ScenarioError(
         f"Scenario `{scenario_id}` not found in {scenarios_dir} "
-        f"(looked for {scenario_id}.jsonl and metadata.id match)"
+        f"(looked for {scenario_id}.jsonl/.yaml/.yml and metadata.id match)"
     )

@@ -1,7 +1,7 @@
 # livekit-agent-simulator
 
 <div align="center">
-  <img src="lk_sim_illustration.webp" alt="lks — livekit-agent-simulator: black-box LiveKit agent tests with WebRTC, Inbound, Outbound" width="720">
+  <img src="lks_illustration.webp" alt="lks — livekit-agent-simulator: black-box LiveKit agent tests with WebRTC, Inbound, Outbound" width="720">
 </div>
 
 <div align="center">
@@ -9,19 +9,19 @@
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.10%E2%80%933.13-blue.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/quangdang46/livekit-agent-simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/quangdang46/livekit-agent-simulator/actions/workflows/ci.yml)
-[![GitHub release](https://img.shields.io/github/v/release/quangdang46/livekit-agent-simulator)](https://github.com/quangdang46/livekit-agent-simulator/releases)
+[![CI](https://github.com/quangdang46/livekit_agent_simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/quangdang46/livekit_agent_simulator/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/quangdang46/livekit_agent_simulator)](https://github.com/quangdang46/livekit_agent_simulator/releases)
 
 </div>
 
 **Dial any LiveKit voice agent with an AI simulated caller — WebRTC room, inbound SIP, or outbound SIP — and keep a full forensic log.**  
-Standalone MCP server + CLI (`lks`, alias: `lk-sim`). Black-box testing: no imports from the agent under test, no edits to its code or `.env`.
+Standalone MCP server + CLI (`lks`). Black-box testing: no imports from the agent under test, no edits to its code or `.env`.
 
 <div align="center">
 <h3>Quick Install</h3>
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh?$(date +%s)" \
   | bash -s -- --verify
 ```
 
@@ -33,7 +33,7 @@ Paste into Claude Code, Cursor, Codex, AmpCode, Windsurf, or any coding agent **
 
 ```text
 Install and configure livekit-agent-simulator (CLI: lks) for this project by following the instructions here:
-https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md
+https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/docs/guide/installation.md
 
 Target project root is this workspace. Use absolute --root paths. Install the portable CLI if missing, run lks init, help fill .agent-sim/config.yaml from my local env or ask me for LiveKit + Gemini + agent_name, ensure .agent-sim is gitignored, run preflight, and stop before execute if the voice agent worker is not running. Do not edit agent application source outside .agent-sim/.
 ```
@@ -41,7 +41,7 @@ Target project root is this workspace. Use absolute --root paths. Install the po
 Same idea, one line:
 
 ```text
-Install and configure livekit-agent-simulator by following: https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md
+Install and configure livekit-agent-simulator by following: https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/docs/guide/installation.md
 ```
 
 ---
@@ -89,12 +89,12 @@ Voice agents fail in ways unit tests never see:
 
 ```bash
 # Install once
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh?$(date +%s)" \
   | bash -s -- --verify
 
 # In the repo you want to test (agent worker must already be running)
 lks init --root /path/to/target
-# edit /path/to/target/.agent-sim/config.yaml  (LiveKit + Gemini keys, agent_name)
+# edit /path/to/target/.agent-sim/config.yaml  (LiveKit + active provider keys, agent_name)
 
 lks preflight --root /path/to/target
 lks execute smoke-hello --root /path/to/target
@@ -186,20 +186,20 @@ Mode details and config: [docs/telephony.md](docs/telephony.md). Templates: `inb
 
 ```bash
 # macOS / Linux
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh?$(date +%s)" \
   | bash -s -- --verify
 ```
 
 ```powershell
 # Windows PowerShell
-irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lk-sim-install.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps1" -Verify
+irm "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
 ```
 
 Also available from a release asset:
 
 ```bash
-curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/releases/download/v0.1.0/install.sh" \
+curl -fsSL "https://github.com/quangdang46/livekit_agent_simulator/releases/download/v0.1.0/install.sh" \
   | bash -s -- --verify
 ```
 
@@ -214,12 +214,12 @@ By default the installer registers the MCP server `livekit-agent-simulator` (`lk
 
 **Agent-oriented install playbook (long form):** [docs/guide/installation.md](docs/guide/installation.md)  
 Raw URL for paste into agents:  
-`https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md`
+`https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/docs/guide/installation.md`
 
 ### From source (maintainers / contributors)
 
 ```bash
-git clone https://github.com/quangdang46/livekit-agent-simulator.git
+git clone https://github.com/quangdang46/livekit_agent_simulator.git
 cd livekit-agent-simulator
 uv sync --extra dev
 uv run lks --help
@@ -260,16 +260,33 @@ lks web --root /path/to/target
 
 ### Minimal scenario (`smoke-hello`)
 
-```jsonl
-{"apiVersion":"agent-sim/v1","kind":"Scenario","metadata":{"id":"smoke-hello","locale":"en-US","tags":["smoke"]}}
-{"kind":"Persona","spec":{"name":"Alex","brief":"First-time caller; confirm you reached the right place, then end politely.","goals":["Hear the agent","Say you will call back"],"style":"polite, brief"}}
-{"kind":"Execute","spec":{"max_turns":2,"timeout_s":90,"first_speaker":"user"}}
-{"kind":"PassCriteria","spec":{"criteria":["The agent responded to the caller","The agent responded in the caller's language"]}}
+```yaml
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: smoke-hello
+  locale: en-US
+  tags: [smoke]
+persona:
+  name: Alex
+  brief: First-time caller; confirm you reached the right place, then end politely.
+  goals:
+  - Hear the agent
+  - Say you will call back
+  style: polite, brief
+execute:
+  max_turns: 2
+  timeout_s: 90
+  first_speaker: user
+pass_criteria:
+  criteria:
+  - The agent responded to the caller
+  - The agent responded in the caller's language
 ```
 
 Optional multi-judge PassCriteria: `judges[]` + `mode` (`all` \| `majority` \| `any`). Assert highlights (`tool_order`, `constraint_respected`, recovery/latency): `lks guide`.
 
-Full-line `//` comments in scaffolded JSONL are guides — runtime ignores them.
+Full-line `#` comments in scaffolded YAML are guides — runtime ignores them. Legacy `*.jsonl` scenarios are still read.
 
 ---
 
@@ -283,8 +300,9 @@ Target-only data lives under `<target>/.agent-sim/` (**gitignored**). Created by
 | `livekit.api_key` / `api_secret` | yes | Server API credentials |
 | `livekit.agent_name` | yes | Must match worker dispatch name |
 | `livekit.dispatch_metadata` | no | Default opaque JSON **string** for all runs |
-| `simulator.google_api_key` | yes | Gemini key for sim caller (+ judge) |
-| `simulator.voice.model` / `voice` / `language` | no | Defaults: flash-live, Puck, `en-US` |
+| `simulator.api_key` | yes | Key of the **active** caller provider (`google` → Gemini, `openai` → OpenAI) |
+| `simulator.provider` / `mode` | no | Caller brain: `google` (default) or `openai`; `realtime` mode (cascade reserved) |
+| `simulator.voice.model` / `voice` / `language` | no | Provider-neutral voice bag; defaults flash-live, Puck, `en-US` |
 | `judge.model` | no | If set + PassCriteria → post-run LLM judge |
 | `observe.record_audio` | no (default `true`) | Local stereo WAV (L=sim, R=agent); no Egress |
 | `observe.data_topics` | no | Empty = all topics |
@@ -304,7 +322,7 @@ CLI and MCP share the same public ops (`ops.py`). Prefer `execute` (validate the
 | `guide` | `guide` | Setup/ops guide (markdown) |
 | `web` | `web` | Local report player |
 | `preflight` | `preflight` | Config + LiveKit connectivity |
-| `scenarios` | `list_scenarios` | List `scenarios/*.jsonl` |
+| `scenarios` | `list_scenarios` | List `scenarios/*.yaml` (legacy `*.jsonl` read) |
 | `plugins` | `list_plugins` | Verify plugins |
 | `cues` | `list_cues` | Built-in + local PCM cues |
 | `validate` | `validate_scenario` | Schema + lint |
@@ -330,6 +348,23 @@ lks web --port 8765 --root /path/to/target
 ```
 
 Every MCP tool needs `project_root` **except** `guide`.
+
+### Output format
+
+List/table-shaped commands (`scenarios`, `runs`, `plugins`, `cues`, `validate`,
+`preflight`, `execute`, `execute-all`, `execute-dict`, `compare`, `status`,
+`report`, `log`) print a **human-readable rich table** by default. Add
+`--json` to any of them for the raw machine-readable payload — the same bytes
+the MCP tools return. Single-dict commands (`init`, `export`, `convert`,
+`scenario-init`, `scenario-from-run`, `guide`, `web`) always print JSON.
+
+```bash
+lks scenarios                          # human table
+lks scenarios --json                   # raw JSON for scripts / CI / agents
+lks execute-all --json | jq '.suite'   # pipe JSON to jq
+```
+
+**Agents & CI:** use `--json` — the default table is for humans.
 
 ### MCP config examples
 
@@ -360,7 +395,7 @@ Dev checkout (package not installed globally):
 }
 ```
 
-Equivalent one-shot entry: `lks-mcp` (alias: `lk-sim-mcp`; same process as `lks mcp` / `lk-sim mcp`).
+Equivalent one-shot entry: `lks-mcp` (same process as `lks mcp`).
 
 ---
 
@@ -429,7 +464,7 @@ lks preflight --no-connectivity --root /path/to/target
 
 ### Gemini / simulator auth errors
 
-Set `simulator.google_api_key` in `.agent-sim/config.yaml`. The sim caller uses Gemini Live (`gemini-3.1-flash-live-preview` by default).
+Set `simulator.api_key` in `.agent-sim/config.yaml` for the active `simulator.provider` (`google` → Gemini Live, `openai` → OpenAI Realtime).
 
 ### No audio in report player
 
@@ -444,7 +479,7 @@ lks web --root /path/to/target
 ```bash
 lks mcp   # must be what the host launches
 # or reinstall without --no-mcp
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh?$(date +%s)" \
   | bash -s -- --verify
 ```
 

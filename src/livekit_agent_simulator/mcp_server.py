@@ -1,4 +1,4 @@
-"""FastMCP server — same public ops as `lks` CLI (alias: `lk-sim`; see ops module docstring).
+"""FastMCP server — same public ops as `lks` CLI (see ops module docstring).
 
 Every tool takes `project_root`: absolute path of the repo under test that
 contains (or will contain) the `.agent-sim/` folder.
@@ -61,7 +61,7 @@ async def preflight(project_root: str, connectivity: bool = True) -> dict[str, A
 
 @mcp.tool
 def list_scenarios(project_root: str) -> list[dict[str, Any]]:
-    """List all scenarios in `.agent-sim/scenarios/*.jsonl` with id, tags, and validity."""
+    """List all scenarios in `.agent-sim/scenarios/*.yaml` (legacy `*.jsonl` still read) with id, tags, and validity."""
     return ops.list_scenarios(project_root)
 
 
@@ -91,8 +91,14 @@ def export_scenario(project_root: str, scenario_id: str) -> dict[str, Any]:
 
 @mcp.tool
 def init_scenario(project_root: str, scenario_id: str, force: bool = False) -> dict[str, Any]:
-    """Scaffold `.agent-sim/scenarios/<id>.jsonl` with `//` guide lines + example JSON kinds. Runtime skips `//` lines."""
+    """Scaffold `.agent-sim/scenarios/<id>.yaml` with `#` guide comments + example sections."""
     return ops.init_scenario(project_root, scenario_id, force=force)
+
+
+@mcp.tool
+def convert_scenario(project_root: str, scenario_id: str, force: bool = False) -> dict[str, Any]:
+    """Convert a legacy `.jsonl` scenario to `.yaml` (keeps the .jsonl, idempotent)."""
+    return ops.convert_scenario(project_root, scenario_id, force=force)
 
 
 @mcp.tool
@@ -102,8 +108,9 @@ async def execute_scenario(
     repeat: int = 1,
     pass_at_k: int | None = None,
     run_name: str | None = None,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
-    """Validate then execute one scenario from `.agent-sim/scenarios/*.jsonl`.
+    """Validate then execute one scenario from `.agent-sim/scenarios/*.yaml` (legacy `*.jsonl` still read).
 
     ``repeat`` / ``pass_at_k``: flake control — run N times, require ≥ K hard-pass
     iterations (default K = N). Example: repeat=5, pass_at_k=3.
@@ -118,6 +125,7 @@ async def execute_scenario(
         repeat=repeat,
         pass_at_k=pass_at_k,
         run_name=run_name,
+        agent_name=agent_name,
     )
 
 
@@ -131,11 +139,15 @@ async def execute_scenarios(
     repeat: int = 1,
     pass_at_k: int | None = None,
     parallel: int = 1,
+    wait_s: float = 0.0,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
     """Execute multiple scenarios; returns suite matrix + CI gate (hard: assert/script/status).
 
     ``repeat`` / ``pass_at_k`` propagate to each scenario for flake control.
     ``parallel``: max concurrent scenarios (default 1 = sequential).
+    ``wait_s``: cooldown seconds after each finish before the next start on that
+    slot (default 0; first wave is not delayed).
     """
     return await ops.execute_scenarios(
         project_root,
@@ -146,6 +158,8 @@ async def execute_scenarios(
         repeat=repeat,
         pass_at_k=pass_at_k,
         parallel=parallel,
+        wait_s=wait_s,
+        agent_name=agent_name,
     )
 
 
@@ -154,9 +168,12 @@ async def execute_scenario_dict(
     project_root: str,
     scenario: dict[str, Any],
     run_name: str | None = None,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
     """Validate then run an in-memory scenario dict (no JSONL file). Same fields as export_scenario."""
-    return await ops.execute_scenario_dict(project_root, scenario, run_name=run_name)
+    return await ops.execute_scenario_dict(
+        project_root, scenario, run_name=run_name, agent_name=agent_name
+    )
 
 
 @mcp.tool
@@ -166,10 +183,10 @@ async def scenario_from_run(
     scenario_id: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
-    """Promote a finished run into a draft scenario JSONL (fail → golden).
+    """Promote a finished run into a draft scenario YAML (fail → golden).
 
-    Dry-run by default; use write=True to write the draft .jsonl
-    under .agent-sim/scenarios/. Returns the scenario_id, jsonl text,
+    Dry-run by default; use write=True to write the draft .yaml
+    under .agent-sim/scenarios/. Returns the scenario_id, yaml text,
     warnings, and stats.
     """
     return ops.scenario_from_run(

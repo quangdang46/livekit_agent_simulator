@@ -1,11 +1,20 @@
-"""Promote a finished run into a draft scenario JSONL (fail → golden, P1.4).
+"""Promote a finished run into a draft scenario YAML (fail → golden, P1.4/P2 #34).
 
 Reads ``reports/<run_id>/{meta,summary,events}`` and synthesizes an agent-sim/v1
 draft. Dispatch metadata is copied from the original scenario file when still
 present on disk; otherwise the draft omits Dispatch and notes that in Context.
 
-v1 is intentionally conservative: no full Script reverse-engineer; barge runs
-get a recovery Assert + notes. Humans/agents must review before CI promote.
+Extract quality rules (issue #34):
+- Persona.brief is a short mission statement — never a transcript paste.
+- Caller intent lands in ``goals[]`` (source persona goals preferred, else
+  intent-phrased from the first user finals) + ``constraints[]``.
+- One ``Behavior`` barge/noise stub is reconstructed from ``sim.script.cue``
+  markers in events.jsonl so a barge-fail replays deterministically.
+- When ``first_speaker=user``, also emit a minimal Script **open** line (source
+  Script open preferred, else first user final). Behavior barge-only would
+  otherwise suppress the Gemini bootstrap and dead-air the call.
+- Transcript sample + metrics hints live in ``Context.notes`` (author-only).
+- No full Script reverse-engineer. Humans/agents must review before CI promote.
 """
 
 from __future__ import annotations
@@ -71,66 +80,183 @@ def _slug_id(base: str, run_id: str) -> str:
 
 
 def _dispatch_from_source_scenario(scenario_file: str | None) -> str | None:
-    if not scenario_file:
+    """Dispatch metadata from the source scenario (JSONL or YAML)."""
+    if not scenario_file or not Path(scenario_file).is_file():
         return None
-    path = Path(scenario_file)
-    if not path.is_file():
+    try:
+        from .scenario import parse_scenario, ScenarioError
+    except ImportError:
         return None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("//"):
-            continue
-        try:
-            obj = json.loads(s)
-        except json.JSONDecodeError:
-            continue
-        if obj.get("kind") == "Dispatch":
-            md = (obj.get("spec") or {}).get("metadata")
-            if isinstance(md, str) and md.strip():
-                return md.strip()
-            if isinstance(md, dict):
-                return json.dumps(md, ensure_ascii=False, separators=(",", ":"))
+    try:
+        scenario = parse_scenario(scenario_file)
+    except ScenarioError:
+        return None
+    if scenario.dispatch and scenario.dispatch.metadata:
+        return scenario.dispatch.metadata
     return None
 
 
 def _persona_from_source(scenario_file: str | None) -> dict[str, Any] | None:
-    if not scenario_file:
+    """Persona spec from the source scenario (JSONL or YAML)."""
+    if not scenario_file or not Path(scenario_file).is_file():
         return None
-    path = Path(scenario_file)
-    if not path.is_file():
+    try:
+        from .scenario import parse_scenario, ScenarioError
+    except ImportError:
         return None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("//"):
-            continue
-        try:
-            obj = json.loads(s)
-        except json.JSONDecodeError:
-            continue
-        if obj.get("kind") == "Persona" and isinstance(obj.get("spec"), dict):
-            return dict(obj["spec"])
-    return None
+    try:
+        scenario = parse_scenario(scenario_file)
+    except ScenarioError:
+        return None
+    return dict(scenario.persona) if scenario.persona else None
 
 
 def _pass_criteria_from_source(scenario_file: str | None) -> list[str]:
-    if not scenario_file:
+    """Pass criteria from the source scenario (JSONL or YAML)."""
+    if not scenario_file or not Path(scenario_file).is_file():
         return []
-    path = Path(scenario_file)
-    if not path.is_file():
+    try:
+        from .scenario import parse_scenario, ScenarioError
+    except ImportError:
         return []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("//"):
+    try:
+        scenario = parse_scenario(scenario_file)
+    except ScenarioError:
+        return []
+    return list(scenario.pass_criteria)
+
+
+def _behavior_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Reconstruct one Behavior barge/noise stub from run markers.
+
+    Uses the first successful ``sim.script.cue`` that fired as a cut-in
+    (``barge_in`` true, or class ``noise``/``backchannel`` during agent
+    speech). Falls back to a generic barge stub when only an ``interruption``
+    marker with ``by=sim`` exists.
+    """
+    fallback_interruption: dict[str, Any] | None = None
+    for e in events:
+        kind = str(e.get("kind") or "")
+        spec = e.get("spec") or {}
+        if not isinstance(spec, dict):
             continue
-        try:
-            obj = json.loads(s)
-        except json.JSONDecodeError:
+        if kind == "interruption" and spec.get("by") == "sim" and fallback_interruption is None:
+            fallback_interruption = spec
             continue
-        if obj.get("kind") == "PassCriteria":
-            crit = (obj.get("spec") or {}).get("criteria") or []
-            if isinstance(crit, list):
-                return [str(c) for c in crit if str(c).strip()]
-    return []
+        if kind != "sim.script.cue" or spec.get("error"):
+            continue
+        icls = str(spec.get("class") or "correction")
+        barge = bool(spec.get("barge_in"))
+        during = bool(spec.get("during_agent_speech"))
+        if not barge and not (icls in ("noise", "backchannel") and during):
+            continue
+        after_ms = max(600, int(spec.get("agent_active_ms") or 0) or 600)
+        say = _redact(str(spec.get("say") or "").strip())
+        asset = spec.get("asset")
+        asset_s = str(asset).strip() if asset else None
+        if icls == "noise":
+            entry: dict[str, Any] = {
+                "id": "replay-noise-1",
+                "after_agent_ms": after_ms,
+                "say": say or "[noise]",
+            }
+            if asset_s:
+                entry["asset"] = asset_s
+            return {"false_interrupts": [entry]}
+        if icls == "backchannel" and not barge:
+            entry = {
+                "id": "replay-backchannel-1",
+                "after_agent_ms": after_ms,
+                "say": say or "uh-huh",
+            }
+            if asset_s:
+                entry["asset"] = asset_s
+            return {"backchannels": [entry]}
+        entry = {
+            "id": "replay-barge-1",
+            "after_agent_ms": after_ms,
+            "say": say or "Wait — one second —",
+            "class": icls if icls in ("correction", "question", "urgent", "backchannel") else "correction",
+        }
+        if asset_s:
+            entry["asset"] = asset_s
+        return {"barge_ins": [entry]}
+    if fallback_interruption is not None:
+        icls = str(fallback_interruption.get("class") or "correction")
+        return {
+            "barge_ins": [
+                {
+                    "id": "replay-barge-1",
+                    "after_agent_ms": 600,
+                    "say": _redact(str(fallback_interruption.get("say") or "Wait — one second —")),
+                    "class": icls if icls in ("correction", "question", "urgent", "backchannel") else "correction",
+                }
+            ]
+        }
+    return None
+
+
+def _script_open_say_from_source(scenario_file: str | None) -> str | None:
+    """First explicit Script speak open from the source scenario, if any."""
+    if not scenario_file or not Path(scenario_file).is_file():
+        return None
+    try:
+        from .scenario import parse_scenario, ScenarioError
+    except ImportError:
+        return None
+    try:
+        scenario = parse_scenario(scenario_file)
+    except ScenarioError:
+        return None
+    for step in scenario.script_steps:
+        action = str(getattr(step, "action", "speak") or "speak").strip().lower()
+        if action not in ("speak", ""):
+            continue
+        say = str(getattr(step, "say", "") or "").strip()
+        if not say or say.startswith("["):
+            continue
+        # Prefer opens that do not require the agent to speak first.
+        if getattr(step, "require_agent_spoke_first", True):
+            continue
+        if getattr(step, "barge_in", False):
+            continue
+        return _redact(say)[:200]
+    return None
+
+
+def _script_open_for_user_first(
+    *,
+    first_speaker: str,
+    user_texts: list[str],
+    scenario_file: str | None,
+) -> dict[str, Any] | None:
+    """Minimal Script open so user-first + Behavior barge does not dead-air.
+
+    ``DefaultCallerPolicy`` skips the speak-first bootstrap whenever any
+    ``script_steps`` exist. Behavior barge compiles into script_steps, so a
+    draft with only a Behavior cut-in would tell Gemini to wait for a cue that
+    never fires (agent also waits for the caller). Emit one silence-triggered
+    open line to break that deadlock.
+    """
+    if first_speaker != "user":
+        return None
+    say = _script_open_say_from_source(scenario_file)
+    if not say and user_texts:
+        say = _redact(user_texts[0])[:200]
+    if not say:
+        say = "Hi — I'm calling about my request."
+    return {
+        "steps": [
+            {
+                "id": "open",
+                "trigger": "silence",
+                "delay_ms": 2200,
+                "say": say,
+                "once": True,
+                "require_agent_spoke_first": False,
+            }
+        ]
+    }
 
 
 def build_scenario_draft_from_run(
@@ -145,7 +271,7 @@ def build_scenario_draft_from_run(
         {
           "scenario_id": str,
           "source_run_id": str,
-          "jsonl": str,           # ready to write
+          "yaml": str,            # ready to write
           "kinds": list[str],
           "warnings": list[str],
           "notes": str,
@@ -188,19 +314,15 @@ def build_scenario_draft_from_run(
     # Locale: prefer original scenario metadata if parseable
     locale = locale_default
     if scenario_file_s and Path(scenario_file_s).is_file():
-        for line in Path(scenario_file_s).read_text(encoding="utf-8").splitlines():
-            s = line.strip()
-            if not s or s.startswith("//"):
-                continue
+        try:
+            from .scenario import parse_scenario, ScenarioError
+        except ImportError:
+            pass
+        else:
             try:
-                obj = json.loads(s)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("kind") == "Scenario":
-                loc = (obj.get("metadata") or {}).get("locale")
-                if loc:
-                    locale = str(loc)
-                break
+                locale = parse_scenario(scenario_file_s).effective_locale()
+            except ScenarioError:
+                pass
 
     user_texts = _transcript_finals(events, "user")
     agent_texts = _transcript_finals(events, "agent")
@@ -221,19 +343,29 @@ def build_scenario_draft_from_run(
     if not isinstance(constraints, list):
         constraints = []
 
-    goals: list[str] = []
-    for t in user_texts[:3]:
-        goals.append(t[:160] + ("…" if len(t) > 160 else ""))
+    # Goals: source persona goals win; else intent-phrased from user finals —
+    # never a raw transcript dump (issue #34).
+    src_goals = src_persona.get("goals")
+    goals: list[str] = [str(g).strip() for g in src_goals if str(g).strip()] if isinstance(src_goals, list) else []
     if not goals:
-        goals = ["Revisit the situation observed in the source run", "End the call politely"]
+        if user_texts:
+            first = _redact(user_texts[0])
+            first = first[:120] + ("…" if len(first) > 120 else "")
+            goals.append(f'Open with the same request as the source run: "{first}"')
+            if len(user_texts) > 1:
+                goals.append("Follow up naturally, mirroring the caller path from the source run")
+        else:
+            goals.append("Revisit the situation observed in the source run")
+        goals.append("End the call politely")
 
-    snippet = " | ".join(user_texts[:4])[:400]
+    if not constraints:
+        constraints = ["Stay natural and spoken; never mention being a simulation or a test"]
+
+    # Brief: short mission statement only — transcript sample goes to Context.notes.
     brief_bits = [
         f"Promoted from run `{source_run_id}` (source scenario `{source_scenario}`).",
-        "Replay a similar caller path; stay natural and spoken.",
+        "Replay a similar caller path; pursue the listed goals, stay natural and spoken.",
     ]
-    if snippet:
-        brief_bits.append(f"Caller said approximately: {snippet}")
     if src_persona.get("brief"):
         brief_bits.append(f"Original brief (reference): {_redact(str(src_persona['brief'])[:300])}")
     brief = " ".join(brief_bits)
@@ -245,9 +377,22 @@ def build_scenario_draft_from_run(
         barge_count = int(behavior.get("barges_fired") or 0)
 
     warnings: list[str] = [
-        "DRAFT — review Persona/Assert before promoting to CI.",
+        "DRAFT — review Persona goals/constraints, Behavior, and Assert before promoting to CI.",
         "PII redaction is best-effort (email/phone/card patterns only).",
     ]
+
+    behavior_spec = _behavior_from_events(events)
+    has_barge_stub = bool(behavior_spec and behavior_spec.get("barge_ins"))
+    script_open = _script_open_for_user_first(
+        first_speaker=first_speaker,
+        user_texts=user_texts,
+        scenario_file=scenario_file_s,
+    )
+    if script_open:
+        warnings.append(
+            "Script open added for first_speaker=user (avoids dead-air when Behavior "
+            "barge suppresses Gemini bootstrap). Review the open line before CI."
+        )
 
     outcomes: list[dict[str, Any]] = []
     if agent_texts:
@@ -260,7 +405,7 @@ def build_scenario_draft_from_run(
                 "phrases": ["a", "e", "i", "o", "u"],
             }
         )
-    if barge_count > 0:
+    if barge_count > 0 or has_barge_stub:
         outcomes.append(
             {
                 "id": "recovered_after_barge",
@@ -269,9 +414,19 @@ def build_scenario_draft_from_run(
                 "min_interruptions": 0,
             }
         )
+        if behavior_spec:
+            warnings.append(
+                f"Source run had barge_count={barge_count}; Behavior stub + recovery Assert "
+                "reconstructed from run markers — review timing (after_agent_ms) before CI."
+            )
+        else:
+            warnings.append(
+                f"Source run had barge_count={barge_count} but no sim.script.cue markers to "
+                "reconstruct; recovery Assert added — re-add Script/Behavior barge cues manually."
+            )
+    elif behavior_spec:
         warnings.append(
-            f"Source run had barge_count={barge_count}; recovery Assert added. "
-            "Re-add Script/Behavior barge cues if you need deterministic cut-ins."
+            "Behavior noise stub reconstructed from run markers — review before CI."
         )
 
     # optional latency comment values from metrics (not auto-assert — too tight for cold starts)
@@ -295,7 +450,7 @@ def build_scenario_draft_from_run(
     if not dispatch_md:
         warnings.append(
             "Dispatch.metadata not recovered (source scenario file missing or had no Dispatch). "
-            "Add Dispatch manually if the worker needs opaque metadata."
+            "Add Dispatch manually if the agent under test needs opaque metadata."
         )
 
     criteria = _pass_criteria_from_source(scenario_file_s)
@@ -306,7 +461,7 @@ def build_scenario_draft_from_run(
         ]
     verdict = summary.get("verdict") if isinstance(summary.get("verdict"), dict) else {}
     if str(verdict.get("verdict") or "").lower() == "fail" and verdict.get("notes"):
-        note = _redact(str(verdict["notes"])[:240])
+        note = _redact(str(verdict["notes"]))[:240]
         criteria.append(f"Avoid the failure mode noted in source judge: {note}")
 
     status = summary.get("status")
@@ -316,116 +471,96 @@ def build_scenario_draft_from_run(
         f"judge={verdict.get('verdict') or 'n/a'}). "
         f"Observed metrics: ttfw_ms={ttfw}, turn_p95_ms={tt.get('p95')}, barge_count={barge_count}."
     )
+    snippet = " | ".join(user_texts[:4])[:400]
+    if snippet:
+        notes += f" Caller transcript sample (reference only): {snippet}"
     if latency_hint:
         notes += (
             " Optional latency Assert (not auto-added): "
             + json.dumps(latency_hint["suggested_assert_example"], ensure_ascii=False)
         )
 
-    lines: list[str] = [
-        f"// DRAFT from run {source_run_id} — review before CI",
-        json.dumps(
-            {
-                "apiVersion": "agent-sim/v1",
-                "kind": "Scenario",
-                "metadata": {
-                    "id": sid,
-                    "locale": locale,
-                    "tags": ["promoted", "from-run", source_scenario[:32]],
-                },
+    data: dict[str, Any] = {
+        "apiVersion": "agent-sim/v1",
+        "kind": "Scenario",
+        "metadata": {
+            "id": sid,
+            "locale": locale,
+            "tags": ["promoted", "from-run", source_scenario[:32]],
+        },
+        "persona": {
+            "name": name,
+            "language": language,
+            "brief": brief,
+            "goals": goals,
+            "style": str(src_persona.get("style") or "natural spoken language, concise"),
+            "traits": traits,
+            "constraints": constraints,
+        },
+        "context": {
+            "notes": notes,
+            "fixtures": {
+                "source_run_id": source_run_id,
+                "source_scenario_id": source_scenario,
             },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-        json.dumps(
-            {
-                "kind": "Persona",
-                "spec": {
-                    "name": name,
-                    "language": language,
-                    "brief": brief,
-                    "goals": goals,
-                    "style": str(src_persona.get("style") or "natural spoken language, concise"),
-                    "traits": traits,
-                    "constraints": constraints,
-                },
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-        json.dumps(
-            {
-                "kind": "Context",
-                "spec": {
-                    "notes": notes,
-                    "fixtures": {
-                        "source_run_id": source_run_id,
-                        "source_scenario_id": source_scenario,
-                    },
-                },
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-        json.dumps(
-            {
-                "kind": "Execute",
-                "spec": {
-                    "max_turns": max_turns,
-                    "timeout_s": timeout_s,
-                    "first_speaker": first_speaker,
-                },
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-    ]
+        },
+        "execute": {
+            "max_turns": max_turns,
+            "timeout_s": timeout_s,
+            "first_speaker": first_speaker,
+        },
+    }
     if dispatch_md:
-        lines.append(
-            json.dumps(
-                {"kind": "Dispatch", "spec": {"metadata": dispatch_md}},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        )
+        data["dispatch"] = {"metadata": dispatch_md}
+    if script_open:
+        data["script"] = script_open
+    if behavior_spec:
+        data["behavior"] = behavior_spec
     if outcomes:
-        lines.append(
-            json.dumps(
-                {
-                    "kind": "Assert",
-                    "spec": {"tools": [], "transcript": [], "outcomes": outcomes},
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        )
-    lines.append(
-        json.dumps(
-            {"kind": "PassCriteria", "spec": {"criteria": criteria}},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    )
+        data["assert"] = {"tools": [], "transcript": [], "outcomes": outcomes}
+    data["pass_criteria"] = {"criteria": criteria}
 
-    kinds = []
-    for line in lines:
-        if line.startswith("//"):
-            continue
-        kinds.append(json.loads(line)["kind"])
+    # ---- Serialize to the section-object YAML shape (stable order) ----
+    from .scenario_yaml import dump_scenario_dict
+
+    yaml_text = dump_scenario_dict(data)
+    yaml_text = f"# DRAFT from run {source_run_id} — review before CI\n" + yaml_text
+
+    # Presence-ordered kinds, mirroring the data dict construction above.
+    kinds: list[str] = ["Scenario"]
+    if data.get("persona"):
+        kinds.append("Persona")
+    if data.get("context"):
+        kinds.append("Context")
+    if data.get("execute"):
+        kinds.append("Execute")
+    if data.get("dispatch"):
+        kinds.append("Dispatch")
+    if data.get("script"):
+        kinds.append("Script")
+    if data.get("behavior"):
+        kinds.append("Behavior")
+    if data.get("assert"):
+        kinds.append("Assert")
+    kinds.append("PassCriteria")
 
     return {
         "scenario_id": sid,
         "source_run_id": source_run_id,
         "source_scenario_id": source_scenario,
-        "jsonl": "\n".join(lines) + "\n",
+        "yaml": yaml_text,
         "kinds": kinds,
         "warnings": warnings,
         "notes": notes,
         "latency_hint": latency_hint,
+        "behavior": behavior_spec,
+        "script_open": script_open,
         "stats": {
             "user_finals": len(user_texts),
             "agent_finals": len(agent_texts),
             "barge_count": barge_count,
+            "behavior_stub": bool(behavior_spec),
+            "script_open": bool(script_open),
             "duration_ms": summary.get("duration_ms"),
             "status": status,
         },

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install lks (alias: lk-sim) from GitHub Releases (CI portable pack).
+# Install lks from GitHub Releases (CI portable pack).
 # No uv/pip/build on the user machine - download zip + PATH.
 #
 #   curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/releases/download/v0.1.0/install.sh" | bash
@@ -13,7 +13,7 @@ PKG_NAME="livekit-agent-simulator"
 OWNER="quangdang46"
 REPO="livekit-agent-simulator"
 DEST="${DEST:-$HOME/.local/bin}"
-INSTALL_ROOT="${INSTALL_ROOT:-$HOME/.local/share/lk-sim}"
+INSTALL_ROOT="${INSTALL_ROOT:-$HOME/.local/share/lks}"
 CURRENT_DIR="$INSTALL_ROOT/current"
 GIT_REF="${LK_SIM_REF:-}"
 QUIET=0
@@ -148,14 +148,12 @@ PY
 }
 
 resolve_lk_sim() {
-  # Prefer primary `lks`, then alias `lk-sim` (legacy installs / PATH).
-  for name in "$BINARY_NAME" "lk-sim"; do
-    if command -v "$name" >/dev/null 2>&1; then
-      command -v "$name"
-      return 0
-    fi
-  done
-  for c in "$DEST/$BINARY_NAME" "$DEST/lk-sim" "$CURRENT_DIR/$BINARY_NAME" "$CURRENT_DIR/lk-sim"; do
+  # Primary `lks`.
+  if command -v "$BINARY_NAME" >/dev/null 2>&1; then
+    command -v "$BINARY_NAME"
+    return 0
+  fi
+  for c in "$DEST/$BINARY_NAME" "$CURRENT_DIR/$BINARY_NAME"; do
     [ -x "$c" ] && { echo "$c"; return 0; }
   done
   return 1
@@ -189,7 +187,7 @@ EOF
 uninstall_all() {
   log_info "Uninstalling ${PKG_NAME}..."
   rm -rf "$INSTALL_ROOT" 2>/dev/null || true
-  rm -f "$DEST/lks" "$DEST/lks-mcp" "$DEST/lk-sim" "$DEST/lk-sim-mcp" 2>/dev/null || true
+  rm -f "$DEST/lks" "$DEST/lks-mcp" 2>/dev/null || true
   _remove_mcp_from_file "$HOME/.claude.json" "$MCP_SERVER_NAME"
   _remove_mcp_from_file "$HOME/.cursor/mcp.json" "$MCP_SERVER_NAME"
   _remove_mcp_from_file "$HOME/.vscode/mcp.json" "$MCP_SERVER_NAME" "servers"
@@ -236,7 +234,7 @@ portable_asset_name() {
     x86_64|amd64) arch="x64" ;;
     arm64|aarch64) arch="arm64" ;;
   esac
-  echo "lk-sim-${os}-${arch}.zip"
+  echo "lks-${os}-${arch}.zip"
 }
 
 install_portable() {
@@ -252,7 +250,7 @@ install_portable() {
     | head -1)"
   [ -n "$url" ] || die "Release ${tag} missing asset ${asset}"
 
-  work="$(mktemp -d "${TMPDIR:-/tmp}/lk-sim-portable.XXXXXX")"
+  work="$(mktemp -d "${TMPDIR:-/tmp}/lks-portable.XXXXXX")"
   zip="${work}/${asset}"
   log_info "Downloading ${url}"
   curl -fsSL "$url" -o "$zip"
@@ -261,12 +259,12 @@ install_portable() {
   log_info "Extracting portable pack..."
   mkdir -p "$work/out"
   unzip -q "$zip" -d "$work/out"
-  payload="$(find "$work/out" -mindepth 1 -maxdepth 1 -type d -name 'lk-sim-*' | head -1)"
+  payload="$(find "$work/out" -mindepth 1 -maxdepth 1 -type d -name 'lks-*' | head -1)"
   [ -n "$payload" ] || die "portable folder not found in zip"
 
   rm -rf "$INSTALL_ROOT"
   mkdir -p "$CURRENT_DIR"
-  # Copy lk-sim-linux-x64/* into current/, not current/lk-sim-linux-x64/
+  # Copy lks-linux-x64/* into current/, not current/lks-linux-x64/
   cp -a "$payload"/. "$CURRENT_DIR/"
   repair_nested_portable_layout() {
     local dir="$1"
@@ -274,7 +272,7 @@ install_portable() {
       return 0
     fi
     local nested
-    nested="$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name 'lk-sim-*' | head -1)"
+    nested="$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name 'lks-*' | head -1)"
     [ -n "$nested" ] || return 1
     if [ ! -f "$nested/python/Lib/encodings/__init__.py" ] && [ ! -f "$nested/python/lib/python3.12/encodings/__init__.py" ]; then
       return 1
@@ -288,16 +286,13 @@ install_portable() {
     [ -f "$dir/python/Lib/encodings/__init__.py" ] || [ -f "$dir/python/lib/python3.12/encodings/__init__.py" ]
   }
   repair_nested_portable_layout "$CURRENT_DIR" || die "portable pack invalid: python missing under $CURRENT_DIR/python"
-  chmod +x "$CURRENT_DIR/lks" "$CURRENT_DIR/lks-mcp" "$CURRENT_DIR/lk-sim" "$CURRENT_DIR/lk-sim-mcp" 2>/dev/null || true
+  chmod +x "$CURRENT_DIR/lks" "$CURRENT_DIR/lks-mcp" 2>/dev/null || true
 
   mkdir -p "$DEST"
   # Primary
   ln -sfn "$CURRENT_DIR/lks" "$DEST/lks"
   ln -sfn "$CURRENT_DIR/lks-mcp" "$DEST/lks-mcp"
-  # Backward-compatible alias
-  ln -sfn "$CURRENT_DIR/lk-sim" "$DEST/lk-sim"
-  ln -sfn "$CURRENT_DIR/lk-sim-mcp" "$DEST/lk-sim-mcp"
-  log_info "Installed -> $CURRENT_DIR (shims in $DEST: lks + lk-sim)"
+  log_info "Installed -> $CURRENT_DIR (shims in $DEST: lks)"
 
   rm -rf "$work"
 }
