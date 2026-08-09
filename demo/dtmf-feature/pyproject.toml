@@ -7,6 +7,7 @@ dependencies = [
     "livekit-agents>=1.2",
     "livekit-plugins-silero>=0.7",
     "livekit-plugins-openai>=0.11",
+    "livekit-plugins-google>=1.2",
     "livekit-plugins-deepgram>=0.8",
     "livekit-plugins-cartesia>=0.6",
     "python-dotenv>=1.0",

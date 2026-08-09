@@ -19,7 +19,7 @@ persona:
 execute:
   max_turns: 8
   timeout_s: 120
-  first_speaker: agent
+  first_speaker: user
 
 script:
   steps:

@@ -15,6 +15,11 @@ read. See README.md for the GetDtmfTask-based alternative.
 
 Run:
     uv run dtmf-agent dev --config livekit.toml --log-level info
+
+Stack selection (env AGENT_STACK):
+    AGENT_STACK=openai   (default) OpenAI Realtime (gpt-realtime-*) — no pipeline
+    AGENT_STACK=gemini   Google Gemini Live (gemini-3.1-flash-live-preview) — no pipeline
+Both stacks exercise the same DTMF send/receive paths.
 """
 
 from __future__ import annotations
@@ -34,9 +39,22 @@ from livekit.agents import (
     metrics,
 )
 from livekit.agents.llm.tool_context import ToolError, function_tool
-from livekit.plugins import deepgram, openai, silero
+from livekit.plugins import openai
 
 load_dotenv()
+
+# ---- model stack (AGENT_STACK=openai | gemini) — realtime models only ----
+AGENT_STACK = os.getenv("AGENT_STACK", "openai").strip().lower()
+
+
+def build_session() -> AgentSession:
+    """Build the AgentSession for the selected stack (realtime, no STT/LLM/TTS pipeline)."""
+    if AGENT_STACK == "gemini":
+        from livekit.plugins.google.realtime import RealtimeModel
+
+        return AgentSession(llm=RealtimeModel(model="gemini-3.1-flash-live-preview", voice="Puck"))
+    # openai (default): OpenAI Realtime
+    return AgentSession(llm=openai.realtime.RealtimeModel(model="gpt-realtime-2.1-mini", voice="marin"))
 
 # Codec table (RFC 4733 section 3.2): digits 0-9 map to 0-9, * -> 10, # -> 11.
 DTMF_CODE = {str(d): d for d in range(10)} | {"*": 10, "#": 11}
@@ -63,8 +81,12 @@ class DtmfAgent(Agent):
                 "When the caller greets you, tell them they can use the phone keypad: "
                 "press 1 for plan details, 2 for international data roaming, "
                 "3 for upgrade options, or 4 to speak to a human agent. "
-                "When the caller presses a key, the system tells you which key "
-                "they pressed; reply with the matching outcome."
+                "When the caller presses a key, you receive a message like "
+                "[User pressed keypad key: N]. Acknowledge the press in one short "
+                "sentence, then give the matching outcome: "
+                "1 = current plan is $100/month, 2 = international roaming enabled, "
+                "3 = new plan $150/month, 4 = transfer to a human agent. "
+                "If the key is not 1-4, say the key is not valid and repeat the menu."
             ),
         )
 
@@ -107,12 +129,7 @@ server = AgentServer()
 
 @server.rtc_session(agent_name=os.getenv("AGENT_NAME", "dtmf-demo-local"))
 async def entrypoint(ctx: JobContext) -> None:
-    session: AgentSession = AgentSession(
-        vad=silero.VAD.load(),
-        stt=deepgram.STT(model="nova-3") if os.getenv("DEEPGRAM_API_KEY") else openai.STT(),
-        llm=openai.LLM(model="gpt-4.1-mini"),
-        tts=openai.TTS(voice="nova"),
-    )
+    session = build_session()
 
     @session.on("metrics_collected")
     def _on_metrics(ev: MetricsCollectedEvent) -> None:

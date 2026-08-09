@@ -59,8 +59,10 @@ must use the same name in `.agent-sim/config.yaml` (done automatically).
 ## Run
 
 ```bash
-# terminal 1 — the agent worker
-dtmf-agent dev --config livekit.toml --log-level info
+# terminal 1 — the agent worker (default stack: openai)
+AGENT_STACK=openai dtmf-agent dev --config livekit.toml --log-level info
+# or Gemini LLM via LiveKit Inference:
+AGENT_STACK=gemini dtmf-agent dev --config livekit.toml --log-level info
 
 # terminal 2 — the simulator
 lks preflight --root .
