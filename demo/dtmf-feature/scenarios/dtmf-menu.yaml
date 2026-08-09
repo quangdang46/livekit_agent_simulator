@@ -1,0 +1,47 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: dtmf-menu
+  locale: en-US
+  tags: [dtmf, ivr, draft]
+
+persona:
+  name: Alex
+  brief: |
+    You are calling a business for the first time. You reach an automated
+    assistant that offers a keypad menu. Press the keys the agent asks for
+    (on your telephone keypad) and follow the instructions you hear. Keep
+    answers short.
+  goals:
+  - Hear the agent's greeting and keypad menu
+  - Press 1 when asked for plan details
+  - Press 2 when offered international data roaming
+  - End the call politely
+  style: polite, brief
+  speech_conditions:
+    barge_policy: mid_agent_turn
+
+execute:
+  max_turns: 8
+  timeout_s: 120
+  first_speaker: agent
+
+script:
+  steps:
+    # After the agent reads the menu, press 1 (plan details).
+    - id: press-1
+      action: dtmf
+      trigger: agent_speaking
+      delay_ms: 800
+      digits: "1"
+    # Then press 2 (roaming) — ~2.5s later so the agent can respond.
+    - id: press-2
+      action: dtmf
+      trigger: agent_speaking
+      delay_ms: 2500
+      digits: "2w0"
+
+pass_criteria:
+  criteria:
+  - The agent heard and acknowledged the caller's keypad presses
+  - The caller pressed the keys the agent asked for

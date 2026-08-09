@@ -1,0 +1,2 @@
+# livekit-agents worker config (auto-generated, safe to commit as a sample).
+# Credentials stay in .env — the agent reads LIVEKIT_URL/API_KEY/API_SECRET there.
