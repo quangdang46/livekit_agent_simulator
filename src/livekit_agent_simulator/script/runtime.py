@@ -136,8 +136,10 @@ class ScriptRunner:
                     if hasattr(self.bridge, "suppress_persona_output"):
                         self.bridge.suppress_persona_output(1500)
                 if not self._hang_up_ready(step):
-                    # Hold the arm but do not accumulate delay while dialog is still open.
-                    self._trigger_since.pop(step.id, None)
+                    # Hold the arm: keep the trigger timestamp so the step still
+                    # fires once the gate opens (defer budget exhausted / agent
+                    # replied). Popping it here would reset elapsed_ms to 0 and
+                    # the step could never fire again.
                     continue
                 await self._fire(step, elapsed_ms)
             await asyncio.sleep(0.05)

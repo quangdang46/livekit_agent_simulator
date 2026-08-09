@@ -52,7 +52,7 @@ def build_session() -> AgentSession:
     if AGENT_STACK == "gemini":
         from livekit.plugins.google.realtime import RealtimeModel
 
-        return AgentSession(llm=RealtimeModel(model="gemini-3.1-flash-live-preview", voice="Puck"))
+        return AgentSession(llm=RealtimeModel(model="gemini-2.5-flash-native-audio-preview-12-2025", voice="Puck"))
     # openai (default): OpenAI Realtime
     return AgentSession(llm=openai.realtime.RealtimeModel(model="gpt-realtime-2.1-mini", voice="marin"))
 
@@ -78,6 +78,8 @@ class DtmfAgent(Agent):
         super().__init__(
             instructions=(
                 "You are the DTMF demo assistant at Acme Support. Be friendly and concise. "
+                "When the call starts, greet the caller immediately with a short "
+                "hello and the keypad menu (no waiting for them to speak first). "
                 "When the caller greets you, tell them they can use the phone keypad: "
                 "press 1 for plan details, 2 for international data roaming, "
                 "3 for upgrade options, or 4 to speak to a human agent. "
@@ -121,17 +123,43 @@ async def entrypoint(ctx: JobContext) -> None:
         sender = dtmf.participant.identity if dtmf.participant else "unknown"
         print(f"[dtmf] received digit {digit!r} from {sender} (code {dtmf.code})")
         reply = IVR_MENU.get(digit, "That key is not valid.")
-        asyncio.create_task(
-            session.generate_reply(
-                instructions=_dtmf_chat_message(digit) + "\n" + reply,
-                allow_interruptions=True,
+
+        async def _inject():
+            # Inject the keypad press as a user message; the realtime model
+            # (OpenAI Realtime / Gemini Live) answers it on its own turn.
+            # generate_reply() is NOT compatible with gemini-3.1-flash-live
+            # (LiveKit plugins/google README), so we feed the chat context
+            # instead and let the model respond naturally.
+            agent = session._agent  # bound by session.start
+            if agent is None:
+                return
+            ctx = agent.chat_ctx.copy()
+            ctx.add_message(
+                role="user",
+                content=_dtmf_chat_message(digit) + "\n" + reply,
             )
-        )
+            await agent.update_chat_ctx(ctx)
+
+        asyncio.create_task(_inject())
 
     await session.start(
         agent=DtmfAgent(),
         room=ctx.room,
     )
+
+    # Proactive greeting: with realtime agents the model waits for user input
+    # before speaking. Generate the opening line so first_speaker=agent
+    # scenarios work. (Not compatible with gemini-3.1-flash-live-preview —
+    # that model needs the caller to speak first; see plugin README.)
+    try:
+        await session.generate_reply(
+            instructions=(
+                "Greet the caller now with a short hello and the keypad menu "
+                "(press 1 for plan details, 2 for roaming, 3 for upgrades, 4 for a human)."
+            )
+        )
+    except Exception as e:  # model may not support generate_reply
+        print(f"[agent] proactive greeting skipped: {type(e).__name__}: {e}")
 
     await asyncio.sleep(3600)
 
