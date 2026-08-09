@@ -23,3 +23,10 @@ execute:
   max_turns: 8
   timeout_s: 90
   first_speaker: agent
+
+assert:
+  outcomes:
+  - id: agent_spoke
+    type: transcript_contains
+    role: agent
+    phrases: [hello, press, keypad, welcome]

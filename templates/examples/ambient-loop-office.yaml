@@ -48,3 +48,10 @@ script:
     with_blip: true
     gain: 0.3
     interrupt_class: noise
+
+assert:
+  outcomes:
+  - id: agent_spoke
+    type: transcript_contains
+    role: agent
+    phrases: [hello, press, keypad, welcome]
