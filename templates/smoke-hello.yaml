@@ -1,0 +1,23 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: smoke-hello
+  locale: en-US
+  tags:
+  - smoke
+persona:
+  name: Alex
+  brief: You are calling a business for the first time. You just want to confirm you reached the right
+    place, then politely end the call.
+  goals:
+  - Hear the agent's greeting or response
+  - Say you will call back later
+  style: polite, brief
+execute:
+  max_turns: 2
+  timeout_s: 90
+  first_speaker: user
+pass_criteria:
+  criteria:
+  - The agent responded to the caller
+  - The agent responded in the caller's language

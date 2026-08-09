@@ -15,7 +15,11 @@ livekit:
   # dispatch_metadata: '{"yourProjectKey":"value"}'
 
 simulator:
-  google_api_key: "AIzaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  # Caller brain: provider google | openai, mode realtime (cascade reserved).
+  provider: google
+  mode: realtime
+  # API key of the ACTIVE provider (Google or OpenAI).
+  api_key: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   language: "en-US"
   voice:
     model: "gemini-3.1-flash-live-preview"
@@ -23,7 +27,7 @@ simulator:
     language: "en-US"
 
 judge:
-  model: "gemini-2.5-flash"
+  model: "gemini-3.1-flash-lite"
   temperature: 0
 
 observe:
@@ -46,7 +50,7 @@ observe:
   turn_taking_warn_ms: 2500
 
 # room_pcm library: package built-ins + per-target overrides (multi-repo).
-# List: lk-sim cues --root .
+# List: lks cues --root .
 # Scenario asset: "builtin:noise.loud" | "my.wav" in .agent-sim/cues/ | alias name
 # cues:
 #   dirs:

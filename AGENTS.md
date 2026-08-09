@@ -1,6 +1,6 @@
 # AGENTS.md — livekit-agent-simulator
 
-Standalone Python package: MCP + `lk-sim` CLI. Dials **any** LiveKit voice agent using
+Standalone Python package: MCP + `lks` CLI. Dials **any** LiveKit voice agent using
 `.agent-sim/` in a **target repo** (config, scenarios, reports). The agent under test is a
 black box — we never import or edit target application code unless the user asks.
 
@@ -45,6 +45,40 @@ wrong for core — fix the design or keep it out of `src/`.
 - Defaults must be **portable** (`en-US` / `UTC` in core; demos may override in templates or target config).
 - Docs/examples use neutral placeholders (`yourProjectKey`, `/path/to/target-repo`) — not a real product name as the default.
 - Prefer fail-fast or remove over silent multi-provider stubs that only implement one backend.
+
+---
+
+## Product rule: no stubborn patches (defaults first)
+
+A **normal human caller** is the default product, not a special scenario case.
+
+| Do | Do not |
+|---|---|
+| Prefer existing defaults / one clear gate (e.g. hang_up waits for agent reply) | Stack scenario delays, extra waits, persona constraints, or authoring warns to paper over a bad override |
+| If a run feels unnatural, ask: “was a default turned off?” | Treat “don’t hang up right after saying your name” as a one-off backchannel/noise carve-out |
+| Fix the **wrong override** or the **broken knob** once | Add compensating sleeps, style flags, or “human reminder” prose in every JSONL |
+| Revert stubborn patches when the user says the behavior is just normal | Leave half-fixes in `src/` after the real fix was “leave the default on” |
+
+**Smell test:** if the patch only makes sense for one scenario id or one failure screenshot, it is probably wrong. Delete it and use the default path.
+
+---
+
+## Product rule: no dead features (keep the surface lean)
+
+Do **not** add CLI commands, MCP tools, config knobs, or scenario sections that
+nobody (human or agent) actually uses. A feature that exists but is never run is
+worse than no feature: it ships bugs, bloats docs/help, and doubles review cost.
+
+| Do | Do not |
+|---|---|
+| Only implement what has a concrete user: a real run, a test, or a documented recipe | Add a feature "for completeness" or "someone might need it later" |
+| Before building, ask: *who runs this? which flow calls it?* If the answer is "nobody", skip it | Keep legacy/duplicate paths (CLI vs MCP alias) that no test exercises |
+| When a feature goes unused, remove it or fold it into the existing surface | Ship half-finished knobs (e.g. `compare --baseline` without the P1.D regression gate) |
+| Gate new CLI/MCP surface behind at least one test | Grow `lks --help` with commands that have 0 tests and no docs usage |
+
+**Smell test:** if you can't name the flow that calls it, it is dead on arrival.
+WIP.md P2.x items (OTel export, multi-party handoff, text-fast mode, …) are
+parked for a reason — don't implement them just because they are listed.
 
 ---
 
@@ -97,7 +131,7 @@ On Windows, if `uv sync` fails (MCP exe locked):
 | Bug / SDK / protocol | Exa + LiveKit MCP + `.venv` → fix → pytest |
 | New scenario kind / MCP tool | Research first; plan if large; tests required |
 | Target scenario/config only | Edit `<target>/.agent-sim/` — no package release |
-| Smoke against running agent | `lk-sim preflight` + `lk-sim execute <id> --root <path>` (same ops as MCP) |
+| Smoke against running agent | `lks preflight` + `lks execute <id> --root <path>` (same ops as MCP) |
 
 ---
 
@@ -114,7 +148,7 @@ On Windows, if `uv sync` fails (MCP exe locked):
 | `logging/` | Event envelope, SQLite, reports |
 | `web/` (repo root) | Web UI — Vite/TS; `pnpm build` → `web/dist/`; CI force-includes into wheel as `web_static` |
 | `src/.../web/` | Report player API (`cues`, markers, HTTP server) |
-| `mcp_server.py` / `cli.py` | MCP tools + `lk-sim` |
+| `mcp_server.py` / `cli.py` | MCP tools + `lks` |
 | `templates/` | Init scaffolds |
 | `tests/` | pytest |
 | `docs/portability.md` | Optional consumer wiring (not default agent context) |
@@ -130,8 +164,10 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 
 - **Execute** — run params; overrides Simulator.
 - **Dispatch** — opaque metadata for `RoomAgentDispatch`.
-- **Script** — timed caller cues (`agent_speaking` + `delay_ms`); `delivery: room_pcm` plays WAV into sim mic; log verify via `script_verify` and optional **verify plugins** (`docs/plugins.md`).
+- **Script** — timed caller cues (`agent_speaking` + `delay_ms`); `delivery: room_pcm` plays WAV into sim mic; log verify via `script_verify` and optional **plugins** (verify + `before_run` / `after_run` — `docs/plugins.md`).
 - **PassCriteria** — optional LLM judge rubric.
+- **Context.notes** — author-only (reports/docs); **not** injected into the caller SI.
+- **Context.caller_knows** / **world** — optional facts the persona already knows (injected).
 
 ---
 
@@ -142,6 +178,8 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 - Credentials only in target `.agent-sim/config.yaml` (gitignored).
 - Core stays **repo-agnostic**; consumer fit only under target `.agent-sim/` (or docs examples).
 - No legacy shims / dual config names — clean breaks are fine while pre-1.0.
+- **No stubborn patches** — defaults first; do not compensate with scenario/authoring hacks (see above).
+- **No dead features** — only build what has a real user flow; don't add CLI/MCP/config surface nobody runs (see above).
 - **pytest must pass** before reporting done.
 
 ---
@@ -151,8 +189,8 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 | Item | Value |
 |---|---|
 | Package | `livekit-agent-simulator` |
-| CLI | `lk-sim` |
-| MCP entry | `lk-sim mcp` (or console script `lk-sim-mcp`) |
+| CLI | `lks` |
+| MCP entry | `lks mcp` (console script `lks-mcp`) |
 | Dot folder (target) | `.agent-sim/` |
-| Sim participant | `lk-sim-caller` |
-| Room prefix | `lk-sim-<run-id>` |
+| Sim participant | `lks-caller` |
+| Room prefix | `lks-<run-id>` |

@@ -15,6 +15,14 @@ def test_empty_events():
     assert m["barge_count"] == 0
     assert m["barge_recovery_rate"] is None
     assert m["talk_ratio"] is None
+    assert m["user_words_count"] == 0
+    assert m["user_words_p50"] is None
+    assert m["user_words_p10"] is None
+    assert m["user_words_mean"] is None
+    assert m["user_words_natural_count"] == 0
+    assert m["user_words_natural_p50"] is None
+    assert m["user_words_script_count"] == 0
+    assert m["user_words_script_p50"] is None
 
 
 def test_turn_taking_and_ttfw():
@@ -34,9 +42,90 @@ def test_turn_taking_and_ttfw():
     assert m["user_finals"] == 2
     assert m["talk_ratio"] is not None
     assert 0 < m["talk_ratio"] < 1
+    assert m["user_words_count"] == 2
+    assert m["user_words_p50"] == 2.0  # "hello there" and "book me" → 2, 2
+    assert m["user_words_mean"] == 2.0
+    # No Script cues → all finals count as natural
+    assert m["user_words_natural_count"] == 2
+    assert m["user_words_natural_p50"] == 2.0
+    assert m["user_words_script_count"] == 0
     d = metrics_digest(m)
     assert d["ttfw_ms"] == 1800
     assert d["turn_p50_ms"] == 800
+    assert d["user_words_p50"] == 2.0
+    assert d["user_words_natural_p50"] == 2.0
+
+
+def test_user_words_dedupe_consecutive_and_percentiles():
+    events = [
+        _ev("transcript.user.final", 100, text="hi"),
+        _ev("transcript.user.final", 110, text="hi"),  # consecutive dup
+        _ev("transcript.user.final", 200, text="I need help with my order please"),
+        _ev("transcript.user.final", 300, text=""),  # empty excluded
+        _ev("transcript.user.final", 400, text="okay thanks a lot for clarifying that"),
+    ]
+    m = compute_voice_metrics(events)
+    # 1, 7, 7 words
+    assert m["user_words_count"] == 3
+    assert m["user_words_p10"] == 1.0
+    assert m["user_words_p50"] == 7.0
+    assert m["user_words_mean"] == (1 + 7 + 7) / 3
+
+
+def test_user_words_natural_excludes_script_say_matches():
+    """Freestyle soft metric ignores finals that match Script say lines."""
+    script_say = "My name is Mai and I need an appointment on Tuesday please"
+    # Distinct content words so speech_origin overlap does not false-positive.
+    freestyle = (
+        "Um well the delivery never arrived so I am calling "
+        "to track the package and confirm the refund timeline"
+    )
+    events = [
+        _ev("sim.script.cue", 500, say=script_say, step_id="open", action="speak"),
+        _ev("transcript.user.final", 900, text=script_say),
+        _ev("transcript.agent.final", 2000, text="Sure, what day works?"),
+        _ev("transcript.user.final", 3500, text=freestyle),
+        _ev(
+            "transcript.user.final",
+            3600,
+            text=freestyle,
+        ),  # consecutive dup ignored
+    ]
+    m = compute_voice_metrics(events)
+    assert m["user_words_count"] == 2
+    assert m["user_words_script_count"] == 1
+    assert m["user_words_script_p50"] == float(len(script_say.split()))
+    assert m["user_words_natural_count"] == 1
+    assert m["user_words_natural_p50"] == float(len(freestyle.split()))
+    assert m["user_words_natural_p50"] > m["user_words_script_p50"]
+    d = metrics_digest(m)
+    assert d["user_words_natural_p50"] == m["user_words_natural_p50"]
+    # Overall p50 mixes both — not the freestyle signal
+    assert m["user_words_p50"] is not None
+
+
+def test_user_words_natural_excludes_script_clause_stt_splits():
+    """Trailing STT fragment of a multi-clause Script say is not freestyle."""
+    say = (
+        "I was looking at the 2022 Mazda CX-5 actually. "
+        "Is that one still available?"
+    )
+    events = [
+        _ev("sim.script_inject", 1000, text=say, label="name_car"),
+        _ev("transcript.user.final", 2500, text="I was looking at the 2022 Mazda CX-5, actually."),
+        _ev("transcript.user.final", 4200, text="Is that one still available?"),
+        _ev(
+            "transcript.user.final",
+            8000,
+            text="Yeah this is for myself, I'm calling from near the city.",
+        ),
+    ]
+    m = compute_voice_metrics(events)
+    assert m["user_words_script_count"] == 2
+    assert m["user_words_natural_count"] == 1
+    assert m["user_words_natural_p50"] == float(
+        len("Yeah this is for myself, I'm calling from near the city.".split())
+    )
 
 
 def test_ttfw_from_preamble():

@@ -15,7 +15,7 @@ class AgentDialsSimLeg:
         adapter, writer = ctx.adapter, ctx.writer
 
         # Optional sim-room if call_to / sim inbound is provisioned for Gemini answer.
-        sim_room_name = f"lk-sim-sip-{ctx.run_id}"
+        sim_room_name = f"lks-sip-{ctx.run_id}"
         agent_room_name = room_name_for_run(ctx.run_id)
         await adapter.create_room(sim_room_name)
         await adapter.create_room(agent_room_name)
@@ -60,7 +60,7 @@ class AgentDialsSimLeg:
 
         agent_room = await adapter.connect_participant(
             agent_room_name,
-            identity=f"lk-sim-obs-{ctx.run_id[:8]}",
+            identity=f"lks-obs-{ctx.run_id[:8]}",
             name="Agent Simulator Observer",
         )
         return SimLegHandle(

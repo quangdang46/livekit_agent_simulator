@@ -1,4 +1,4 @@
-# Install lk-sim from GitHub Releases (CI portable pack).
+# Install lks from GitHub Releases (CI portable pack).
 # No uv, no pip, no build on the user machine - download zip + PATH.
 #
 #   irm "https://github.com/quangdang46/livekit-agent-simulator/releases/download/v0.1.0/install.ps1" -OutFile install.ps1
@@ -17,13 +17,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$BinaryName = "lk-sim"
+$BinaryName = "lks"
 $McpServerName = "livekit-agent-simulator"
 $PkgName = "livekit-agent-simulator"
 $Owner = "quangdang46"
 $Repo = "livekit-agent-simulator"
-# Install root: %LOCALAPPDATA%\lk-sim\current
-$InstallRoot = Join-Path $env:LOCALAPPDATA "lk-sim"
+# Install root: %LOCALAPPDATA%\lks\current
+$InstallRoot = Join-Path $env:LOCALAPPDATA "lks"
 $CurrentDir = Join-Path $InstallRoot "current"
 $ShimDir = Join-Path $env:USERPROFILE ".local\bin"
 
@@ -87,8 +87,8 @@ function Get-ReleaseTagFromRef {
 function Get-PortableAssetName {
     $arch = $env:PROCESSOR_ARCHITECTURE
     switch -Regex ($arch) {
-        '^(ARM64|arm64)$' { return "lk-sim-windows-arm64.zip" }
-        default { return "lk-sim-windows-x64.zip" }
+        '^(ARM64|arm64)$' { return "lks-windows-arm64.zip" }
+        default { return "lks-windows-x64.zip" }
     }
 }
 
@@ -184,13 +184,13 @@ function Repair-NestedPortableLayout {
     param([string]$Dir)
     if (Test-PortablePythonValid -Dir $Dir) { return $true }
 
-    $nested = Get-ChildItem -Path $Dir -Directory -Filter "lk-sim-*" -ErrorAction SilentlyContinue |
+    $nested = Get-ChildItem -Path $Dir -Directory -Filter "lks-*" -ErrorAction SilentlyContinue |
         Where-Object { Test-PortablePythonValid -Dir $_.FullName } |
         Select-Object -First 1
     if (-not $nested) { return $false }
 
     Write-Log "Repairing nested portable layout ($($nested.Name) -> $Dir)"
-    $staging = Join-Path $env:TEMP ("lk-sim-repair-" + [guid]::NewGuid().ToString("n"))
+    $staging = Join-Path $env:TEMP ("lks-repair-" + [guid]::NewGuid().ToString("n"))
     try {
         Copy-PortablePayloadContents -SourceDir $nested.FullName -DestDir $staging
         Get-ChildItem -Path $Dir -Force | ForEach-Object {
@@ -219,7 +219,7 @@ function Stop-LkSimProcesses {
             if (-not $exe) { continue }
             $exeNorm = $exe.TrimEnd('\').ToLowerInvariant()
             if ($exeNorm.StartsWith($rootNorm)) {
-                Write-Log "Stopping lk-sim process PID $($proc.Id) ($exe)"
+                Write-Log "Stopping lks process PID $($proc.Id) ($exe)"
                 Stop-Process -Id $proc.Id -Force -ErrorAction Stop
                 $stopped++
             }
@@ -254,12 +254,13 @@ function Copy-PortablePayloadContents {
 }
 
 function Resolve-LkSim {
+    # Primary `lks`.
     $cmd = Get-Command $BinaryName -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     $candidates = @(
-        (Join-Path $ShimDir "lk-sim.cmd"),
-        (Join-Path $CurrentDir "lk-sim.cmd"),
-        (Join-Path $CurrentDir "lk-sim")
+        (Join-Path $ShimDir "lks.cmd"),
+        (Join-Path $CurrentDir "lks.cmd"),
+        (Join-Path $CurrentDir "lks")
     )
     foreach ($c in $candidates) {
         if (Test-Path $c) { return $c }
@@ -270,7 +271,7 @@ function Resolve-LkSim {
 function Configure-AllMcpProviders {
     $binary = Resolve-LkSim
     if (-not $binary) {
-        Write-Log "lk-sim not found on PATH - skip MCP provider config" "WARN"
+        Write-Log "lks not found on PATH - skip MCP provider config" "WARN"
         return
     }
     Write-Log "Configuring MCP providers -> $binary mcp"
@@ -319,7 +320,7 @@ function Uninstall-All {
     if (Test-Path $InstallRoot) {
         Remove-Item -Recurse -Force $InstallRoot -ErrorAction SilentlyContinue
     }
-    foreach ($name in @("lk-sim.cmd", "lk-sim-mcp.cmd", "lk-sim", "lk-sim-mcp")) {
+    foreach ($name in @("lks.cmd", "lks-mcp.cmd", "lks", "lks-mcp")) {
         $p = Join-Path $ShimDir $name
         if (Test-Path $p) { Remove-Item -Force $p -ErrorAction SilentlyContinue }
     }
@@ -350,14 +351,14 @@ function Install-PortableFromRelease {
     $asset = @($rel.assets) | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
     if (-not $asset) {
         # fallback: any windows zip
-        $asset = @($rel.assets) | Where-Object { $_.name -like "lk-sim-windows-*.zip" } | Select-Object -First 1
+        $asset = @($rel.assets) | Where-Object { $_.name -like "lks-windows-*.zip" } | Select-Object -First 1
     }
     if (-not $asset) {
         $names = (@($rel.assets) | ForEach-Object { $_.name }) -join ", "
         throw "Release $tag has no Windows portable zip (want $assetName). Assets: $names"
     }
 
-    $work = Join-Path $env:TEMP ("lk-sim-portable-" + [guid]::NewGuid().ToString("n"))
+    $work = Join-Path $env:TEMP ("lks-portable-" + [guid]::NewGuid().ToString("n"))
     New-Item -ItemType Directory -Path $work -Force | Out-Null
     $zip = Join-Path $work $asset.name
     Write-Log "Downloading $($asset.browser_download_url)"
@@ -369,13 +370,13 @@ function Install-PortableFromRelease {
     Write-Log "Extracting portable pack..."
     Expand-Archive -Path $zip -DestinationPath $work -Force
 
-    # Zip contains lk-sim-windows-x64/...
+    # Zip contains lks-windows-x64/...
     $payload = Get-ChildItem -Path $work -Directory | Where-Object {
-        $_.Name -like "lk-sim-windows-*"
+        $_.Name -like "lks-windows-*"
     } | Select-Object -First 1
     if (-not $payload) {
         # maybe flat
-        if (Test-Path (Join-Path $work "lk-sim.cmd")) {
+        if (Test-Path (Join-Path $work "lks.cmd")) {
             $payload = Get-Item $work
         } else {
             throw "Portable payload folder not found after extract"
@@ -386,7 +387,7 @@ function Install-PortableFromRelease {
         Stop-LkSimProcesses -Root $InstallRoot
     }
 
-    $stagingDir = Join-Path $env:TEMP ("lk-sim-staging-" + [guid]::NewGuid().ToString("n"))
+    $stagingDir = Join-Path $env:TEMP ("lks-staging-" + [guid]::NewGuid().ToString("n"))
     New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
     try {
         Copy-PortablePayloadContents -SourceDir $payload.FullName -DestDir $stagingDir
@@ -425,9 +426,14 @@ set "ROOT=%ROOT:~0,-1%"
 "%ROOT%\python\python.exe" -m livekit_agent_simulator.mcp_server %*
 exit /b %ERRORLEVEL%
 "@
-    $fixedLk | Set-Content -Path (Join-Path $CurrentDir "lk-sim.cmd") -Encoding ASCII
-    $fixedMcp | Set-Content -Path (Join-Path $CurrentDir "lk-sim-mcp.cmd") -Encoding ASCII
-    foreach ($broken in @("lk-sim.exe", "lk-sim-mcp.exe")) {
+    # Primary launchers
+    foreach ($name in @("lks.cmd")) {
+        $fixedLk | Set-Content -Path (Join-Path $CurrentDir $name) -Encoding ASCII
+    }
+    foreach ($name in @("lks-mcp.cmd")) {
+        $fixedMcp | Set-Content -Path (Join-Path $CurrentDir $name) -Encoding ASCII
+    }
+    foreach ($broken in @("lks.exe", "lks-mcp.exe")) {
         $p = Join-Path $CurrentDir "python\Scripts\$broken"
         if (Test-Path $p) { Remove-Item -Force $p -ErrorAction SilentlyContinue }
     }
@@ -436,21 +442,20 @@ exit /b %ERRORLEVEL%
     if (-not (Test-Path $ShimDir)) {
         New-Item -ItemType Directory -Path $ShimDir -Force | Out-Null
     }
-    $lkCmd = Join-Path $CurrentDir "lk-sim.cmd"
-    $mcpCmd = Join-Path $CurrentDir "lk-sim-mcp.cmd"
-    if (-not (Test-Path $lkCmd)) { throw "lk-sim.cmd missing in portable pack" }
+    $lkCmd = Join-Path $CurrentDir "lks.cmd"
+    $mcpCmd = Join-Path $CurrentDir "lks-mcp.cmd"
+    if (-not (Test-Path $lkCmd)) { throw "lks.cmd missing in portable pack" }
 
-    $shimLk = Join-Path $ShimDir "lk-sim.cmd"
-    $shimMcp = Join-Path $ShimDir "lk-sim-mcp.cmd"
+    # Primary shims
     @"
 @echo off
 "$lkCmd" %*
-"@ | Set-Content -Path $shimLk -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $ShimDir "lks.cmd") -Encoding ASCII
     if (Test-Path $mcpCmd) {
         @"
 @echo off
 "$mcpCmd" %*
-"@ | Set-Content -Path $shimMcp -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $ShimDir "lks-mcp.cmd") -Encoding ASCII
     }
 
     Ensure-DirOnPath $ShimDir
@@ -486,18 +491,22 @@ set "ROOT=%ROOT:~0,-1%"
 "%ROOT%\python\python.exe" -m livekit_agent_simulator.mcp_server %*
 exit /b %ERRORLEVEL%
 "@
-    $fixedLk | Set-Content -Path (Join-Path $CurrentDir "lk-sim.cmd") -Encoding ASCII
-    $fixedMcp | Set-Content -Path (Join-Path $CurrentDir "lk-sim-mcp.cmd") -Encoding ASCII
+    foreach ($name in @("lks.cmd")) {
+        $fixedLk | Set-Content -Path (Join-Path $CurrentDir $name) -Encoding ASCII
+    }
+    foreach ($name in @("lks-mcp.cmd")) {
+        $fixedMcp | Set-Content -Path (Join-Path $CurrentDir $name) -Encoding ASCII
+    }
     Ensure-DirOnPath $ShimDir
-    $lkCmd = Join-Path $CurrentDir "lk-sim.cmd"
+    $lkCmd = Join-Path $CurrentDir "lks.cmd"
     @"
 @echo off
 "$lkCmd" %*
-"@ | Set-Content -Path (Join-Path $ShimDir "lk-sim.cmd") -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $ShimDir "lks.cmd") -Encoding ASCII
     if ($Verify) {
         cmd /c "`"$lkCmd`" --help" | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Repair verify failed: lk-sim --help" }
-        Write-Log "Verified lk-sim --help after repair"
+        if ($LASTEXITCODE -ne 0) { throw "Repair verify failed: lks --help" }
+        Write-Log "Verified lks --help after repair"
     }
     Write-Host ""
     Write-Host "OK repaired portable layout at $CurrentDir" -ForegroundColor Green
@@ -517,8 +526,8 @@ if (-not $NoMcp) {
 
 $lkResolved = Resolve-LkSim
 if ($Verify) {
-    $lkCmd = Join-Path $CurrentDir "lk-sim.cmd"
-    if (-not (Test-Path $lkCmd)) { throw "lk-sim.cmd missing after install" }
+    $lkCmd = Join-Path $CurrentDir "lks.cmd"
+    if (-not (Test-Path $lkCmd)) { throw "lks.cmd missing after install" }
     cmd /c "`"$lkCmd`" --help" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "$BinaryName --help failed after install (exit $LASTEXITCODE)" }
     Write-Log "Verified $BinaryName --help"

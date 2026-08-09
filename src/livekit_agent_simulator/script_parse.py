@@ -111,12 +111,56 @@ def parse_script_steps(spec: dict[str, Any], path_label: str) -> list[ScriptStep
             min_agent = int(raw.get("min_agent_active_ms", 200))
             trigger = "agent_speaking"
             action = "speak"
+        # DTMF validation
+        digits = ""
+        if action == "dtmf":
+            raw_digits = str(raw.get("digits") or raw.get("digit") or "").strip()
+            allowed = set("0123456789*#w")
+            for ch in raw_digits:
+                if ch not in allowed:
+                    raise ValueError(
+                        f"{path_label}: Script step {step_id!r}: action=dtmf: "
+                        f"digits can only contain 0-9*#w (got {ch!r})"
+                    )
+            digits = raw_digits
+            say = "[DTMF: " + digits + "]"
+        # Backward compat: dtmf step defaults
+        if action == "dtmf" and trigger not in ("silence", "time"):
+            trigger = "time"
         # Default: blip on text barge; off when room_pcm (asset is the cut-in audio).
         if "with_blip" in raw:
             with_blip = bool(raw.get("with_blip"))
         else:
             with_blip = barge_in and delivery != "room_pcm"
         gain = _parse_step_gain(raw, path_label, step_id)
+        loop = bool(raw.get("loop") or raw.get("repeat") is True)
+        if "repeat" in raw and not isinstance(raw.get("repeat"), bool):
+            # repeat as count is not supported; only bool alias for loop
+            if raw.get("repeat") not in (None, 0, 1, "0", "1"):
+                raise ValueError(
+                    f"{path_label}: Script step {step_id!r}: use loop=true for continuous "
+                    f"ambient beds (repeat count is not supported)"
+                )
+        if loop and delivery != "room_pcm":
+            raise ValueError(
+                f"{path_label}: Script step {step_id!r}: loop requires delivery=room_pcm"
+            )
+        if loop and action != "speak":
+            raise ValueError(
+                f"{path_label}: Script step {step_id!r}: loop only applies to speak + room_pcm"
+            )
+        asset_s = str(asset).strip() if asset else None
+        if loop and asset_s:
+            name = asset_s.lower()
+            if name.startswith("builtin:"):
+                name = name[len("builtin:") :]
+            if name.startswith("@"):
+                name = name[1:]
+            if name.startswith("voice."):
+                raise ValueError(
+                    f"{path_label}: Script step {step_id!r}: loop is for noise/ambient beds, "
+                    f"not voice.* speech assets"
+                )
         try:
             interrupt_class = normalize_interrupt_class(
                 raw.get("class") or raw.get("interrupt_class"),
@@ -125,24 +169,49 @@ def parse_script_steps(spec: dict[str, Any], path_label: str) -> list[ScriptStep
         except ValueError as e:
             raise ValueError(f"{path_label}: Script step {step_id!r}: {e}") from e
 
+        overlay_raw = raw.get("overlay") or raw.get("speech_role")
+        overlay: str | None = None
+        if overlay_raw is not None and str(overlay_raw).strip():
+            overlay = str(overlay_raw).strip().lower().replace("-", "_")
+            if overlay in ("forced_line", "forced", "say"):
+                overlay = "line"
+            if overlay not in ("fixture", "line"):
+                raise ValueError(
+                    f"{path_label}: Script step {step_id!r}: overlay must be "
+                    f"fixture|line (got {overlay_raw!r})"
+                )
+
         steps.append(
             ScriptStep(
                 id=step_id,
                 trigger=trigger,
                 delay_ms=delay_ms,
                 say=str(say).strip(),
+                digits=digits,
                 label=str(raw.get("label") or step_id),
                 once=bool(raw.get("once", True)),
                 min_agent_active_ms=min_agent,
                 delivery=delivery,
-                asset=str(asset).strip() if asset else None,
+                asset=asset_s,
                 silence_after_cue_ms=int(raw.get("silence_after_cue_ms", 0)),
                 action=action,
+                mute_persona=(
+                    bool(raw["mute_persona"])
+                    if "mute_persona" in raw
+                    else None
+                ),
                 require_agent_spoke_first=bool(raw.get("require_agent_spoke_first", True)),
+                require_agent_reply_this_turn=bool(
+                    raw.get("require_agent_reply_this_turn", True)
+                ),
+                defer_on_open_question=bool(raw.get("defer_on_open_question", True)),
+                open_question_idle_ms=int(raw.get("open_question_idle_ms", 20000)),
                 barge_in=barge_in,
                 with_blip=with_blip,
                 gain=gain,
                 interrupt_class=interrupt_class,
+                overlay=overlay,
+                loop=loop,
             )
         )
     return steps

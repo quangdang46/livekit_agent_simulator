@@ -1,8 +1,23 @@
-"""Example verify plugin — copy to `<repo>/.agent-sim/plugins/` and reference from scenario JSONL."""
+"""Example plugins — copy to `<repo>/.agent-sim/plugins/` and reference from scenario JSONL.
+
+Kinds:
+  - @verify_plugin       → Script.verify checks on events.jsonl
+  - @register_before_run → after prepare, before SimLeg connects
+  - @register_after_run  → after finalize, just before execute returns
+
+Full API: docs/plugins.md
+"""
 
 from __future__ import annotations
 
-from livekit_agent_simulator.plugins import VerifyContext, verify_plugin
+from livekit_agent_simulator.plugins import (
+    AfterRunContext,
+    BeforeRunContext,
+    VerifyContext,
+    register_after_run,
+    register_before_run,
+    verify_plugin,
+)
 
 
 @verify_plugin("example_backchannel_continue")
@@ -22,6 +37,19 @@ def example_backchannel_continue(ctx: VerifyContext) -> dict:
         ],
         "detail": "example plugin — replace with your project logic",
     }
+
+
+@register_before_run
+def example_before_run(ctx: BeforeRunContext) -> None:
+    """Optional: stamp meta / prepare external resources before connect."""
+    ctx.meta.setdefault("example_plugin", True)
+
+
+@register_after_run
+def example_after_run(ctx: AfterRunContext) -> None:
+    """Optional: side effects after the report is written (CI notify, archive, …)."""
+    # Example only — replace or delete. Do not log secrets.
+    _ = (ctx.run_id, ctx.status, ctx.report_dir)
 
 
 def setup() -> None:

@@ -16,7 +16,11 @@ def evaluate_script_log(
     project_root: Path | str | None = None,
 ) -> dict[str, object]:
     """Log-based PASS/FAIL for scripted adaptive scenarios (no LLM judge required)."""
-    cues = [e for e in events if e.get("kind") in ("sim.script.cue", "sim.script.wait")]
+    cues = [
+        e
+        for e in events
+        if e.get("kind") in ("sim.script.cue", "sim.script.wait", "sim.script.hang_up")
+    ]
     agent_finals = [e for e in events if e.get("kind") == "transcript.agent.final"]
     user_finals = [e for e in events if e.get("kind") == "transcript.user.final"]
     interruptions = [e for e in events if e.get("kind") == "interruption"]
@@ -30,6 +34,15 @@ def evaluate_script_log(
             continue
         cue = matching[0]
         spec = cue.get("spec") or {}
+        if spec.get("error"):
+            checks.append(
+                {
+                    "step_id": step.id,
+                    "pass": False,
+                    "reason": f"cue fired with error: {spec.get('error')}",
+                }
+            )
+            continue
         during = bool(spec.get("during_agent_speech"))
         if step.trigger == "agent_speaking" and step.action == "speak" and not during:
             checks.append(
@@ -247,6 +260,7 @@ def evaluate_script_log(
         "script_steps": len(steps),
         "cues_fired": len([e for e in cues if e.get("kind") == "sim.script.cue"]),
         "waits_fired": len([e for e in cues if e.get("kind") == "sim.script.wait"]),
+        "hang_ups_fired": len([e for e in cues if e.get("kind") == "sim.script.hang_up"]),
         "agent_finals_after_first_cue": agent_after_cue,
         "user_finals_after_first_cue": user_after_cue,
         "agent_finals_after_silence": agent_after_silence,

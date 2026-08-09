@@ -1,0 +1,51 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: multi-judge-smoke
+  locale: en-US
+  tags:
+  - smoke
+  - regression
+persona:
+  name: Alex
+  language: en-US
+  brief: You called for a quick status check.
+  goals:
+  - Confirm you reached the agent
+  - Get a short status
+  - End politely
+  style: brief
+  traits:
+  - polite
+execute:
+  max_turns: 4
+  timeout_s: 100
+  first_speaker: agent
+assert:
+  outcomes:
+  - id: agent_spoke
+    type: transcript_contains
+    phrases:
+    - a
+    - e
+    - i
+    - o
+    - u
+    role: agent
+    min_agent_finals_after_barge_in: 1
+    min_interruptions: 0
+    require_turn_samples: 0
+    min_goals: 1
+    check_agent_transcript: false
+pass_criteria:
+  criteria:
+  - '[task] The agent responded to the caller''s request'
+  - '[clarity] The agent spoke in a language the caller can understand'
+  mode: all
+  judges:
+  - id: task
+    criteria:
+    - The agent responded to the caller's request
+  - id: clarity
+    criteria:
+    - The agent spoke in a language the caller can understand

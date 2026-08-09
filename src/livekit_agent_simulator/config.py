@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -20,6 +20,15 @@ DEFAULT_LANGUAGE = "en-US"
 DEFAULT_TIMEZONE = "UTC"
 DEFAULT_VOICE_MODEL = "gemini-3.1-flash-live-preview"
 DEFAULT_JUDGE_MODEL = "gemini-2.5-flash"
+
+# Caller brain providers (`simulator.provider`). One active provider per run.
+ProviderName = Literal["google", "openai"]
+_PROVIDER_VALUES = frozenset({"google", "openai"})
+
+# Caller brain modes (`simulator.mode`). "realtime" today; cascade (text LLM +
+# separate TTS) is a future brain family, reserved here.
+BrainMode = Literal["realtime"]
+_BRAIN_MODE_VALUES = frozenset({"realtime"})
 
 
 class ConfigError(Exception):
@@ -39,7 +48,11 @@ class LiveKitConfig:
 
 @dataclass
 class SimulatorVoiceConfig:
-    """Gemini Live voice for the simulated caller."""
+    """Voice bag for the simulated caller — provider-neutral.
+
+    ``model``/``voice``/``language`` are interpreted by the active provider
+    (``simulator.provider``). ``language`` is the authoritative sim locale.
+    """
 
     model: str = DEFAULT_VOICE_MODEL
     voice: str = "Puck"
@@ -48,15 +61,31 @@ class SimulatorVoiceConfig:
 
 @dataclass
 class SimulatorConfig:
-    google_api_key: str
+    """Sim caller brain: one active provider per run, one key for it.
+
+    ``provider`` selects the caller brain (google → Gemini Live, openai →
+    OpenAI Realtime). ``mode`` picks the brain family (``realtime`` today;
+    ``cascade`` reserved). ``api_key`` holds the active provider's key — there
+    is no per-provider key alias (AGENTS.md: one clear API, no legacy names).
+    """
+
+    provider: ProviderName = "google"
+    mode: BrainMode = "realtime"
+    api_key: str = ""
     language: str = DEFAULT_LANGUAGE
     voice: SimulatorVoiceConfig = field(default_factory=SimulatorVoiceConfig)
 
 
 @dataclass
 class JudgeConfig:
-    model: str = DEFAULT_JUDGE_MODEL
+    # None → JUDGE_MODEL env → DEFAULT_JUDGE_MODEL at resolve time
+    model: str | None = None
     temperature: float = 0.0
+    # HTTP gateway. Empty base_url → Gemini judge via simulator.api_key.
+    base_url: str | None = None
+    api_key: str | None = None
+    # Wire format when base_url set: openai (/chat/completions) | anthropic (/messages)
+    endpoint_type: str = "openai"
 
 
 @dataclass
@@ -75,6 +104,10 @@ class ObserveConfig:
     record_audio: bool = True
     data_topics: list[str] = field(default_factory=list)
     tool_event_patterns: list[ToolEventPattern] = field(default_factory=list)
+    # Data topics whose payloads describe the agent's flow/node lifecycle
+    # (e.g. node active / transition events). Targets opt in here; the soft
+    # LLM judge surfaces these as flow evidence. Empty = no flow evidence.
+    flow_topics: list[str] = field(default_factory=list)
     # Sim wire format: payload `type` values treated as transcript turns on data topics.
     transcript_payload_types: list[str] = field(default_factory=lambda: ["transcript_turn"])
     transcript_dedupe_window_ms: int = 15_000
@@ -162,7 +195,7 @@ def load_config(project_root: Path | str) -> SimConfig:
     config_path = project_root / DOT_FOLDER / CONFIG_FILENAME
     if not config_path.exists():
         raise ConfigError(
-            f"{config_path} not found. Run `lk-sim init` (or the `init_project` MCP tool) "
+            f"{config_path} not found. Run `lks init` (or the `init_project` MCP tool) "
             f"to scaffold {DOT_FOLDER}/ first."
         )
 
@@ -193,7 +226,21 @@ def load_config(project_root: Path | str) -> SimConfig:
     sim_raw = raw.get("simulator")
     if not isinstance(sim_raw, dict):
         raise ConfigError(f"Missing `simulator:` section in {config_path}.")
+    provider_raw = str(sim_raw.get("provider", "google")).strip().lower()
+    if provider_raw not in _PROVIDER_VALUES:
+        raise ConfigError(
+            "`simulator.provider` must be `google` or `openai` "
+            f"(got {provider_raw!r})."
+        )
+    mode_raw = str(sim_raw.get("mode", "realtime")).strip().lower()
+    if mode_raw not in _BRAIN_MODE_VALUES:
+        raise ConfigError(
+            "`simulator.mode` must be `realtime` "
+            f"(got {mode_raw!r}); cascade is reserved for a future brain."
+        )
     voice_raw = sim_raw.get("voice") or {}
+    # `simulator.language` is the legacy default; `voice.language` is the
+    # authoritative sim locale once set (portable default en-US otherwise).
     default_lang = str(sim_raw.get("language", DEFAULT_LANGUAGE))
     voice = SimulatorVoiceConfig(
         model=str(voice_raw.get("model", DEFAULT_VOICE_MODEL)),
@@ -201,7 +248,9 @@ def load_config(project_root: Path | str) -> SimConfig:
         language=str(voice_raw.get("language", default_lang)),
     )
     simulator = SimulatorConfig(
-        google_api_key=str(_require(sim_raw, "google_api_key", "simulator")),
+        provider=provider_raw,  # type: ignore[assignment]
+        mode=mode_raw,  # type: ignore[assignment]
+        api_key=str(_require(sim_raw, "api_key", "simulator")),
         language=default_lang,
         voice=voice,
     )
@@ -209,9 +258,24 @@ def load_config(project_root: Path | str) -> SimConfig:
     judge: JudgeConfig | None = None
     judge_raw = raw.get("judge")
     if isinstance(judge_raw, dict):
+        base_url = judge_raw.get("base_url")
+        api_key = judge_raw.get("api_key")
+        ep_raw = str(judge_raw.get("endpoint_type") or "openai").strip().lower()
+        if ep_raw not in ("openai", "anthropic"):
+            raise ConfigError(
+                "`judge.endpoint_type` must be openai or anthropic "
+                "(HTTP wire format when base_url is set)."
+            )
         judge = JudgeConfig(
-            model=str(judge_raw.get("model", DEFAULT_JUDGE_MODEL)),
+            model=(
+                str(judge_raw["model"]).strip()
+                if judge_raw.get("model") not in (None, "")
+                else None
+            ),
             temperature=float(judge_raw.get("temperature", 0.0)),
+            base_url=str(base_url).strip() if base_url else None,
+            api_key=str(api_key).strip() if api_key else None,
+            endpoint_type=ep_raw,
         )
 
     obs_raw = raw.get("observe") or {}
@@ -226,6 +290,7 @@ def load_config(project_root: Path | str) -> SimConfig:
         lk_agent_session=bool(obs_raw.get("lk_agent_session", True)),
         record_audio=bool(obs_raw.get("record_audio", True)),
         data_topics=[str(t) for t in (obs_raw.get("data_topics") or [])],
+        flow_topics=[str(t) for t in (obs_raw.get("flow_topics") or [])],
         tool_event_patterns=patterns,
         transcript_payload_types=[
             str(t) for t in (obs_raw.get("transcript_payload_types") or ["transcript_turn"])
@@ -307,11 +372,23 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
             "dispatch_metadata_set": bool(cfg.livekit.dispatch_metadata),
         },
         "simulator": {
+            "provider": cfg.simulator.provider,
+            "mode": cfg.simulator.mode,
             "voice_model": cfg.simulator.voice.model,
             "voice": cfg.simulator.voice.voice,
             "language": cfg.simulator.voice.language,
         },
         "judge_enabled": cfg.judge is not None,
+        "judge": (
+            {
+                "model": cfg.judge.model or DEFAULT_JUDGE_MODEL,
+                "http": bool(cfg.judge.base_url),
+                "endpoint_type": cfg.judge.endpoint_type if cfg.judge.base_url else None,
+                "api_key_set": bool(cfg.judge.api_key),
+            }
+            if cfg.judge
+            else None
+        ),
         "cues": {
             "dirs": list(cfg.cues.dirs),
             "alias_keys": sorted(cfg.cues.aliases.keys()),

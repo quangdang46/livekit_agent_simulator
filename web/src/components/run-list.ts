@@ -6,8 +6,15 @@ import {
   shortRunId,
   statusTone,
 } from "../lib/format";
+import {
+  loadHomeFilter,
+  loadHomeViewMode,
+  saveHomeFilter,
+  saveHomeViewMode,
+  type ListViewMode,
+} from "../lib/ui-prefs";
 
-type ViewMode = "recents" | "scenario";
+type ViewMode = ListViewMode;
 
 type ScenarioGroup = {
   scenarioId: string;
@@ -206,20 +213,23 @@ function renderByScenario(
   }
 }
 
+export type RunListHandle = {
+  update(runs: RunSummary[]): void;
+};
+
 export function renderRunList(
   root: HTMLElement,
   runs: RunSummary[],
   onSelect: (runId: string) => void,
-): void {
-  const sorted = sortRunsNewest(runs);
-  const latest = sorted[0] ?? null;
-  let mode: ViewMode = "recents";
+): RunListHandle {
+  let sorted = sortRunsNewest(runs);
+  let mode: ViewMode = loadHomeViewMode("recents");
 
   root.innerHTML = `
     <main class="page home-page">
       <header class="header home-header">
         <div>
-          <p class="eyebrow">lk-sim</p>
+          <p class="eyebrow">lks</p>
           <h1>Reports</h1>
           <p class="muted home-sub" id="home-sub"></p>
         </div>
@@ -237,25 +247,11 @@ export function renderRunList(
   const toolbar = root.querySelector<HTMLElement>("#home-toolbar");
   const latestSlot = root.querySelector<HTMLElement>("#latest-slot");
   const listSlotEl = root.querySelector<HTMLElement>("#list-slot");
-  if (!sub || !toolbar || !latestSlot || !listSlotEl) return;
+  const emptyEl = root.querySelector<HTMLElement>("#empty");
+  if (!sub || !toolbar || !latestSlot || !listSlotEl || !emptyEl) {
+    return { update() {} };
+  }
   const listSlot: HTMLElement = listSlotEl;
-
-  if (latest) {
-    sub.textContent = `${runs.length} run${runs.length === 1 ? "" : "s"} · newest first`;
-  } else {
-    sub.textContent = "Run a scenario, then refresh this page.";
-  }
-
-  if (latest) {
-    latestSlot.appendChild(
-      makeRunCard(latest, {
-        featured: true,
-        isLatest: true,
-        showScenario: true,
-        onSelect,
-      }),
-    );
-  }
 
   const tabs = document.createElement("div");
   tabs.className = "view-tabs";
@@ -267,6 +263,7 @@ export function renderRunList(
     b.textContent = label;
     b.addEventListener("click", () => {
       mode = id;
+      saveHomeViewMode(mode);
       paint();
     });
     return b;
@@ -279,7 +276,11 @@ export function renderRunList(
   filter.className = "run-filter";
   filter.placeholder = "Filter scenario or run id…";
   filter.autocomplete = "off";
-  filter.addEventListener("input", () => paint());
+  filter.value = loadHomeFilter();
+  filter.addEventListener("input", () => {
+    saveHomeFilter(filter.value);
+    paint();
+  });
   toolbar.appendChild(filter);
 
   function filtered(): RunSummary[] {
@@ -291,6 +292,27 @@ export function renderRunList(
     });
   }
 
+  function paintHeader(): void {
+    const latest = sorted[0] ?? null;
+    emptyEl!.classList.toggle("hidden", sorted.length > 0);
+    if (latest) {
+      sub!.textContent = `${sorted.length} run${sorted.length === 1 ? "" : "s"} · auto-updating`;
+    } else {
+      sub!.textContent = "Run a scenario — this list updates automatically.";
+    }
+    latestSlot!.innerHTML = "";
+    if (latest) {
+      latestSlot!.appendChild(
+        makeRunCard(latest, {
+          featured: true,
+          isLatest: true,
+          showScenario: true,
+          onSelect,
+        }),
+      );
+    }
+  }
+
   function paint(): void {
     for (const b of Array.from(tabs.querySelectorAll<HTMLButtonElement>(".view-tab"))) {
       b.classList.toggle("is-active", b.dataset.mode === mode);
@@ -300,14 +322,33 @@ export function renderRunList(
     if (!rows.length) {
       const empty = document.createElement("p");
       empty.className = "muted";
-      empty.textContent = "No runs match that filter.";
+      empty.textContent = sorted.length
+        ? "No runs match that filter."
+        : "Waiting for reports…";
       listSlot.appendChild(empty);
       return;
     }
-    const latestId = latest?.run_id ?? null;
+    const latestId = sorted[0]?.run_id ?? null;
     if (mode === "recents") renderRecents(listSlot, rows, latestId, onSelect);
     else renderByScenario(listSlot, rows, latestId, onSelect);
   }
 
+  function update(next: RunSummary[]): void {
+    const prevFocus = document.activeElement === filter;
+    const selStart = filter.selectionStart;
+    const selEnd = filter.selectionEnd;
+    sorted = sortRunsNewest(next);
+    paintHeader();
+    paint();
+    if (prevFocus) {
+      filter.focus();
+      if (selStart != null && selEnd != null) {
+        filter.setSelectionRange(selStart, selEnd);
+      }
+    }
+  }
+
+  paintHeader();
   paint();
+  return { update };
 }

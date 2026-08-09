@@ -1,0 +1,5 @@
+{"apiVersion": "agent-sim/v1", "kind": "Scenario", "metadata": {"id": "amd-silent-caller", "locale": "en-US", "tags": ["smoke", "regression", "amd"]}}
+{"kind": "Persona", "spec": {"name": "Silent", "language": "en-US", "brief": "You answer the phone but do not speak. Stay completely silent.", "goals": ["Remain silent so the agent must reprompt or end"], "style": "no speech", "traits": ["silent"], "constraints": ["Do not speak"], "speech_conditions": {"silence_ms": 12000, "silence_arm_ms": 300}}}
+{"kind": "Execute", "spec": {"max_turns": 3, "timeout_s": 80, "first_speaker": "agent"}}
+{"kind": "Assert", "spec": {"outcomes": [{"id": "agent_spoke", "type": "transcript_contains", "role": "agent", "phrases": ["a", "e", "i", "o", "u"]}]}}
+{"kind": "PassCriteria", "spec": {"criteria": ["The agent handles a silent callee (reprompt or end) without crashing"]}}

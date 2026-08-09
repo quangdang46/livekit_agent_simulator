@@ -1,0 +1,7 @@
+{"apiVersion": "agent-sim/v1", "kind": "Scenario", "metadata": {"id": "amd-voicemail-greeting", "locale": "en-US", "tags": ["draft", "telephony", "amd", "smoke"]}}
+{"kind": "Persona", "spec": {"name": "Voicemail box", "language": "en-US", "brief": "You are a voicemail system, not a human. After a short greeting beep pattern, stay silent. Do not converse.", "goals": ["Play greeting behavior via script", "Remain silent so the agent can leave a message or hang up"], "style": "machine-like, no small talk", "traits": ["silent"], "constraints": ["Do not hold a human conversation", "Do not answer questions"], "speech_conditions": {"silence_ms": 15000, "silence_arm_ms": 500}}}
+{"kind": "Caller", "spec": {"mode": "webrtc_sim"}}
+{"kind": "Execute", "spec": {"max_turns": 4, "timeout_s": 90, "first_speaker": "user"}}
+{"kind": "Script", "spec": {"steps": [{"id": "greeting", "trigger": "time", "delay_ms": 400, "delivery": "room_pcm", "asset": "builtin:voice.barge_short", "say": "[voicemail greeting]", "barge_in": false, "class": "silence"}, {"id": "hold", "trigger": "time", "delay_ms": 2000, "action": "wait", "silence_after_cue_ms": 12000}]}}
+{"kind": "Assert", "spec": {"outcomes": [{"id": "agent_spoke", "type": "transcript_contains", "role": "agent", "phrases": ["a", "e", "i", "o", "u"]}]}}
+{"kind": "PassCriteria", "spec": {"criteria": ["DRAFT machine-answer stress: agent handles extended caller silence after a short greeting cue"]}}

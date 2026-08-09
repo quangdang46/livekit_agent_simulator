@@ -1,0 +1,6 @@
+{"apiVersion": "agent-sim/v1", "kind": "Scenario", "metadata": {"id": "amd-slow-pickup", "locale": "en-US", "tags": ["smoke", "regression"]}}
+{"kind": "Persona", "spec": {"name": "Slow human", "language": "en-US", "brief": "You pick up late. After a long pause, say hello briefly.", "goals": ["Wait before speaking", "Greet briefly", "End politely"], "style": "slow", "traits": ["quiet", "polite"], "speech_conditions": {"silence_ms": 4000, "silence_arm_ms": 200}}}
+{"kind": "Execute", "spec": {"max_turns": 5, "timeout_s": 100, "first_speaker": "user"}}
+{"kind": "Script", "spec": {"steps": [{"id": "late-hello", "trigger": "time", "delay_ms": 5000, "say": "Hello? Sorry I just picked up.", "action": "speak"}]}}
+{"kind": "Assert", "spec": {"outcomes": [{"id": "agent_spoke", "type": "transcript_contains", "role": "agent", "phrases": ["a", "e", "i", "o", "u"]}]}}
+{"kind": "PassCriteria", "spec": {"criteria": ["The agent waited for or handled a delayed human pickup"]}}
