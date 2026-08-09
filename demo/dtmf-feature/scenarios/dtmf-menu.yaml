@@ -8,18 +8,13 @@ metadata:
 persona:
   name: Alex
   brief: |
-    You are calling a business for the first time. You reach an automated
-    assistant that offers a keypad menu. Press the keys the agent asks for
-    (on your telephone keypad) and follow the instructions you hear. Keep
-    answers short.
+    You are calling a business. An automated assistant reads a keypad menu.
+    Press the keys it asks for on your telephone keypad, and answer questions
+    with one or two words only.
   goals:
-  - Hear the agent's greeting and keypad menu
-  - Press 1 when asked for plan details
-  - Press 2 when offered international data roaming
-  - End the call politely
+  - Press 1 and 2 when the menu is read
+  - End the call politely after both presses
   style: polite, brief
-  speech_conditions:
-    barge_policy: mid_agent_turn
 
 execute:
   max_turns: 8
@@ -28,18 +23,43 @@ execute:
 
 script:
   steps:
-    # After the agent reads the menu, press 1 (plan details).
+    # Press 1 shortly after the agent starts talking (greeting/menu).
     - id: press-1
       action: dtmf
       trigger: agent_speaking
-      delay_ms: 800
+      delay_ms: 700
       digits: "1"
-    # Then press 2 (roaming) — ~2.5s later so the agent can respond.
+    # Say what you pressed so the agent has a spoken signal too.
+    - id: say-pressed-1
+      action: speak
+      trigger: time
+      delay_ms: 4000
+      say: "I pressed one."
+      once: true
+    # Press 2 after the agent responds to the first press.
     - id: press-2
       action: dtmf
       trigger: agent_speaking
-      delay_ms: 2500
-      digits: "2w0"
+      delay_ms: 2000
+      digits: "2"
+    # Say what you pressed so the agent has a spoken signal too.
+    - id: say-pressed-2
+      action: speak
+      trigger: time
+      delay_ms: 4000
+      say: "I pressed two."
+      once: true
+    # Wrap up and end the call politely.
+    - id: farewell
+      action: speak
+      trigger: time
+      delay_ms: 6000
+      say: "Great, that's all I needed. Thanks, goodbye."
+      once: true
+    - id: hangup
+      action: hang_up
+      trigger: time
+      delay_ms: 9000
 
 pass_criteria:
   criteria:
