@@ -101,27 +101,6 @@ class DtmfAgent(Agent):
             "3 to explore upgrade options, or 4 to speak to a human agent."
         )
 
-    @function_tool
-    async def press_one(self) -> str:
-        """Press keypad key 1."""
-        return await self._press("1")
-
-    @function_tool
-    async def press_two(self) -> str:
-        """Press keypad key 2."""
-        return await self._press("2")
-
-    @function_tool
-    async def press_pound(self) -> str:
-        """Press keypad key # (pound)."""
-        return await self._press("#")
-
-    async def _press(self, digit: str) -> str:
-        room = getattr(self, "room", None) or getattr(self, "_room", None)
-        if room is None or room.local_participant is None:
-            return "Not connected yet."
-        await room.local_participant.publish_dtmf(code=DTMF_CODE[digit], digit=digit)
-        return f"Pressed key {digit}."
 
 
 server = AgentServer()
