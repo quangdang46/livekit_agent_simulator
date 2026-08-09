@@ -119,6 +119,12 @@ def test_scenario_from_dict_and_export():
         }
     )
     out = export_scenario_dict(s)
-    assert out["id"] == "dyn"
+    # export_scenario_dict now returns the canonical section-object shape
+    # (id lives under metadata; lossless round-trip via scenario_from_dict).
+    assert out["metadata"]["id"] == "dyn"
     assert out["script"]["verify"]["plugins"] == ["p1"]
     assert out["plugin_modules"] == ["mod"]
+    # round-trip: the exported dict must re-import to an equal scenario
+    s2 = scenario_from_dict(out)
+    assert s2.id == "dyn"
+    assert s2.plugin_modules == ["mod"]

@@ -99,6 +99,26 @@ def test_evaluate_script_log_fail_not_during_agent():
     assert result["pass"] is False
 
 
+def test_evaluate_script_log_fail_cue_with_inject_error():
+    steps = [ScriptStep("open", "silence", 1000, "Hi")]
+    events = [
+        {
+            "kind": "sim.script.cue",
+            "ts_mono_ms": 3000,
+            "spec": {
+                "step_id": "open",
+                "during_agent_speech": False,
+                "error": "gemini_text inject produced no mic audio (model stayed silent)",
+            },
+        },
+    ]
+    result = evaluate_script_log(events, steps, ScriptVerifySpec())
+    assert result["pass"] is False
+    checks = result["checks"]
+    assert isinstance(checks, list)
+    assert any("error" in str(c.get("reason", "")) for c in checks)
+
+
 def test_evaluate_script_log_interrupt_scenario():
     steps = [ScriptStep("ri", "agent_speaking", 800, "wait", "interrupt")]
     events = [
@@ -198,3 +218,104 @@ def test_evaluate_barge_in_recovery():
     )
     assert result["pass"] is True
     assert result["agent_finals_after_barge_in"] == 1
+
+
+def test_evaluate_hang_up_step_counts_as_fired():
+    steps = [
+        ScriptStep("open", "silence", 100, say="hi", require_agent_spoke_first=False),
+        ScriptStep("bye", "silence", 500, say="bye", action="hang_up"),
+    ]
+    events = [
+        {
+            "kind": "sim.script.cue",
+            "ts_mono_ms": 1000,
+            "spec": {
+                "step_id": "open",
+                "during_agent_speech": False,
+                "trigger": "silence",
+                "action": "speak",
+            },
+        },
+        {
+            "kind": "sim.script.hang_up",
+            "ts_mono_ms": 5000,
+            "spec": {
+                "step_id": "bye",
+                "during_agent_speech": False,
+                "trigger": "silence",
+                "action": "hang_up",
+            },
+        },
+    ]
+    result = evaluate_script_log(events, steps, ScriptVerifySpec())
+    assert result["pass"] is True
+    assert result["hang_ups_fired"] == 1
+
+
+def test_parse_script_loop_room_pcm():
+    from livekit_agent_simulator.script_parse import parse_script_steps
+
+    steps = parse_script_steps(
+        {
+            "steps": [
+                {
+                    "id": "bed",
+                    "trigger": "time",
+                    "delay_ms": 500,
+                    "delivery": "room_pcm",
+                    "asset": "builtin:noise.ambient",
+                    "say": "[ambient]",
+                    "loop": True,
+                    "gain": 0.3,
+                }
+            ]
+        },
+        "test",
+    )
+    assert len(steps) == 1
+    assert steps[0].loop is True
+    assert steps[0].gain == 0.3
+
+
+def test_parse_script_loop_rejects_gemini_text():
+    from livekit_agent_simulator.script_parse import parse_script_steps
+    import pytest
+
+    with pytest.raises(ValueError, match="loop requires delivery=room_pcm"):
+        parse_script_steps(
+            {
+                "steps": [
+                    {
+                        "id": "bad",
+                        "trigger": "time",
+                        "delay_ms": 100,
+                        "say": "hi",
+                        "loop": True,
+                    }
+                ]
+            },
+            "test",
+        )
+
+
+def test_parse_script_loop_rejects_voice_asset():
+    from livekit_agent_simulator.script_parse import parse_script_steps
+    import pytest
+
+    with pytest.raises(ValueError, match="noise/ambient"):
+        parse_script_steps(
+            {
+                "steps": [
+                    {
+                        "id": "bad",
+                        "trigger": "time",
+                        "delay_ms": 100,
+                        "delivery": "room_pcm",
+                        "asset": "builtin:voice.barge_short",
+                        "say": "[v]",
+                        "loop": True,
+                    }
+                ]
+            },
+            "test",
+        )

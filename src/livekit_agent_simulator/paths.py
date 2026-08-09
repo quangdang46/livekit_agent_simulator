@@ -42,7 +42,7 @@ def _find_repo_web_dist(pkg_dir: Path) -> Path | None:
 
 
 def package_web_dir() -> Path:
-    """Built Vite assets for ``lk-sim web``.
+    """Built Vite assets for ``lks web``.
 
     Prefer the newest of:
     1. Repo-root ``web/dist`` (editable checkout after ``pnpm --dir web build``)

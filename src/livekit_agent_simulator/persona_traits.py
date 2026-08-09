@@ -2,6 +2,10 @@
 
 Scenarios use ``Persona.spec.traits: ["impatient", "quiet", ...]``. Unknown tags are
 passed through as free-text behavior hints (no consumer-specific coupling).
+
+Length-band aliases (resolved in ``CallerPolicyContext.resolved_verbosity``, not here):
+``quiet`` / ``silent`` / ``terse`` → quiet band; ``chatty`` → chatty band.
+Explicit ``speech_conditions.verbosity`` always wins over traits.
 """
 
 from __future__ import annotations
@@ -22,6 +26,9 @@ TRAIT_LIBRARY: dict[str, list[str]] = {
     "quiet": [
         "You are reserved: leave pauses before answering; replies are very short.",
     ],
+    "terse": [
+        "Keep answers minimal: one short clause when possible; no extra detail.",
+    ],
     "silent": [
         "You often go quiet after the agent speaks; only answer when necessary.",
     ],
@@ -36,7 +43,7 @@ TRAIT_LIBRARY: dict[str, list[str]] = {
         "is unclear, but stay on topic.",
     ],
     "fast_speaker": [
-        "Speak quickly and denser than average phone speech; still 1–2 sentences max.",
+        "Speak quickly and denser than average phone speech; stay within the length band above.",
     ],
     "soft_spoken": [
         "Keep volume soft and wording gentle; avoid sharp interruptions.",

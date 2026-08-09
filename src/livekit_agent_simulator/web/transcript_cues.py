@@ -68,7 +68,9 @@ def _build_transcript_cues(
     )
 
     # Collapse multi-source duplicates of the *same utterance*.
-    # Critical for SIP: agent STT often invents English user lines that never hit sim mic.
+    # Agent-side STT of the caller often finalizes several seconds after Gemini's
+    # output transcription (turn boundary), so the near-window must be wide when
+    # texts match across sources — otherwise the player shows duplicate callers.
     cues: list[dict[str, Any]] = []
     for c in raw:
         role = str(c["role"])
@@ -77,10 +79,22 @@ def _build_transcript_cues(
             prev = cues[i]
             if prev["role"] != role:
                 continue
-            if abs(int(prev["final_ms"]) - int(c["final_ms"])) > 2500:
-                # Too far from recent same-role cues — new utterance
+            delta = abs(int(prev["final_ms"]) - int(c["final_ms"]))
+            similar = _texts_similar(str(prev["text"]), str(c["text"]))
+            prev_src = str(prev.get("source") or "")
+            cur_src = str(c.get("source") or "")
+            cross_source = bool(prev_src and cur_src and prev_src != cur_src)
+            # Same-source near dupes stay tight; cross-source STT lag needs headroom.
+            if similar and cross_source:
+                max_delta = 15000 if role == "user" else 6000
+            elif similar:
+                max_delta = 4000
+            else:
+                max_delta = 2500
+            if delta > max_delta:
+                # Farther same-role cues cannot be this utterance.
                 break
-            if not _texts_similar(str(prev["text"]), str(c["text"])):
+            if not similar:
                 continue
             prev_rank = _source_rank(prev.get("source"), role)
             cur_rank = _source_rank(c.get("source"), role)
@@ -94,23 +108,24 @@ def _build_transcript_cues(
         if not replaced:
             cues.append(c)
 
-    # Drop agent-side STT *ghosts* of the same Gemini utterance only.
-    # Ghost = non-gemini user final within ±2.5s of a sim.gemini final with
-    # *dissimilar* text (English hallucination). Similar text already collapsed.
-    # Do NOT drop unrelated user lines (script barge STT, later natural turns).
-    gemini_user = [
+    # Drop agent-side STT *ghosts* of the same sim-caller utterance only.
+    # Ghost = non-provider user final within ±2.5s of a sim.gemini/sim.openai
+    # final with *dissimilar* text (English hallucination). Similar text already
+    # collapsed. Do NOT drop unrelated user lines (script barge STT, later turns).
+    _sim_caller_sources = {"sim.gemini", "sim.openai"}
+    provider_user = [
         c
         for c in cues
-        if c["role"] == "user" and str(c.get("source") or "") == "sim.gemini"
+        if c["role"] == "user" and str(c.get("source") or "") in _sim_caller_sources
     ]
-    if gemini_user:
+    if provider_user:
         filtered: list[dict[str, Any]] = []
         for c in cues:
             if c["role"] != "user":
                 filtered.append(c)
                 continue
             src = str(c.get("source") or "")
-            if src == "sim.gemini":
+            if src in _sim_caller_sources:
                 filtered.append(c)
                 continue
             fm = int(c["final_ms"])
@@ -118,17 +133,17 @@ def _build_transcript_cues(
             # Only consider as ghost if very close in time AND clearly not same text
             # AND source is agent-side STT (lk.transcription / worker topic)
             if src in ("lk.transcription",) or (
-                src and src not in ("sim.gemini", "sim.script") and "transcript" in src
+                src and src not in (*_sim_caller_sources, "sim.script") and "transcript" in src
             ):
                 near = [
                     g
-                    for g in gemini_user
+                    for g in provider_user
                     if abs(fm - int(g["final_ms"])) <= 2500
                 ]
                 if near and not any(
                     _texts_similar(text, str(g.get("text") or "")) for g in near
                 ):
-                    # e.g. Gemini "Alô Lan" vs STT "How's your day going?"
+                    # e.g. sim "Alô Lan" vs STT "How's your day going?"
                     continue
             filtered.append(c)
         cues = filtered
@@ -147,7 +162,7 @@ def _build_transcript_cues(
             if win is not None:
                 start, end_hint = win
 
-        prefer = "sim.gemini" if role == "user" else None
+        prefer = "sim.gemini" if role == "user" else None  # sim provider sources share rank
         interim_start = _best_interim_start(
             interims,
             role=role,

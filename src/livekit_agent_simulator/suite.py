@@ -7,7 +7,9 @@ Hard fails (default CI exit ≠ 0):
   - ``script_verify.pass`` is false
 
 Soft fails (recorded, do not fail CI unless ``strict_judge``):
-  - LLM ``verdict.verdict == "fail"``
+  - LLM ``verdict.verdict`` in ``fail`` / ``maybe``
+
+Never hard-fail CI for ``skipped`` / ``error`` (misconfig or transport) — even with ``strict_judge``.
 """
 
 from __future__ import annotations
@@ -56,10 +58,20 @@ def evaluate_run_result(
         hard.append("script_verify")
 
     verdict = summary.get("verdict")
-    if isinstance(verdict, dict) and str(verdict.get("verdict") or "").lower() == "fail":
-        soft.append("judge_fail")
-        if strict_judge:
-            hard.append("judge_fail")
+    if isinstance(verdict, dict):
+        jv = str(verdict.get("verdict") or "").lower()
+        if jv == "fail":
+            soft.append("judge_fail")
+            if strict_judge:
+                hard.append("judge_fail")
+        elif jv == "maybe":
+            soft.append("judge_maybe")
+            if strict_judge:
+                hard.append("judge_maybe")
+        elif jv == "error":
+            # Misconfig / HTTP / parse — visible soft note only; never CI hard gate
+            soft.append("judge_error")
+        # skipped → ignore (same UX as no PassCriteria)
 
     hard_fail = len(hard) > 0
     soft_fail = len(soft) > 0

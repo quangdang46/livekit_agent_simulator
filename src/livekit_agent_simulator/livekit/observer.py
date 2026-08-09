@@ -29,8 +29,11 @@ ATTR_FINAL = "lk.transcription_final"
 ATTR_SEGMENT_ID = "lk.segment_id"
 
 # Lower index = higher priority when deduping finals from multiple sources.
-_USER_FINAL_PRIORITY = ("sim.gemini", "data", "lk.transcription")
-_AGENT_FINAL_PRIORITY = ("data", "lk.transcription", "sim.gemini")
+# Provider sim-transcript sources (sim.gemini / sim.openai) are the most
+# trustworthy caller transcripts; data-topic and lk.transcription are mirrors.
+_SIM_TRANSCRIPT_SOURCES = ("sim.gemini", "sim.openai")
+_USER_FINAL_PRIORITY = (*_SIM_TRANSCRIPT_SOURCES, "data", "lk.transcription")
+_AGENT_FINAL_PRIORITY = ("data", "lk.transcription", *_SIM_TRANSCRIPT_SOURCES)
 
 
 def _lookup_path(payload: dict[str, Any], dotted: str) -> Any:
@@ -58,7 +61,7 @@ def _similar_text(a: str, b: str) -> bool:
 
 
 def _canonical_source(source: str) -> str:
-    if source in ("sim.gemini", "lk.transcription"):
+    if source in (*_SIM_TRANSCRIPT_SOURCES, "lk.transcription"):
         return source
     return "data"
 
@@ -97,12 +100,26 @@ class Observer:
         # Turn tracking: a turn = one user utterance + the agent reply to it.
         self.turn = 0
         self._last_user_final_mono: float | None = None
+        self._last_agent_final_mono: float | None = None
+        self._last_agent_final_text: str = ""
         self._agent_replied_this_turn = False
         self.last_agent_activity_mono: float = time.monotonic()
         self.agent_disconnected = asyncio.Event()
         self._agent_has_spoken = False
         self._user_has_spoken = False
         self._current_turn_user_norm: str | None = None
+        # Any activity (agent OR caller) — the dead-call net measures silence
+        # from this, so a caller's first turn gives the agent time to reply.
+        self.last_activity_mono: float = time.monotonic()
+        # True once the first transcript (either role) has landed; the
+        # dead-call net only arms after this.
+        self._any_activity = False
+        # (role, text) of the last interim we synthesized before a final, so the
+        # ordering guard in on_transcript never double-emits for the same turn.
+        self._last_interim_key: tuple[str, str] | None = None
+        # Roles that already emitted a final in the current turn (late interims
+        # for those roles are dropped — see on_transcript).
+        self._finalized_roles: set[str] = set()
 
         self.agent_is_active_speaker = False
         self._agent_active_since_mono: float | None = None
@@ -131,6 +148,18 @@ class Observer:
     @property
     def user_has_spoken(self) -> bool:
         return self._user_has_spoken
+
+    @property
+    def last_user_final_mono(self) -> float | None:
+        return self._last_user_final_mono
+
+    @property
+    def last_agent_final_mono(self) -> float | None:
+        return self._last_agent_final_mono
+
+    @property
+    def last_agent_final_text(self) -> str:
+        return self._last_agent_final_text
 
     def agent_active_duration_ms(self) -> int | None:
         if self._agent_active_since_mono is None:
@@ -258,7 +287,7 @@ class Observer:
                 frame = frame_event.frame
                 pcm = bytes(frame.data)
                 if pcm:
-                    self.recorder.push_agent(pcm, 16_000)
+                    self.recorder.push_agent(pcm, 16_000, track_id=key)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -280,7 +309,14 @@ class Observer:
 
     async def finalize_session_snapshot(self) -> None:
         if self._agent_session is not None:
+            # Drain late RemoteSession frames before snapshot/request (room may already be gone).
+            await self._agent_session.drain_ingress(timeout_s=1.5)
             await self._agent_session.fetch_session_snapshot()
+
+    async def drain_session_ingress(self, *, timeout_s: float = 1.5) -> None:
+        """Public drain hook for post-disconnect grace (room-teardown tool race)."""
+        if self._agent_session is not None:
+            await self._agent_session.drain_ingress(timeout_s=timeout_s)
 
     async def detach(self) -> None:
         for t in self._record_tasks:
@@ -333,6 +369,14 @@ class Observer:
         self._recent_finals[key] = (source, now)
         return True
 
+    def _role_has_final(self, role: str) -> bool:
+        """True when this role already emitted a final in the current turn."""
+        return role in self._finalized_roles
+
+    def any_activity_occurred(self) -> bool:
+        """True once any transcript (either role) has been observed."""
+        return self._any_activity
+
     # Shared entry point — also used by the Gemini bridge (sim-side transcription).
     def on_transcript(
         self,
@@ -353,10 +397,33 @@ class Observer:
             self.last_agent_activity_mono = time.monotonic()
             if final:
                 self._agent_has_spoken = True
+        # Caller activity also counts: the dead-call net must not fire while
+        # the agent is still working on its first reply (the agent has not
+        # spoken yet, so last_agent_activity_mono would be stale).
+        self.last_activity_mono = time.monotonic()
+        self._any_activity = True
 
         if not final:
+            # Drop late interims for a role whose final already landed — async
+            # providers (OpenAI bridge) can deliver a trailing `.delta` after
+            # `.done`, which previously produced interim-after-final within a
+            # turn. Consumers must never see that inversion.
+            if self._role_has_final(role):
+                return
             self.writer.emit(f"transcript.{role}.interim", spec=spec, source=source)
             return
+
+        # Ordering guard (OpenAI bridge only): a final may arrive before the
+        # trailing interim of the same utterance (async `.delta` still pending
+        # when `.done` lands). Emit a final-flavored interim first so consumers
+        # never see interim-after-final within a turn.
+        if source == "sim.openai" and self._last_interim_key != (role, text):
+            self._last_interim_key = (role, text)
+            self.writer.emit(
+                f"transcript.{role}.interim",
+                spec={**spec, "final": False},
+                source=source,
+            )
 
         if not self._accept_final(role, text, source):
             return
@@ -379,8 +446,10 @@ class Observer:
             self.turn += 1
             self._current_turn_user_norm = norm
             self.writer.begin_turn(self.turn)
+            self._finalized_roles.clear()
             self._last_user_final_mono = time.monotonic()
             self._agent_replied_this_turn = False
+            self._finalized_roles.add("user")
             self.writer.emit("transcript.user.final", spec=spec, source=source)
         else:
             if self.turn == 0 and self.first_speaker == "user" and not self._user_has_spoken:
@@ -398,6 +467,9 @@ class Observer:
                     (time.monotonic() - self._last_user_final_mono) * 1000
                 )
             self._agent_replied_this_turn = True
+            self._last_agent_final_mono = time.monotonic()
+            self._last_agent_final_text = text
+            self._finalized_roles.add("agent")
             self.writer.emit("transcript.agent.final", spec=spec, source=source)
 
     # --------------------------------------------------------------- data topics

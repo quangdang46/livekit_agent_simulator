@@ -35,7 +35,7 @@ def _cfg(tmp_path, **tel):
             api_secret="s",
             agent_name="agent",
         ),
-        simulator=SimulatorConfig(google_api_key="AIza", voice=SimulatorVoiceConfig()),
+        simulator=SimulatorConfig(api_key="AIza", voice=SimulatorVoiceConfig()),
         observe=ObserveConfig(),
         telephony=TelephonyConfig(**tel) if tel else TelephonyConfig(),
     )
