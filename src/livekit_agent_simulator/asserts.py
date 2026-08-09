@@ -38,11 +38,15 @@ class OutcomeExpect:
       - recovery: agent re-engages after sim barge-in / interruption
       - latency: hard gates on turn_taking / TTFW / recovery percentiles (P1.3)
       - ended_by: assert which side ended the call (sim | agent | detect)
+- backchannel_agent_continued: after a backchannel cue, agent continued without tool storm
       - goals_met: LLM judge checks caller stated/pursued N goals before [END_CALL]
+      - constraint_respected: caller must_not leak forbidden phrases/patterns
+- backchannel_agent_continued: after backchannel, agent re-engages normally
+        (hard deterministic on user transcript; optional LLM pending when no phrases)
     """
 
     id: str
-    type: str  # transcript_contains | llm_bool | recovery | latency | ended_by | goals_met
+    type: str  # transcript_contains | llm_bool | recovery | latency | ended_by | goals_met | constraint_respected
     phrases: tuple[str, ...] = ()
     prompt: str | None = None  # for llm_bool
     role: str = "any"
@@ -65,6 +69,11 @@ class OutcomeExpect:
     min_goals: int = 0
     # Optional explicit goals list (defaults to reading from scenario Persona goals).
     goals: tuple[str, ...] = ()
+    # constraint_respected: forbidden substrings / regex on CALLER transcript
+    must_not_phrases: tuple[str, ...] = ()
+    must_not_match: str | None = None  # regex
+    # When true (default), also fail if agent transcript contains forbidden (leak echo)
+    check_agent_transcript: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,10 +94,18 @@ class AssertSpec:
     transcript: list[TranscriptExpect] = field(default_factory=list)
     outcomes: list[OutcomeExpect] = field(default_factory=list)
     sip: SipExpect | None = None
+    # Hamming workflow: required tool.start name sequence (subsequence, not contiguous)
+    tool_order: tuple[str, ...] = ()
 
     @property
     def empty(self) -> bool:
-        return not (self.tools or self.transcript or self.outcomes or self.sip)
+        return not (
+            self.tools
+            or self.transcript
+            or self.outcomes
+            or self.sip
+            or self.tool_order
+        )
 
 
 def _opt_int(raw: dict[str, Any], key: str) -> int | None:
@@ -142,7 +159,7 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
         if not isinstance(raw, dict) or not raw.get("id"):
             raise ValueError(f"{path_label}: outcomes[{i}] needs id")
         otype = str(raw.get("type", "transcript_contains"))
-        if otype not in ("transcript_contains", "llm_bool", "recovery", "latency", "ended_by", "goals_met"):
+        if otype not in ("transcript_contains", "llm_bool", "recovery", "latency", "ended_by", "goals_met", "constraint_respected", "backchannel_agent_continued"):
             raise ValueError(f"{path_label}: outcomes[{i}].type unsupported: {otype}")
         phrases = raw.get("phrases") or raw.get("contains_any") or []
         if isinstance(phrases, str):
@@ -178,6 +195,21 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
         goals_raw = raw.get("goals") or ()
         if isinstance(goals_raw, str):
             goals_raw = [goals_raw]
+        mnp = raw.get("must_not_phrases") or raw.get("forbidden") or raw.get("must_not") or []
+        if isinstance(mnp, str):
+            mnp = [mnp]
+        if not isinstance(mnp, list):
+            raise ValueError(f"{path_label}: outcomes[{i}].must_not_phrases must be array/string")
+        mnm = str(raw["must_not_match"]) if raw.get("must_not_match") else None
+        if otype == "constraint_respected":
+            # phrases also accepted as must_not list for brevity
+            if not mnp and phrases:
+                mnp = list(phrases)
+            if not mnp and not mnm and not raw.get("prompt"):
+                raise ValueError(
+                    f"{path_label}: outcomes[{i}] constraint_respected needs "
+                    f"must_not_phrases / must_not_match and/or prompt (LLM)"
+                )
         outcomes.append(
             OutcomeExpect(
                 id=str(raw["id"]),
@@ -202,6 +234,9 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
                 ended_by=eb or (raw.get("ended_by") or raw.get("who")),
                 min_goals=mg,
                 goals=tuple(str(g) for g in goals_raw),
+                must_not_phrases=tuple(str(x) for x in mnp),
+                must_not_match=mnm,
+                check_agent_transcript=bool(raw.get("check_agent_transcript", False)),
             )
         )
 
@@ -221,7 +256,20 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
             dial_answered=bool(sip_raw.get("dial_answered", False)),
         )
 
-    return AssertSpec(tools=tools, transcript=transcript, outcomes=outcomes, sip=sip)
+    order_raw = spec.get("tool_order") or spec.get("required_order") or []
+    if isinstance(order_raw, str):
+        order_raw = [order_raw]
+    if not isinstance(order_raw, list):
+        raise ValueError(f"{path_label}: tool_order must be an array of tool names")
+    tool_order = tuple(str(x).strip() for x in order_raw if str(x).strip())
+
+    return AssertSpec(
+        tools=tools,
+        transcript=transcript,
+        outcomes=outcomes,
+        sip=sip,
+        tool_order=tool_order,
+    )
 
 
 def _tool_args_blob(spec: dict[str, Any]) -> dict[str, Any]:
@@ -300,6 +348,9 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
                 "args_contains": te.args_contains or None,
             }
         )
+
+    if asserts.tool_order:
+        checks.append(_eval_tool_order(asserts.tool_order, tool_starts))
 
     for i, tr in enumerate(asserts.transcript):
         role = tr.role if tr.role in ("agent", "user") else "any"
@@ -417,6 +468,38 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
             checks.append(_eval_latency_outcome(oc, events))
         elif oc.type == "ended_by":
             checks.append(_eval_ended_by_outcome(oc, events))
+        elif oc.type == "constraint_respected":
+            checks.append(_eval_constraint_respected(oc, events, pending_llm))
+        elif oc.type == "backchannel_agent_continued":
+            bc_cues = [
+                int(e.get("ts_mono_ms") or 0)
+                for e in events
+                if e.get("kind") == "sim.script.cue"
+                and (e.get("spec") or {}).get("class") in ("backchannel",)
+            ]
+            if not bc_cues:
+                checks.append({
+                    "outcome_id": oc.id, "type": oc.type, "pass": True,
+                    "skipped": True, "reason": "no backchannel cues in run",
+                })
+            else:
+                first_bc = bc_cues[0]
+                agent_after = [t for t in agent_final_ms if t > first_bc + 100]
+                continued = len(agent_after) >= 1
+                tool_near = sum(
+                    1 for e in events
+                    if (e.get("kind") in ("tool.start", "sim.script.cue"))
+                    and (int(e.get("ts_mono_ms") or 0) >= first_bc - 2000)
+                    and (int(e.get("ts_mono_ms") or 0) <= first_bc + 5000)
+                )
+                if not continued:
+                    pass  # will fail below — agent stopped talking after backchannel
+                elif tool_near > 5:
+                    continued = False
+                checks.append({
+                    "outcome_id": oc.id, "type": oc.type, "pass": continued,
+                    "continued": continued, "agent_finals_after": len(agent_after),
+                })
         elif oc.type == "goals_met":
             pending_llm.append({"id": oc.id, "prompt": oc.prompt or oc.id, "goals_met": True,
                                 "min_goals": oc.min_goals, "goals": list(oc.goals)})
@@ -635,3 +718,95 @@ def _eval_sip_expect(sip: SipExpect, events: list[dict[str, Any]]) -> list[dict[
             }
         )
     return checks
+
+def _eval_constraint_respected(
+    oc: OutcomeExpect,
+    events: list[dict[str, Any]],
+    pending_llm: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Hard-fail if CALLER (user) transcript contains forbidden material.
+
+    Optional regex ``must_not_match``. If only ``prompt`` is set (no phrases/regex),
+    defer to judge as pending_llm (soft unless wired like goals_met later).
+    """
+    user_texts = _transcript_texts(events, "user")
+    blobs = [("user", "\n".join(user_texts))]
+    if oc.check_agent_transcript:
+        blobs.append(("agent", "\n".join(_transcript_texts(events, "agent"))))
+
+    hits: list[str] = []
+    for role, blob in blobs:
+        low = blob.lower()
+        for phrase in oc.must_not_phrases:
+            if phrase and phrase.lower() in low:
+                hits.append(f"{role}:phrase:{phrase}")
+        if oc.must_not_match:
+            if re.search(oc.must_not_match, blob, re.I):
+                hits.append(f"{role}:regex:{oc.must_not_match}")
+
+    has_hard = bool(oc.must_not_phrases or oc.must_not_match)
+    if has_hard:
+        ok = len(hits) == 0
+        return {
+            "check": f"outcome:{oc.id}",
+            "pass": ok,
+            "type": "constraint_respected",
+            "must_not_phrases": list(oc.must_not_phrases),
+            "must_not_match": oc.must_not_match,
+            "violations": hits,
+        }
+
+    # LLM-only constraint: pending judge
+    pending_llm.append(
+        {
+            "id": oc.id,
+            "prompt": oc.prompt or oc.id,
+            "constraint_respected": True,
+        }
+    )
+    return {
+        "check": f"outcome:{oc.id}",
+        "pass": True,
+        "type": "constraint_respected",
+        "pending_judge": True,
+        "prompt": oc.prompt,
+    }
+
+
+def _eval_tool_order(
+    required: tuple[str, ...],
+    tool_starts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Require tool.start names to appear in order (subsequence).
+
+    Extra tools between required names are allowed. Names are exact string match
+    as observed in events (scenario author owns portable tool names).
+    """
+    actual = []
+    for e in tool_starts:
+        spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
+        name = str(spec.get("name") or "").strip()
+        if name:
+            actual.append(name)
+
+    idx = 0
+    matched: list[str] = []
+    for name in actual:
+        if idx < len(required) and name == required[idx]:
+            matched.append(name)
+            idx += 1
+    ok = idx == len(required)
+    return {
+        "check": "tool_order",
+        "pass": ok,
+        "type": "tools",
+        "expected_order": list(required),
+        "actual_order": actual,
+        "matched_prefix": matched,
+        "reason": None
+        if ok
+        else (
+            f"required subsequence {list(required)!r} not found in tool.start order "
+            f"{actual!r} (matched {matched!r})"
+        ),
+    }

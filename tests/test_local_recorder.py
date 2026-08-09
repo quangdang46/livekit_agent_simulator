@@ -64,3 +64,42 @@ def test_24k_sim_and_16k_agent(tmp_path: Path) -> None:
     assert result is not None
     assert result.sim_samples > 0
     assert result.agent_samples > 0
+
+
+def test_concurrent_agent_tracks_mix_in_place_instead_of_appending(
+    tmp_path: Path,
+) -> None:
+    rec = LocalConversationRecorder(sample_rate=16_000)
+    rec.mark_start()
+
+    rec.push_agent(_tone(160, amplitude=1_000), 16_000, track_id="tts")
+    rec.push_agent(_tone(160, amplitude=500), 16_000, track_id="background_audio")
+
+    path = tmp_path / "multitrack.wav"
+    result = rec.finalize(path)
+    assert result is not None
+    # Two concurrent 10ms tracks remain 10ms, not a concatenated 20ms stream.
+    assert result.agent_samples == 160
+
+    with wave.open(str(path), "rb") as wf:
+        frames = wf.readframes(wf.getnframes())
+    _left, right = struct.unpack_from("<hh", frames, 0)
+    assert right == 1_500
+
+
+def test_agent_track_mix_saturates_pcm16(tmp_path: Path) -> None:
+    rec = LocalConversationRecorder(sample_rate=16_000)
+    rec.mark_start()
+    rec.push_agent(_tone(160, amplitude=30_000), 16_000, track_id="tts")
+    rec.push_agent(
+        _tone(160, amplitude=30_000),
+        16_000,
+        track_id="background_audio",
+    )
+
+    path = tmp_path / "saturated.wav"
+    assert rec.finalize(path) is not None
+    with wave.open(str(path), "rb") as wf:
+        frames = wf.readframes(wf.getnframes())
+    _left, right = struct.unpack_from("<hh", frames, 0)
+    assert right == 32_767

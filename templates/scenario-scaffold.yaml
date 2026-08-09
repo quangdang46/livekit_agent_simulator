@@ -1,0 +1,111 @@
+# === Scenario (required header) ===
+# id: must match this filename (without .yaml)
+# locale: BCP-47 language for the sim persona (e.g. en-US, vi-VN, ja-JP)
+# tags: free labels; use with: lks execute-all --tag smoke
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: '{{SCENARIO_ID}}'
+  locale: en-US
+  tags:
+  - draft
+
+# === Persona (required) — Hamming-style character ===
+# name, brief (required), goals[], style, traits[]
+# constraints[]: hard rules (no card numbers, hang up if restart menu, …)
+# speech_conditions: optional auto Script — barge_policy, noise/noise_when/noise_gain, silence_ms, voice_gain (quiet mic)
+# language: optional override of metadata.locale for speech
+persona:
+  name: Alex
+  brief: |
+    You are calling a business for the first time. Confirm you reached the
+    right place, answer briefly, then politely end the call when done.
+  goals:
+  - Hear the agent greeting or first reply
+  - State your reason briefly
+  - End the call politely
+  style: polite, brief, natural spoken language
+  traits:
+  - polite
+  constraints:
+  - Do not invent account numbers or payment details
+  speech_conditions:
+    barge_policy: ''
+    noise: ''
+    silence_ms: 0
+
+# === Context (optional) ===
+# notes + optional fixtures (opaque hints for humans/seed; not parsed by core)
+context:
+  notes: 'Example: open ticket #12345. Prefer deleting this line over leaving fake notes.'
+
+# === Simulator / Execute ===
+# max_turns, timeout_s, first_speaker (agent | user)
+# hold_music_timeout_s: optional — caller hangs up after N s without agent activity
+execute:
+  max_turns: 4
+  timeout_s: 120
+  first_speaker: user
+
+# === Dispatch (optional) — opaque JSON string for RoomAgentDispatch.metadata ===
+dispatch:
+  metadata: '{"yourProjectKey":"replace-me"}'
+
+# === Caller / Telephony (optional) — transport mode; NEVER put mode in config.yaml ===
+# mode: webrtc_sim (default) | inbound_sip | outbound_human_pickup | outbound_sim_callee | agent_dials
+# outbound_human_pickup: human answers — need call_to (handset) + trunk
+# outbound_sim_callee: Gemini answers — need call_to OR config sim_inbound_number + trunk + DID dispatch
+# inbound_sip: Gemini dials — need dial_in OR config telephony.dial_in + trunk
+# caller:
+#   mode: webrtc_sim
+# telephony:
+#   call_to: '+15559876543'
+#   dial_in: '+15551234567'
+
+# === Behavior (optional, Hamming policy) — compiles to Script if present ===
+# barge_ins[], user_silence[], hang_ups[], ambient{asset, delay_ms}
+# behavior:
+#   barge_ins:
+#     - id: cut1
+#       after_agent_ms: 800
+#       say: Wait — one second
+#       class: correction
+
+# === Script (optional) — timed cues; omit if speech_conditions/Behavior enough ===
+# trigger: agent_speaking | silence | time
+# action: speak | wait | hang_up
+# script:
+#   steps:
+#     - id: bye
+#       trigger: silence
+#       delay_ms: 2200
+#       say: Thanks, that's all for now. Bye.
+#       once: true
+
+# === Assert — tools / transcript / outcomes / sip ===
+# constraint_respected example: {"id":"no_card","type":"constraint_respected","must_not_phrases":["4111","card number"]}
+assert:
+  transcript:
+  - role: agent
+    contains_any:
+    - help
+    - support
+    - hello
+    - hi
+  outcomes:
+  - id: agent_spoke
+    type: transcript_contains
+    role: agent
+    phrases:
+    - a
+    - e
+    - i
+    - o
+    - u
+
+# === PassCriteria (optional soft judge) ===
+# mode: all (default) | majority | any
+pass_criteria:
+  criteria:
+  - The agent responded to the caller
+  - The agent responded in a language the caller can understand

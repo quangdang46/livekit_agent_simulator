@@ -71,7 +71,10 @@ class LocalConversationRecorder:
         self._lock = threading.Lock()
         self._started_mono: float | None = None
         self._sim = array.array("h")
-        self._agent = array.array("h")
+        # An agent can publish multiple concurrent audio tracks (for example,
+        # the primary TTS track plus BackgroundAudioPlayer). Keep each source
+        # on its own wall-clock-aligned buffer and mix only at finalize.
+        self._agent_tracks: dict[str, array.array[int]] = {}
         self._finalized = False
 
     @property
@@ -92,8 +95,18 @@ class LocalConversationRecorder:
     def push_sim(self, pcm: bytes, sample_rate: int) -> None:
         self._push(self._sim, pcm, sample_rate)
 
-    def push_agent(self, pcm: bytes, sample_rate: int) -> None:
-        self._push(self._agent, pcm, sample_rate)
+    def push_agent(
+        self,
+        pcm: bytes,
+        sample_rate: int,
+        *,
+        track_id: str = "agent",
+    ) -> None:
+        if not pcm or self._finalized:
+            return
+        with self._lock:
+            channel = self._agent_tracks.setdefault(track_id, array.array("h"))
+        self._push(channel, pcm, sample_rate)
 
     def _push(self, channel: array.array, pcm: bytes, sample_rate: int) -> None:
         if not pcm or self._finalized:
@@ -125,7 +138,7 @@ class LocalConversationRecorder:
                 raise RuntimeError("LocalConversationRecorder already finalized")
             self._finalized = True
             sim = self._sim
-            agent = self._agent
+            agent = self._mix_agent_tracks()
             if not sim and not agent:
                 return None
             n = max(len(sim), len(agent))
@@ -141,7 +154,7 @@ class LocalConversationRecorder:
                 stereo[i * 2 + 1] = agent[i]
             duration_ms = int(n * 1000 / self.sample_rate)
             sim_samples = len(self._sim)
-            agent_samples = len(self._agent)
+            agent_samples = len(agent)
 
         path.parent.mkdir(parents=True, exist_ok=True)
         with wave.open(str(path), "wb") as wf:
@@ -157,3 +170,15 @@ class LocalConversationRecorder:
             sim_samples=sim_samples,
             agent_samples=agent_samples,
         )
+
+    def _mix_agent_tracks(self) -> array.array[int]:
+        """Saturating-mix wall-clock-aligned agent tracks into one mono channel."""
+        if not self._agent_tracks:
+            return array.array("h")
+        n = max(len(track) for track in self._agent_tracks.values())
+        mixed = array.array("h", [0] * n)
+        for track in self._agent_tracks.values():
+            for i, sample in enumerate(track):
+                value = mixed[i] + sample
+                mixed[i] = max(-32768, min(32767, value))
+        return mixed

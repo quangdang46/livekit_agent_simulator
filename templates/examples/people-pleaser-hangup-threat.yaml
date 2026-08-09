@@ -1,0 +1,93 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: people-pleaser-hangup-threat
+  locale: en-US
+  tags:
+  - smoke
+  - regression
+persona:
+  name: Riley
+  language: en-US
+  brief: You are frustrated about a loop. You threaten to hang up if the agent restarts the menu.
+  goals:
+  - State the problem once
+  - Warn you will hang up if restarted
+  - Hang up if the agent loops
+  style: short, firm
+  traits:
+  - impatient
+  - hangup_threat
+  constraints:
+  - Do not invent account numbers
+execute:
+  max_turns: 5
+  timeout_s: 100
+  first_speaker: agent
+script:
+  steps:
+  - id: threat
+    trigger: agent_speaking
+    delay_ms: 800
+    say: If you restart the main menu I will hang up.
+    label: threat
+    once: true
+    min_agent_active_ms: 200
+    delivery: gemini_text
+    silence_after_cue_ms: 0
+    action: speak
+    loop: false
+    require_agent_spoke_first: true
+    require_agent_reply_this_turn: true
+    defer_on_open_question: true
+    open_question_idle_ms: 20000
+    barge_in: true
+    with_blip: true
+    gain: 1.0
+    interrupt_class: correction
+  - id: bye
+    trigger: time
+    delay_ms: 12000
+    say: I am hanging up now.
+    label: bye
+    once: true
+    min_agent_active_ms: 400
+    delivery: gemini_text
+    silence_after_cue_ms: 0
+    action: hang_up
+    loop: false
+    require_agent_spoke_first: true
+    require_agent_reply_this_turn: true
+    defer_on_open_question: true
+    open_question_idle_ms: 20000
+    barge_in: false
+    with_blip: false
+    gain: 1.0
+  verify:
+    require_during_agent_speech: false
+    min_agent_finals_after_first_cue: 0
+    min_user_finals_after_first_cue: 0
+    min_agent_finals_after_silence: 0
+    min_agent_finals_after_barge_in: 1
+assert:
+  outcomes:
+  - id: ended
+    type: ended_by
+    role: any
+    min_agent_finals_after_barge_in: 1
+    min_interruptions: 0
+    require_turn_samples: 0
+    ended_by: sim
+    min_goals: 1
+    check_agent_transcript: false
+  - id: recovered_or_ended
+    type: recovery
+    role: any
+    min_agent_finals_after_barge_in: 0
+    min_interruptions: 0
+    require_turn_samples: 0
+    min_goals: 1
+    check_agent_transcript: false
+pass_criteria:
+  criteria:
+  - The agent handled an impatient caller without abusing the user

@@ -9,7 +9,7 @@ Mode **`outbound_sim_callee`**: `call_to` must be a **sim DID** that routes into
 Calling a **real PSTN number** without that DID:
 
 ```
-lk-sim dial +84xxxxxxxxx  ──►  Cloud Trunk  ──►  PSTN  ──►  Real phone rings
+lks dial +84xxxxxxxxx  ──►  Cloud Trunk  ──►  PSTN  ──►  Real phone rings
                                                               │
                                                             Human picks up
                                                               │
@@ -40,3 +40,16 @@ See: `docs/telephony.md`
 - Plan: `docs/plans/PLAN-20260713-simleg-refactor.md` (T6 vendor sip-to-ai)
 - Telephony docs: `docs/telephony.md`
 - Cloned ref: `references/sip-to-ai/` (Apache-2.0 licensed SIP/RTP stack)
+
+### Preflight (lks)
+
+`lks preflight --root <target>` reports:
+
+| Check | Meaning |
+|---|---|
+| `telephony` | trunk / dial_in / sim_inbound presence |
+| `telephony.outbound_sim_callee` | **warn** if trunk without `sim_inbound_number`; **pass** when both set (still requires correct LiveKit dispatch rule) |
+
+Scenario parse/run still **fail-fast** via `validate_telephony_for_mode` when `Caller.mode=outbound_sim_callee` and no `call_to` / `sim_inbound_number`.
+
+Portable: no carrier-specific branches — only LiveKit trunk id + E.164/DID strings from config/scenario.

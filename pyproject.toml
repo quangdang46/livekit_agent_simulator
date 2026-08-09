@@ -1,6 +1,6 @@
 [project]
 name = "livekit-agent-simulator"
-version = "0.1.2"
+version = "0.1.4"
 description = "Standalone MCP + CLI that simulates a realtime caller against any LiveKit voice agent and records a full forensic behavior log."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -13,6 +13,7 @@ dependencies = [
     "google-genai>=1.0",
     "pyyaml>=6.0",
     "typer>=0.12",
+    "rich>=13",
     "aiosqlite>=0.20",
     "tzdata>=2024.1",
 ]
@@ -24,9 +25,10 @@ dev = [
 ]
 
 [project.scripts]
-lk-sim = "livekit_agent_simulator.cli:main"
-# Optional short entry (same as `lk-sim mcp`) for hosts that prefer a single argv[0]
-lk-sim-mcp = "livekit_agent_simulator.mcp_server:main"
+# Primary CLI
+lks = "livekit_agent_simulator.cli:main"
+# One-shot MCP entry (same as `lks mcp`)
+lks-mcp = "livekit_agent_simulator.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]

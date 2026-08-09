@@ -1,0 +1,86 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: character-impatient
+  locale: en-US
+  tags:
+  - example
+  - character
+persona:
+  name: Sam
+  language: en-US
+  brief: You called support about a delayed order. You are short on time.
+  goals:
+  - Confirm you reached support
+  - State the order is delayed and ask for ETA or next step
+  - End politely once you have a clear next step
+  style: short answers, slightly rushed
+  traits:
+  - impatient
+  - interrupts
+  - polite
+  constraints:
+  - Do not invent payment card numbers
+  - Do not agree to restart from the main menu — ask for a supervisor or hang up with [END_CALL]
+  speech_conditions:
+    barge_policy: mid_agent_turn
+    barge_after_agent_ms: 700
+    barge_say: '[barge]'
+    barge_asset: builtin:voice.barge_short
+    noise: ''
+    silence_ms: 0
+execute:
+  max_turns: 6
+  timeout_s: 150
+  first_speaker: agent
+script:
+  steps:
+  - id: auto-barge-1
+    trigger: agent_speaking
+    delay_ms: 350
+    say: '[barge]'
+    label: auto-barge-1
+    once: true
+    min_agent_active_ms: 350
+    delivery: room_pcm
+    asset: builtin:voice.barge_short
+    silence_after_cue_ms: 0
+    action: speak
+    loop: false
+    require_agent_spoke_first: true
+    require_agent_reply_this_turn: true
+    defer_on_open_question: true
+    open_question_idle_ms: 20000
+    barge_in: true
+    with_blip: false
+    gain: 1.0
+    interrupt_class: correction
+  verify:
+    require_during_agent_speech: false
+    min_agent_finals_after_first_cue: 0
+    min_user_finals_after_first_cue: 0
+    min_agent_finals_after_silence: 0
+    min_agent_finals_after_barge_in: 1
+assert:
+  transcript:
+  - role: agent
+    contains_any:
+    - help
+    - hello
+    - hi
+    - support
+    - order
+    - sorry
+  outcomes:
+  - id: recovered
+    type: recovery
+    role: any
+    min_agent_finals_after_barge_in: 1
+    min_interruptions: 0
+    require_turn_samples: 0
+    min_goals: 1
+    check_agent_transcript: false
+pass_criteria:
+  criteria:
+  - The agent responded to an impatient caller
+  - The agent stayed on the delayed-order topic
