@@ -59,7 +59,7 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} pytest -q
 
       - name: CLI smoke
-        run: uv run --python ${{ matrix.python-version }} lk-sim --help
+        run: uv run --python ${{ matrix.python-version }} lks --help
 
   summary:
     name: CI summary
@@ -76,7 +76,7 @@ jobs:
             echo "|-------|--------|"
             echo "| web UI (Vite → web/dist) | required |"
             echo "| pytest (3.10, 3.12) | required |"
-            echo "| lk-sim --help | required |"
+            echo "| lks --help | required |"
             echo ""
             echo "Distribution: **git + uv/pipx** via install.sh / install.ps1 (no PyPI / wheel publish)."
           } >> "$GITHUB_STEP_SUMMARY"

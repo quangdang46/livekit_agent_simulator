@@ -14,10 +14,23 @@ Internal helpers (not exposed on CLI/MCP): ``_run_scenario``, ``_run_scenario_di
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
 from typing import Any
+
+
+def _is_transport_drop(result: dict[str, Any]) -> bool:
+    """True when a run ended because the Gemini Live socket dropped mid-call.
+
+    The orchestrator records ``summary["end_reason"] = "gemini_socket_drop"``
+    when ``bridge.transport_dropped`` was set (1006 / ConnectionClosed). These
+    are network-level failures, not real call outcomes, so the run should be
+    retried rather than counted as a genuine failure.
+    """
+    summary = result.get("summary") or {}
+    return summary.get("end_reason") == "gemini_socket_drop"
 
 from .config import DOT_FOLDER, ConfigError, load_config
 from .logging.sqlite_store import RunStore
@@ -51,7 +64,7 @@ def init_project(project_root: Path | str) -> dict[str, Any]:
             "or add project-specific noise.\n\n"
             "Scenario: `\"delivery\":\"room_pcm\",\"asset\":\"my_noise.wav\"` "
             "or `\"asset\":\"builtin:noise.loud\"`.\n\n"
-            "List: `lk-sim cues --root .`\n",
+            "List: `lks cues --root .`\n",
             encoding="utf-8",
         )
         created.append(str(cues_readme))
@@ -61,9 +74,9 @@ def init_project(project_root: Path | str) -> dict[str, Any]:
         shutil.copyfile(templates / "config.yaml", config_dst)
         created.append(str(config_dst))
 
-    smoke_dst = dot / "scenarios" / "smoke-hello.jsonl"
+    smoke_dst = dot / "scenarios" / "smoke-hello.yaml"
     if not smoke_dst.exists():
-        shutil.copyfile(templates / "smoke-hello.jsonl", smoke_dst)
+        shutil.copyfile(templates / "smoke-hello.yaml", smoke_dst)
         created.append(str(smoke_dst))
 
     plugin_dst = dot / "plugins" / "example_verify.py"
@@ -88,7 +101,7 @@ def init_project(project_root: Path | str) -> dict[str, Any]:
         "next_steps": [
             f"Fill in LiveKit + Google credentials in {config_dst}",
             "Make sure your worker is running with the configured agent_name",
-            "Run the smoke scenario: lk-sim execute smoke-hello",
+            "Run the smoke scenario: lks execute smoke-hello",
         ],
     }
 
@@ -116,9 +129,9 @@ def init_scenario(
     *,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Scaffold ``.agent-sim/scenarios/<id>.jsonl`` with ``//`` guide lines + example JSON.
+    """Scaffold ``.agent-sim/scenarios/<id>.yaml`` with ``#`` guide comments + example sections.
 
-    Full-line ``//`` comments are ignored at parse time. Delete unused kind lines as needed.
+    YAML comments are native (no ``//`` line-skip needed). Delete unused sections as needed.
     """
     scenario_id = scenario_id.strip()
     if not _SCENARIO_ID_RE.match(scenario_id):
@@ -135,13 +148,13 @@ def init_scenario(
         scenarios_dir = root / DOT_FOLDER / "scenarios"
         scenarios_dir.mkdir(parents=True, exist_ok=True)
 
-    dest = scenarios_dir / f"{scenario_id}.jsonl"
+    dest = scenarios_dir / f"{scenario_id}.yaml"
     if dest.exists() and not force:
         raise ConfigError(
             f"{dest} already exists. Pass force=true / --force to overwrite, or pick another id."
         )
 
-    scaffold = package_templates_dir() / "scenario-scaffold.jsonl"
+    scaffold = package_templates_dir() / "scenario-scaffold.yaml"
     if not scaffold.exists():
         raise ConfigError(f"Package scaffold missing: {scaffold}")
     text = scaffold.read_text(encoding="utf-8").replace("{{SCENARIO_ID}}", scenario_id)
@@ -160,10 +173,94 @@ def init_scenario(
         "created": True,
         "overwritten": force,
         "next_steps": [
-            f"Edit {dest} — // lines are guides; remove unused kind JSON lines",
-            f"Validate: lk-sim validate {scenario_id} --root {root}",
-            f"Run: lk-sim execute {scenario_id} --root {root}",
+            f"Edit {dest} — # lines are guides; remove unused sections",
+            f"Validate: lks validate {scenario_id} --root {root}",
+            f"Run: lks execute {scenario_id} --root {root}",
         ],
+    }
+
+
+def _write_yaml_atomic(dest: Path, text: str) -> None:
+    """Write YAML ``text`` to ``dest`` atomically, validating first.
+
+    The draft is written to a ``.yaml.tmp`` sibling and round-tripped through
+    the YAML parser BEFORE ``os.replace`` moves it into place, so a broken
+    YAML never lands on ``dest`` (e.g. shadowing a valid ``.jsonl`` that
+    ``find_scenario`` would otherwise skip). The temp file is unlinked on any
+    failure. ``parse_scenario`` is not used on the temp because its suffix
+    (``.tmp``) routes to the JSONL parser; ``load_scenario_yaml`` is the same
+    YAML branch ``parse_scenario`` dispatches to for ``.yaml`` files.
+    """
+    from .scenario_yaml import load_scenario_yaml
+
+    tmp = dest.with_suffix(".yaml.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        load_scenario_yaml(tmp)
+        os.replace(tmp, dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def convert_scenario(
+    project_root: Path | str,
+    scenario_id: str,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Convert an existing ``.jsonl`` scenario to ``.yaml`` (idempotent).
+
+    Parses the JSONL through the normal validator, then writes the equivalent
+    section-object YAML beside it. Fails if the scenario is already ``.yaml``.
+    The original ``.jsonl`` is left in place (both formats are supported).
+    """
+    if not _SCENARIO_ID_RE.match(scenario_id):
+        raise ConfigError(
+            f"Invalid scenario_id {scenario_id!r}: use letters/digits/[_-], start with alnum, max 64 chars"
+        )
+    root = Path(project_root).resolve()
+    # Prefer the configured scenarios dir; else fall back to .agent-sim/scenarios.
+    try:
+        cfg = load_config(root)
+        scenarios_dir = cfg.scenarios_dir
+    except ConfigError:
+        scenarios_dir = root / DOT_FOLDER / "scenarios"
+        scenarios_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve the .jsonl directly (find_scenario prefers .yaml, so it can't see it).
+    jsonl_path = scenarios_dir / f"{scenario_id}.jsonl"
+    if not jsonl_path.exists():
+        # fall back to a metadata.id scan across .jsonl files
+        jsonl_path = None
+        for f in sorted(scenarios_dir.glob("*.jsonl")):
+            try:
+                if parse_scenario(f).id == scenario_id:
+                    jsonl_path = f
+                    break
+            except ScenarioError:
+                continue
+        if jsonl_path is None:
+            raise ConfigError(
+                f"Scenario `{scenario_id}` not found as a .jsonl in {scenarios_dir} "
+                f"(convert applies to legacy .jsonl scenarios; .yaml is already canonical)."
+            )
+
+    scenario = parse_scenario(jsonl_path)
+    dest = scenario.path.with_suffix(".yaml")
+    if dest.exists() and not force:
+        raise ConfigError(
+            f"{dest} already exists. Pass force=true / --force to overwrite, or pick another id."
+        )
+    from .scenario_yaml import scenario_to_yaml_text
+
+    text = scenario_to_yaml_text(scenario)
+    _write_yaml_atomic(dest, text)
+    return {
+        "source": str(scenario.path),
+        "written_to": str(dest),
+        "scenario_id": scenario.id,
+        "note": "Original .jsonl left in place; both formats are supported.",
     }
 
 
@@ -174,18 +271,21 @@ def list_scenarios(project_root: Path | str) -> list[dict[str, Any]]:
 
 def validate_scenario(project_root: Path | str, scenario_id: str) -> dict[str, Any]:
     cfg = load_config(project_root)
-    path = cfg.scenarios_dir / f"{scenario_id}.jsonl"
-    if not path.exists():
-        candidates = list(cfg.scenarios_dir.glob("*.jsonl"))
+    try:
+        # Keep validation consistent with execution: resolve by metadata.id, not filename.
+        # `find_scenario` falls back to scanning all scenario files when `<id>.<ext>` doesn't exist.
+        s = find_scenario(cfg.scenarios_dir, scenario_id)
+    except ScenarioError as e:
+        candidates = sorted(
+            list(cfg.scenarios_dir.glob("*.jsonl"))
+            + list(cfg.scenarios_dir.glob("*.yaml"))
+            + list(cfg.scenarios_dir.glob("*.yml"))
+        )
         return {
             "valid": False,
-            "error": f"{path} not found",
+            "error": str(e),
             "available": [c.name for c in candidates],
         }
-    try:
-        s = parse_scenario(path)
-    except ScenarioError as e:
-        return {"valid": False, "error": str(e)}
     warnings: list[str] = []
     if not s.pass_criteria:
         warnings.append("No PassCriteria — judge will be skipped for this scenario.")
@@ -205,10 +305,11 @@ def validate_scenario(project_root: Path | str, scenario_id: str) -> dict[str, A
                 warnings.append(f"verify plugin {name!r} is not registered (load errors: {load_info.get('errors')})")
         if load_info.get("errors"):
             warnings.extend(f"plugin load: {e}" for e in load_info["errors"])
-    from .authoring import authoring_scorecard, collect_authoring_warnings
+    from .authoring import build_authoring_report, collect_authoring_warnings
 
+    # Flat messages stay in warnings[] for humans/agents; structured codes in authoring.
     warnings.extend(collect_authoring_warnings(s))
-    scorecard = authoring_scorecard(s)
+    authoring = build_authoring_report(s)
     return {
         "valid": True,
         "id": s.id,
@@ -220,7 +321,7 @@ def validate_scenario(project_root: Path | str, scenario_id: str) -> dict[str, A
         "has_dispatch": s.dispatch is not None and bool(s.dispatch.metadata),
         "pass_criteria": s.pass_criteria,
         "warnings": warnings,
-        "authoring": scorecard,
+        "authoring": authoring,
     }
 
 
@@ -244,7 +345,7 @@ def list_plugins(project_root: Path | str) -> dict[str, Any]:
         "verify_plugins": list_verify_plugins(),
         "local_modules": local_files,
         "load": load_info,
-        "entry_point_group": "lk_sim.plugins",
+        "entry_point_group": "lks.plugins",
     }
 
 
@@ -270,7 +371,13 @@ def list_cues(project_root: Path | str | None = None) -> dict[str, Any]:
         return list_all_cues(root if (root / DOT_FOLDER).is_dir() else None)
 
 
-async def _run_scenario_dict(project_root: Path | str, scenario: dict[str, Any]) -> dict[str, Any]:
+async def _run_scenario_dict(
+    project_root: Path | str,
+    scenario: dict[str, Any],
+    *,
+    run_name: str | None = None,
+    agent_name: str | None = None,
+) -> dict[str, Any]:
     """Internal: run dict after preflight (no schema validation wrapper)."""
     cfg = load_config(project_root)
     pf = await preflight(cfg.project_root, connectivity=True)
@@ -278,23 +385,41 @@ async def _run_scenario_dict(project_root: Path | str, scenario: dict[str, Any])
         failed = [c for c in pf["checks"] if c["status"] == "fail"]
         raise RuntimeError("Preflight failed: " + "; ".join(f"{c['name']}: {c['detail']}" for c in failed))
     scenario_id = str(scenario.get("id") or (scenario.get("metadata") or {}).get("id", "dynamic"))
-    s = scenario_from_dict(scenario, path=cfg.scenarios_dir / f"{scenario_id}.jsonl")
-    return await run_orchestrator.run_scenario_instance(cfg, s)
+    s = scenario_from_dict(scenario, path=cfg.scenarios_dir / f"{scenario_id}.yaml")
+    return await run_orchestrator.run_scenario_instance(
+        cfg, s, run_name=run_name, agent_name=agent_name
+    )
 
 
-async def _run_scenario(project_root: Path | str, scenario_id: str) -> dict[str, Any]:
+async def _run_scenario(
+    project_root: Path | str,
+    scenario_id: str,
+    *,
+    run_name: str | None = None,
+    agent_name: str | None = None,
+) -> dict[str, Any]:
     """Internal: run JSONL scenario after preflight (orchestrator also preflights)."""
     cfg = load_config(project_root)
-    return await run_orchestrator.run_scenario(cfg, scenario_id)
+    return await run_orchestrator.run_scenario(
+        cfg, scenario_id, run_name=run_name, agent_name=agent_name
+    )
 
 
-async def execute_scenario_dict(project_root: Path | str, scenario: dict[str, Any]) -> dict[str, Any]:
+async def execute_scenario_dict(
+    project_root: Path | str,
+    scenario: dict[str, Any],
+    *,
+    run_name: str | None = None,
+    agent_name: str | None = None,
+) -> dict[str, Any]:
     """Validate dict-shaped scenario then run (no JSONL file on disk required)."""
     try:
         scenario_from_dict(scenario)
     except ScenarioError as e:
         return {"executed": False, "validation": {"valid": False, "error": str(e)}}
-    result = await _run_scenario_dict(project_root, scenario)
+    result = await _run_scenario_dict(
+        project_root, scenario, run_name=run_name, agent_name=agent_name
+    )
     return {"executed": True, "validation": {"valid": True}, **result}
 
 
@@ -304,11 +429,15 @@ async def execute_scenario(
     *,
     repeat: int = 1,
     pass_at_k: int | None = None,
+    run_name: str | None = None,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
     """Validate then run one scenario from `.agent-sim/scenarios/<id>.jsonl`.
 
     ``repeat`` / ``pass_at_k`` enable flake-tolerant execution (pass@k).
     ``repeat=1`` (default) preserves single-shot semantics.
+
+    ``agent_name`` overrides the target worker for this run (no config edit).
     """
     if repeat < 1:
         raise ValueError(f"repeat must be >= 1, got {repeat}")
@@ -328,12 +457,26 @@ async def execute_scenario(
 
     for i in range(repeat):
         try:
-            result = await _run_scenario(project_root, scenario_id)
+            result = await _run_scenario(project_root, scenario_id, run_name=run_name, agent_name=agent_name)
             # _run_scenario returns raw orchestrator result without executed/validation
             result["executed"] = True
             result["validation"] = {"valid": True, "id": scenario_id}
         except Exception as e:
             result = {"executed": True, "run_id": None, "status": "failed", "error": f"{type(e).__name__}: {e}"}
+
+        # Gemini Live transport drop (`1006 abnormal closure`) is retryable
+        # flakiness, not a real call outcome — the caller's persona context was
+        # never delivered, so re-run once instead of failing the iteration.
+        if _is_transport_drop(result):
+            try:
+                retried = await _run_scenario(project_root, scenario_id, run_name=run_name, agent_name=agent_name)
+                retried["executed"] = True
+                retried["validation"] = {"valid": True, "id": scenario_id}
+                retried.setdefault("retried_from_drop", True)
+                result = retried
+            except Exception as e:
+                result = {"executed": True, "run_id": None, "status": "failed", "error": f"{type(e).__name__}: {e}"}
+
         gate = evaluate_run_result(result)
         summary = result.get("summary") or {}
         mdig = metrics_digest(summary.get("metrics") if isinstance(summary.get("metrics"), dict) else None)
@@ -361,6 +504,8 @@ async def execute_scenario(
         "ok": ok,
         "iterations": iterations,
     }
+    if run_name:
+        out["run_name"] = run_name
     # Attach last result fields for backward compat
     if iterations:
         last = iterations[-1]
@@ -396,6 +541,8 @@ async def execute_scenarios(
     repeat: int = 1,
     pass_at_k: int | None = None,
     parallel: int = 1,
+    wait_s: float = 0.0,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
     """Run multiple scenarios + suite matrix / CI gate.
 
@@ -405,6 +552,15 @@ async def execute_scenarios(
     ``repeat`` / ``pass_at_k`` propagate to each scenario (pass@k).
     ``parallel`` runs up to N scenarios concurrently (default 1 = sequential).
     Within a scenario, ``repeat`` iterations stay sequential.
+
+    ``agent_name`` overrides the target worker for every scenario in the suite
+    (no config edit — enables parallel worktree workflows).
+
+    ``wait_s`` is a cooldown (seconds) after each scenario finishes before the
+    next one may start on that concurrency slot (or before the next sequential
+    run). The first scenario(s) of the suite start immediately. Default 0 —
+    this is an optional load knob for the target agent worker, not a substitute
+    for per-run ``wait_for_agent`` / ``agent_join_timeout_ms``.
     """
     import asyncio
 
@@ -412,6 +568,8 @@ async def execute_scenarios(
 
     if parallel < 1:
         raise ValueError(f"parallel must be >= 1, got {parallel}")
+    if wait_s < 0:
+        raise ValueError(f"wait_s must be >= 0, got {wait_s}")
 
     cfg = load_config(project_root)
     listed = _list_scenarios(cfg.scenarios_dir)
@@ -427,7 +585,11 @@ async def execute_scenarios(
     async def _one(sid: str) -> dict[str, Any]:
         try:
             return await execute_scenario(
-                project_root, sid, repeat=repeat, pass_at_k=pass_at_k
+                project_root,
+                sid,
+                repeat=repeat,
+                pass_at_k=pass_at_k,
+                agent_name=agent_name,
             )
         except Exception as e:
             return {
@@ -436,20 +598,75 @@ async def execute_scenarios(
                 "error": f"{type(e).__name__}: {e}",
             }
 
+    async def _cooldown() -> None:
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+
     if parallel == 1 or len(targets) <= 1:
         results: list[dict[str, Any]] = []
-        for sid in targets:
+        for i, sid in enumerate(targets):
+            # Cooperative cancel: do not start the next scenario after Ctrl+C.
+            task = asyncio.current_task()
+            cancelling = getattr(task, "cancelling", None) if task is not None else None
+            if callable(cancelling) and cancelling():
+                raise asyncio.CancelledError()
+            if i > 0:
+                await _cooldown()
             results.append(await _one(sid))
     else:
-        sem = asyncio.Semaphore(parallel)
+        # Admit at most ``parallel`` workers. Do NOT spawn one task per scenario
+        # behind a semaphore: on cancel, a released slot can admit a waiter that
+        # has not yet seen CancelledError, so "a few more" scenarios still start.
+        stop = asyncio.Event()
+        q: asyncio.Queue[str | None] = asyncio.Queue()
+        for sid in targets:
+            q.put_nowait(sid)
+        for _ in range(parallel):
+            q.put_nowait(None)  # sentinel per worker
 
-        async def _bounded(sid: str) -> dict[str, Any]:
-            async with sem:
-                return await _one(sid)
+        results_by_id: dict[str, dict[str, Any]] = {}
+        result_lock = asyncio.Lock()
 
-        # Preserve input order in the suite matrix
-        results = list(await asyncio.gather(*[_bounded(sid) for sid in targets]))
+        async def _worker() -> None:
+            while True:
+                if stop.is_set():
+                    return
+                sid = await q.get()
+                if sid is None:
+                    return
+                if stop.is_set():
+                    return
+                try:
+                    # Hold the worker slot through cooldown so the next admitted
+                    # scenario cannot start until wait_s after this finish.
+                    out = await _one(sid)
+                    await _cooldown()
+                except asyncio.CancelledError:
+                    stop.set()
+                    raise
+                async with result_lock:
+                    results_by_id[sid] = out
 
+        workers = [asyncio.create_task(_worker(), name=f"suite-worker-{i}") for i in range(parallel)]
+        try:
+            await asyncio.gather(*workers)
+        except asyncio.CancelledError:
+            stop.set()
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+            raise
+        results = [
+            results_by_id.get(
+                sid,
+                {
+                    "executed": False,
+                    "scenario_id": sid,
+                    "error": "CancelledError: suite stopped before this scenario ran",
+                },
+            )
+            for sid in targets
+        ]
     suite = build_suite_report(results, strict_judge=strict_judge, tag=tag)
     out: dict[str, Any] = {
         "count": len(results),
@@ -458,6 +675,7 @@ async def execute_scenarios(
         "ok": suite["ok"],
         "exit_code": suite["exit_code"],
         "parallel": parallel,
+        "wait_s": wait_s,
     }
     if write_report:
         paths = write_suite_report(suite, cfg.reports_dir)
@@ -629,6 +847,7 @@ def evaluate_baseline_gate(
     max_ttfw_regression_ms: float = 1500.0,
     max_turn_p95_regression_ms: float = 2000.0,
     max_duration_regression_ms: float = 30000.0,
+    max_barge_recovery_drop: float = 0.0,
     require_status_done: bool = True,
 ) -> dict[str, Any]:
     """Hard gate: candidate must not regress vs baseline digest (portable thresholds)."""
@@ -693,6 +912,38 @@ def evaluate_baseline_gate(
         if not ok:
             reasons.append(f"tool_errors rose {bt:.0f} → {ct:.0f}")
 
+    # Rate metric: higher is better — fail if drop exceeds max_barge_recovery_drop.
+    br_b = _as_float(baseline.get("barge_recovery_rate"))
+    br_c = _as_float(candidate.get("barge_recovery_rate"))
+    if br_b is not None and br_c is not None:
+        drop = br_b - br_c
+        ok = drop <= max_barge_recovery_drop
+        checks.append(
+            {
+                "check": "barge_recovery_rate_not_down",
+                "pass": ok,
+                "baseline": br_b,
+                "candidate": br_c,
+                "drop": drop,
+                "max_drop": max_barge_recovery_drop,
+            }
+        )
+        if not ok:
+            reasons.append(
+                f"barge_recovery_rate dropped {br_b:.2f} → {br_c:.2f} "
+                f"(max drop {max_barge_recovery_drop:.2f})"
+            )
+    else:
+        checks.append(
+            {
+                "check": "barge_recovery_rate_not_down",
+                "pass": True,
+                "skipped": True,
+                "baseline": br_b,
+                "candidate": br_c,
+            }
+        )
+
     ok = not reasons
     return {"ok": ok, "pass": ok, "checks": checks, "reasons": reasons}
 
@@ -705,6 +956,7 @@ async def compare_runs_with_baseline(
     max_ttfw_regression_ms: float = 1500.0,
     max_turn_p95_regression_ms: float = 2000.0,
     max_duration_regression_ms: float = 30000.0,
+    max_barge_recovery_drop: float = 0.0,
 ) -> dict[str, Any]:
     """Compare candidate to golden baseline; attach hard ``gate`` for CI exit codes."""
     raw = await compare_runs(project_root, baseline_run_id, candidate_run_id)
@@ -716,6 +968,7 @@ async def compare_runs_with_baseline(
         max_ttfw_regression_ms=max_ttfw_regression_ms,
         max_turn_p95_regression_ms=max_turn_p95_regression_ms,
         max_duration_regression_ms=max_duration_regression_ms,
+        max_barge_recovery_drop=max_barge_recovery_drop,
     )
     return {
         **raw,
@@ -741,13 +994,13 @@ def scenario_from_run(
     scenario_id: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
-    """Promote a finished run into a draft scenario JSONL (fail → golden).
+    """Promote a finished run into a draft scenario YAML (fail → golden).
 
     Reads ``reports/<run_id>/`` and synthesizes an agent-sim/v1 draft.
     Dry-run by default (prints to stdout); use ``write=True`` to write
-    ``.agent-sim/scenarios/<id>.jsonl``.
+    ``.agent-sim/scenarios/<id>.yaml``.
 
-    Result keys: ``scenario_id``, ``source_run_id``, ``jsonl`` (str),
+    Result keys: ``scenario_id``, ``source_run_id``, ``yaml`` (str),
     ``warnings`` (list), ``kinds``, ``latency_hint``, ``stats``.
     """
     from .scenario_from_run import build_scenario_draft_from_run
@@ -764,8 +1017,8 @@ def scenario_from_run(
     )
 
     if write:
-        dest = cfg.scenarios_dir / f"{draft['scenario_id']}.jsonl"
-        dest.write_text(draft["jsonl"], encoding="utf-8")
+        dest = cfg.scenarios_dir / f"{draft['scenario_id']}.yaml"
+        _write_yaml_atomic(dest, draft["yaml"])
         draft["written_to"] = str(dest)
     return draft
 
@@ -817,5 +1070,7 @@ __all__ = [
     "get_run_log",
     "get_run_report",
     "compare_runs",
+    "compare_runs_with_baseline",
+    "evaluate_baseline_gate",
     "list_runs",
 ]

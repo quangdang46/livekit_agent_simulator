@@ -1,4 +1,4 @@
-# Caller behavior research — Hamming / Coval / Cekura → lk-sim
+# Caller behavior research — Hamming / Coval / Cekura → lks
 
 **Date:** 2026-07-14  
 **Purpose:** Deep research so caller-character work stays on the industry path without becoming SaaS.  
@@ -8,7 +8,7 @@
 
 ## 1. Executive takeaway
 
-| Vendor stance | Implication for lk-sim |
+| Vendor stance | Implication for lks |
 |---|---|
 | Hamming: persona = **test design artifact**, not a vibe | Keep goal + constraints + behavior + asserts + evidence |
 | Hamming: barge-in is a **policy + event taxonomy**, not a bool | Type mid-call inputs (correction / backchannel / noise / DTMF / silence / escalate) |
@@ -65,9 +65,9 @@ promotion:
   run_frequency: on_prompt_or_tool_change
 ```
 
-**Map to lk-sim kinds**
+**Map to lks kinds**
 
-| Hamming | lk-sim |
+| Hamming | lks |
 |---|---|
 | `persona.caller_goal` | `Persona.goals[]` (+ numbered checklist prompt) |
 | `caller_context` | `Persona.brief` + `Context.notes` |
@@ -114,7 +114,7 @@ promotion:
 | “Spanish speaker” | Label only | Starts Spanish, English product name preserved, flow continues |
 | “VIP user” | Status without policy | Fixture flag → priority route after one failed step |
 
-**lk-sim authoring rule:** reject vibe-only Persona in guides/validate warnings when goals empty or barge without recovery assert.
+**lks authoring rule:** reject vibe-only Persona in guides/validate warnings when goals empty or barge without recovery assert.
 
 ### 2.3 Interruption handling runbook (most important for caller sim)
 
@@ -143,7 +143,7 @@ From [Interruption Handling Runbook](https://hamming.ai/resources/voice-agent-in
 | `interruption.false_positive` | Noise/backchannel mistakes |
 | `silence.timeout` | Separate from barge-in |
 
-**lk-sim today:** `interruption`, `sim.script.cue` (barge_in), `silence.detected`, recovery asserts.  
+**lks today:** `interruption`, `sim.script.cue` (barge_in), `silence.detected`, recovery asserts.  
 **Gap:** no **class** on cues; backchannel not first-class; no DTMF; limited false-positive modeling.
 
 **Test matrix Hamming ships (minimum 5–7 cases)**
@@ -193,7 +193,7 @@ assertions:
   latency: { turn_p95_ms_max: 1500 }
 ```
 
-**lk-sim equivalent:** scenario JSONL in Git under target `.agent-sim/scenarios/` — already “tests as code.”  
+**lks equivalent:** scenario JSONL in Git under target `.agent-sim/scenarios/` — already “tests as code.”  
 Missing authoring fields: `owner`, `risk`, `source_pattern` (can live in Scenario metadata tags / comments without core schema break).
 
 ### 2.5 Workflow testing (tools / state / handoffs)
@@ -207,7 +207,7 @@ contract = preconditions + caller scenario + allowed tool sequence
 
 Layers: conversation · tool call · state · side effect · handoff · regression retention.
 
-**Portable boundary for lk-sim**
+**Portable boundary for lks**
 
 | Layer | Core can do | Target must do |
 |---|---|---|
@@ -225,13 +225,13 @@ From [Testing LiveKit Voice Agents](https://hamming.ai/resources/testing-livekit
 | Layer | Tool |
 |---|---|
 | Text logic | LiveKit Agents pytest |
-| Full-stack WebRTC | Hamming (or **lk-sim**) |
+| Full-stack WebRTC | Hamming (or **lks**) |
 | Load | `lk perf` / Hamming concurrent |
 | Prod observe | Hamming plugin / OTel |
 
 Hamming LiveKit product features we **partially** match:
 
-| Hamming | lk-sim |
+| Hamming | lks |
 |---|---|
 | LiveKit-to-LiveKit rooms | ✅ webrtc_sim (+ SIP modes beyond Hamming’s default pitch) |
 | Synthetic caller | ✅ Gemini Live |
@@ -260,9 +260,9 @@ From [Coval Personas](https://docs.coval.ai/concepts/personas/overview) + Test S
 
 > Keep behavioral traits in the persona and task instructions in the test case — **don't mix the two**.
 
-**lk-sim mapping**
+**lks mapping**
 
-| Coval | lk-sim |
+| Coval | lks |
 |---|---|
 | Persona characteristics prompt | Persona brief/style/traits/constraints |
 | Test case Simulation Input (scenario) | Persona.goals + Execute + Context |
@@ -299,7 +299,7 @@ Same **test set**, vary persona:
 | High Background Noise | SNR |
 | Low Volume | quiet speaker |
 
-**lk-sim recipe:** suite matrix = goals fixed × trait/speech_conditions variants (docs + templates), not a new runtime product.
+**lks recipe:** suite matrix = goals fixed × trait/speech_conditions variants (docs + templates), not a new runtime product.
 
 ### 3.4 LLM people-pleaser problem (Coval)
 
@@ -327,7 +327,7 @@ Aligns with Hamming layered asserts + our suite tags.
 
 ---
 
-## 5. Cross-vendor synthesis → lk-sim principles
+## 5. Cross-vendor synthesis → lks principles
 
 ### 5.1 Locked principles (do not regress)
 
@@ -344,7 +344,7 @@ Aligns with Hamming layered asserts + our suite tags.
 
 ### 5.2 Capability matrix (caller-relevant)
 
-| Capability | Hamming | Coval | Cekura | lk-sim now | Next |
+| Capability | Hamming | Coval | Cekura | lks now | Next |
 |---|---|---|---|---|---|
 | Goal-driven persona | ✅ | ✅ test case | ✅ | ✅ goals + goals_met | polish authoring |
 | Constraints / refusals | ✅ | prompt | partial | ✅ constraints | judge constraint respect |
@@ -374,7 +374,7 @@ Aligns with Hamming layered asserts + our suite tags.
 
 ---
 
-## 6. Interruption taxonomy — recommended lk-sim model
+## 6. Interruption taxonomy — recommended lks model
 
 Extend Behavior/Script **metadata** (additive):
 
@@ -449,7 +449,7 @@ Minimum viable **blocking** character:
 
 Align defaults/docs with Hamming production bands, measured from **room events** (not agent internals):
 
-| Metric | lk-sim source | Suggested hard-gate examples |
+| Metric | lks source | Suggested hard-gate examples |
 |---|---|---|
 | Turn p50/p95 | `summary.metrics` + Assert latency | p95 ≤ 3500–5000 ms (env-dependent) |
 | TTFW | same | ≤ 3000–5000 ms first agent audio |
@@ -476,7 +476,7 @@ Align defaults/docs with Hamming production bands, measured from **room events**
 | **C7** | Timer interruption_rate compile (Low/Med/High) | Coval behavioral setting | S |
 | **C8** | Constraint-respect judge outcome | People-pleaser counter | S |
 
-Priority for lk-sim niche: **C1 → C2 → C4 → C3 → C5**.
+Priority for lks niche: **C1 → C2 → C4 → C3 → C5**.
 
 ---
 
@@ -530,4 +530,4 @@ Priority for lk-sim niche: **C1 → C2 → C4 → C3 → C5**.
 
 ## 12. One-paragraph product decision
 
-Hamming says: build **reviewable failure modes** from call patterns, classify interruptions, prove workflows with tools and recovery, promote only high-signal cases to blocking CI, and use full-stack WebRTC for timing. Coval says: separate **who** from **what**, expose structured pacing knobs, and fight LLM people-pleasing. Cekura says: cover a realistic personality mix. **lk-sim already sits on the right architecture** (Persona + Behavior→Script + Assert + forensics + MCP). The research-backed next moves are **typed mid-call interaction classes, DTMF, silent/machine presets, and stricter authoring quality** — not a new persona runtime and not Hamming’s SaaS surface.
+Hamming says: build **reviewable failure modes** from call patterns, classify interruptions, prove workflows with tools and recovery, promote only high-signal cases to blocking CI, and use full-stack WebRTC for timing. Coval says: separate **who** from **what**, expose structured pacing knobs, and fight LLM people-pleasing. Cekura says: cover a realistic personality mix. **lks already sits on the right architecture** (Persona + Behavior→Script + Assert + forensics + MCP). The research-backed next moves are **typed mid-call interaction classes, DTMF, silent/machine presets, and stricter authoring quality** — not a new persona runtime and not Hamming’s SaaS surface.

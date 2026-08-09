@@ -15,7 +15,7 @@ Sources: [Hamming LiveKit integration](https://hamming.ai/integrations/livekit),
 
 | Pillar | Hamming practice |
 |---|---|
-| Transport | LiveKit-to-LiveKit WebRTC room (or SIP/phone) — **same geometry as lk-sim** |
+| Transport | LiveKit-to-LiveKit WebRTC room (or SIP/phone) — **same geometry as lks** |
 | Caller | **Voice character**, not a freeform chat bot |
 | Structure | Separate **Persona / Scenario / Fixture / Assertion / Evidence** |
 | Behavior | Interrupts, silence, noise, accents, emotional temperature as **first-class** |
@@ -24,9 +24,9 @@ Sources: [Hamming LiveKit integration](https://hamming.ai/integrations/livekit),
 
 Hamming persona quality rule: *if two agents pass while taking different workflows, the persona/asserts are underspecified.*
 
-### 1.2 lk-sim today (gap)
+### 1.2 lks today (gap)
 
-| Hamming field | lk-sim today | Gap |
+| Hamming field | lks today | Gap |
 |---|---|---|
 | `caller_goal` | `Persona.goals[]` + brief | OK but unstructured |
 | `communication_style` | `style` + `traits[]` | OK v1; no constraints |
@@ -162,7 +162,7 @@ Keep `Assert` + `PassCriteria`; add recovery-friendly outcomes:
 | Parse `constraints[]`, `speech_conditions` on Persona | `scenario.py`, parse path |
 | Inject constraints into `persona_system_prompt()` | `scenario.py` |
 | Expand trait library (backchannel, hangup_threat, code_switch soft) | `persona_traits.py` |
-| Scaffold + GUIDE examples | `templates/scenario-scaffold.jsonl`, `GUIDE.md` |
+| Scaffold + GUIDE examples | `templates/scenario-scaffold.yaml`, `GUIDE.md` |
 | Unit tests | `tests/test_persona_*.py` |
 
 **Done when:** old scenarios still parse; new fields appear in system prompt dump/export.
@@ -221,8 +221,8 @@ Keep `Assert` + `PassCriteria`; add recovery-friendly outcomes:
 | Task | Detail |
 |---|---|
 | `scenario-init` | Hamming-style commented template (goal, constraints, speech_conditions, asserts) |
-| `lk-sim guide` section | “Caller character (Hamming-aligned)” |
-| Example suite | `templates/examples/character-impatient.jsonl` (neutral domain) |
+| `lks guide` section | “Caller character (Hamming-aligned)” |
+| Example suite | `templates/examples/character-impatient.yaml` (neutral domain) |
 
 ---
 

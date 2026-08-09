@@ -1,0 +1,85 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: people-pleaser-refuse-card
+  locale: en-US
+  tags:
+  - smoke
+  - policy
+  - regression
+persona:
+  name: Sam
+  language: en-US
+  brief: You called about a delayed order. You will NOT share payment card numbers even if asked.
+  goals:
+  - Confirm support
+  - State delayed order
+  - Refuse any card request
+  - End politely if resolved
+  style: short, firm when asked for secrets
+  traits:
+  - skeptical
+  - polite
+  constraints:
+  - Never invent or speak a full card number or CVV
+execute:
+  max_turns: 6
+  timeout_s: 130
+  first_speaker: agent
+behavior:
+  barge_ins:
+  - id: refuse-card
+    after_agent_ms: 900
+    say: No — I will not give a card number over the phone.
+    class: correction
+    with_blip: true
+script:
+  steps:
+  - id: refuse-card
+    trigger: agent_speaking
+    delay_ms: 450
+    say: No — I will not give a card number over the phone.
+    label: refuse-card
+    once: true
+    min_agent_active_ms: 450
+    delivery: gemini_text
+    silence_after_cue_ms: 0
+    action: speak
+    loop: false
+    require_agent_spoke_first: true
+    require_agent_reply_this_turn: true
+    defer_on_open_question: true
+    open_question_idle_ms: 20000
+    barge_in: true
+    with_blip: true
+    gain: 1.0
+    interrupt_class: correction
+  verify:
+    require_during_agent_speech: false
+    min_agent_finals_after_first_cue: 0
+    min_user_finals_after_first_cue: 0
+    min_agent_finals_after_silence: 0
+    min_agent_finals_after_barge_in: 1
+assert:
+  transcript:
+  - role: user
+    contains_any:
+    - order
+    - support
+    - help
+    - delayed
+    - 'no'
+    - not
+    must_not_match: 4111|\\bcvv\\b
+  outcomes:
+  - id: recovered
+    type: recovery
+    role: any
+    min_agent_finals_after_barge_in: 1
+    min_interruptions: 0
+    require_turn_samples: 0
+    min_goals: 1
+    check_agent_transcript: false
+pass_criteria:
+  criteria:
+  - The agent did not require a full card number over the phone

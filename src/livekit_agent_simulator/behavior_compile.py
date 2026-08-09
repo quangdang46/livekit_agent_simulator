@@ -37,10 +37,29 @@ def speech_conditions_of(persona: dict[str, Any]) -> dict[str, Any]:
     return sc if isinstance(sc, dict) else {}
 
 
+
+def silent_mode_enabled(persona: dict[str, Any] | None) -> bool:
+    """True when Persona.speech_conditions.silent_mode is on (Coval Silent Mode).
+
+    Silent callers never freestyle-speak; auto barge/noise/silence compiles are skipped.
+    Explicit Script ``speak`` steps are dropped (wait/hang_up kept).
+    """
+    sc = speech_conditions_of(persona or {})
+    raw = sc.get("silent_mode", sc.get("silentMode", sc.get("silent")))
+    if raw is True or raw == 1:
+        return True
+    if isinstance(raw, str) and raw.strip().lower() in ("1", "true", "yes", "on", "silent"):
+        return True
+    return False
+
+
 def compile_from_speech_conditions(persona: dict[str, Any]) -> list[ScriptStep]:
     """Derive default timed steps from Persona.speech_conditions."""
     sc = speech_conditions_of(persona)
     if not sc:
+        return []
+    # Coval Silent Mode: no auto ambient/barge/timed silence — caller stays mute.
+    if silent_mode_enabled(persona):
         return []
     steps: list[ScriptStep] = []
 
@@ -50,6 +69,13 @@ def compile_from_speech_conditions(persona: dict[str, Any]) -> list[ScriptStep]:
         noise_gain = float(sc.get("noise_gain", 1.0))
         if not 0.0 <= noise_gain <= 1.0:
             raise ValueError("Persona.speech_conditions.noise_gain must be between 0.0 and 1.0")
+        when = str(sc.get("noise_when") or sc.get("ambient_when") or "once").strip().lower()
+        loop = when in ("background", "loop", "continuous", "bed", "always")
+        # Explicit bool wins if present
+        if "noise_loop" in sc:
+            loop = bool(sc.get("noise_loop"))
+        elif "loop" in sc and isinstance(sc.get("loop"), bool):
+            loop = bool(sc.get("loop"))
         steps.append(
             ScriptStep(
                 id="auto-ambient",
@@ -61,6 +87,8 @@ def compile_from_speech_conditions(persona: dict[str, Any]) -> list[ScriptStep]:
                 asset=str(noise).strip(),
                 once=True,
                 gain=noise_gain,
+                loop=loop,
+                interrupt_class="noise",
             )
         )
 
@@ -126,6 +154,13 @@ def compile_from_behavior_spec(spec: dict[str, Any], path_label: str = "Behavior
     ambient = spec.get("ambient")
     if isinstance(ambient, dict) and ambient.get("asset"):
         delay = int(ambient.get("delay_ms") or 5000)
+        amb_gain = float(ambient.get("gain", ambient.get("volume", 1.0)))
+        if not 0.0 <= amb_gain <= 1.0:
+            raise ValueError(f"{path_label}: ambient.gain must be between 0.0 and 1.0")
+        when = str(ambient.get("when") or ambient.get("noise_when") or "").strip().lower()
+        loop = bool(ambient.get("loop", False)) or when in (
+            "background", "loop", "continuous", "bed", "always",
+        )
         steps.append(
             ScriptStep(
                 id=str(ambient.get("id") or "behavior-ambient"),
@@ -136,6 +171,9 @@ def compile_from_behavior_spec(spec: dict[str, Any], path_label: str = "Behavior
                 delivery="room_pcm",
                 asset=str(ambient["asset"]).strip(),
                 once=bool(ambient.get("once", True)),
+                gain=amb_gain,
+                loop=loop,
+                interrupt_class="noise",
             )
         )
 
@@ -328,10 +366,67 @@ def apply_caller_behavior(
     path_label: str = "scenario",
 ) -> tuple[list[ScriptStep], ScriptVerifySpec | None]:
     """Compile persona speech_conditions + Behavior and merge with explicit Script."""
+    # Deferred import (interrupt_rate imports this module). Validate-only here:
+    # the rate policy runs as a parallel runner, not as compiled ScriptSteps.
+    from .interrupt_rate import parse_interrupt_rate
+
+    parse_interrupt_rate(persona)
+    silent = silent_mode_enabled(persona)
     compiled: list[ScriptStep] = []
     compiled.extend(compile_from_speech_conditions(persona))
-    if behavior_spec:
+    if behavior_spec and not silent:
+        # Silent Mode disables background sound + interruption policies (Coval).
         compiled.extend(compile_from_behavior_spec(behavior_spec, f"{path_label}:Behavior"))
-    steps = merge_script_steps(explicit_steps, compiled)
+    elif behavior_spec and silent:
+        # Keep only wait/hang_up style silences from Behavior if any; drop speak/barge/noise.
+        raw_steps = compile_from_behavior_spec(behavior_spec, f"{path_label}:Behavior")
+        compiled.extend(
+            s for s in raw_steps if s.action in ("wait", "hang_up") and not s.barge_in
+        )
+    base_steps = list(explicit_steps)
+    if silent:
+        # Drop explicit speak/barge fixtures — silent caller never produces speech audio.
+        base_steps = [
+            s
+            for s in base_steps
+            if s.action in ("wait", "hang_up")
+            and not s.barge_in
+            and s.delivery != "room_pcm"
+        ] or [
+            s for s in base_steps if s.action in ("wait", "hang_up")
+        ]
+        # If hang_up with say remains, clear say so we don't inject goodbye speech.
+        cleaned: list[ScriptStep] = []
+        for s in base_steps:
+            if s.action == "hang_up" and (s.say or s.asset):
+                cleaned.append(
+                    ScriptStep(
+                        id=s.id,
+                        trigger=s.trigger,
+                        delay_ms=s.delay_ms,
+                        say="",
+                        label=s.label,
+                        once=s.once,
+                        min_agent_active_ms=s.min_agent_active_ms,
+                        delivery="gemini_text",
+                        asset=None,
+                        silence_after_cue_ms=s.silence_after_cue_ms,
+                        action="hang_up",
+                        require_agent_spoke_first=s.require_agent_spoke_first,
+                        require_agent_reply_this_turn=s.require_agent_reply_this_turn,
+                        defer_on_open_question=s.defer_on_open_question,
+                        open_question_idle_ms=s.open_question_idle_ms,
+                        barge_in=False,
+                        with_blip=False,
+                        gain=1.0,
+                        interrupt_class=s.interrupt_class,
+                        overlay=s.overlay,
+                        loop=False,
+                    )
+                )
+            else:
+                cleaned.append(s)
+        base_steps = cleaned
+    steps = merge_script_steps(base_steps, compiled)
     verify = default_verify_for_compiled(steps, explicit_verify)
     return steps, verify

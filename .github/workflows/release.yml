@@ -41,7 +41,7 @@ jobs:
           uv python install 3.12
           uv sync --frozen --extra dev
           uv run pytest -q
-          uv run lk-sim --help
+          uv run lks --help
 
       - name: Build wheel
         run: |
@@ -101,8 +101,8 @@ jobs:
           uv run --no-project python scripts/build_portable.py --wheel "$WHL" --out-dir dist/portable
           ls -la dist/portable/
           # Expect zip named by host arch; rename to matrix.asset for stable release names
-          ZIP=$(ls dist/portable/lk-sim-*.zip | head -1)
-          DEST="dist/portable/lk-sim-${{ matrix.asset }}.zip"
+          ZIP=$(ls dist/portable/lks-*.zip | head -1)
+          DEST="dist/portable/lks-${{ matrix.asset }}.zip"
           if [ "$(basename "$ZIP")" != "$(basename "$DEST")" ]; then
             cp "$ZIP" "$DEST"
           fi
@@ -111,7 +111,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: portable-${{ matrix.asset }}
-          path: dist/portable/lk-sim-${{ matrix.asset }}.zip
+          path: dist/portable/lks-${{ matrix.asset }}.zip
           if-no-files-found: error
 
   release:
@@ -134,11 +134,11 @@ jobs:
           # wheel
           find artifacts -name '*.whl' -exec cp {} release-assets/ \;
           # portable zips
-          find artifacts -name 'lk-sim-*.zip' -exec cp {} release-assets/ \;
+          find artifacts -name 'lks-*.zip' -exec cp {} release-assets/ \;
           ls -la release-assets/
           test -f release-assets/install.ps1
-          test -f release-assets/lk-sim-windows-x64.zip
-          test -f release-assets/lk-sim-linux-x64.zip
+          test -f release-assets/lks-windows-x64.zip
+          test -f release-assets/lks-linux-x64.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -154,8 +154,8 @@ jobs:
             ### Windows PowerShell
 
             ```powershell
-            irm "https://github.com/quangdang46/livekit-agent-simulator/releases/download/${{ github.ref_name }}/install.ps1" -OutFile "$env:TEMP\lk-sim-install.ps1"
-            powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lk-sim-install.ps1" -Verify
+            irm "https://github.com/quangdang46/livekit-agent-simulator/releases/download/${{ github.ref_name }}/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+            powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
             ```
 
             ### macOS / Linux
@@ -168,9 +168,9 @@ jobs:
 
             | Asset | Who |
             |-------|-----|
-            | `lk-sim-windows-x64.zip` | Windows |
-            | `lk-sim-linux-x64.zip` | Linux |
-            | `lk-sim-macos-arm64.zip` | Apple Silicon |
+            | `lks-windows-x64.zip` | Windows |
+            | `lks-linux-x64.zip` | Linux |
+            | `lks-macos-arm64.zip` | Apple Silicon |
             | `install.ps1` / `install.sh` | one-shot installers |
             | `*.whl` | optional (devs) |
 

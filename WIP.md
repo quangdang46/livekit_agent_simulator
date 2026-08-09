@@ -1,6 +1,6 @@
 # WIP — roadmap toward replacing “open mic and talk to the agent”
 
-**Goal:** `lk-sim` is the day-to-day black-box QA loop for LiveKit voice agents — real room (WebRTC or SIP), Gemini as the human, forensic report + web replay, CI-friendly gates, MCP for coding agents.
+**Goal:** `lks` is the day-to-day black-box QA loop for LiveKit voice agents — real room (WebRTC or SIP), Gemini as the human, forensic report + web replay, CI-friendly gates, MCP for coding agents.
 
 **Not the goal:** LiveKit in-process `AgentSession` unit tests; 50k concurrent load platforms; production observability SaaS (Hamming Observe / Coval online eval).
 
@@ -30,15 +30,15 @@ Update this file when gaps close or priorities change.
 | Layer | Owner | What it is |
 |---|---|---|
 | **In-process unit / session** | LiveKit Agents + pytest | Fake models, `result.expect…` — **no real room** |
-| **Black-box room / audio E2E** | Hamming, Coval, Cekura, **lk-sim** | Real room + sim caller |
+| **Black-box room / audio E2E** | Hamming, Coval, Cekura, **lks** | Real room + sim caller |
 | **Load** | `lk perf`, Hamming | Many rooms |
 | **Prod observe** | OTel, SaaS | Drift, alerts |
 
-**lk-sim complements Agents pytest; it does not replace it.**
+**lks complements Agents pytest; it does not replace it.**
 
 ### Competitive snapshot
 
-| Capability | lk-sim | Hamming / Coval / Cekura | LiveKit pytest |
+| Capability | lks | Hamming / Coval / Cekura | LiveKit pytest |
 |---|---|---|---|
 | Real LiveKit room | ✅ | ✅ | ❌ |
 | AI persona caller | ✅ Gemini Live | ✅ | ❌ |
@@ -74,7 +74,7 @@ Update this file when gaps close or priorities change.
 | Asserts | tools, transcript, recovery, latency, ended_by, goals_met, SIP |
 | Metrics | p50/p95/p99, TTFW, recovery, barge rate |
 | pass@k / suite / parallel | `--repeat`, `--pass-at-k`, `execute-all --parallel` |
-| Fail → golden draft | `scenario-from-run` (extract quality still weak — see P1.H) |
+| Fail → golden draft | `scenario-from-run` (smart extract: goals/constraints + Behavior stub from markers — P1.J done) |
 | Forensics + web + MCP + portable install | events, WAV, report player, CLI↔ops parity |
 
 P0 “talk like a person” ≈ **done v1**.  
@@ -105,8 +105,8 @@ Ranked by ROI. Feature **and** logic gaps from research.
 | **P1.D** | **Golden baseline compare** | Feature | CI before/after | `compare --baseline <run-id\|suite>` hard-fail latency/assert deltas | F8 |
 | **P1.E** | **outbound_sim_callee reliability** | Ops | DID hairpin (`docs/PROBLEM.md`) | Preflight + DID/dispatch recipe; T6 sip-to-ai only if needed | P1.E |
 | **P1.I** | **Tool required_order ledger** | Assert | Hamming workflow | Assert tools in order (not only min_count); fail on wrong sequence | Workflow |
-| **P1.J** | **scenario-from-run extract quality** | Logic | Fail→golden flywheel | Prefer goals + constraints + 1 Behavior barge from markers; **not** transcript dump into brief | C6 / L7 |
-| **P1.K** | **Interruption rate timer** | Feature | Coval None/Low/Med/High (~never/90s/45s/30s) | Compile recurring barge steps from rate; optional speech_conditions | C7 / F10 |
+| **P1.J** | **scenario-from-run extract quality** ✅ | Logic | Fail→golden flywheel | Done (#34): goals/constraints preferred over transcript; brief = mission statement; 1 Behavior barge/noise/backchannel stub from `sim.script.cue` markers; transcript sample → Context.notes; Script open when `first_speaker=user`; review checklist in draft header | C6 / L7 |
+| **P1.K** | **Interruption rate timer** | ✅ done (#25) | Coval None/Low/Med/High (~never/90s/45s/30s) | `speech_conditions.interruption_rate` → parallel `InterruptRateRunner` (fires only while agent is active speaker; `interruption_*` overrides; disabled by silent_mode) | C7 / F10 |
 | **P1.L** | **Event taxonomy polish** | Events + web | Hamming interruption lifecycle | `interruption.recovered`, class on cues, behavior_summary by class; web chips | Events |
 
 ### P2 — Production-adjacent (defer unless a target needs it)
@@ -123,7 +123,7 @@ Ranked by ROI. Feature **and** logic gaps from research.
 | **P2.G** | Multi-party handoff | After P2.A |
 | **P2.H** | Text-fast mode | Cheap loop before full voice |
 | **P2.I** | Language / voice **scenario matrix** | Manual ⚠️ today — suite recipe, not one-off config |
-| **P2.J** | Hold-music timeout hang | Coval advanced disconnect |
+| **P2.J** | Hold-music timeout hang — ✅ done (#29): `Execute.spec.hold_music_timeout_s` (5–300 s, Persona alias) → sim hang-up on agent dead air, reason `hold_music_timeout` | Coval advanced disconnect |
 | **P2.K** | Owner / source_pattern / risk metadata | Hamming tests-as-code fields on Scenario (tags or optional fields) |
 
 ### P0 residual polish (optional)
@@ -220,9 +220,9 @@ needed:   + backchannels[], false_interrupts[], dtmf[]
 
 ---
 
-## Developer manual work vs lk-sim
+## Developer manual work vs lks
 
-| Manual developer | lk-sim today | Gap ID |
+| Manual developer | lks today | Gap ID |
 |---|---|---|
 | Open mic, greet agent | ✅ | — |
 | Happy-path flow | ✅ | — |
@@ -317,7 +317,7 @@ Keep portable: no consumer keys in `src/`; extend via scenario / `.agent-sim/cue
 | Golden baseline compare | Planned (P1.D) |
 | outbound_sim_callee DID ops | Planned (P1.E) |
 | Tool order / from-run extract / rate timer / events | Planned (P1.I–L) |
-| Warm transfer observe | Deferred P2 |
+| Warm transfer observe | Deferred P2 (docs note in telephony.md; no core yet) |
 | Load / accent / prod observe | Deferred P2 |
 
 ---
@@ -346,7 +346,7 @@ See `docs/PROBLEM.md`, `docs/telephony.md`. Work: **P1.E**.
 |---|---|
 | Unit tests | `uv run pytest -q` green (or scoped + full before merge) |
 | Build | package importable; web build if `web/` touched |
-| Real execute | `lk-sim execute <scenario> --root <any-target>` with **real** `reports/<run-id>/` matching expected gate — **except** pure tests/docs (no runtime surface) |
+| Real execute | `lks execute <scenario> --root <any-target>` with **real** `reports/<run-id>/` matching expected gate — **except** pure tests/docs (no runtime surface) |
 | Portable core | AGENTS.md: no hardcoding of worker/dashboard/product in `src/`; target is black-box smoke only |
 
 ### Forbidden
