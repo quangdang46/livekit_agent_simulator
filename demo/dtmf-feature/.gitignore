@@ -9,3 +9,6 @@ reports/
 __pycache__/
 *.pyc
 *.egg-info/
+
+# livekit-agent-simulator
+.agent-sim/
