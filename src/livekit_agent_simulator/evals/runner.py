@@ -126,6 +126,17 @@ def _repair_truncated_json(text: str) -> str | None:
     if s.endswith("\\"):
         s = s[:-1].rstrip()
 
+    # Dangling key repair: an unterminated string may have been a KEY cut off
+    # before its `: value` (e.g. `"needs_huma` at EOF). After closing the quote
+    # and containers it becomes `"key"}` — an invalid dangling key. Drop the
+    # dangling key (and its preceding comma) if a closing container follows.
+    # Only match a COMMA-preceded string (a key position) — a `: "value"}` is a
+    # legitimate truncated value and must stay.
+    m = re.search(r',\s*"[^"]*"\s*([}\]])$', s)
+    if m:
+        # Cut from the comma that precedes the dangling key; keep the closer.
+        s = s[: m.start(0)].rstrip() + m.group(1)
+
     return s if _try_parse(s) is not None else None
 
 

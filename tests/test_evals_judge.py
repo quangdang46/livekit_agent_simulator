@@ -352,6 +352,17 @@ def test_repair_unterminated_string_with_backslash():
     assert j.notes == "foo"
 
 
+def test_repair_truncated_key_dropped():
+    """Regression: judge returned JSON truncated mid-KEY (before `: value`), e.g.
+    a Gemini judge cutting off at `"needs_huma`. The dangling key must be dropped
+    so the repaired object parses (real run surfaced `verdict: error` on a pass)."""
+    j = _parse_llm_json(
+        '{\n  "verdict": "pass",\n  "score": 92,\n  "confidence": "high",\n  "needs_huma'
+    )
+    assert j.verdict == "pass"
+    assert j.score == 92
+
+
 def test_repair_nested_object_missing_braces():
     j = _parse_llm_json(
         '{"verdict":"fail","final_assessment":{"goal":"7/10","conclusion":"rough'
