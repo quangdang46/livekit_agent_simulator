@@ -15,7 +15,9 @@ from __future__ import annotations
 import array
 import asyncio
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
+
+from .degradation import EffectFn
 
 from livekit import rtc
 
@@ -99,6 +101,7 @@ class ParallelMicMixer:
         recorder: LocalConversationRecorder | None = None,
         frame_ms: int = FRAME_MS,
         speech_preroll_ms: int = DEFAULT_SPEECH_PREROLL_MS,
+        effects: Sequence[EffectFn] = (),
     ) -> None:
         if sample_rate <= 0:
             raise ValueError("sample_rate must be positive")
@@ -115,6 +118,7 @@ class ParallelMicMixer:
         self.frame_samples = max(1, (sample_rate * frame_ms) // 1000)
         self.speech_preroll_ms = speech_preroll_ms
         self._preroll_samples = (sample_rate * speech_preroll_ms) // 1000
+        self.effects: list[EffectFn] = list(effects)
 
         self._lock = threading.Lock()
         self._speech = array.array("h")
@@ -357,6 +361,10 @@ class ParallelMicMixer:
         try:
             while not self._stop.is_set():
                 pcm = self._pop_frame()
+                # Post-mix degradation effects (packet loss / echo / phone / static).
+                # Applied to the exact bytes the agent hears; recorder captures post-effects.
+                for fx in self.effects:
+                    pcm = fx(pcm)
                 # Always write (incl. silence) so playout clock stays steady while noise plays.
                 frame = rtc.AudioFrame(
                     data=pcm,
