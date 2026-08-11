@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 from google import genai
 from google.genai import types
@@ -31,6 +31,7 @@ from livekit import rtc
 from ..audio.local_recorder import LocalConversationRecorder
 from ..audio.mic_mixer import ParallelMicMixer
 from ..audio.pcm_cue import load_wav_pcm, resolve_cue_asset
+from ..audio.degradation import EffectFn
 from ..config import SimConfig
 from .end_call import (
     END_CALL_TOKEN,
@@ -207,6 +208,7 @@ class GeminiCallerBridge:
         midcall_cues: list | None = None,
         voice_gain: float = 1.0,
         silent_mode: bool = False,
+        audio_effects: Sequence[EffectFn] = (),
     ) -> None:
         self.cfg = cfg
         self.room = room
@@ -222,6 +224,8 @@ class GeminiCallerBridge:
         self._voice_gain = float(voice_gain)
         # Coval Silent Mode: never freestyle-speak; hang-up farewell still allowed.
         self._silent_mode = bool(silent_mode)
+        # Post-mix audio degradation (packet loss / echo / phone / static) for the sim mic.
+        self._audio_effects: list[EffectFn] = list(audio_effects)
         # Dialog steering texts from CallerPolicy (bootstrap / reground); not PCM Script.
         self._midcall_cues = list(midcall_cues or [])
 
@@ -403,6 +407,7 @@ class GeminiCallerBridge:
             self._source,
             sample_rate=GEMINI_OUT_RATE,
             recorder=self.recorder,
+            effects=self._audio_effects,
         )
         self._mixer.start()
         self.writer.emit(

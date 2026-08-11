@@ -1,0 +1,39 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: degraded-call
+  locale: en-US
+  tags:
+  - example
+  - telephony
+  - audio-degradation
+persona:
+  name: Maria
+  language: en-US
+  brief: You are calling from a moving car; the line is rough. You need account help.
+  goals:
+  - Confirm you reached support
+  - Ask about an unknown charge on the latest bill
+  - End politely once you have a clear next step
+  style: concise, slightly stressed
+  traits:
+  - polite
+  - slightly_impatient
+  constraints:
+  - Do not invent an account number — say you do not have it on hand
+  speech_conditions:
+    # Post-mix audio degradation — the "call your users actually make".
+    # packet_loss + phone_quality stress ASR under a rough mobile line.
+    effects:
+      packet_loss:
+        probability: 0.05
+        chunk_ms: 20
+      phone_quality: true
+execute:
+  max_turns: 5
+  timeout_s: 120
+  first_speaker: agent
+pass_criteria:
+  criteria:
+  - The agent understood a caller on a degraded/rough audio line
+  - The agent stayed on the unknown-charge topic despite packet loss
