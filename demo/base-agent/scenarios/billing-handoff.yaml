@@ -1,0 +1,36 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: billing-handoff
+  locale: en-US
+  tags: [base-agent, handoff, workflow]
+persona:
+  name: John
+  language: en-US
+  brief: |
+    You are calling Acme Corp about a confusing charge on your latest invoice.
+    You need help from the billing department. Answer questions briefly with
+    one or two words. Follow the agent's direction if they route you.
+  goals:
+  - Explain you have a billing question about a charge
+  - Get help from the billing team
+  style: polite, brief
+execute:
+  max_turns: 8
+  timeout_s: 90
+  first_speaker: agent
+assert:
+  transcript:
+  - role: agent
+    contains_any: [billing, invoice, charge, payment]
+  tools:
+  - name: transfer_to_billing
+    min_count: 0
+  outcomes:
+  - id: transferred_to_billing
+    type: handoff
+    min_handoffs: 1
+pass_criteria:
+  criteria:
+  - The agent routed the billing caller to the billing specialist
+  - The billing specialist acknowledged the caller's charge question

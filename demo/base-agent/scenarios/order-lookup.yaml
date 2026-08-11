@@ -1,0 +1,32 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: order-lookup
+  locale: en-US
+  tags: [base-agent, tools, task]
+persona:
+  name: Anna
+  language: en-US
+  brief: |
+    You are calling Acme Corp to check the status of your order. Your account
+    number is 12345. Provide it when asked, confirm when read back.
+  goals:
+  - Ask about your order status
+  - Provide account number 12345 when asked
+  style: polite, brief
+execute:
+  max_turns: 8
+  timeout_s: 90
+  first_speaker: agent
+assert:
+  transcript:
+  - role: agent
+    contains_any: [order, shipped, status, account]
+  tools:
+  - name: lookup_order
+    min_count: 0
+  - name: account_number_collected
+    min_count: 0
+pass_criteria:
+  criteria:
+  - The agent looked up the order status using the account number

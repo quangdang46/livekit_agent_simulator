@@ -1,0 +1,27 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: frontdesk-hours
+  locale: en-US
+  tags: [smoke, base-agent, tools]
+persona:
+  name: Maria
+  language: en-US
+  brief: You called the Acme Corp reception desk to ask what time they open on Saturday.
+  goals:
+  - Ask what time they open on Saturday
+  style: polite, brief
+execute:
+  max_turns: 5
+  timeout_s: 60
+  first_speaker: agent
+assert:
+  transcript:
+  - role: agent
+    contains_any: [open, saturday, 10, am]
+  tools:
+  - name: check_hours
+    min_count: 0
+pass_criteria:
+  criteria:
+  - The agent answered the caller's question about Saturday hours
