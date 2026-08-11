@@ -1,0 +1,38 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: handoff-observe
+  locale: en-US
+  tags:
+  - example
+  - handoff
+  - workflow
+persona:
+  name: Dana
+  language: en-US
+  brief: You reached support about a billing question; a first agent may route you to a specialist.
+  goals:
+  - Confirm you reached support
+  - Ask about a charge you do not recognize
+  - Follow the agent's direction (including any transfer to a specialist)
+  style: polite, cooperative
+  traits:
+  - polite
+  constraints:
+  - Do not hang up until the agent ends the call
+execute:
+  max_turns: 8
+  timeout_s: 150
+  first_speaker: agent
+assert:
+  outcomes:
+  # Positive case: this billing triage flow MUST hand off to a specialist.
+  - id: transferred_to_specialist
+    type: handoff
+    min_handoffs: 1
+pass_criteria:
+  criteria:
+  - The agent transferred the caller to a specialist for the billing question
+# For the negative case (forbid transfers), swap the outcome above for:
+#   - id: no_unplanned_handoff
+#     type: no_unplanned_handoff

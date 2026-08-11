@@ -124,6 +124,31 @@ def web(
 
 
 @app.command()
+def serve(
+    port: int = typer.Option(8787, "--port", "-p"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    root: Optional[Path] = ROOT_OPTION,
+) -> None:
+    """Start the lks REST API (JSON over HTTP; same ops as CLI/MCP). Ctrl+C to stop."""
+    from .web.api import start_api_server
+
+    try:
+        info = start_api_server(
+            _root(root),
+            host=host,
+            port=port,
+            blocking=True,
+        )
+        _print({k: v for k, v in info.items() if k not in ("server", "thread")})
+    except KeyboardInterrupt:
+        typer.echo("\nStopped REST API.")
+        raise typer.Exit(0)
+    except (ConfigError, OSError) as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
 def preflight(
     root: Optional[Path] = ROOT_OPTION,
     no_connectivity: bool = typer.Option(False, "--no-connectivity", help="Skip LiveKit API check"),

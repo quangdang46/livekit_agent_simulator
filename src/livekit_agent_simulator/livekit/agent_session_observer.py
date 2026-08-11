@@ -289,9 +289,32 @@ class AgentSessionObserver:
         if not added.HasField("item"):
             return
         item = added.item
-        if item.WhichOneof("item") != "function_call":
-            return
-        self._emit_tool_start(item.function_call)
+        item_type = item.WhichOneof("item")
+        if item_type == "function_call":
+            self._emit_tool_start(item.function_call)
+        elif item_type == "agent_handoff":
+            self._emit_handoff(item.agent_handoff)
+
+    def _emit_handoff(self, handoff: agent_pb.AgentHandoff) -> None:
+        """Emit a handoff.* event for an agent→agent transfer (AgentHandoff chat item).
+
+        ``agent_handoff`` items appear in the chat history when control transfers
+        between agents (LiveKit AgentSession handoff / WarmTransferTask). We surface
+        them as ``handoff`` events so asserts can require (or forbid) transfers.
+
+        ``created_at`` is a protobuf ``Timestamp`` — convert to an ISO string so the
+        event is JSON-serializable (regression: the raw Timestamp crashed the writer).
+        """
+        created = handoff.created_at
+        self._emit_session(
+            "handoff",
+            {
+                "id": handoff.id or None,
+                "old_agent_id": handoff.old_agent_id or None,
+                "new_agent_id": handoff.new_agent_id or None,
+                "created_at": created.ToJsonString() if created is not None else None,
+            },
+        )
 
     def _tool_key(self, call_id: str | None, item_id: str | None) -> str | None:
         return call_id or item_id or None
@@ -467,3 +490,5 @@ class AgentSessionObserver:
                 if key and key not in self._started_call_ids and key in calls_by_key:
                     self._emit_tool_start(calls_by_key[key])
                 self._emit_tool_output(output)
+            elif item_type == "agent_handoff":
+                self._emit_handoff(item.agent_handoff)

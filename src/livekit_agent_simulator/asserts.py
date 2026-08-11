@@ -53,6 +53,10 @@ class OutcomeExpect:
     min_agent_finals_after_barge_in: int = 1
     min_interruptions: int = 0
     max_ms_after_barge_to_agent_final: int | None = None
+    # handoff: min_handoffs handoff events must occur (agent→agent transfer).
+    min_handoffs: int = 1
+    # no_unplanned_handoff: pass iff zero handoff events (forbid transfers).
+    no_unplanned_handoff: bool = False
     # latency thresholds (omit = do not check that dimension)
     max_turn_p50_ms: int | None = None
     max_turn_p95_ms: int | None = None
@@ -159,7 +163,7 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
         if not isinstance(raw, dict) or not raw.get("id"):
             raise ValueError(f"{path_label}: outcomes[{i}] needs id")
         otype = str(raw.get("type", "transcript_contains"))
-        if otype not in ("transcript_contains", "llm_bool", "recovery", "latency", "ended_by", "goals_met", "constraint_respected", "backchannel_agent_continued"):
+        if otype not in ("transcript_contains", "llm_bool", "recovery", "latency", "ended_by", "goals_met", "constraint_respected", "backchannel_agent_continued", "handoff", "no_unplanned_handoff"):
             raise ValueError(f"{path_label}: outcomes[{i}].type unsupported: {otype}")
         phrases = raw.get("phrases") or raw.get("contains_any") or []
         if isinstance(phrases, str):
@@ -237,6 +241,8 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
                 must_not_phrases=tuple(str(x) for x in mnp),
                 must_not_match=mnm,
                 check_agent_transcript=bool(raw.get("check_agent_transcript", False)),
+                min_handoffs=int(raw.get("min_handoffs", 1)),
+                no_unplanned_handoff=bool(raw.get("no_unplanned_handoff", False)),
             )
         )
 
@@ -503,6 +509,35 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
                 checks.append({
                     "outcome_id": oc.id, "type": oc.type, "pass": continued,
                     "continued": continued, "agent_finals_after": len(agent_after),
+                })
+        elif oc.type in ("handoff", "no_unplanned_handoff"):
+            handoffs = [e for e in events if e.get("kind") == "handoff"]
+            n = len(handoffs)
+            if oc.type == "no_unplanned_handoff":
+                ok = n == 0
+                checks.append({
+                    "check": f"outcome:{oc.id}",
+                    "pass": ok,
+                    "type": oc.type,
+                    "handoffs": n,
+                    "expected": "none",
+                    "reason": None if ok else f"unexpected handoff(s) occurred: {n}",
+                })
+            else:
+                ok = n >= oc.min_handoffs
+                checks.append({
+                    "check": f"outcome:{oc.id}",
+                    "pass": ok,
+                    "type": "handoff",
+                    "handoffs": n,
+                    "expected_min": oc.min_handoffs,
+                    "details": [
+                        {
+                            "old_agent_id": (e.get("spec") or {}).get("old_agent_id"),
+                            "new_agent_id": (e.get("spec") or {}).get("new_agent_id"),
+                        }
+                        for e in handoffs
+                    ],
                 })
         elif oc.type == "goals_met":
             pending_llm.append({"id": oc.id, "prompt": oc.prompt or oc.id, "goals_met": True,

@@ -31,6 +31,7 @@ from .config import SimConfig, config_snapshot
 from .callers.base import CallerBridge
 from .callers.factory import build_caller_bridge
 from .callers.gemini import resolve_voice_gain
+from .audio.degradation import resolve_audio_effects
 from .livekit.adapter import AgentJoinTimeout, LiveKitAdapter
 from .livekit.observer import Observer
 from .livekit.sim_leg import SimLegContext, SimLegError, SimLegHandle, sim_leg_factory
@@ -353,6 +354,7 @@ async def run_scenario_instance(
                 voice_gain=resolve_voice_gain(scenario.persona),
                 midcall_cues=[] if _silent else _midcall_cues,
                 silent_mode=_silent,
+                audio_effects=resolve_audio_effects(scenario.persona),
             )
             if _silent:
                 writer.emit(

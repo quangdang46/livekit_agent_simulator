@@ -8,9 +8,12 @@ branch.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 from livekit import rtc
+
+if TYPE_CHECKING:
+    from ..audio.degradation import EffectFn
 
 if TYPE_CHECKING:
     from ..audio.local_recorder import LocalConversationRecorder
@@ -32,6 +35,7 @@ def build_caller_bridge(
     midcall_cues: list | None = None,
     voice_gain: float = 1.0,
     silent_mode: bool = False,
+    audio_effects: Sequence[EffectFn] = (),
 ) -> CallerBridge:
     """Construct the caller bridge for ``cfg.simulator.provider``.
 
@@ -56,6 +60,7 @@ def build_caller_bridge(
             midcall_cues=midcall_cues,
             voice_gain=voice_gain,
             silent_mode=silent_mode,
+            audio_effects=audio_effects,
         )
     if provider == "openai":
         from .openai import OpenAICallerBridge
@@ -71,5 +76,6 @@ def build_caller_bridge(
             midcall_cues=midcall_cues,
             voice_gain=voice_gain,
             silent_mode=silent_mode,
+            audio_effects=audio_effects,
         )
     raise ConfigError(f"Unknown simulator.provider {provider!r}")

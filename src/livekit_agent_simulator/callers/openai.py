@@ -29,13 +29,14 @@ import json
 import time
 from pathlib import Path
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 from livekit import rtc
 
 from ..audio.local_recorder import LocalConversationRecorder
 from ..audio.mic_mixer import ParallelMicMixer
 from ..audio.pcm_cue import load_wav_pcm, resolve_cue_asset
+from ..audio.degradation import EffectFn
 from ..config import SimConfig
 from .end_call import (
     END_CALL_TOKEN,
@@ -106,6 +107,7 @@ class OpenAICallerBridge:
         midcall_cues: list | None = None,
         voice_gain: float = 1.0,
         silent_mode: bool = False,
+        audio_effects: Sequence[EffectFn] = (),
     ) -> None:
         self.cfg = cfg
         self.room = room
@@ -118,6 +120,7 @@ class OpenAICallerBridge:
             raise ValueError(f"voice_gain must be between 0.0 and 1.0 (got {voice_gain})")
         self._voice_gain = float(voice_gain)
         self._silent_mode = bool(silent_mode)
+        self._audio_effects: list[EffectFn] = list(audio_effects)
         self._midcall_cues = list(midcall_cues or [])
 
         self.end_call = asyncio.Event()
@@ -273,6 +276,7 @@ class OpenAICallerBridge:
             self._source,
             sample_rate=OPENAI_OUT_RATE,
             recorder=self.recorder,
+            effects=self._audio_effects,
         )
         self._mixer.start()
         self.writer.emit(
