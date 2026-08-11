@@ -212,6 +212,13 @@ Three silence concepts — do not mix them:
   - **Silent mode (dead air):** `speech_conditions.silent_mode: true` — caller stays mute for the whole call (Coval Silent Mode). Disables freestyle, agent-greeted nudge, auto barge/noise; hang_up is silent. Use for reprompt/timeout QA.
   - **Interruption rate (recurring cut-ins):** `speech_conditions.interruption_rate: none|low|medium|high` — parallel timer policy that barges while the agent is speaking, at most once per interval (`low`=90 s, `medium`=45 s, `high`=30 s). Fires only while the agent is the active speaker (a due interval waits for the next agent turn). Emits the same `sim.script.cue` / `interruption` events as Script barges (`class` defaults to `correction`). Overrides: `interruption_say`, `interruption_asset` (→ `room_pcm`), `interruption_class`, `interruption_gain`, `interruption_with_blip`, `interruption_min_agent_active_ms`, and `interruption_interval_ms` (≥ 5000; pins the interval for short smoke calls). Disabled by `silent_mode`. Distinct from one-shot `barge_policy` and authored `Behavior.barge_ins[]` (see example `interrupt-rate-medium`).
   - **Continuous ambient bed:** `noise_when: "background"` (or Behavior/Script `"loop": true`) re-queues `room_pcm` noise until hang-up (parallel under speech). One-shot bursts stay default (`once` / no loop).  
+  - **Audio degradation (rough line / packet loss):** `speech_conditions.effects` applies post-mix PCM transforms to the caller mic so the agent-under-test is stressed with imperfect audio (the "call your users actually make" gap). Accepts a dict `{name: kwargs}` or a list. Seeded per-config → reproducible in CI.
+    - `packet_loss: {probability, chunk_ms}` — network dropouts (default 0.05 / 20 ms)
+    - `breaking_up: {probability}` — heavier intermittent dropouts
+    - `echo: {delay_ms, decay}` — acoustic echo (default 200 ms / 0.5)
+    - `phone_quality: true` — bandpass + compression (phone-line feel)
+    - `static: {intensity}` — white-noise static
+    - See `templates/examples/degraded-call.yaml` (shipped after `init`).
 - **Behavior** kind → explicit barge/silence/ambient policies; set Script step `class` (`correction` \| `backchannel` \| `noise` \| `dtmf` \| `silence` \| `escalate`) so recovery metrics and web chips stay honest  
 - **Assert** `outcomes` type **`recovery`** → agent re-engages after barge (`min_agent_finals_after_barge_in`, optional `max_ms_after_barge_to_agent_final`)
 - **Assert** `outcomes` type **`latency`** → hard CI gates on turn p50/p95, TTFW, recovery percentiles, barge recovery rate
@@ -225,6 +232,10 @@ Three silence concepts — do not mix them:
   - Example: `{"id":"no_card","type":"constraint_respected","must_not_phrases":["4111","CVV"]}`
 - **Assert** `tool_order` → required subsequence of `tool.start` names (not necessarily contiguous)
   - Example: `{"kind":"Assert","spec":{"tool_order":["lookup","book"]}}`
+- **Assert** `outcomes` type **`handoff`** → at least `min_handoffs` agent→agent transfers occurred (LiveKit AgentHandoff chat items, e.g. tool-based handoff or WarmTransferTask) — surfaced as `handoff.*` events
+  - Example: `{"id":"transferred","type":"handoff","min_handoffs":1}`
+- **Assert** `outcomes` type **`no_unplanned_handoff`** → pass iff **zero** handoff events (forbid a transfer you didn't expect)
+  - Example: `{"id":"no_transfer","type":"no_unplanned_handoff"}`
 - **Script action `hang_up`** → sim caller disconnects from room (cúp máy thật)
   - Example: `{"id":"hangup","action":"hang_up","trigger":"time","delay_ms":5000,"say":"Thôi em cúp đây"}`  
 - See https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/caller-pattern-plan.md and `templates/examples/character-impatient.yaml` (shipped in package after `init`)
@@ -492,9 +503,40 @@ Full guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/doc
 | `report` | `get_run_report` |
 | `compare` | `compare_runs` (optional `--baseline` hard regression gate) |
 | `runs` | `list_runs` |
+| `serve` | — | REST API (JSON over HTTP; same ops as CLI/MCP) |
+| `optimize` | `optimize_persona` | Offline persona-prompt optimizer (live benchmark loop) → `.agent-sim/optimized/` artifact |
 | `mcp` | *(stdio server — all tools above)* |
 
 There is **no** separate `run` command — always validate-then-run via `execute*`.
+
+### REST API (`serve`)
+
+`lks serve` exposes the same public ops over HTTP/JSON (one ops layer — no forked run logic).
+Start it, then call endpoints from CI runners / workflows:
+
+```bash
+lks serve --root /path/to/target          # listens on 127.0.0.1:8787
+curl http://127.0.0.1:8787/api/v1/health
+curl http://127.0.0.1:8787/api/v1/scenarios
+curl -X POST http://127.0.0.1:8787/api/v1/validate -H 'Content-Type: application/json' -d '{"scenario_id":"smoke-hello"}'
+curl -X POST http://127.0.0.1:8787/api/v1/execute  -H 'Content-Type: application/json' -d '{"scenario_id":"smoke-hello"}'
+```
+
+### Persona-prompt optimizer (`optimize`)
+
+**Offline DSPy-style loop, live re-runs.** Generates candidate persona-prompt variants
+(structural mutations: verbosity / section reorder / guardrail lines), scores each by
+re-running the dataset live, and selects the winner that **strictly beats baseline** AND
+passes a held-out scenario. Writes a versioned artifact you review + commit; runtime
+applies it via `lks execute --optimized <name>`.
+
+```bash
+lks optimize scen-a,scen-b --held-out scen-c --root /path/to/target   # → .agent-sim/optimized/<name>/
+lks execute scen-a --optimized <name> --root /path/to/target           # apply the winner
+```
+
+The optimizer reuses the configured judge LLM for candidate generation — **no new runtime
+dependency**. Production keeps running the versioned prompt; the optimizer is a dev tool.
 
 ### Authoring quality gate (`validate`)
 

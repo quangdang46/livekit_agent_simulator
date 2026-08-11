@@ -684,6 +684,7 @@ Mark setup complete only when **all** of these are true:
 - [ ] (Optional) MCP `livekit-agent-simulator` registered if they use a coding agent
 - [ ] (Optional) `lks execute smoke-hello --root "$TARGET_ROOT"` → `status: done` or a clear next fix (agent timeout / Gemini quota)
 - [ ] (Optional SIP) `telephony:` trunk/DID filled when testing `inbound_sip` / `outbound_human_pickup` / `outbound_sim_callee`; scenarios validated
+- [ ] (Optional) new surfaces known: `lks serve` (REST API on :8787), `lks optimize` (persona-prompt optimizer), `speech_conditions.effects` (audio degradation), `handoff` / `no_unplanned_handoff` asserts — see `lks guide`
 
 **Do not claim “fully working E2E”** if preflight failed or the agent is not registered.
 
