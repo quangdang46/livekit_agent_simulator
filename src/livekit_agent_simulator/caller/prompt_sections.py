@@ -503,6 +503,18 @@ class FirstSpeakerSection:
 
 
 class GuardrailsSection:
+    """Caller guardrails block.
+
+    ``extra_lines`` are appended verbatim after the built-in guardrails — the
+    extension point the persona-prompt optimizer uses to inject generic
+    anti-repetition / anti-role-flip lines without touching the default
+    (``build_default_sections()`` constructs it parameterless, so behavior is
+    unchanged unless a variant provides extras).
+    """
+
+    def __init__(self, extra_lines: list[str] | None = None) -> None:
+        self._extra_lines = list(extra_lines or [])
+
     def render(self, ctx: CallerPolicyContext) -> list[str]:
         n = len(ctx.goals())
         has_script = bool(ctx.script_steps)
@@ -585,6 +597,8 @@ class GuardrailsSection:
             lines.append(
                 f"You have {n} numbered goal(s). Ending before they are addressed is a failure."
             )
+        if self._extra_lines:
+            lines.extend(self._extra_lines)
         return lines
 
 

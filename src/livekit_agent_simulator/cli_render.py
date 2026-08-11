@@ -627,6 +627,27 @@ def render_report(console: Console, data: dict[str, Any]) -> None:
         console.print(f"{label}: {truncate(path, 90) if path else 'not available'}")
 
 
+def render_optimize(console: Console, data: dict[str, Any]) -> None:
+    """Summary table for `lks optimize`."""
+    _kv(
+        console,
+        [
+            ("name", data.get("name") or _DASH),
+            ("dir", data.get("dir") or _DASH),
+            ("baseline_pass_rate", fmt_pct(data.get("baseline_pass_rate"))),
+            ("winner", (data.get("winner") or {}).get("id") or "none"),
+            ("winner_pass_rate", fmt_pct((data.get("winner") or {}).get("pass_rate"))),
+        ],
+        title="optimize",
+    )
+    cands = data.get("candidate_pass_rates") or []
+    if cands:
+        t = _table(["candidate", "pass_rate"], title="candidates")
+        for c in cands:
+            t.add_row(str(c.get("id") or _DASH), fmt_pct(c.get("pass_rate")))
+        console.print(t)
+
+
 def render_log(console: Console, data: dict[str, Any]) -> None:
     if not data.get("found"):
         console.print(f"run {data.get('run_id') or '?'}: not found", style="red bold")
@@ -706,4 +727,5 @@ __all__ = [
     "render_status",
     "render_report",
     "render_log",
+    "render_optimize",
 ]

@@ -336,6 +336,7 @@ CLI and MCP share the same public ops (`ops.py`). Prefer `execute` (validate the
 | `report` | `get_run_report` | Summary + verdict + paths |
 | `compare` | `compare_runs` | Diff two runs; `--baseline` hard-fails on latency/assert / barge-recovery regression |
 | `runs` | `list_runs` | Run history |
+| `optimize` | `optimize_persona` | Offline persona-prompt optimizer (live benchmark loop) → `.agent-sim/optimized/` artifact |
 | `mcp` | — | Start MCP server (stdio) |
 
 ```bash
@@ -344,6 +345,8 @@ lks execute-all --tag smoke --root /path/to/target
 lks log <run-id> --root /path/to/target
 lks compare <run-a> <run-b> --root /path/to/target
 lks compare <baseline> <candidate> --baseline --root /path/to/target
+lks optimize scen-a,scen-b --held-out scen-c --root /path/to/target   # → optimized/<name>/
+lks execute scen-a --optimized <name> --root /path/to/target           # apply the winner
 lks web --port 8765 --root /path/to/target
 ```
 

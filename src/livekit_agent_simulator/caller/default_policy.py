@@ -22,8 +22,14 @@ class DefaultCallerPolicy:
     - Swap entire policy via Scenario/bridge injection later without touching Live I/O.
     """
 
-    def __init__(self, sections: list[PromptSection] | None = None) -> None:
+    def __init__(
+        self,
+        sections: list[PromptSection] | None = None,
+        *,
+        policy_source: str = "builtin",
+    ) -> None:
         self._sections = list(sections) if sections is not None else build_default_sections()
+        self.policy_source = policy_source
 
     def build_system_instruction(self, ctx: CallerPolicyContext) -> str:
         lines: list[str] = []
