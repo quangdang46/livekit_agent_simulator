@@ -103,6 +103,24 @@ def test_conversation_item_added_emits_handoff() -> None:
     assert any(e["kind"] == "handoff" for e in writer.events)
 
 
+def test_handoff_created_at_is_json_serializable() -> None:
+    """Regression: a protobuf Timestamp crashed the event writer (TypeError)."""
+    import json
+    from google.protobuf.timestamp_pb2 import Timestamp
+
+    writer = _SinkWriter()
+    observer = _make_observer(writer)  # type: ignore[arg-type]
+    item = _handoff_item("triage", "billing")
+    ts = Timestamp()
+    ts.seconds = 1_700_000_000
+    item.agent_handoff.created_at.CopyFrom(ts)
+    observer._reconcile_history([item])
+    h = next(e for e in writer.events if e["kind"] == "handoff")
+    # The spec must serialize to JSON (the raw Timestamp would raise TypeError).
+    json.dumps(h["spec"])
+    assert h["spec"]["created_at"] == "2023-11-14T22:13:20Z"
+
+
 # -------------------------------------------------------------------------- asserts
 
 def test_handoff_outcome_requires_count() -> None:

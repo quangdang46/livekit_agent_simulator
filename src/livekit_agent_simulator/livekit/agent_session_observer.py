@@ -301,14 +301,18 @@ class AgentSessionObserver:
         ``agent_handoff`` items appear in the chat history when control transfers
         between agents (LiveKit AgentSession handoff / WarmTransferTask). We surface
         them as ``handoff`` events so asserts can require (or forbid) transfers.
+
+        ``created_at`` is a protobuf ``Timestamp`` — convert to an ISO string so the
+        event is JSON-serializable (regression: the raw Timestamp crashed the writer).
         """
+        created = handoff.created_at
         self._emit_session(
             "handoff",
             {
                 "id": handoff.id or None,
                 "old_agent_id": handoff.old_agent_id or None,
                 "new_agent_id": handoff.new_agent_id or None,
-                "created_at": handoff.created_at or None,
+                "created_at": created.ToJsonString() if created is not None else None,
             },
         )
 
