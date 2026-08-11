@@ -118,6 +118,23 @@ def test_packet_loss_zeroes_some_samples() -> None:
     assert any(s == 0 for s in samples)
 
 
+def test_effect_is_reproducible_same_config() -> None:
+    # Same effect config → same dropout pattern (CI reproducibility).
+    pcm = _speech_pcm(2400)
+    spec = {"speech_conditions": {"effects": {"packet_loss": {"probability": 0.5}}}}
+    fx1 = resolve_audio_effects(spec)[0]
+    fx2 = resolve_audio_effects(spec)[0]
+    assert fx1(pcm) == fx2(pcm)
+
+
+def test_effect_differs_across_configs() -> None:
+    # Different config → different pattern (seeded from the config).
+    pcm = _speech_pcm(2400)
+    a = resolve_audio_effects({"speech_conditions": {"effects": {"packet_loss": {"probability": 0.3}}}})[0]
+    b = resolve_audio_effects({"speech_conditions": {"effects": {"packet_loss": {"probability": 0.7}}}})[0]
+    assert a(pcm) != b(pcm)
+
+
 def test_echo_extends_signal() -> None:
     pcm = _speech_pcm(2400)
     fx = resolve_audio_effects({"speech_conditions": {"effects": {"echo": {"decay": 0.5}}}})[0]

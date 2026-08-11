@@ -21,9 +21,16 @@ from typing import Any, Callable
 # A post-mix frame transform: PCM16 mono bytes in, PCM16 mono bytes out.
 EffectFn = Callable[[bytes], bytes]
 
-# Deterministic keyed RNG so a given scenario's degradation is reproducible
-# across runs (fixed "packet loss pattern" per effect config).
-_RNG = random.Random()
+
+def _seeded_rng(*parts: Any) -> random.Random:
+    """Build a deterministic RNG from the effect's config.
+
+    The same effect config (e.g. ``packet_loss probability=0.05 chunk_ms=20``)
+    always yields the same dropout pattern across runs, so a scenario with
+    degradation is reproducible in CI. Different configs seed differently.
+    """
+    seed = "|".join(str(p) for p in parts)
+    return random.Random(seed)
 
 
 def _pcm_to_samples(pcm: bytes) -> array.array:
@@ -60,25 +67,27 @@ def _dropout(samples: array.array, chunk_samples: int, probability: float, rng: 
 
 
 def packet_loss(probability: float = 0.05, chunk_ms: int = 20, sample_rate: int = 24_000) -> EffectFn:
-    """Simulate network dropouts: zero random ~20ms windows."""
+    """Simulate network dropouts: zero random ~20ms windows (seeded, reproducible)."""
     chunk = max(1, (sample_rate * chunk_ms) // 1000)
+    rng = _seeded_rng("packet_loss", probability, chunk)
 
     def _apply(pcm: bytes) -> bytes:
         if probability <= 0 or not pcm:
             return pcm
-        return _samples_to_pcm(_dropout(_pcm_to_samples(pcm), chunk, probability, _RNG))
+        return _samples_to_pcm(_dropout(_pcm_to_samples(pcm), chunk, probability, rng))
 
     return _apply
 
 
 def breaking_up(probability: float = 0.2, sample_rate: int = 24_000) -> EffectFn:
-    """Intermittent connection: heavier dropouts than packet_loss (LangWatch parity)."""
+    """Intermittent connection: heavier dropouts than packet_loss (LangWatch parity, seeded)."""
     chunk = (sample_rate * 100) // 1000  # 100ms windows
+    rng = _seeded_rng("breaking_up", probability, chunk)
 
     def _apply(pcm: bytes) -> bytes:
         if not pcm:
             return pcm
-        return _samples_to_pcm(_dropout(_pcm_to_samples(pcm), chunk, probability, _RNG))
+        return _samples_to_pcm(_dropout(_pcm_to_samples(pcm), chunk, probability, rng))
 
     return _apply
 
@@ -143,9 +152,10 @@ def phone_quality(sample_rate: int = 24_000) -> EffectFn:
 
 
 def static(intensity: float = 0.05) -> EffectFn:
-    """Overlay white-noise static at the given intensity (fraction of full scale)."""
+    """Overlay white-noise static at the given intensity (fraction of full scale, seeded)."""
     if not 0.0 <= intensity <= 1.0:
         raise ValueError(f"static intensity must be in [0.0, 1.0] (got {intensity})")
+    rng = _seeded_rng("static", intensity)
 
     def _apply(pcm: bytes) -> bytes:
         if not pcm:
@@ -153,7 +163,7 @@ def static(intensity: float = 0.05) -> EffectFn:
         samples = _pcm_to_samples(pcm)
         out = array.array("h", samples)
         for i in range(len(out)):
-            noise = int(round(_RNG.gauss(0, 32767 * intensity)))
+            noise = int(round(rng.gauss(0, 32767 * intensity)))
             v = out[i] + noise
             if v > 32767:
                 v = 32767
