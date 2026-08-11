@@ -103,6 +103,16 @@ def test_conversation_item_added_emits_handoff() -> None:
     assert any(e["kind"] == "handoff" for e in writer.events)
 
 
+def test_handoff_skips_session_bootstrap_false_positive() -> None:
+    """Regression: OpenAI Realtime emits an AgentHandoff at session start with
+    old_agent_id empty — that is NOT a transfer and must not emit a handoff event."""
+    writer = _SinkWriter()
+    observer = _make_observer(writer)  # type: ignore[arg-type]
+    item = _handoff_item("", "dtmf_agent")  # old_agent_id empty = bootstrap
+    observer._reconcile_history([item])
+    assert not any(e["kind"] == "handoff" for e in writer.events)
+
+
 def test_handoff_created_at_is_json_serializable() -> None:
     """Regression: a protobuf Timestamp crashed the event writer (TypeError)."""
     import json

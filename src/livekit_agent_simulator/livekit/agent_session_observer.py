@@ -302,16 +302,26 @@ class AgentSessionObserver:
         between agents (LiveKit AgentSession handoff / WarmTransferTask). We surface
         them as ``handoff`` events so asserts can require (or forbid) transfers.
 
+        False-positive guard: some agents (e.g. OpenAI Realtime) emit an
+        ``AgentHandoff`` chat item at session start with ``old_agent_id`` empty and
+        ``created_at`` at epoch 0 — the initial agent assignment, NOT a transfer.
+        Skip those so ``no_unplanned_handoff`` doesn't false-fail a normal call.
+
         ``created_at`` is a protobuf ``Timestamp`` — convert to an ISO string so the
         event is JSON-serializable (regression: the raw Timestamp crashed the writer).
         """
+        old_id = handoff.old_agent_id or ""
+        new_id = handoff.new_agent_id or ""
+        if not old_id or old_id == new_id:
+            # No prior agent (session bootstrap) or a no-op — not a real transfer.
+            return
         created = handoff.created_at
         self._emit_session(
             "handoff",
             {
                 "id": handoff.id or None,
-                "old_agent_id": handoff.old_agent_id or None,
-                "new_agent_id": handoff.new_agent_id or None,
+                "old_agent_id": old_id or None,
+                "new_agent_id": new_id or None,
                 "created_at": created.ToJsonString() if created is not None else None,
             },
         )
