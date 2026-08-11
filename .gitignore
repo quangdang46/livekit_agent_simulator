@@ -5,7 +5,8 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
-.agent-sim/
+.agent-sim/*
+!.agent-sim/optimized/
 *.sqlite
 *.sqlite-journal
 .env

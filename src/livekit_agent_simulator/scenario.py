@@ -176,6 +176,10 @@ class Scenario:
     asserts: AssertSpec | None = None
     # Raw Behavior.spec (Hamming-style policy); compiled into script_steps at parse end.
     behavior_spec: dict[str, Any] | None = None
+    # Optional persona-prompt policy override (a saved optimizer variant). When
+    # set, persona_system_prompt() composes with this policy instead of the
+    # builtin DefaultCallerPolicy — the runtime seam for `lks execute --optimized`.
+    caller_policy: Any = None
 
     def effective_caller_mode(self) -> str:
         if self.caller and self.caller.mode:
@@ -304,6 +308,7 @@ class Scenario:
             context=self.context if isinstance(self.context, dict) else {},
             script_steps=self.script_steps,
             first_speaker=self.run_spec.first_speaker,
+            policy=self.caller_policy,
         )
 
 

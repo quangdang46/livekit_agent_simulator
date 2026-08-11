@@ -158,13 +158,20 @@ async def run_scenario(
     *,
     run_name: str | None = None,
     agent_name: str | None = None,
+    caller_policy: Any = None,
 ) -> dict[str, Any]:
-    """Run one scenario by id from `.agent-sim/scenarios/`."""
+    """Run one scenario by id from `.agent-sim/scenarios/`.
+
+    ``caller_policy`` (optional) overrides the persona-prompt composer — the
+    runtime seam for a saved ``lks optimize`` artifact.
+    """
     preflight, _ = await run_preflight(cfg.project_root, connectivity=True)
     if not preflight.ok:
         failed = [c for c in preflight.checks if c["status"] == "fail"]
         raise RuntimeError("Preflight failed: " + "; ".join(f"{c['name']}: {c['detail']}" for c in failed))
     scenario = find_scenario(cfg.scenarios_dir, scenario_id)
+    if caller_policy is not None:
+        scenario.caller_policy = caller_policy
     return await run_scenario_instance(cfg, scenario, run_name=run_name, agent_name=agent_name)
 
 
@@ -331,7 +338,10 @@ async def run_scenario_instance(
                 script_steps=list(scenario.script_steps or []),
                 first_speaker=run.first_speaker,
             )
-            _midcall_cues = DefaultCallerPolicy().midcall_cues(_midcall_ctx)
+            # Variant policy (saved optimizer artifact) drives BOTH the SI and the
+            # reground cues so a prompt override behaves consistently end-to-end.
+            _policy = scenario.caller_policy or DefaultCallerPolicy()
+            _midcall_cues = _policy.midcall_cues(_midcall_ctx)
             _silent = silent_mode_enabled(scenario.persona)
             bridge = build_caller_bridge(
                 cfg=cfg,

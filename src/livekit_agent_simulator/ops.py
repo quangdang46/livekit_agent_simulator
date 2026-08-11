@@ -391,17 +391,38 @@ async def _run_scenario_dict(
     )
 
 
+def _resolve_caller_policy(project_root: Path | str, optimized: str | None) -> Any:
+    """Load a saved optimizer artifact into a caller policy (or None for builtin)."""
+    if not optimized:
+        return None
+    from .optimize.apply import policy_for_variant
+    from .optimize.variant import load_variant
+
+    cfg = load_config(project_root)
+    artifact = cfg.optimized_dir / optimized / "prompt.yaml"
+    if not artifact.is_file():
+        raise ConfigError(
+            f"No optimized prompt at {artifact} — run `lks optimize --name {optimized}` first"
+        )
+    return policy_for_variant(load_variant(artifact))
+
+
 async def _run_scenario(
     project_root: Path | str,
     scenario_id: str,
     *,
     run_name: str | None = None,
     agent_name: str | None = None,
+    caller_policy: Any = None,
 ) -> dict[str, Any]:
     """Internal: run JSONL scenario after preflight (orchestrator also preflights)."""
     cfg = load_config(project_root)
     return await run_orchestrator.run_scenario(
-        cfg, scenario_id, run_name=run_name, agent_name=agent_name
+        cfg,
+        scenario_id,
+        run_name=run_name,
+        agent_name=agent_name,
+        caller_policy=caller_policy,
     )
 
 
@@ -431,6 +452,7 @@ async def execute_scenario(
     pass_at_k: int | None = None,
     run_name: str | None = None,
     agent_name: str | None = None,
+    optimized: str | None = None,
 ) -> dict[str, Any]:
     """Validate then run one scenario from `.agent-sim/scenarios/<id>.jsonl`.
 
@@ -438,6 +460,10 @@ async def execute_scenario(
     ``repeat=1`` (default) preserves single-shot semantics.
 
     ``agent_name`` overrides the target worker for this run (no config edit).
+
+    ``optimized`` (optional) applies a saved ``lks optimize`` artifact
+    (``.agent-sim/optimized/<name>/prompt.yaml``) as the persona-prompt
+    override for this run.
     """
     if repeat < 1:
         raise ValueError(f"repeat must be >= 1, got {repeat}")
@@ -449,15 +475,26 @@ async def execute_scenario(
     if not validation.get("valid"):
         return {"executed": False, "validation": validation}
 
+    caller_policy = _resolve_caller_policy(project_root, optimized)
+
     from .suite import evaluate_run_result
     from .metrics import metrics_digest
 
     iterations: list[dict[str, Any]] = []
     hard_passes = 0
 
+    def _run() -> dict[str, Any]:
+        return _run_scenario(
+            project_root,
+            scenario_id,
+            run_name=run_name,
+            agent_name=agent_name,
+            caller_policy=caller_policy,
+        )
+
     for i in range(repeat):
         try:
-            result = await _run_scenario(project_root, scenario_id, run_name=run_name, agent_name=agent_name)
+            result = await _run()
             # _run_scenario returns raw orchestrator result without executed/validation
             result["executed"] = True
             result["validation"] = {"valid": True, "id": scenario_id}
@@ -469,7 +506,7 @@ async def execute_scenario(
         # never delivered, so re-run once instead of failing the iteration.
         if _is_transport_drop(result):
             try:
-                retried = await _run_scenario(project_root, scenario_id, run_name=run_name, agent_name=agent_name)
+                retried = await _run()
                 retried["executed"] = True
                 retried["validation"] = {"valid": True, "id": scenario_id}
                 retried.setdefault("retried_from_drop", True)
@@ -1023,6 +1060,78 @@ def scenario_from_run(
     return draft
 
 
+def render_prompt_variant(project_root: Path | str, name: str) -> dict[str, Any]:
+    """Render the composed system instruction a saved variant would produce.
+
+    Useful for reviewing a saved artifact before running it.
+    """
+    from .optimize.apply import apply_variant_to_persona
+    from .optimize.variant import load_variant
+    from .scenario import parse_scenario
+
+    cfg = load_config(project_root)
+    artifact = cfg.optimized_dir / name / "prompt.yaml"
+    if not artifact.is_file():
+        raise ConfigError(
+            f"No optimized prompt at {artifact} — run `lks optimize --name {name}` first"
+        )
+    variant = load_variant(artifact)
+    # Render against the first scenario in the dataset for preview.
+    scenario_files = sorted(p for p in cfg.scenarios_dir.glob("*.yaml"))
+    if not scenario_files:
+        return {"name": name, "variant": variant.id, "instruction": ""}
+    scenario = parse_scenario(scenario_files[0])
+    from .caller import build_persona_system_instruction
+
+    policy = _resolve_caller_policy(project_root, name)
+    instruction = build_persona_system_instruction(
+        persona=apply_variant_to_persona(scenario.persona, variant),
+        locale=scenario.effective_locale(),
+        context=scenario.context if isinstance(scenario.context, dict) else {},
+        script_steps=scenario.script_steps,
+        first_speaker=scenario.run_spec.first_speaker,
+        policy=policy,
+    )
+    return {"name": name, "variant": variant.id, "instruction": instruction}
+
+
+async def optimize_persona(
+    project_root: Path | str,
+    scenario_ids: list[str],
+    *,
+    held_out: str | None = None,
+    candidates: int = 4,
+    max_candidates: int = 6,
+    strict_judge: bool = False,
+    repeat: int = 1,
+    pass_at_k: int | None = None,
+    agent_name: str | None = None,
+    name: str | None = None,
+    parallel: int = 1,
+    wait_s: float = 0.0,
+) -> dict[str, Any]:
+    """Run the persona-prompt optimizer (live benchmark loop) over a dataset.
+
+    Wraps ``optimize.optimize_persona`` — the single ops layer for CLI + MCP.
+    ``execute_scenario`` is the real runner (tests inject a mock).
+    """
+    from .optimize.optimize import optimize_persona as _opt
+
+    return await _opt(
+        str(Path(project_root).resolve()),
+        list(scenario_ids),
+        held_out=held_out,
+        candidates=candidates,
+        max_candidates=max_candidates,
+        strict_judge=strict_judge,
+        repeat=repeat,
+        pass_at_k=pass_at_k,
+        agent_name=agent_name,
+        name=name,
+        execute_scenario=execute_scenario,
+    )
+
+
 def web(
     project_root: Path | str,
     run_id: str | None = None,
@@ -1073,4 +1182,6 @@ __all__ = [
     "compare_runs_with_baseline",
     "evaluate_baseline_gate",
     "list_runs",
+    "optimize_persona",
+    "render_prompt_variant",
 ]

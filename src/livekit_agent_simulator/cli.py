@@ -297,6 +297,12 @@ def execute(
         help="Override the target LiveKit worker name for this run (no config edit). "
         "Enables parallel worktree workflows.",
     ),
+    optimized: Optional[str] = typer.Option(
+        None,
+        "--optimized",
+        help="Apply a saved `lks optimize` artifact (.agent-sim/optimized/<name>/prompt.yaml) "
+        "as the persona-prompt override for this run.",
+    ),
     as_json: bool = JSON_OPTION,
 ) -> None:
     """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)"""
@@ -308,6 +314,7 @@ def execute(
             pass_at_k=pass_at_k,
             run_name=name,
             agent_name=agent_name,
+            optimized=optimized,
         )
     )
     from .suite import evaluate_run_result
@@ -436,6 +443,56 @@ def execute_dict_cmd(
     _emit(result, as_json, cli_render.render_execute)
     if _run_failed(result):
         raise typer.Exit(1)
+
+
+@app.command()
+def optimize(
+    scenario_ids: str = typer.Argument(
+        ...,
+        help="Comma-separated scenario ids (dataset) to optimize over",
+    ),
+    held_out: Optional[str] = typer.Option(
+        None,
+        "--held-out",
+        help="Scenario id held out for generalization check (must not regress)",
+    ),
+    candidates: int = typer.Option(4, "--candidates", "-c", help="Max candidate variants to evaluate"),
+    max_candidates: int = typer.Option(6, "--max-candidates", help="Cap on LLM-proposed variants"),
+    strict_judge: bool = typer.Option(False, "--strict-judge", help="Treat judge fail as hard fail"),
+    repeat: int = typer.Option(1, "--repeat", "-n", help="Run each scenario N times for pass@k"),
+    pass_at_k: Optional[int] = typer.Option(None, "--pass-at-k", "-k", help="Min hard-pass iterations"),
+    agent_name: Optional[str] = typer.Option(None, "--agent-name", help="Override target worker name"),
+    name: Optional[str] = typer.Option(None, "--name", help="Artifact slug (default auto)"),
+    root: Optional[Path] = ROOT_OPTION,
+    as_json: bool = JSON_OPTION,
+) -> None:
+    """Run the persona-prompt optimizer over a dataset (live benchmark loop).
+
+    Writes the winning variant to .agent-sim/optimized/<name>/; apply it to a
+    run with `lks execute <scenario> --optimized <name>`. (MCP: optimize_persona)
+    """
+    ids = [s.strip() for s in scenario_ids.split(",") if s.strip()]
+    if not ids:
+        typer.secho("scenario_ids must be a non-empty comma-separated list", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    result = _run(
+        ops.optimize_persona(
+            _root(root),
+            ids,
+            held_out=held_out,
+            candidates=candidates,
+            max_candidates=max_candidates,
+            strict_judge=strict_judge,
+            repeat=repeat,
+            pass_at_k=pass_at_k,
+            agent_name=agent_name,
+            name=name,
+        )
+    )
+    _emit(result, as_json, cli_render.render_optimize)
+    if result.get("winner") is None:
+        typer.secho("No candidate beat baseline — keeping the builtin prompt.", fg=typer.colors.YELLOW)
+        raise typer.Exit(0)
 
 
 @app.command()

@@ -109,6 +109,7 @@ async def execute_scenario(
     pass_at_k: int | None = None,
     run_name: str | None = None,
     agent_name: str | None = None,
+    optimized: str | None = None,
 ) -> dict[str, Any]:
     """Validate then execute one scenario from `.agent-sim/scenarios/*.yaml` (legacy `*.jsonl` still read).
 
@@ -118,6 +119,9 @@ async def execute_scenario(
     ``run_name``: override slug after auto seq prefix
     (e.g. ``demo`` → ``001-demo``; default → ``001-<scenario>``).
     Leading ``seq`` is auto-incremented (001, 002, …) from existing reports.
+
+    ``optimized``: apply a saved ``lks optimize`` artifact
+    (``.agent-sim/optimized/<name>/prompt.yaml``) as the persona-prompt override.
     """
     return await ops.execute_scenario(
         project_root,
@@ -126,6 +130,41 @@ async def execute_scenario(
         pass_at_k=pass_at_k,
         run_name=run_name,
         agent_name=agent_name,
+        optimized=optimized,
+    )
+
+
+@mcp.tool
+async def optimize_persona(
+    project_root: str,
+    scenario_ids: list[str],
+    held_out: str | None = None,
+    candidates: int = 4,
+    max_candidates: int = 6,
+    strict_judge: bool = False,
+    repeat: int = 1,
+    pass_at_k: int | None = None,
+    agent_name: str | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Run the persona-prompt optimizer over a dataset (live benchmark loop).
+
+    Runs the current persona prompt (baseline) and candidate variants over the
+    given scenarios, selects the winner that beats baseline AND passes the
+    held-out scenario, and writes it to ``.agent-sim/optimized/<name>/``.
+    Apply it to a run with ``execute_scenario(..., optimized=<name>)``.
+    """
+    return await ops.optimize_persona(
+        project_root,
+        list(scenario_ids),
+        held_out=held_out,
+        candidates=candidates,
+        max_candidates=max_candidates,
+        strict_judge=strict_judge,
+        repeat=repeat,
+        pass_at_k=pass_at_k,
+        agent_name=agent_name,
+        name=name,
     )
 
 

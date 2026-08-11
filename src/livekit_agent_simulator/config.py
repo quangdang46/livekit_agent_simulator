@@ -179,6 +179,11 @@ class SimConfig:
     def sqlite_path(self) -> Path:
         return self.dot_dir / "runs.sqlite"
 
+    @property
+    def optimized_dir(self) -> Path:
+        """Saved persona-prompt optimizer artifacts (``.agent-sim/optimized/``)."""
+        return self.dot_dir / "optimized"
+
 
 def _require(section: dict[str, Any], key: str, section_name: str) -> Any:
     value = section.get(key)
