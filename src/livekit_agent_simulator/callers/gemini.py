@@ -240,6 +240,7 @@ class GeminiCallerBridge:
         # exceed ~10 min without losing conversation context.
         self._resume_handle: str | None = None
         self._reconnect_required = asyncio.Event()
+        self._reconnect_count = 0
         self._session_generation = 0
         self._agent_track_queue: asyncio.Queue[rtc.RemoteAudioTrack] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
@@ -431,7 +432,18 @@ class GeminiCallerBridge:
     # -------------------------------------------------------------------- run
 
     async def run(self) -> None:
-        client = genai.Client(api_key=self.cfg.simulator.api_key)
+        # websockets 16 defaults ping_interval=20s / ping_timeout=20s: Gemini Live
+        # sometimes misses a pong during long model processing, the library then
+        # closes with 1011 "keepalive ping timeout" → APIError 1006 → the caller
+        # marks the drop retryable=false and the run dies mid-call (~4 min in).
+        # Raise both via HttpOptions.async_client_args (passed through as
+        # ws_connect kwargs by google-genai live.connect).
+        client = genai.Client(
+            api_key=self.cfg.simulator.api_key,
+            http_options=types.HttpOptions(
+                async_client_args={"ping_interval": 30, "ping_timeout": 60},
+            ),
+        )
         voice = self.cfg.simulator.voice
 
         # publish_mic() publishes the sim mic track + starts the mixer ONCE —
@@ -515,11 +527,18 @@ class GeminiCallerBridge:
                 if not self._reconnect_required.is_set():
                     break
 
-                # Gemini sent go_away (connection about to be reset, ~10-min cap) —
+                # Gemini sent go_away (connection about to be reset, ~10-min cap)
+                # OR mid-call transport drop (1006/1011 with a resumption handle) —
                 # resume the session on a fresh connection with the saved handle.
                 self._reconnect_required.clear()
                 self.end_call.clear()
                 self._session_generation += 1
+                self._reconnect_count += 1
+                if self._reconnect_count > 2:
+                    # Bounded mid-call reconnect: a server that keeps resetting the
+                    # socket won't recover; stop hammering and end the call.
+                    self.end_call.set()
+                    break
                 self.writer.emit(
                     "sim.gemini_reconnecting",
                     spec={"generation": self._session_generation},
@@ -1464,17 +1483,23 @@ class GeminiCallerBridge:
                 isinstance(e, ConnectionError)
                 or "1006" in str(e)
                 or "1008" in str(e)  # known Gemini preview-model transient (tool-call crash)
+                or "1011" in str(e)  # server internal error — transient; resumable w/ handle
                 or "abnormal closure" in str(e).lower()
                 or "ConnectionClosed" in type(e).__name__
             )
             if is_transport:
-                self.transport_dropped = True
+                # transport_dropped only when we are NOT going to resume (no handle
+                # or reconnect already queued); a resumable drop is retryable.
+                self.transport_dropped = (
+                    self._resume_handle is None or self._reconnect_required.is_set()
+                )
                 self.writer.emit(
                     "sim.gemini_socket_drop",
                     spec={
                         "phase": "mid_call",
                         "error": f"{type(e).__name__}: {e}",
-                        "retryable": False,  # dialogue already began; do not reconnect
+                        "retryable": self._resume_handle is not None
+                        and not self._reconnect_required.is_set(),
                     },
                     source="sim",
                     include_dialogue=False,
@@ -1485,6 +1510,20 @@ class GeminiCallerBridge:
                 source="sim",
                 include_dialogue=False,
             )
+            # Mid-call transport drop (1006 / 1011 / ConnectionClosed) — Gemini
+            # closed the socket for a transient reason. If a resumption handle is
+            # available, signal run() to reconnect and resume the session instead
+            # of killing the call. Once the socket has died, `send_realtime_input`
+            # is no longer safe to call, so run() must *not* emit per-connection
+            # cues on the resume — the persona's context survives via the handle.
+            if (
+                is_transport
+                and self._resume_handle is not None
+                and not self._reconnect_required.is_set()
+            ):
+                self.transport_dropped = False
+                self._reconnect_required.set()
+                return
             self.end_call.set()
 
     def _mute_hang_up_audio(self) -> None:
