@@ -524,6 +524,7 @@ class GeminiCallerBridge:
                 is_transport = (
                     isinstance(e, ConnectionError)
                     or "1006" in str(e)
+                    or "1008" in str(e)  # known Gemini preview-model transient (tool-call crash)
                     or "abnormal closure" in str(e).lower()
                     or "ConnectionClosed" in type(e).__name__
                 )
@@ -1392,6 +1393,7 @@ class GeminiCallerBridge:
             is_transport = (
                 isinstance(e, ConnectionError)
                 or "1006" in str(e)
+                or "1008" in str(e)  # known Gemini preview-model transient (tool-call crash)
                 or "abnormal closure" in str(e).lower()
                 or "ConnectionClosed" in type(e).__name__
             )
