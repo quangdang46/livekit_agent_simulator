@@ -310,6 +310,15 @@ Target-only data lives under `<target>/.agent-sim/` (**gitignored**). Created by
 
 See template: [`templates/config.yaml`](templates/config.yaml). Consumer-specific wiring: [`docs/portability.md`](docs/portability.md).
 
+> **⚠️ Gemini caller model note (observed 2026-08):**
+> `gemini-3.1-flash-live-preview` — the historical default — is a **preview** model with known instability as the simulated caller: transient mid-call WebSocket drops (`APIError 1006 / 1008`, end reason `gemini_socket_drop`) in ~2/15 real runs, plus LiveKit-documented limits (`send_client_content` rejected after the first model turn, `update_instructions`/`generate_reply` unsupported). If you see calls ending with `gemini_socket_drop`, switch the caller model to a stable release, e.g.:
+> ```yaml
+> simulator:
+>   voice:
+>     model: "gemini-2.5-flash-native-audio-preview-12-2025"   # or gemini-live-2.5-flash-native-audio (GA)
+> ```
+> Verified: `gemini-2.5-flash-native-audio-preview-12-2025` connects and talks as the caller with **0 socket drops** across real runs (the `-12-2025` date suffix is required — `gemini-2.5-flash-native-audio-preview` alone returns `API_KEY_INVALID`).
+
 ---
 
 ## Commands
