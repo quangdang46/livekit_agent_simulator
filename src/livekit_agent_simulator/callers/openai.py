@@ -132,6 +132,9 @@ class OpenAICallerBridge:
         self._ws: Any | None = None
         self._sim_out_text = ""
         self._sim_out_item_id: str | None = None
+        # Caller-audio onset latch: first push_speech per utterance emits
+        # sim.caller.audio_source_start; reset when a new utterance begins.
+        self._user_audio_source_emitted: bool = False
         # Agent (input-side) transcript accumulation.
         self._agent_in_text = ""
         # One-shot watchdog handle for output-done fallback (see
@@ -601,6 +604,8 @@ class OpenAICallerBridge:
                 include_dialogue=False,
             )
             return
+        # A scripted line is its own caller utterance — arm the audio-onset latch.
+        self._reset_user_audio_source_latch()
         if delivery == "room_pcm":
             await self._inject_room_pcm(
                 text, label=label, delivery=delivery, asset=asset,
@@ -661,6 +666,7 @@ class OpenAICallerBridge:
                 raise ValueError("loop is not supported for voice.* speech assets")
             self.suppress_persona_output(int(duration_s * 1000) + 400)
             speech_gain = max(0.0, min(1.0, float(gain) * self._voice_gain))
+            self._emit_user_audio_source_start(gain=speech_gain, via="inject_voice_wav")
             self._mixer.push_speech(pcm, gain=speech_gain)
             self._mixer.end_speech_turn()
             mix = "speech"
@@ -754,6 +760,7 @@ class OpenAICallerBridge:
         duration_s = max(0.05, len(pcm) / 2 / TARGET_RATE)
         self.suppress_persona_output(int(duration_s * 1000) + 400)
         speech_gain = max(0.0, min(1.0, float(gain) * self._voice_gain))
+        self._emit_user_audio_source_start(gain=speech_gain, via="sapi_fallback")
         self._mixer.push_speech(pcm, gain=speech_gain)
         self._mixer.end_speech_turn()
         self.writer.emit(
@@ -1069,6 +1076,9 @@ class OpenAICallerBridge:
             if clean:
                 self.observer.on_transcript("user", clean, final=True, source="sim.openai")
             self._sim_out_text = ""
+            # A freestyle utterance committed — arm the caller-audio onset latch
+            # so the next utterance emits again.
+            self._reset_user_audio_source_latch()
             if (
                 pending
                 and (ended or farewell)
@@ -1225,6 +1235,7 @@ class OpenAICallerBridge:
         else:
             gain = self._voice_gain
         if self._mixer is not None:
+            self._emit_user_audio_source_start(gain=gain, via="freestyle_tts")
             self._mixer.push_speech(pcm, gain=gain)
             return
         source = self._source
@@ -1242,6 +1253,31 @@ class OpenAICallerBridge:
             samples_per_channel=samples,
         )
         await source.capture_frame(frame)
+
+    def _emit_user_audio_source_start(self, *, gain: float, via: str) -> None:
+        """Emit sim.caller.audio_source_start once per caller utterance.
+
+        Fired at the first push_speech of an utterance (the simulated caller's
+        speech onset at the source — NOT the perceived onset, which is measured
+        on the agent R channel). ``via`` records which path produced it.
+        """
+        # Defensive: tests may construct the bridge without __init__.
+        writer = getattr(self, "writer", None)
+        if writer is None:
+            return
+        if getattr(self, "_user_audio_source_emitted", False):
+            return
+        self._user_audio_source_emitted = True
+        writer.emit(
+            "sim.caller.audio_source_start",
+            spec={"provider": "openai", "voice_gain": self._voice_gain, "gain": float(gain), "via": via},
+            source="sim.openai",
+            include_dialogue=False,
+        )
+
+    def _reset_user_audio_source_latch(self) -> None:
+        """Arm the latch for the next caller utterance."""
+        self._user_audio_source_emitted = False
 
 
 def _is_transport_error(e: Exception) -> bool:

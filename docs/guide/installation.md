@@ -583,6 +583,8 @@ Assert highlights (for scenario authors after setup):
 - `goals_met` — LLM judge verifies caller pursued N persona goals before `[END_CALL]` (hard fail)  
 - `constraint_respected` — hard fail if caller transcript leaks `must_not_phrases` / `must_not_match`  
 - `tool_order` — required subsequence of `tool.start` names  
+- `agent_must_respond` — PASS iff the agent produced ≥ 1 **audio onset** (no transcript fallback); FAIL when the agent only produced text but no audio  
+- `ttfa` / `turn_taking_audio` — **perceived** audio-onset latency gates (see §below); missing sample → **SKIP** (not fail), but `require_audio_samples` set + short → fail
 
 Persona prompt now uses numbered GOAL checklist + guardrails against premature end.
 The caller must work through all goals; early `[END_CALL]` causes a failed test.
@@ -601,6 +603,64 @@ assert:
 ```
 
 PassCriteria can use flat `criteria[]` or multi-judge `judges[]` + `mode` (`all` \| `majority` \| `any`). Full recipes: `lks guide`.
+
+#### Audio-onset latency (perceived vs transcript)
+
+The classic `latency` / `ttfw` / `turn_taking_ms` metrics measure **transcript
+delivery** — they include the caller STT pipeline and end at the agent's
+*transcript final*, not when the caller actually hears the agent. To measure
+**perceived** latency (what the human caller experiences), enable audio-onset
+detection:
+
+```yaml
+observe:
+  record_audio: true          # required — detector reads the R-channel PCM
+  audio_onset:
+    enabled: true             # default false = no behavior change
+    vad: rms                  # only RMS today
+    threshold: 0.012          # initial default to tune, NOT an immutable constant
+    win_ms: 20
+    energy_frames: 3          # consecutive energy windows to leave SILENCE
+    exit_frames: 5            # consecutive quiet windows to return to SILENCE
+    refractory_ms: 60         # suppress re-fire on continuous speech
+```
+
+How it works:
+
+- `sim.caller.audio_source_start` — emitted once per caller utterance at the
+  first `push_speech` (the **simulated caller speech onset at the source**; not
+  the perceived onset). Source `sim.gemini` / `sim.openai`.
+- `sim.agent.audio_onset` — emitted when the recorder R-channel PCM rises above
+  the RMS threshold, timestamp **backdated to the onset frame** (never detection
+  time, so VAD detection latency is not counted as audio latency).
+
+Metrics added (alongside the existing ones — old semantics unchanged):
+
+| Metric | Definition |
+|---|---|
+| `ttfa_run_ms` | run start → first agent audio onset |
+| `turn_taking_audio_ms` | caller `audio_source_start` → next **unused** agent audio onset, paired by **causal temporal order** (survives interruptions; not turn numbers) |
+| `user_audio_source_count` / `agent_audio_onset_count` | raw event counts |
+
+Assert outcomes (missing sample → **SKIP**, not fail):
+
+```yaml
+assert:
+  outcomes:
+    - id: agent_said_audio
+      type: agent_must_respond        # FAIL if 0 audio onsets (no transcript fallback)
+    - id: heard_fast
+      type: ttfa
+      max_ttfa_p95_ms: 2000
+    - id: turn_audio_ok
+      type: turn_taking_audio
+      max_turn_audio_p95_ms: 2500
+      require_audio_samples: 2        # explicit minimum → FAIL when short
+```
+
+`--baseline` compare also tracks `ttfa_ms` and `turn_taking_audio_p95`;
+`baseline=None + candidate=value` is **not** a regression (skipped), so adding
+the metric to a new run does not fail an old baseline.
 
 #### Judge builtin presets
 

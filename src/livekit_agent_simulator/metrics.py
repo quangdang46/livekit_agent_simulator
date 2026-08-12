@@ -154,6 +154,34 @@ def _split_user_word_counts(
     return natural, script
 
 
+def _pair_audio_onsets(
+    user_sources: list[int],
+    agent_onsets: list[int],
+) -> list[float]:
+    """Temporally pair caller audio_source_start → next unused agent audio_onset.
+
+    Returns the per-utterance latency list (ms). Each agent onset is consumed
+    once; a user source with no following unused onset contributes nothing.
+    """
+    if not user_sources or not agent_onsets:
+        return []
+    out: list[float] = []
+    used = [False] * len(agent_onsets)
+    for u in sorted(user_sources):
+        best: int | None = None
+        for i, a in enumerate(agent_onsets):
+            if used[i]:
+                continue
+            if a > u:
+                best = i
+                break
+        if best is None:
+            continue
+        used[best] = True
+        out.append(float(agent_onsets[best] - u))
+    return out
+
+
 def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Derive voice QA metrics from ``events.jsonl`` envelopes.
 
@@ -162,6 +190,8 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
     turn_taking: list[float] = []
     agent_final_ms: list[int] = []
     user_final_ms: list[int] = []
+    user_audio_source_ms: list[int] = []
+    agent_audio_onset_ms: list[int] = []
     agent_chars = 0
     user_chars = 0
     tool_starts = 0
@@ -208,6 +238,10 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
             interruptions += 1
         elif kind == "silence.detected":
             silence_events += 1
+        elif kind == "sim.caller.audio_source_start":
+            user_audio_source_ms.append(mono)
+        elif kind == "sim.agent.audio_onset":
+            agent_audio_onset_ms.append(mono)
 
         if _is_barge_event(e):
             barge_ms.append(mono)
@@ -228,6 +262,14 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
         recovery_rate = None
     else:
         recovery_rate = barges_recovered / barge_count
+
+    # Perceived audio latency (audio-onset ground truth). Paired by CAUSAL
+    # temporal order, not turn number: each user audio_source_start U pairs with
+    # the first unused agent audio_onset A after it (A.ts > U.ts), and A is
+    # consumed so a later U does not reuse it. This survives interruptions where
+    # turn numbers do not reflect request → response.
+    turn_taking_audio_ms = _pair_audio_onsets(user_audio_source_ms, agent_audio_onset_ms)
+    ttfa_run_ms: int | None = agent_audio_onset_ms[0] if agent_audio_onset_ms else None
 
     total_chars = agent_chars + user_chars
     talk_ratio: float | None
@@ -250,6 +292,14 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
         "turn_taking_ms": _pct_block(turn_taking),
         "ttfw_ms": ttfw_ms,
         "ttfw_source": first_agent_kind,
+        # Perceived audio latency (audio-onset ground truth). ttfa_run_ms = run
+        # start → first agent audio onset. turn_taking_audio_ms = caller
+        # audio_source_start → next unused agent audio_onset (temporal pairing).
+        "ttfa_run_ms": ttfa_run_ms,
+        "ttfa_source": "agent.audio_onset",
+        "turn_taking_audio_ms": _pct_block(turn_taking_audio_ms),
+        "user_audio_source_count": len(user_audio_source_ms),
+        "agent_audio_onset_count": len(agent_audio_onset_ms),
         "recovery_ms": _pct_block(recovery_samples),
         "barge_count": barge_count,
         "barges_recovered": barges_recovered,
@@ -299,6 +349,11 @@ def metrics_digest(metrics: dict[str, Any] | None) -> dict[str, Any]:
         }
     tt = metrics.get("turn_taking_ms") if isinstance(metrics.get("turn_taking_ms"), dict) else {}
     rec = metrics.get("recovery_ms") if isinstance(metrics.get("recovery_ms"), dict) else {}
+    att = (
+        metrics.get("turn_taking_audio_ms")
+        if isinstance(metrics.get("turn_taking_audio_ms"), dict)
+        else {}
+    )
     return {
         "ttfw_ms": metrics.get("ttfw_ms"),
         "turn_p50_ms": tt.get("p50"),
@@ -309,4 +364,7 @@ def metrics_digest(metrics: dict[str, Any] | None) -> dict[str, Any]:
         "talk_ratio": metrics.get("talk_ratio"),
         "user_words_p50": metrics.get("user_words_p50"),
         "user_words_natural_p50": metrics.get("user_words_natural_p50"),
+        "ttfa_ms": metrics.get("ttfa_run_ms"),
+        "turn_taking_audio_p50_ms": att.get("p50"),
+        "turn_taking_audio_p95_ms": att.get("p95"),
     }

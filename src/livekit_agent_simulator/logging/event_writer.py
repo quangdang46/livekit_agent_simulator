@@ -97,9 +97,14 @@ class EventWriter:
         turn: int | None = None,
         parent_event_id: str | None = None,
         include_dialogue: bool = True,
+        *,
+        ts_mono_ms: int | None = None,
     ) -> dict[str, Any]:
         self._seq += 1
         now = datetime.now(timezone.utc)
+        mono = int((time.monotonic() - self._t0_mono) * 1000)
+        if ts_mono_ms is not None:
+            mono = max(0, int(ts_mono_ms))
         event: dict[str, Any] = {
             "event_id": f"evt_{uuid.uuid4().hex[:12]}",
             "seq": self._seq,
@@ -107,7 +112,7 @@ class EventWriter:
             "turn": self.turn if turn is None else turn,
             "kind": kind,
             "ts": int(now.timestamp() * 1000),
-            "ts_mono_ms": int((time.monotonic() - self._t0_mono) * 1000),
+            "ts_mono_ms": mono,
             "datetime_utc": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "datetime_local": now.astimezone(self._tz).isoformat(timespec="milliseconds"),
             "source": source,

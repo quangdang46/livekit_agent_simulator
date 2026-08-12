@@ -85,3 +85,30 @@ def test_gate_skips_missing_latency():
     assert g["ok"] is True
     skipped = [c for c in g["checks"] if c.get("skipped")]
     assert skipped
+
+
+def test_gate_audio_metrics_skip_when_baseline_missing():
+    """baseline=None + candidate=value → skip, NOT regression (spec decision 11)."""
+    base = {"status": "done", "ttfa_ms": None, "turn_taking_audio_p95": None}
+    cand = {"status": "done", "ttfa_ms": 1800, "turn_taking_audio_p95": 2200}
+    g = evaluate_baseline_gate(base, cand)
+    assert g["ok"] is True
+    for key in ("ttfa_ms", "turn_taking_audio_p95"):
+        c = next(c for c in g["checks"] if c.get("check") == f"regression:{key}")
+        assert c["skipped"] is True
+
+
+def test_gate_audio_metrics_regress_when_both_present():
+    base = {"status": "done", "ttfa_ms": 1200, "turn_taking_audio_p95": 1500}
+    cand = {"status": "done", "ttfa_ms": 5000, "turn_taking_audio_p95": 9000}
+    g = evaluate_baseline_gate(base, cand, max_ttfa_regression_ms=2000, max_turn_audio_p95_regression_ms=2500)
+    assert g["ok"] is False
+    assert any("ttfa_ms" in r for r in g["reasons"])
+    assert any("turn_taking_audio_p95" in r for r in g["reasons"])
+
+
+def test_gate_audio_metrics_ok_when_within_limit():
+    base = {"status": "done", "ttfa_ms": 1200, "turn_taking_audio_p95": 1500}
+    cand = {"status": "done", "ttfa_ms": 1300, "turn_taking_audio_p95": 1600}
+    g = evaluate_baseline_gate(base, cand)
+    assert g["ok"] is True

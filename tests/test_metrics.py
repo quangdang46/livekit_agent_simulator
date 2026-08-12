@@ -169,3 +169,67 @@ def test_tool_error_rate_and_slow_turns():
     assert m["tool_error_rate"] == 0.5
     assert m["slow_turns_over_2500ms"] == 2
     assert m["slow_turns_over_5000ms"] == 1
+
+
+def test_audio_metrics_empty():
+    m = compute_voice_metrics([])
+    assert m["ttfa_run_ms"] is None
+    assert m["turn_taking_audio_ms"]["count"] == 0
+    assert m["user_audio_source_count"] == 0
+    assert m["agent_audio_onset_count"] == 0
+    d = metrics_digest(m)
+    assert d["ttfa_ms"] is None
+    assert d["turn_taking_audio_p95_ms"] is None
+
+
+def test_audio_metrics_ttfa_run():
+    events = [
+        _ev("sim.caller.audio_source_start", 500, provider="gemini"),
+        _ev("sim.agent.audio_onset", 1200, onset_frame_idx=0),
+    ]
+    m = compute_voice_metrics(events)
+    assert m["ttfa_run_ms"] == 1200  # run start → first agent audio onset
+    assert m["user_audio_source_count"] == 1
+    assert m["agent_audio_onset_count"] == 1
+    assert m["turn_taking_audio_ms"]["count"] == 1
+    assert m["turn_taking_audio_ms"]["p50"] == 700  # 1200 - 500
+
+
+def test_audio_metrics_temporal_pairing_not_turn_number():
+    """Interruption scenario: turn numbers misrepresent causality; temporal pairing must not."""
+    # Turn 1: user source A at 1000 → agent onset at 2000.
+    # Caller interrupts; turn 2: user source B at 3000 → agent onset at 4000.
+    # Even without turn fields, pairing must be A→2000, B→4000.
+    events = [
+        _ev("sim.caller.audio_source_start", 1000, provider="gemini"),
+        _ev("sim.agent.audio_onset", 2000, onset_frame_idx=0),
+        _ev("sim.caller.audio_source_start", 3000, provider="gemini"),
+        _ev("sim.agent.audio_onset", 4000, onset_frame_idx=0),
+    ]
+    m = compute_voice_metrics(events)
+    vals = m["turn_taking_audio_ms"]
+    assert vals["count"] == 2
+    assert vals["p50"] == 1000  # 1000 and 1000
+    assert vals["max"] == 1000
+
+
+def test_audio_metrics_onset_consumed_once():
+    """A user source must not pair with an already-used agent onset."""
+    events = [
+        _ev("sim.caller.audio_source_start", 1000, provider="gemini"),
+        _ev("sim.agent.audio_onset", 2000, onset_frame_idx=0),
+        # second user source after the only onset → no unused onset left
+        _ev("sim.caller.audio_source_start", 2500, provider="gemini"),
+    ]
+    m = compute_voice_metrics(events)
+    vals = m["turn_taking_audio_ms"]
+    assert vals["count"] == 1
+    assert vals["p50"] == 1000
+
+
+def test_audio_metrics_missing_agent_onset():
+    """User source with no following agent onset → contributes nothing (no sample)."""
+    events = [_ev("sim.caller.audio_source_start", 1000, provider="gemini")]
+    m = compute_voice_metrics(events)
+    assert m["ttfa_run_ms"] is None
+    assert m["turn_taking_audio_ms"]["count"] == 0

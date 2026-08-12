@@ -71,7 +71,7 @@ The roadmap doc is behind the code.
 | **Auto-repair failed prompts (LLM fix loop)** | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Cross-platform agent import/export (AgentGraph IR)** | ❌ (LiveKit-only) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Multi-judge / weighted PassCriteria | ✅ judges+mode | ✅ | ✅ judge criteria | ✅ 50+ | ✅ | ✅ |
-| **Audio-native scoring (WER / clarity / jitter from audio channel)** | ❌ transcript+judge | ⚠️ disabled | ⚠️ latency only | ✅ | ✅ | ✅ Cekura/Bluejay |
+| **Audio-native scoring (WER / clarity / jitter from audio channel)** | ⚠️ onset-only (RMS VAD → perceived TTFA / turn audio) | ⚠️ disabled | ⚠️ latency only | ✅ | ✅ | ✅ Cekura/Bluejay |
 | Latency hard gates (p50/p95, TTFW, recovery) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Parallel / batch suite | ✅ `execute-all --parallel` | ✅ | ✅ | ✅ 50K | ✅ | ✅ |
 | **CI/CD native hook** | ✅ CI friendly + MCP | ✅ GH Actions | ✅ `scenario.run()` in pytest | ✅ | ✅ | ✅ |
