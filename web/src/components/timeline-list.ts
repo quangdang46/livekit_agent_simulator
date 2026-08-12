@@ -1,6 +1,7 @@
 import { fmtMs } from "../lib/format";
 import { markerTitle } from "../lib/constants";
 import { createToolCardElement } from "./tool-card";
+import { mountGroupRow, syncGroupExpansion } from "./tool-group";
 import type { Cue, Marker, TimelineItem, ToolSpan } from "../types";
 
 function roleLabel(role: string, origin?: string | null): string {
@@ -195,16 +196,20 @@ export function mountTimelineList(
       li = mountMarkerRow(item.marker);
     } else if (item.kind === "tool") {
       li = createToolCardElement(item.tool);
+    } else if (item.kind === "group") {
+      li = mountGroupRow(item.group, audio, onUserSeek);
     } else {
       li = mountCueRow(item.cue);
     }
 
-    li.addEventListener("click", () => {
-      if (!audio.src) return;
-      audio.currentTime = (item.start_ms || 0) / 1000;
-      onUserSeek();
-      void audio.play().catch(() => undefined);
-    });
+    if (item.kind !== "group") {
+      li.addEventListener("click", () => {
+        if (!audio.src) return;
+        audio.currentTime = (item.start_ms || 0) / 1000;
+        onUserSeek();
+        void audio.play().catch(() => undefined);
+      });
+    }
     ol.appendChild(li);
     els.push(li);
   }
@@ -223,6 +228,7 @@ export function activeRank(el: HTMLElement): number {
   if (el.classList.contains("role-script-cue") || origin === "script_cue") {
     return 3;
   }
+  if (el.classList.contains("tool-group-wrap")) return 4;
   if (!el.classList.contains("marker") && !el.classList.contains("tool-row")) {
     return 4;
   }
@@ -303,6 +309,7 @@ export function syncActiveTimeline(
     el.setAttribute("aria-current", on ? "true" : "false");
     setNowBadge(el, on);
   });
+  syncGroupExpansion(els);
 
   if (follow.enabled && active >= 0 && active !== follow.lastActive) {
     const el = els[active];

@@ -173,7 +173,17 @@ export type CuesPayload = {
 export type TimelineItem =
   | { kind: "cue"; start_ms: number; end_ms: number; cue: Cue }
   | { kind: "marker"; start_ms: number; end_ms: number; marker: Marker }
-  | { kind: "tool"; start_ms: number; end_ms: number; tool: ToolSpan };
+  | { kind: "tool"; start_ms: number; end_ms: number; tool: ToolSpan }
+  | { kind: "group"; start_ms: number; end_ms: number; group: GroupInfo };
+
+export type GroupInfo = {
+  kind:
+    | { kind: "tool"; key: string; name: string }
+    | { kind: "marker"; key: string; type: string };
+  items: TimelineItem[];
+  start_ms: number;
+  end_ms: number;
+};
 
 export type PlayerUI = {
   audio: HTMLAudioElement;

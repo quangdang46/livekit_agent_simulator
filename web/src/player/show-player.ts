@@ -11,6 +11,7 @@ import {
   syncActiveTimeline,
   type FollowState,
 } from "../components/timeline-list";
+import { groupTimelineItems } from "../components/tool-group";
 import { mountVerifyBar } from "../components/verify-bar";
 
 export function bindFollowControls(
@@ -129,7 +130,9 @@ export async function showPlayer(
       follow.lastActive = -2;
     };
 
-    const items = buildTimelineItems(data.cues || [], markers, tools);
+    const items = groupTimelineItems(
+      buildTimelineItems(data.cues || [], markers, tools),
+    );
     const els = mountTimelineList(ui.cuesEl, items, ui.audio, onUserSeek);
     if (!els.length) {
       ui.subtitle.textContent =
@@ -188,7 +191,9 @@ export async function showPlayer(
         ui.audio.src = `/runs/${encodeURIComponent(runId)}/${data.audio.file}`;
       }
       if (data.audio?.file && ui.missing) ui.missing.classList.add("hidden");
-      const newItems = buildTimelineItems(data.cues || [], markers, tools);
+      const newItems = groupTimelineItems(
+        buildTimelineItems(data.cues || [], markers, tools),
+      );
       mountTimelineList(ui.cuesEl, newItems, ui.audio, onUserSeek);
       mountVerifyBar(ui.verify, {
         script: data.script_verify,

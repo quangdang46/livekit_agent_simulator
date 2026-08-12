@@ -10,6 +10,8 @@ export const MARKER_LABELS: Record<string, string> = {
   backchannel: "Backchannel",
   false_interrupt: "False interrupt",
   dtmf: "DTMF",
+  audio_onset: "Agent audio onset",
+  user_audio_source: "Caller audio source",
   tool: "Tool call",
   tool_error: "Tool error",
 };
@@ -24,6 +26,8 @@ export const LEGEND_ORDER: MarkerType[] = [
   "interruption",
   "recovery",
   "script_cue",
+  "audio_onset",
+  "user_audio_source",
   "tool",
   "tool_error",
 ];
