@@ -234,6 +234,13 @@ class GeminiCallerBridge:
         # orchestrator can distinguish a natural hang-up from a connection failure
         # instead of masking it as `sim_end_call`.
         self.transport_dropped = False
+        # Gemini Live session resumption (connection ~10-min cap, Google docs).
+        # The server sends session_resumption_update(new_handle) periodically and
+        # go_away before closing; we save the handle and reconnect so calls can
+        # exceed ~10 min without losing conversation context.
+        self._resume_handle: str | None = None
+        self._reconnect_required = asyncio.Event()
+        self._session_generation = 0
         self._agent_track_queue: asyncio.Queue[rtc.RemoteAudioTrack] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
         self._source: rtc.AudioSource | None = None
@@ -427,73 +434,108 @@ class GeminiCallerBridge:
         client = genai.Client(api_key=self.cfg.simulator.api_key)
         voice = self.cfg.simulator.voice
 
-        # Manual activity markers (auto VAD disabled). Speech-gated PCM +
-        # activity_end commits the agent turn so Live generates caller freestyle.
-        config = types.LiveConnectConfig(
-            response_modalities=[types.Modality.AUDIO],  # AUDIO only — TEXT → 1011 close
-            input_audio_transcription=types.AudioTranscriptionConfig(),
-            output_audio_transcription=types.AudioTranscriptionConfig(),
-            realtime_input_config=types.RealtimeInputConfig(
-                automatic_activity_detection=types.AutomaticActivityDetection(
-                    disabled=True,
-                ),
-            ),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice.voice)
-                ),
-                language_code=voice.language,
-            ),
-            system_instruction=types.Content(
-                parts=[types.Part(text=self.persona_system_prompt)]
-            ),
-        )
-
+        # publish_mic() publishes the sim mic track + starts the mixer ONCE —
+        # it must NOT be re-run on a session reconnect (would double-publish).
         source = await self.publish_mic()
 
-        session_cm, session = await self._connect_live_with_retry(
-            client, voice.model, config
-        )
+        session_cm: Any | None = None
         try:
-            self._live_session = session
-            self.writer.emit(
-                "sim.gemini_connected",
-                spec={
-                    "model": voice.model,
-                    "voice": voice.voice,
-                    "language": voice.language,
-                    "voice_gain": self._voice_gain,
-                    "silent_mode": bool(getattr(self, "_silent_mode", False)),
-                },
-                source="sim",
-                include_dialogue=False,
-            )
-            await self._emit_bootstrap_cues(session)
-
-            self._tasks = [
-                asyncio.create_task(self._pump_agent_audio(session), name="agent->gemini"),
-                asyncio.create_task(self._pump_gemini_events(session, source), name="gemini->lk"),
-            ]
-            try:
-                await self.end_call.wait()
-            finally:
-                await self._flush_agent_audio_stream(
-                    session, reason="session_teardown"
+            while True:
+                # Manual activity markers (auto VAD disabled). Speech-gated PCM +
+                # activity_end commits the agent turn so Live generates caller freestyle.
+                # session_resumption: first connect uses no handle; reconnects (after
+                # go_away) pass the saved handle to resume conversation context past
+                # the ~10-min connection cap.
+                config = types.LiveConnectConfig(
+                    response_modalities=[types.Modality.AUDIO],  # AUDIO only — TEXT → 1011 close
+                    input_audio_transcription=types.AudioTranscriptionConfig(),
+                    output_audio_transcription=types.AudioTranscriptionConfig(),
+                    realtime_input_config=types.RealtimeInputConfig(
+                        automatic_activity_detection=types.AutomaticActivityDetection(
+                            disabled=True,
+                        ),
+                    ),
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice.voice)
+                        ),
+                        language_code=voice.language,
+                    ),
+                    system_instruction=types.Content(
+                        parts=[types.Part(text=self.persona_system_prompt)]
+                    ),
+                    session_resumption=types.SessionResumptionConfig(
+                        handle=self._resume_handle,
+                    ),
                 )
-                self._live_session = None
-                for t in self._tasks:
-                    t.cancel()
-                await asyncio.gather(*self._tasks, return_exceptions=True)
-                if self._mixer is not None:
-                    await self._mixer.aclose()
-                    self._mixer = None
+
+                session_cm, session = await self._connect_live_with_retry(
+                    client, voice.model, config
+                )
+                try:
+                    self._live_session = session
+                    self.writer.emit(
+                        "sim.gemini_connected",
+                        spec={
+                            "model": voice.model,
+                            "voice": voice.voice,
+                            "language": voice.language,
+                            "voice_gain": self._voice_gain,
+                            "silent_mode": bool(getattr(self, "_silent_mode", False)),
+                            "resume": bool(self._resume_handle),
+                        },
+                        source="sim",
+                        include_dialogue=False,
+                    )
+                    await self._emit_bootstrap_cues(session)
+
+                    self._tasks = [
+                        asyncio.create_task(self._pump_agent_audio(session), name="agent->gemini"),
+                        asyncio.create_task(self._pump_gemini_events(session, source), name="gemini->lk"),
+                    ]
+                    try:
+                        await self.end_call.wait()
+                    finally:
+                        await self._flush_agent_audio_stream(
+                            session, reason="session_teardown"
+                        )
+                        self._live_session = None
+                        for t in self._tasks:
+                            t.cancel()
+                        await asyncio.gather(*self._tasks, return_exceptions=True)
+                finally:
+                    # Close this connection's SDK context manager before reconnecting.
+                    try:
+                        await session_cm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+                    session_cm = None
+
+                # Normal end (stop / sim_hang_up / end-call token / fatal drop) → done.
+                if not self._reconnect_required.is_set():
+                    break
+
+                # Gemini sent go_away (connection about to be reset, ~10-min cap) —
+                # resume the session on a fresh connection with the saved handle.
+                self._reconnect_required.clear()
+                self.end_call.clear()
+                self._session_generation += 1
+                self.writer.emit(
+                    "sim.gemini_reconnecting",
+                    spec={"generation": self._session_generation},
+                    source="sim",
+                    include_dialogue=False,
+                )
         finally:
-            # Close the SDK context manager (releases the WebSocket + loop
-            # resources). Safe to call even if `__aenter__` failed above.
-            try:
-                await session_cm.__aexit__(None, None, None)
-            except Exception:
-                pass
+            if session_cm is not None:
+                try:
+                    await session_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            # Mixer is torn down once, after the whole session (incl. reconnects).
+            if self._mixer is not None:
+                await self._mixer.aclose()
+                self._mixer = None
 
     async def _connect_live_with_retry(
         self, client: Any, model: str, config: Any
@@ -1233,6 +1275,34 @@ class GeminiCallerBridge:
         try:
             while not self.end_call.is_set():
                 async for response in session.receive():
+                    # Gemini session resumption: the server periodically sends a
+                    # resumable handle so the client can reconnect (a fresh
+                    # WebSocket) and keep the conversation context past the ~10-min
+                    # connection cap. Save it; run() uses it on go_away reconnect.
+                    if response.session_resumption_update is not None:
+                        upd = response.session_resumption_update
+                        if upd.resumable and upd.new_handle:
+                            self._resume_handle = upd.new_handle
+                            self.writer.emit(
+                                "sim.gemini_resumption_handle",
+                                spec={"resumable": True, "handle_set": True},
+                                source="sim",
+                                include_dialogue=False,
+                            )
+
+                    # Server will close the connection soon (connection cap). Signal
+                    # run() to resume the session on a fresh connection. Graceful —
+                    # do NOT set end_call or transport_dropped.
+                    if response.go_away is not None:
+                        self.writer.emit(
+                            "sim.gemini_go_away",
+                            spec={"time_left": response.go_away.time_left},
+                            source="sim",
+                            include_dialogue=False,
+                        )
+                        self._reconnect_required.set()
+                        return
+
                     sc = response.server_content
                     if sc is None:
                         continue
