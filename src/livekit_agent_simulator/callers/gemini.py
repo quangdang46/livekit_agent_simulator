@@ -242,6 +242,9 @@ class GeminiCallerBridge:
         self._sim_out_text = ""
         self._live_session: Any | None = None
         self._suppress_output_until_mono: float | None = None
+        # Caller-audio onset latch: first push_speech per utterance emits
+        # sim.caller.audio_source_start; reset when a new utterance begins.
+        self._user_audio_source_emitted: bool = False
         # Scripted user long-silence: hold persona + pause dead_call until this mono time (+ grace).
         self._script_hold_until_mono: float | None = None
         self._script_hold_grace_s: float = 20.0
@@ -521,6 +524,7 @@ class GeminiCallerBridge:
                 is_transport = (
                     isinstance(e, ConnectionError)
                     or "1006" in str(e)
+                    or "1008" in str(e)  # known Gemini preview-model transient (tool-call crash)
                     or "abnormal closure" in str(e).lower()
                     or "ConnectionClosed" in type(e).__name__
                 )
@@ -560,13 +564,15 @@ class GeminiCallerBridge:
                 include_dialogue=False,
             )
         except Exception as e:  # noqa: BLE001
+            # A redundant/early `activity_end` after the model already ended its
+            # turn (or while audio is mid-flight) makes Gemini close the socket
+            # with 1007 "invalid frame payload data". The stream is effectively
+            # already closed — this must NOT be treated as a fatal sim.error
+            # (the research: activity_end after model turn → 1007, harmless).
+            err = f"{type(e).__name__}: {e}"
             self.writer.emit(
-                "sim.error",
-                spec={
-                    "where": "flush_agent_audio_stream",
-                    "error": f"{type(e).__name__}: {e}",
-                    "reason": reason,
-                },
+                "sim.gemini_activity",
+                spec={"edge": "activity_end_skipped", "reason": reason, "error": err},
                 source="sim",
                 include_dialogue=False,
             )
@@ -777,6 +783,8 @@ class GeminiCallerBridge:
                 include_dialogue=False,
             )
             return
+        # A scripted line is its own caller utterance — arm the audio-onset latch.
+        self._reset_user_audio_source_latch()
         if delivery == "room_pcm":
             if self._mixer is None or self._source is None:
                 raise RuntimeError("Sim mic/mixer not ready — cannot play room_pcm cue")
@@ -808,6 +816,7 @@ class GeminiCallerBridge:
                     raise ValueError("loop is not supported for voice.* speech assets")
                 self.suppress_persona_output(int(duration_s * 1000) + 400)
                 speech_gain = max(0.0, min(1.0, float(gain) * self._voice_gain))
+                self._emit_user_audio_source_start(gain=speech_gain, via="inject_voice_wav")
                 self._mixer.push_speech(pcm, gain=speech_gain)
                 # Complete WAV — not burst TTS; drain without jitter waterline hold.
                 self._mixer.end_speech_turn()
@@ -1087,6 +1096,7 @@ class GeminiCallerBridge:
         duration_s = max(0.05, len(pcm) / 2 / TARGET_RATE)
         self.suppress_persona_output(int(duration_s * 1000) + 400)
         speech_gain = max(0.0, min(1.0, float(gain) * self._voice_gain))
+        self._emit_user_audio_source_start(gain=speech_gain, via="sapi_fallback")
         self._mixer.push_speech(pcm, gain=speech_gain)
         # Complete local TTS buffer — drain without mid-turn underrun hold.
         self._mixer.end_speech_turn()
@@ -1337,6 +1347,9 @@ class GeminiCallerBridge:
                                     "user", clean, final=True, source="sim.gemini"
                                 )
                             self._sim_out_text = ""
+                            # A freestyle utterance committed — arm the caller-audio
+                            # onset latch so the next utterance emits again.
+                            self._reset_user_audio_source_latch()
                             if (
                                 pending
                                 and (ended or farewell)
@@ -1380,6 +1393,7 @@ class GeminiCallerBridge:
             is_transport = (
                 isinstance(e, ConnectionError)
                 or "1006" in str(e)
+                or "1008" in str(e)  # known Gemini preview-model transient (tool-call crash)
                 or "abnormal closure" in str(e).lower()
                 or "ConnectionClosed" in type(e).__name__
             )
@@ -1435,6 +1449,7 @@ class GeminiCallerBridge:
         else:
             gain = self._voice_gain
         if self._mixer is not None:
+            self._emit_user_audio_source_start(gain=gain, via="freestyle_tts")
             self._mixer.push_speech(pcm, gain=gain)
             return
         # Fallback if mixer not started (should not happen after publish_mic).
@@ -1453,3 +1468,28 @@ class GeminiCallerBridge:
             samples_per_channel=samples,
         )
         await source.capture_frame(frame)
+
+    def _emit_user_audio_source_start(self, *, gain: float, via: str) -> None:
+        """Emit sim.caller.audio_source_start once per caller utterance.
+
+        Fired at the first push_speech of an utterance (the simulated caller's
+        speech onset at the source — NOT the perceived onset, which is measured
+        on the agent R channel). ``via`` records which path produced it.
+        """
+        # Defensive: tests may construct the bridge without __init__.
+        writer = getattr(self, "writer", None)
+        if writer is None:
+            return
+        if getattr(self, "_user_audio_source_emitted", False):
+            return
+        self._user_audio_source_emitted = True
+        writer.emit(
+            "sim.caller.audio_source_start",
+            spec={"provider": "gemini", "voice_gain": self._voice_gain, "gain": float(gain), "via": via},
+            source="sim.gemini",
+            include_dialogue=False,
+        )
+
+    def _reset_user_audio_source_latch(self) -> None:
+        """Arm the latch for the next caller utterance."""
+        self._user_audio_source_emitted = False

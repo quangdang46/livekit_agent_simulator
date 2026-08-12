@@ -854,6 +854,8 @@ async def compare_runs(project_root: Path | str, run_id_a: str, run_id_b: str) -
             "barge_count": md.get("barge_count"),
             "barge_recovery_rate": md.get("barge_recovery_rate"),
             "talk_ratio": md.get("talk_ratio"),
+            "ttfa_ms": md.get("ttfa_ms"),
+            "turn_taking_audio_p95": md.get("turn_taking_audio_p95_ms"),
             "verdict": (s.get("verdict") or {}).get("verdict"),
             "assert_pass": av.get("pass"),
         }
@@ -885,6 +887,8 @@ def evaluate_baseline_gate(
     max_turn_p95_regression_ms: float = 2000.0,
     max_duration_regression_ms: float = 30000.0,
     max_barge_recovery_drop: float = 0.0,
+    max_ttfa_regression_ms: float = 2000.0,
+    max_turn_audio_p95_regression_ms: float = 2500.0,
     require_status_done: bool = True,
 ) -> dict[str, Any]:
     """Hard gate: candidate must not regress vs baseline digest (portable thresholds)."""
@@ -939,6 +943,11 @@ def evaluate_baseline_gate(
     reg("ttfw_ms", max_ttfw_regression_ms)
     reg("turn_taking_p95", max_turn_p95_regression_ms)
     reg("duration_ms", max_duration_regression_ms)
+    # Perceived audio latency (audio-onset ground truth). baseline=None AND
+    # candidate=value → skip (not a regression) — the candidate only "gains" a
+    # metric the baseline lacked. Same helper already skips either-side-None.
+    reg("ttfa_ms", max_ttfa_regression_ms)
+    reg("turn_taking_audio_p95", max_turn_audio_p95_regression_ms)
 
     bt, ct = _as_float(baseline.get("tool_errors")), _as_float(candidate.get("tool_errors"))
     if bt is not None and ct is not None:

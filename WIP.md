@@ -201,13 +201,20 @@ needed:   + dtmf
 
 ```text
 today:    transcript_contains | llm_bool | recovery | latency | ended_by | goals_met
+          + constraint_respected | backchannel_agent_continued | handoff | no_unplanned_handoff
+          + agent_must_respond | ttfa | turn_taking_audio   (audio-onset layer)
           + sip: participant_present | call_status_any | dial_answered
+          + tool_order (required subsequence of tool.start)
 needed:   + dtmf sequence
-          + constraint_respected (or must_not / policy)
-          + tool required_order
-          + (later) transfer lifecycle / no_unplanned_handoff
           + (later) backchannel_did_not_cancel heuristic
 ```
+
+**Audio-onset latency (perceived):** `observe.audio_onset.enabled` (default off)
+drives `sim.caller.audio_source_start` (per-utterance at `push_speech`) and
+`sim.agent.audio_onset` (RMS VAD on recorder R-channel, ts backdated to onset
+frame). Metrics `ttfa_run_ms` / `turn_taking_audio_ms` (temporal pairing);
+asserts `agent_must_respond` / `ttfa` / `turn_taking_audio` (missing sample →
+SKIP; `require_audio_samples` set → fail). Old transcript metrics unchanged.
 
 **Behavior / speech_conditions needed:**
 
@@ -317,6 +324,7 @@ Keep portable: no consumer keys in `src/`; extend via scenario / `.agent-sim/cue
 | Golden baseline compare | Planned (P1.D) |
 | outbound_sim_callee DID ops | Planned (P1.E) |
 | Tool order / from-run extract / rate timer / events | Planned (P1.I–L) |
+| **Audio-onset latency (perceived TTFA / turn audio)** | **Done v1** (`observe.audio_onset`; metric + assert; threshold to tune) |
 | Warm transfer observe | Deferred P2 (docs note in telephony.md; no core yet) |
 | Load / accent / prod observe | Deferred P2 |
 

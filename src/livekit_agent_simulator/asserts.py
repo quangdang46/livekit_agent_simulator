@@ -38,11 +38,13 @@ class OutcomeExpect:
       - recovery: agent re-engages after sim barge-in / interruption
       - latency: hard gates on turn_taking / TTFW / recovery percentiles (P1.3)
       - ended_by: assert which side ended the call (sim | agent | detect)
-- backchannel_agent_continued: after a backchannel cue, agent continued without tool storm
+      - agent_must_respond: PASS iff >= 1 agent audio onset (no transcript fallback)
+      - ttfa: gate on run → first agent audio onset (audio ground truth; missing → SKIP)
+      - turn_taking_audio: gate on caller audio_source_start → next agent audio onset
+        (temporal pairing; missing → SKIP)
+      - backchannel_agent_continued: after a backchannel cue, agent continued without tool storm
       - goals_met: LLM judge checks caller stated/pursued N goals before [END_CALL]
       - constraint_respected: caller must_not leak forbidden phrases/patterns
-- backchannel_agent_continued: after backchannel, agent re-engages normally
-        (hard deterministic on user transcript; optional LLM pending when no phrases)
     """
 
     id: str
@@ -67,6 +69,17 @@ class OutcomeExpect:
     max_recovery_p95_ms: int | None = None
     min_barge_recovery_rate: float | None = None
     require_turn_samples: int = 0
+    # Audio-onset latency (perceived latency, audio ground truth):
+    # ttfa (run → first agent audio onset) and turn_taking_audio (caller
+    # audio_source_start → next unused agent audio_onset). Missing sample → SKIP
+    # (not fail); require_turn_samples explicitly set still fails when short.
+    max_ttfa_p50_ms: int | None = None
+    max_ttfa_p95_ms: int | None = None
+    max_turn_audio_p50_ms: int | None = None
+    max_turn_audio_p95_ms: int | None = None
+    max_turn_audio_p99_ms: int | None = None
+    max_turn_audio_max_ms: int | None = None
+    require_audio_samples: int = 0
     # ended_by: who must hang up first
     ended_by: str | None = None  # "sim" | "agent"
     # goals_met: minimum number of caller goals that must be pursued before end.
@@ -163,7 +176,12 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
         if not isinstance(raw, dict) or not raw.get("id"):
             raise ValueError(f"{path_label}: outcomes[{i}] needs id")
         otype = str(raw.get("type", "transcript_contains"))
-        if otype not in ("transcript_contains", "llm_bool", "recovery", "latency", "ended_by", "goals_met", "constraint_respected", "backchannel_agent_continued", "handoff", "no_unplanned_handoff"):
+        if otype not in (
+            "transcript_contains", "llm_bool", "recovery", "latency", "ended_by",
+            "goals_met", "constraint_respected", "backchannel_agent_continued",
+            "handoff", "no_unplanned_handoff", "agent_must_respond", "ttfa",
+            "turn_taking_audio",
+        ):
             raise ValueError(f"{path_label}: outcomes[{i}].type unsupported: {otype}")
         phrases = raw.get("phrases") or raw.get("contains_any") or []
         if isinstance(phrases, str):
@@ -235,6 +253,13 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
                 max_recovery_p95_ms=_opt_int(raw, "max_recovery_p95_ms"),
                 min_barge_recovery_rate=_opt_float(raw, "min_barge_recovery_rate"),
                 require_turn_samples=int(raw.get("require_turn_samples", 0) or 0),
+                max_ttfa_p50_ms=_opt_int(raw, "max_ttfa_p50_ms"),
+                max_ttfa_p95_ms=_opt_int(raw, "max_ttfa_p95_ms"),
+                max_turn_audio_p50_ms=_opt_int(raw, "max_turn_audio_p50_ms"),
+                max_turn_audio_p95_ms=_opt_int(raw, "max_turn_audio_p95_ms"),
+                max_turn_audio_p99_ms=_opt_int(raw, "max_turn_audio_p99_ms"),
+                max_turn_audio_max_ms=_opt_int(raw, "max_turn_audio_max_ms"),
+                require_audio_samples=int(raw.get("require_audio_samples", 0) or 0),
                 ended_by=eb or (raw.get("ended_by") or raw.get("who")),
                 min_goals=mg,
                 goals=tuple(str(g) for g in goals_raw),
@@ -476,6 +501,12 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
             )
         elif oc.type == "latency":
             checks.append(_eval_latency_outcome(oc, events))
+        elif oc.type == "agent_must_respond":
+            checks.append(_eval_agent_must_respond(oc, events))
+        elif oc.type == "ttfa":
+            checks.append(_eval_audio_latency_outcome(oc, events, metric="ttfa"))
+        elif oc.type == "turn_taking_audio":
+            checks.append(_eval_audio_latency_outcome(oc, events, metric="turn_taking_audio"))
         elif oc.type == "ended_by":
             checks.append(_eval_ended_by_outcome(oc, events))
         elif oc.type == "constraint_respected":
@@ -653,6 +684,118 @@ def _eval_latency_outcome(oc: OutcomeExpect, events: list[dict[str, Any]]) -> di
             "max_recovery_p95_ms": oc.max_recovery_p95_ms,
             "min_barge_recovery_rate": oc.min_barge_recovery_rate,
             "require_turn_samples": oc.require_turn_samples or None,
+        },
+    }
+
+
+def _agent_audio_onset_ms(events: list[dict[str, Any]]) -> list[int]:
+    """Agent audio-onset timestamps (sim.agent.audio_onset), sorted."""
+    out: list[int] = []
+    for e in events:
+        if e.get("kind") != "sim.agent.audio_onset":
+            continue
+        try:
+            out.append(int(e.get("ts_mono_ms") or 0))
+        except (TypeError, ValueError):
+            continue
+    return sorted(out)
+
+
+def _eval_agent_must_respond(oc: OutcomeExpect, events: list[dict[str, Any]]) -> dict[str, Any]:
+    """PASS iff the agent produced >= 1 audio onset.
+
+    Audio-response assertion — NO transcript fallback (spec decision). If the
+    agent only produced text (transcript final) but no audio, this FAILS.
+    """
+    onsets = _agent_audio_onset_ms(events)
+    ok = len(onsets) >= 1
+    return {
+        "check": f"outcome:{oc.id}",
+        "pass": ok,
+        "type": "agent_must_respond",
+        "agent_audio_onsets": len(onsets),
+        "reason": None if ok else "no agent audio observed (no audio onset)",
+    }
+
+
+def _eval_audio_latency_outcome(
+    oc: OutcomeExpect,
+    events: list[dict[str, Any]],
+    *,
+    metric: str,
+) -> dict[str, Any]:
+    """Gate on audio-onset latency (perceived latency, audio ground truth).
+
+    ``metric`` is "ttfa" (run → first agent audio onset) or "turn_taking_audio"
+    (caller audio_source_start → next unused agent audio onset).
+
+    Missing sample → SKIP (not fail); the metric reports `insufficient samples`.
+    ``require_audio_samples`` explicitly set and short → FAIL.
+    """
+    m = compute_voice_metrics(events)
+    reasons: list[str] = []
+    ok = True
+    skipped = False
+
+    if metric == "ttfa":
+        actual = m.get("ttfa_run_ms")
+        counts = int(m.get("agent_audio_onset_count") or 0)
+        gates = (
+            ("ttfa_p50", oc.max_ttfa_p50_ms, None),
+            ("ttfa_p95", oc.max_ttfa_p95_ms, actual),
+        )
+    else:  # turn_taking_audio
+        block = m.get("turn_taking_audio_ms") if isinstance(m.get("turn_taking_audio_ms"), dict) else {}
+        counts = int(block.get("count") or 0)
+        actual = block.get("p95")  # used only for the "no sample" label
+        gates = (
+            ("turn_taking_audio_p50", oc.max_turn_audio_p50_ms, block.get("p50")),
+            ("turn_taking_audio_p95", oc.max_turn_audio_p95_ms, block.get("p95")),
+            ("turn_taking_audio_p99", oc.max_turn_audio_p99_ms, block.get("p99")),
+            ("turn_taking_audio_max", oc.max_turn_audio_max_ms, block.get("max")),
+        )
+
+    if oc.require_audio_samples and counts < oc.require_audio_samples:
+        ok = False
+        reasons.append(
+            f"audio samples {counts} < require_audio_samples {oc.require_audio_samples}"
+        )
+
+    if ok:
+        has_gate = any(limit is not None for _, limit, _ in gates)
+        if has_gate and counts == 0:
+            skipped = True
+            reasons.append("insufficient samples (no audio latency sample)")
+        else:
+            for label, limit, value in gates:
+                if limit is None:
+                    continue
+                if value is None:
+                    skipped = True
+                    reasons.append(f"{label}: insufficient samples")
+                    continue
+                if float(value) > limit:
+                    ok = False
+                    reasons.append(f"{label} {float(value):.0f}ms > max {limit}ms")
+
+    return {
+        "check": f"outcome:{oc.id}",
+        "pass": ok,
+        "type": metric,
+        "skipped": skipped,
+        "reasons": reasons,
+        "actual": m.get("ttfa_run_ms") if metric == "ttfa" else (
+            m.get("turn_taking_audio_ms") if isinstance(m.get("turn_taking_audio_ms"), dict) else {}
+        ),
+        "agent_audio_onset_count": counts,
+        "limits": {
+            "max_ttfa_p50_ms": oc.max_ttfa_p50_ms,
+            "max_ttfa_p95_ms": oc.max_ttfa_p95_ms,
+            "max_turn_audio_p50_ms": oc.max_turn_audio_p50_ms,
+            "max_turn_audio_p95_ms": oc.max_turn_audio_p95_ms,
+            "max_turn_audio_p99_ms": oc.max_turn_audio_p99_ms,
+            "max_turn_audio_max_ms": oc.max_turn_audio_max_ms,
+            "require_audio_samples": oc.require_audio_samples or None,
         },
     }
 

@@ -299,3 +299,91 @@ def test_outcome_ended_by_agent():
     )
     assert fail["pass"] is False
 
+
+
+# ---------------------------------------------------------------- audio asserts
+
+
+def _audio_events(agent_onsets: list[int], user_sources: list[int] | None = None):
+    evs = []
+    for m in (user_sources or []):
+        evs.append({"kind": "sim.caller.audio_source_start", "ts_mono_ms": m, "spec": {}})
+    for m in agent_onsets:
+        evs.append({"kind": "sim.agent.audio_onset", "ts_mono_ms": m, "spec": {}})
+    return evs
+
+
+def test_agent_must_respond_passes_with_audio_onset() -> None:
+    spec = parse_assert_spec({"outcomes": [{"id": "a", "type": "agent_must_respond"}]})
+    res = evaluate_asserts(_audio_events([1000]), spec)
+    assert res["pass"] is True
+
+
+def test_agent_must_respond_fails_without_audio() -> None:
+    spec = parse_assert_spec({"outcomes": [{"id": "a", "type": "agent_must_respond"}]})
+    # Agent has a transcript final but NO audio onset → must FAIL (no transcript fallback).
+    events = [{"kind": "transcript.agent.final", "ts_mono_ms": 1000, "spec": {"text": "hi"}}]
+    res = evaluate_asserts(events, spec)
+    assert res["pass"] is False
+    c = res["checks"][0]
+    assert c["type"] == "agent_must_respond"
+    assert c["agent_audio_onsets"] == 0
+
+
+def test_ttfa_skips_when_no_sample() -> None:
+    spec = parse_assert_spec(
+        {"outcomes": [{"id": "a", "type": "ttfa", "max_ttfa_p95_ms": 1000}]}
+    )
+    res = evaluate_asserts([], spec)
+    # Missing sample → SKIP, not fail.
+    assert res["pass"] is True
+    c = res["checks"][0]
+    assert c["skipped"] is True
+
+
+def test_ttfa_fails_when_slow_with_sample() -> None:
+    events = _audio_events(agent_onsets=[2000], user_sources=[500])
+    spec = parse_assert_spec(
+        {"outcomes": [{"id": "a", "type": "ttfa", "max_ttfa_p95_ms": 1000}]}
+    )
+    res = evaluate_asserts(events, spec)
+    # ttfa_run_ms = 2000 (first agent onset) > 1000 → fail.
+    assert res["pass"] is False
+    c = res["checks"][0]
+    assert c["skipped"] is False
+
+
+def test_ttfa_require_audio_samples_fails_when_short() -> None:
+    spec = parse_assert_spec(
+        {"outcomes": [{"id": "a", "type": "ttfa", "require_audio_samples": 2}]}
+    )
+    res = evaluate_asserts(_audio_events(agent_onsets=[1000]), spec)
+    assert res["pass"] is False  # 1 < 2, explicitly configured → fail
+
+
+def test_turn_taking_audio_skips_when_no_sample() -> None:
+    spec = parse_assert_spec(
+        {"outcomes": [{"id": "a", "type": "turn_taking_audio", "max_turn_audio_p95_ms": 1000}]}
+    )
+    res = evaluate_asserts([], spec)
+    assert res["pass"] is True
+    assert res["checks"][0]["skipped"] is True
+
+
+def test_turn_taking_audio_fails_when_slow() -> None:
+    # user source 1000 → agent onset 3000 = 2000ms latency, p95 gate 1000ms → fail.
+    events = _audio_events(agent_onsets=[3000], user_sources=[1000])
+    spec = parse_assert_spec(
+        {"outcomes": [{"id": "a", "type": "turn_taking_audio", "max_turn_audio_p95_ms": 1000}]}
+    )
+    res = evaluate_asserts(events, spec)
+    assert res["pass"] is False
+
+
+def test_turn_taking_audio_passes_when_fast() -> None:
+    events = _audio_events(agent_onsets=[1500], user_sources=[1000])
+    spec = parse_assert_spec(
+        {"outcomes": [{"id": "a", "type": "turn_taking_audio", "max_turn_audio_p95_ms": 1000}]}
+    )
+    res = evaluate_asserts(events, spec)
+    assert res["pass"] is True

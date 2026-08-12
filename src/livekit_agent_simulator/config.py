@@ -89,6 +89,27 @@ class JudgeConfig:
 
 
 @dataclass
+class AudioOnsetConfig:
+    """RMS onset detection on the agent R channel (perceived speech onset).
+
+    Gated by ``enabled`` (default False = no behavior change). When on, the
+    observer feeds recorded agent PCM through :class:`RmsOnsetDetector` and
+    emits ``sim.agent.audio_onset`` with a timestamp backdated to the onset
+    frame (not detection time). ``threshold`` is an initial tunable default,
+    not an immutable benchmark constant — validate against real recordings
+    before locking any CI gate.
+    """
+
+    enabled: bool = False
+    vad: str = "rms"
+    threshold: float = 0.012
+    win_ms: int = 20
+    energy_frames: int = 3
+    exit_frames: int = 5
+    refractory_ms: int = 60
+
+
+@dataclass
 class ToolEventPattern:
     match: dict[str, Any]
     emit: str  # tool.start | tool.end | tool.error
@@ -104,6 +125,7 @@ class ObserveConfig:
     record_audio: bool = True
     data_topics: list[str] = field(default_factory=list)
     tool_event_patterns: list[ToolEventPattern] = field(default_factory=list)
+    audio_onset: AudioOnsetConfig = field(default_factory=AudioOnsetConfig)
     # Data topics whose payloads describe the agent's flow/node lifecycle
     # (e.g. node active / transition events). Targets opt in here; the soft
     # LLM judge surfaces these as flow evidence. Empty = no flow evidence.
@@ -289,6 +311,29 @@ def load_config(project_root: Path | str) -> SimConfig:
         if isinstance(p, dict) and isinstance(p.get("match"), dict) and p.get("emit"):
             patterns.append(ToolEventPattern(match=p["match"], emit=str(p["emit"])))
 
+    ao_raw = obs_raw.get("audio_onset") or {}
+    if not isinstance(ao_raw, dict):
+        raise ConfigError("`observe.audio_onset` must be a mapping (or absent)")
+    audio_onset = AudioOnsetConfig(
+        enabled=bool(ao_raw.get("enabled", False)),
+        vad=str(ao_raw.get("vad", "rms")).strip().lower(),
+        threshold=float(ao_raw.get("threshold", 0.012)),
+        win_ms=int(ao_raw.get("win_ms", 20)),
+        energy_frames=int(ao_raw.get("energy_frames", 3)),
+        exit_frames=int(ao_raw.get("exit_frames", 5)),
+        refractory_ms=int(ao_raw.get("refractory_ms", 60)),
+    )
+    if audio_onset.vad not in ("rms",):
+        raise ConfigError(
+            "`observe.audio_onset.vad` must be `rms` "
+            f"(got {audio_onset.vad!r}); other VAD backends are future work."
+        )
+    if not 0.0 < audio_onset.threshold < 1.0:
+        raise ConfigError(
+            "`observe.audio_onset.threshold` must be between 0.0 and 1.0 "
+            f"(got {audio_onset.threshold!r})"
+        )
+
     observe = ObserveConfig(
         timezone=str(obs_raw.get("timezone", DEFAULT_TIMEZONE)),
         lk_transcription=bool(obs_raw.get("lk_transcription", True)),
@@ -297,6 +342,7 @@ def load_config(project_root: Path | str) -> SimConfig:
         data_topics=[str(t) for t in (obs_raw.get("data_topics") or [])],
         flow_topics=[str(t) for t in (obs_raw.get("flow_topics") or [])],
         tool_event_patterns=patterns,
+        audio_onset=audio_onset,
         transcript_payload_types=[
             str(t) for t in (obs_raw.get("transcript_payload_types") or ["transcript_turn"])
         ],
@@ -405,6 +451,8 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
             "record_audio": cfg.observe.audio_recording_enabled,
             "data_topics": cfg.observe.data_topics,
             "silence_threshold_ms": cfg.observe.silence_threshold_ms,
+            "audio_onset_enabled": cfg.observe.audio_onset.enabled,
+            "audio_onset_threshold": cfg.observe.audio_onset.threshold,
         },
         "telephony": {
             "outbound_trunk_set": bool(tel.outbound_trunk_id),

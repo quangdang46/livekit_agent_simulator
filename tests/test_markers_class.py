@@ -53,3 +53,27 @@ def test_markers_include_class_and_types():
     assert by_type["false_interrupt"]["class"] == "noise"
     # noise should not seed recovery points only — at least types present
     assert "💬" in by_type["backchannel"]["label"] or "backchannel" in by_type["backchannel"]["detail"]
+
+
+def test_markers_include_audio_onset_and_user_source() -> None:
+    events = [
+        {
+            "kind": "sim.caller.audio_source_start",
+            "ts_mono_ms": 500,
+            "spec": {"provider": "gemini", "via": "freestyle_tts"},
+        },
+        {
+            "kind": "sim.agent.audio_onset",
+            "ts_mono_ms": 1200,
+            "spec": {"onset_frame_idx": 3200, "vad": {"method": "rms"}},
+        },
+    ]
+    markers = _build_markers(events, t0=0, duration_ms=10000)
+    types = [m["type"] for m in markers]
+    assert "user_audio_source" in types
+    assert "audio_onset" in types
+    onset = next(m for m in markers if m["type"] == "audio_onset")
+    assert onset["start_ms"] == 1200
+    assert onset["onset_frame_idx"] == 3200
+    src = next(m for m in markers if m["type"] == "user_audio_source")
+    assert src["start_ms"] == 500

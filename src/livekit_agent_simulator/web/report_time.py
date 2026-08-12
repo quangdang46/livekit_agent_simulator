@@ -10,6 +10,8 @@ from typing import Any
 # Marker kinds exposed to the report player (stable API for the UI).
 MARKER_BARGE_IN = "barge_in"
 MARKER_SCRIPT_CUE = "script_cue"
+MARKER_USER_AUDIO_SOURCE = "user_audio_source"
+MARKER_AUDIO_ONSET = "audio_onset"
 MARKER_SILENCE_WAIT = "silence_wait"
 MARKER_SILENCE = "silence"
 MARKER_INTERRUPTION = "interruption"

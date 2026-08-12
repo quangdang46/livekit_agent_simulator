@@ -96,6 +96,23 @@ class Observer:
         # Optional: record agent PCM from *this* room (agent-room on SIP legs).
         # Decouples conversation.wav R-channel from Gemini sim-room track subscription.
         self.recorder = recorder
+        # Perceived agent speech onset (RMS VAD on the agent R channel). Gated
+        # by ObserveConfig.audio_onset.enabled; emits sim.agent.audio_onset with
+        # a timestamp backdated to the onset frame (not detection time).
+        self._onset_detector: Any | None = None
+        if recorder is not None and observe.audio_onset.enabled:
+            from ..audio.vad import RmsOnsetDetector
+
+            ao = observe.audio_onset
+            self._onset_detector = RmsOnsetDetector(
+                sample_rate=16_000,
+                win_ms=ao.win_ms,
+                threshold=ao.threshold,
+                energy_frames=ao.energy_frames,
+                exit_frames=ao.exit_frames,
+                refractory_ms=ao.refractory_ms,
+                on_onset=self._on_agent_onset,
+            )
 
         # Turn tracking: a turn = one user utterance + the agent reply to it.
         self.turn = 0
@@ -293,6 +310,10 @@ class Observer:
                 pcm = bytes(frame.data)
                 if pcm:
                     self.recorder.push_agent(pcm, 16_000, track_id=key)
+                    if self._onset_detector is not None:
+                        # Feed the same agent PCM the recorder saw — onset frame
+                        # index is relative to this stream (sample rate 16k).
+                        self._onset_detector.push(pcm)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -311,6 +332,51 @@ class Observer:
                 await stream.aclose()
             except Exception:
                 pass
+
+    def _on_agent_onset(self, onset_frame_idx: int) -> None:
+        """Emit sim.agent.audio_onset with a timestamp backdated to the onset frame.
+
+        The onset frame index is relative to this agent-stream t0, which is the
+        recorder R-channel t0 (``recorder.started_mono``). Corrected run-relative
+        time = (audio_t0_relative_to_run) + (onset_frame / sample_rate):
+            ts_mono_ms = (started_mono - writer.t0_mono) + onset_to_audio_ms(...)
+        This is the *perceived* agent speech onset — never detection time.
+        """
+        if self.recorder is None:
+            return
+        started = self.recorder.started_mono
+        if started is None:
+            return
+        from ..audio.vad import onset_to_audio_ms
+
+        audio_t0_mono = int((started - self.writer.t0_mono) * 1000)
+        onset_ms = onset_to_audio_ms(onset_frame_idx, 16_000)
+        corrected_ts = max(0, audio_t0_mono + onset_ms)
+        ao = self.observe.audio_onset
+        frames_before = 0
+        if self._onset_detector is not None:
+            frames_before = int(self._onset_detector.frames_before_first_onset or 0)
+        self.writer.emit(
+            "sim.agent.audio_onset",
+            spec={
+                "channel": "agent",
+                "sample_rate": 16_000,
+                "onset_frame_idx": onset_frame_idx,
+                "frames_before_first_onset": frames_before,
+                "vad": {
+                    "method": ao.vad,
+                    "threshold": ao.threshold,
+                    "win_ms": ao.win_ms,
+                    "energy_frames": ao.energy_frames,
+                    "refractory_ms": ao.refractory_ms,
+                },
+            },
+            source="sim",
+            include_dialogue=False,
+            turn=None,
+            # Corrected to the onset frame — detection time is not audio onset.
+            ts_mono_ms=corrected_ts,
+        )
 
     async def finalize_session_snapshot(self) -> None:
         if self._agent_session is not None:

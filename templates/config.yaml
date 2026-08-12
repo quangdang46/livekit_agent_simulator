@@ -48,6 +48,17 @@ observe:
   # Consumer-specific observe/dispatch examples: docs/portability.md
   silence_threshold_ms: 4000
   turn_taking_warn_ms: 2500
+  # Perceived audio-onset latency (default off). Detects agent speech onset on
+  # the recorder R channel (RMS VAD) → sim.agent.audio_onset / ttfa_run_ms /
+  # turn_taking_audio_ms. Threshold is a tunable default, not an immutable constant.
+  # audio_onset:
+  #   enabled: true
+  #   vad: rms
+  #   threshold: 0.012
+  #   win_ms: 20
+  #   energy_frames: 3
+  #   exit_frames: 5
+  #   refractory_ms: 60
 
 # room_pcm library: package built-ins + per-target overrides (multi-repo).
 # List: lks cues --root .

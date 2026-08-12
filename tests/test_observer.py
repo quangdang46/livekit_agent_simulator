@@ -108,3 +108,55 @@ def test_parse_transcript_payload_custom_type_from_config(tmp_path) -> None:
         "turn": {"role": "user", "text": "Hi"},
     }
     assert obs._parse_transcript_payload(payload) == ("user", "Hi")
+
+
+def test_agent_audio_onset_emits_corrected_timestamp(tmp_path) -> None:
+    """sim.agent.audio_onset ts_mono_ms backdates to the onset frame, not detection."""
+    from livekit_agent_simulator.audio.local_recorder import LocalConversationRecorder
+
+    recorder = LocalConversationRecorder(sample_rate=16_000)
+    recorder.mark_start()
+
+    ao = ObserveConfig().audio_onset
+    assert ao.enabled is False  # default off
+
+    from livekit_agent_simulator.config import AudioOnsetConfig
+
+    observe = ObserveConfig(
+        audio_onset=AudioOnsetConfig(
+            enabled=True,
+            vad="rms",
+            threshold=0.012,
+            win_ms=20,
+            energy_frames=3,
+            exit_frames=5,
+            refractory_ms=60,
+        )
+    )
+    report_dir = tmp_path / "reports" / "r-onset"
+    writer = EventWriter("r-onset", report_dir, timezone_name="UTC")
+    obs = Observer(
+        MagicMock(),
+        writer,
+        observe,
+        agent_identity="agent-1",
+        sim_identity="sim-1",
+        first_speaker="agent",
+        recorder=recorder,
+    )
+    assert obs._onset_detector is not None
+
+    # audio_t0 relative to run: recorder.started_mono - writer.t0_mono
+    audio_t0 = int((recorder.started_mono - writer.t0_mono) * 1000)  # type: ignore[operator]
+
+    # Onset at frame 3200 = 200ms into the agent stream.
+    obs._on_agent_onset(3200)
+
+    events = writer.events
+    onsets = [e for e in events if e["kind"] == "sim.agent.audio_onset"]
+    assert len(onsets) == 1
+    ev = onsets[0]
+    assert ev["ts_mono_ms"] == max(0, audio_t0 + 200)
+    assert ev["spec"]["onset_frame_idx"] == 3200
+    assert ev["spec"]["sample_rate"] == 16_000
+    assert ev["spec"]["vad"]["method"] == "rms"

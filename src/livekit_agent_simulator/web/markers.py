@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .report_time import (
+    MARKER_AUDIO_ONSET,
     MARKER_BACKCHANNEL,
     MARKER_BARGE_IN,
     MARKER_DTMF,
@@ -14,6 +15,7 @@ from .report_time import (
     MARKER_SCRIPT_CUE,
     MARKER_SILENCE,
     MARKER_SILENCE_WAIT,
+    MARKER_USER_AUDIO_SOURCE,
     _clamp_end,
     _mono_to_audio_ms,
 )
@@ -223,6 +225,39 @@ def _build_markers(
                     "label": f"interruption ({by})",
                     "detail": note or f"by={by}",
                     "by": by,
+                }
+            )
+            continue
+
+        if kind == "sim.agent.audio_onset":
+            # Perceived agent speech onset (audio ground truth). start is already
+            # the corrected onset time via _mono_to_audio_ms (ts_mono_ms backdated).
+            end = _clamp_end(start, start + 300, duration_ms)
+            markers.append(
+                {
+                    "type": MARKER_AUDIO_ONSET,
+                    "start_ms": start,
+                    "end_ms": end,
+                    "label": "agent audio onset",
+                    "detail": (
+                        f"onset_frame={spec.get('onset_frame_idx')} · "
+                        f"vad={spec.get('vad', {}).get('method', '?')}"
+                    ),
+                    "onset_frame_idx": spec.get("onset_frame_idx"),
+                }
+            )
+            continue
+
+        if kind == "sim.caller.audio_source_start":
+            # Simulated caller speech onset at the source (push_speech time).
+            end = _clamp_end(start, start + 300, duration_ms)
+            markers.append(
+                {
+                    "type": MARKER_USER_AUDIO_SOURCE,
+                    "start_ms": start,
+                    "end_ms": end,
+                    "label": "caller audio source",
+                    "detail": f"provider={spec.get('provider', '?')} · via={spec.get('via', '?')}",
                 }
             )
             continue
