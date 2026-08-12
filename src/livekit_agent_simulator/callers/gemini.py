@@ -1293,7 +1293,21 @@ class GeminiCallerBridge:
         """Play Gemini audio into the room; log transcriptions and interruptions."""
         try:
             while not self.end_call.is_set():
-                async for response in session.receive():
+                # Bound the receive wait: after a mid-call reconnect the old
+                # session's socket may be dead but receive() can block forever;
+                # polling end_call lets bridge.stop() tear down promptly instead
+                # of hanging the run (TimeoutError from _settle timeout=10).
+                try:
+                    response = await asyncio.wait_for(
+                        session.receive().__anext__(), timeout=15.0
+                    )
+                except asyncio.TimeoutError:
+                    if self.end_call.is_set():
+                        return
+                    continue
+                if response is None:
+                    continue
+                    # Gemini session resumption: the server periodically sends a
                     # Gemini session resumption: the server periodically sends a
                     # resumable handle so the client can reconnect (a fresh
                     # WebSocket) and keep the conversation context past the ~10-min
