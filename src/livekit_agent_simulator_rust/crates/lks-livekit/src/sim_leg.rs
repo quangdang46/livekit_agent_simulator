@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
+use livekit_api::services::sip::{CreateSIPParticipantOptions, SIPClient};
 use lks_core::config::SimConfig;
 use lks_core::errors::RunError;
 use lks_core::logging::event::EventWriter;
-use livekit_api::services::sip::{CreateSIPParticipantOptions, SIPClient};
 use tokio::sync::Mutex;
 
 use crate::room::{connect_room, make_token};
@@ -27,7 +27,12 @@ pub async fn run_inbound_sip(
         .as_ref()
         .and_then(|t| t.sip_trunk_id.clone())
         .filter(|s| !s.is_empty())
-        .or_else(|| cfg.telephony.outbound_trunk_id.clone().filter(|s| !s.is_empty()));
+        .or_else(|| {
+            cfg.telephony
+                .outbound_trunk_id
+                .clone()
+                .filter(|s| !s.is_empty())
+        });
     let Some(trunk) = outbound_trunk else {
         return Err(RunError(
             "inbound_sip requires telephony.outbound_trunk_id (config) or Telephony.sip_trunk_id (scenario) to place the call."
@@ -87,7 +92,10 @@ pub async fn run_inbound_sip(
         .replace("ws://", "https://");
     let sip = SIPClient::with_api_key(&api_host, &cfg.livekit.api_key, &cfg.livekit.api_secret);
     let sip_identity = format!("sip-in-{}", &run_id[..12]);
-    let wait = tel.as_ref().and_then(|t| t.wait_until_answered).unwrap_or(true);
+    let wait = tel
+        .as_ref()
+        .and_then(|t| t.wait_until_answered)
+        .unwrap_or(true);
 
     let mut w = writer.lock().await;
     w.emit(
@@ -118,7 +126,13 @@ pub async fn run_inbound_sip(
         ..Default::default()
     };
     let sip_info = sip
-        .create_sip_participant(trunk.clone(), dial_in.clone(), sim_room_name.clone(), options, None)
+        .create_sip_participant(
+            trunk.clone(),
+            dial_in.clone(),
+            sim_room_name.clone(),
+            options,
+            None,
+        )
         .await
         .map_err(|e| RunError(format!("inbound dial failed: {e}")))?;
 
@@ -154,7 +168,9 @@ pub async fn run_inbound_sip(
             identity.to_string(),
             writer.clone(),
         );
-        bridge.run(tokio::sync::broadcast::channel::<()>(1).1).await?;
+        bridge
+            .run(tokio::sync::broadcast::channel::<()>(1).1)
+            .await?;
     } else {
         let bridge = crate::callers::OpenAiCallerBridge::new(
             cfg.livekit.clone(),
@@ -165,7 +181,9 @@ pub async fn run_inbound_sip(
             identity.to_string(),
             writer.clone(),
         );
-        bridge.run(tokio::sync::broadcast::channel::<()>(1).1).await?;
+        bridge
+            .run(tokio::sync::broadcast::channel::<()>(1).1)
+            .await?;
     }
     let _ = room;
     Ok(())
