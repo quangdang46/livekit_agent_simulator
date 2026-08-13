@@ -16,7 +16,7 @@ use crate::scenario_yaml::load_scenario_yaml;
 pub const DOT_FOLDER: &str = ".agent-sim";
 
 /// Find the package templates dir — repo-root `templates/` (walk up ≤ 6 parents).
-fn package_templates_dir() -> PathBuf {
+pub fn package_templates_dir() -> PathBuf {
     // In the Rust port, templates live at the repo root `templates/`. Walk up
     // from the crate dir (crate is at <root>/src/livekit_agent_simulator_rust/
     // crates/lks-core) to find <root>/templates.

@@ -14,7 +14,7 @@
 
 use std::path::PathBuf;
 
-use serde_json::{Map, Value as Json};
+use serde_json::{json, Map, Value as Json};
 
 use crate::errors::ScenarioError;
 use crate::scenario::scenario_from_dict;
@@ -253,7 +253,29 @@ pub fn scenario_to_dict(s: &crate::scenario::Scenario) -> Map<String, Json> {
         let mut m = Map::new();
         m.insert("steps".into(), Json::Array(s.script_steps.clone()));
         if let Some(v) = &s.script_verify {
-            m.insert("verify".into(), v.clone());
+            // Normalize through the typed parser so verify exports carry the
+            // full Python dataclass field set (P5 export parity).
+            match crate::script::parse::parse_script_verify(v) {
+                Ok(Some(spec)) => {
+                    m.insert(
+                        "verify".into(),
+                        json!({
+                            "require_during_agent_speech": spec.require_during_agent_speech,
+                            "min_agent_finals_after_first_cue": spec.min_agent_finals_after_first_cue,
+                            "min_user_finals_after_first_cue": spec.min_user_finals_after_first_cue,
+                            "min_interruptions": spec.min_interruptions,
+                            "max_interruptions": spec.max_interruptions,
+                            "min_agent_finals_after_silence": spec.min_agent_finals_after_silence,
+                            "min_agent_finals_after_barge_in": spec.min_agent_finals_after_barge_in,
+                            "plugins": spec.plugins,
+                            "plugin_options": spec.plugin_options,
+                        }),
+                    );
+                }
+                _ => {
+                    m.insert("verify".into(), v.clone());
+                }
+            }
         }
         data.insert("script".into(), Json::Object(m));
     }
@@ -269,7 +291,20 @@ pub fn scenario_to_dict(s: &crate::scenario::Scenario) -> Map<String, Json> {
         );
     }
     if let Some(a) = &s.asserts {
-        data.insert("assert".into(), a.clone());
+        // Normalize through the typed parser so exports carry the full Python
+        // field set (asdict order + defaults) — P5 export parity.
+        if let Some(m) = a.as_object() {
+            match crate::asserts::parse_assert_spec(m, "Assert") {
+                Ok(spec) => {
+                    data.insert("assert".into(), spec.to_json());
+                }
+                Err(_) => {
+                    data.insert("assert".into(), a.clone());
+                }
+            }
+        } else {
+            data.insert("assert".into(), a.clone());
+        }
     }
     if !s.pass_criteria.is_empty() || !s.pass_judges.is_empty() {
         let mut m = Map::new();

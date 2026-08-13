@@ -40,6 +40,7 @@ export type Cue = {
   script_step_id?: string;
   script_say?: string;
   script_label?: string;
+  script_overlay?: "line" | "card" | string;
   inject_ms?: number;
   synthetic?: boolean;
 };

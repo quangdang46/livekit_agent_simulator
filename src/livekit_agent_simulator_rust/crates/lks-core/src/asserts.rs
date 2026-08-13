@@ -56,6 +56,7 @@ pub struct OutcomeExpect {
     pub id: String,
     pub otype: String,
     pub phrases: Vec<String>,
+    pub prompt: Option<String>,
     pub role: String,
     pub min_agent_finals_after_barge_in: i64,
     pub min_interruptions: i64,
@@ -89,6 +90,93 @@ pub struct AssertSpec {
     pub outcomes: Vec<OutcomeExpect>,
     pub sip: Option<SipExpect>,
     pub tool_order: Vec<String>,
+}
+
+impl ToolExpect {
+    /// Python `asdict` field order (asserts.py dataclass).
+    pub fn to_json(&self) -> Json {
+        json!({
+            "name": self.name,
+            "min_count": self.min_count,
+            "max_count": self.max_count,
+            "args_contains": self.args_contains,
+        })
+    }
+}
+
+impl TranscriptExpect {
+    /// Python `asdict` field order.
+    pub fn to_json(&self) -> Json {
+        json!({
+            "role": self.role,
+            "contains_any": self.contains_any,
+            "must_not_match": self.must_not_match,
+        })
+    }
+}
+
+impl OutcomeExpect {
+    /// Python `asdict` field order (asserts.py OutcomeExpect dataclass).
+    pub fn to_json(&self) -> Json {
+        json!({
+            "id": self.id,
+            "type": self.otype,
+            "phrases": self.phrases,
+            "prompt": self.prompt,
+            "role": self.role,
+            "min_agent_finals_after_barge_in": self.min_agent_finals_after_barge_in,
+            "min_interruptions": self.min_interruptions,
+            "max_ms_after_barge_to_agent_final": self.max_ms_after_barge_to_agent_final,
+            "min_handoffs": self.min_handoffs,
+            "no_unplanned_handoff": self.no_unplanned_handoff,
+            "max_turn_p50_ms": self.max_turn_p50_ms,
+            "max_turn_p95_ms": self.max_turn_p95_ms,
+            "max_turn_p99_ms": Json::Null,
+            "max_turn_max_ms": Json::Null,
+            "max_ttfw_ms": self.max_ttfw_ms,
+            "max_recovery_p50_ms": Json::Null,
+            "max_recovery_p95_ms": self.max_recovery_p95_ms,
+            "min_barge_recovery_rate": self.min_barge_recovery_rate,
+            "require_turn_samples": 0,
+            "max_ttfa_p50_ms": Json::Null,
+            "max_ttfa_p95_ms": Json::Null,
+            "max_turn_audio_p50_ms": Json::Null,
+            "max_turn_audio_p95_ms": Json::Null,
+            "max_turn_audio_p99_ms": Json::Null,
+            "max_turn_audio_max_ms": Json::Null,
+            "require_audio_samples": 0,
+            "ended_by": self.ended_by,
+            "min_goals": self.min_goals,
+            "goals": Json::Array(vec![]),
+            "must_not_phrases": self.must_not_phrases,
+            "must_not_match": self.must_not_match,
+            "check_agent_transcript": false,
+        })
+    }
+}
+
+impl SipExpect {
+    /// Python `asdict` field order.
+    pub fn to_json(&self) -> Json {
+        json!({
+            "participant_present": self.participant_present,
+            "call_status_any": self.call_status_any,
+            "dial_answered": self.dial_answered,
+        })
+    }
+}
+
+impl AssertSpec {
+    /// Python `asdict` field order (asserts.py AssertSpec dataclass).
+    pub fn to_json(&self) -> Json {
+        json!({
+            "tools": self.tools.iter().map(|t| t.to_json()).collect::<Vec<_>>(),
+            "transcript": self.transcript.iter().map(|t| t.to_json()).collect::<Vec<_>>(),
+            "outcomes": self.outcomes.iter().map(|o| o.to_json()).collect::<Vec<_>>(),
+            "sip": self.sip.as_ref().map(|s| s.to_json()),
+            "tool_order": self.tool_order,
+        })
+    }
 }
 
 impl AssertSpec {
@@ -241,6 +329,183 @@ fn collect_barge_ms(events: &[Map<String, Json>]) -> Vec<i64> {
 }
 
 /// Evaluate deterministic asserts. Returns {pass, skipped, checks}.
+///
+/// Parse an Assert section (raw scenario JSON) into a typed AssertSpec
+/// (port of `asserts.parse_assert_spec`). Error strings mirror Python.
+pub fn parse_assert_spec(spec: &Map<String, Json>, path_label: &str) -> Result<AssertSpec, String> {
+    let mut tools = Vec::new();
+    if let Some(arr) = spec.get("tools").and_then(|v| v.as_array()) {
+        for (i, raw) in arr.iter().enumerate() {
+            let Some(m) = raw.as_object() else {
+                return Err(format!("{path_label}: tools[{i}] must be an object"));
+            };
+            let Some(name) = m
+                .get("name")
+                .map(as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            else {
+                return Err(format!("{path_label}: tools[{i}] needs name"));
+            };
+            let args = m
+                .get("args_contains")
+                .or_else(|| m.get("args"))
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            tools.push(ToolExpect {
+                name,
+                min_count: m.get("min_count").and_then(|v| v.as_i64()).unwrap_or(1),
+                max_count: m.get("max_count").and_then(|v| v.as_i64()),
+                args_contains: args,
+            });
+        }
+    }
+
+    let mut transcript = Vec::new();
+    if let Some(arr) = spec.get("transcript").and_then(|v| v.as_array()) {
+        for (i, raw) in arr.iter().enumerate() {
+            let Some(m) = raw.as_object() else {
+                return Err(format!("{path_label}: transcript[{i}] must be object"));
+            };
+            let contains: Vec<String> = match m.get("contains_any").or_else(|| m.get("contains")) {
+                Some(Json::String(s)) => vec![s.clone()],
+                Some(Json::Array(a)) => a.iter().map(as_str).collect(),
+                _ => Vec::new(),
+            };
+            let must_not = m
+                .get("must_not_match")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            transcript.push(TranscriptExpect {
+                role: as_str(m.get("role").unwrap_or(&Json::String("agent".into()))),
+                contains_any: contains,
+                must_not_match: must_not,
+            });
+        }
+    }
+
+    let mut outcomes = Vec::new();
+    if let Some(arr) = spec.get("outcomes").and_then(|v| v.as_array()) {
+        for (i, raw) in arr.iter().enumerate() {
+            let Some(m) = raw.as_object() else {
+                return Err(format!("{path_label}: outcomes[{i}] must be an object"));
+            };
+            let Some(id) = m.get("id").map(as_str).filter(|s| !s.is_empty()) else {
+                return Err(format!("{path_label}: outcomes[{i}] needs id"));
+            };
+            let otype = as_str(
+                m.get("type")
+                    .unwrap_or(&Json::String("transcript_contains".into())),
+            );
+            let phrases: Vec<String> = match m.get("phrases").or_else(|| m.get("contains_any")) {
+                Some(Json::String(s)) => vec![s.clone()],
+                Some(Json::Array(a)) => a.iter().map(as_str).collect(),
+                _ => Vec::new(),
+            };
+            let max_ms = m
+                .get("max_ms_after_barge_to_agent_final")
+                .and_then(|v| v.as_i64());
+            let eb = if otype == "ended_by" {
+                Some(as_str(
+                    m.get("ended_by")
+                        .or_else(|| m.get("who"))
+                        .unwrap_or(&Json::String("detect".into())),
+                ))
+            } else {
+                m.get("ended_by")
+                    .or_else(|| m.get("who"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            };
+            let mnp: Vec<String> = match m
+                .get("must_not_phrases")
+                .or_else(|| m.get("forbidden"))
+                .or_else(|| m.get("must_not"))
+            {
+                Some(Json::String(s)) => vec![s.clone()],
+                Some(Json::Array(a)) => a.iter().map(as_str).collect(),
+                _ => Vec::new(),
+            };
+            outcomes.push(OutcomeExpect {
+                id,
+                otype,
+                phrases,
+                prompt: m.get("prompt").and_then(|v| v.as_str()).map(String::from),
+                role: as_str(m.get("role").unwrap_or(&Json::String("any".into()))),
+                min_agent_finals_after_barge_in: m
+                    .get("min_agent_finals_after_barge_in")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(1),
+                min_interruptions: m
+                    .get("min_interruptions")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                max_ms_after_barge_to_agent_final: max_ms,
+                min_handoffs: m.get("min_handoffs").and_then(|v| v.as_i64()).unwrap_or(1),
+                no_unplanned_handoff: m
+                    .get("no_unplanned_handoff")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                max_turn_p50_ms: m.get("max_turn_p50_ms").and_then(|v| v.as_i64()),
+                max_turn_p95_ms: m.get("max_turn_p95_ms").and_then(|v| v.as_i64()),
+                max_ttfw_ms: m.get("max_ttfw_ms").and_then(|v| v.as_i64()),
+                max_recovery_p95_ms: m.get("max_recovery_p95_ms").and_then(|v| v.as_i64()),
+                min_barge_recovery_rate: m.get("min_barge_recovery_rate").and_then(|v| v.as_f64()),
+                ended_by: eb,
+                min_goals: m.get("min_goals").and_then(|v| v.as_i64()).unwrap_or(1),
+                must_not_phrases: mnp,
+                must_not_match: m
+                    .get("must_not_match")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            });
+        }
+    }
+
+    let sip = spec
+        .get("sip")
+        .and_then(|v| v.as_object())
+        .map(|m| SipExpect {
+            participant_present: m
+                .get("participant_present")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            call_status_any: match m.get("call_status_any").or_else(|| m.get("call_status")) {
+                Some(Json::String(s)) => vec![s.clone()],
+                Some(Json::Array(a)) => a.iter().map(as_str).collect(),
+                _ => Vec::new(),
+            },
+            dial_answered: m
+                .get("dial_answered")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        });
+
+    let tool_order: Vec<String> = match spec
+        .get("tool_order")
+        .or_else(|| spec.get("required_order"))
+    {
+        Some(Json::String(s)) => vec![s.clone()],
+        Some(Json::Array(a)) => a
+            .iter()
+            .map(as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    Ok(AssertSpec {
+        tools,
+        transcript,
+        outcomes,
+        sip,
+        tool_order,
+    })
+}
+
 pub fn evaluate_asserts(events: &[Map<String, Json>], asserts: &AssertSpec) -> Map<String, Json> {
     if asserts.empty() {
         let mut m = Map::new();

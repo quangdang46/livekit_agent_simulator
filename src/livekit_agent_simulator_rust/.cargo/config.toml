@@ -1,0 +1,8 @@
+# macOS: the prebuilt libwebrtc uses ObjC categories that need -ObjC at link
+# time (livekit/rust-sdks#340, #795 — "+[NSString stringForAbslStringView:]
+# unrecognized selector" crash in PeerConnectionFactory init).
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-ObjC"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-ObjC"]

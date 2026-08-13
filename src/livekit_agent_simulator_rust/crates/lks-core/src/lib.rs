@@ -16,15 +16,18 @@ pub mod config;
 
 pub mod asserts;
 pub mod authoring;
+pub mod authoring_warnings;
 pub mod behavior_compile;
 pub mod caller_policy;
 pub mod evals;
 pub mod logging;
 pub mod metrics;
+pub mod ops;
 pub mod optimize;
 pub mod persona_traits;
 pub mod prompt_sections;
 pub mod scenario;
+pub mod scenario_from_run;
 pub mod scenario_jsonl;
 pub mod scenario_ops;
 pub mod scenario_yaml;
