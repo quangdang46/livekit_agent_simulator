@@ -4,6 +4,8 @@
 //! silence | time), delay_ms, delivery (gemini_text | room_pcm), action
 //! (speak | wait | hang_up | dtmf), barge semantics, interrupt class, overlay.
 
+pub mod farewell;
+pub mod hang_up_gate;
 pub mod parse;
 
 use serde_json::{Map, Value as Json};
