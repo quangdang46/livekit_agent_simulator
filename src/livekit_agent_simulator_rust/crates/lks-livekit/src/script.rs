@@ -396,6 +396,9 @@ impl ScriptRuntime {
 /// Shared mic-source handle so the script runtime can play room_pcm cues.
 pub type SharedMicSource = Arc<tokio::sync::Mutex<Option<Arc<NativeAudioSource>>>>;
 
+/// Shared conversation recorder (sim+agent audio → conversation.wav).
+pub type SharedRecorder = Arc<std::sync::Mutex<crate::audio::LocalConversationRecorder>>;
+
 /// Play raw PCM16 samples into the mic source in ~10 ms frames (24 kHz mono).
 pub async fn play_pcm_to_source(
     source: &SharedMicSource,

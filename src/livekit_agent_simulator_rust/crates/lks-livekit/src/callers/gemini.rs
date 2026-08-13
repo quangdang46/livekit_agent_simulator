@@ -151,7 +151,7 @@ impl GeminiCallerBridge {
 
         // 4. Pumps.
         let (out_tx, out_rx) = mpsc::channel::<Vec<i16>>(128);
-        let mic_task = tokio::spawn(super::openai::pump_mic_shared(out_rx, source.clone()));
+        let mic_task = tokio::spawn(super::openai::pump_mic_shared(out_rx, source.clone(), None));
 
         // Gemini events → mic + transcripts.
         let writer = self.writer.clone();

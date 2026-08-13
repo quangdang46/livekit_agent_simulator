@@ -98,7 +98,9 @@ pub async fn execute_scenario(
     let (end_tx, end_rx) = broadcast::channel::<()>(1);
 
     // Local conversation recorder → conversation.wav (16k stereo).
-    let recorder = std::sync::Mutex::new(crate::audio::LocalConversationRecorder::new());
+    let recorder: crate::script::SharedRecorder = Arc::new(std::sync::Mutex::new(
+        crate::audio::LocalConversationRecorder::new(),
+    ));
 
     // --- persona prompt (minimal: persona brief + goals) ---
     let persona_prompt = build_persona_prompt(&scenario);
@@ -320,7 +322,9 @@ pub async fn execute_scenario(
             room_name,
             identity,
             writer_arc.clone(),
-        );
+        )
+        .with_shared_mic(shared_mic.clone())
+        .with_recorder(recorder.clone());
         Box::pin(async move { bridge.run(end_rx).await })
     };
 

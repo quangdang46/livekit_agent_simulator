@@ -45,6 +45,7 @@ pub struct OpenAiCallerBridge {
     identity: String,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
     shared_mic: Option<crate::script::SharedMicSource>,
+    recorder: Option<crate::script::SharedRecorder>,
 }
 
 impl OpenAiCallerBridge {
@@ -66,12 +67,19 @@ impl OpenAiCallerBridge {
             identity,
             writer,
             shared_mic: None,
+            recorder: None,
         }
     }
 
     /// Share the published mic source so script room_pcm cues can play.
     pub fn with_shared_mic(mut self, shared: crate::script::SharedMicSource) -> Self {
         self.shared_mic = Some(shared);
+        self
+    }
+
+    /// Share the conversation recorder so the pumps feed it audio.
+    pub fn with_recorder(mut self, rec: crate::script::SharedRecorder) -> Self {
+        self.recorder = Some(rec);
         self
     }
 
@@ -186,11 +194,13 @@ impl OpenAiCallerBridge {
 
         // Pump 1: agent room audio → OpenAI input buffer.
         let ws_tx_pump = ws_tx;
+        let rec_agent = self.recorder.clone();
         let audio_task = tokio::spawn(pump_agent_audio(
             room.clone(),
             room_events.resubscribe(),
             ws_tx_pump,
             end_rx.resubscribe(),
+            rec_agent,
         ));
 
         // Pump 2: OpenAI events → audio out / transcripts.
@@ -202,7 +212,8 @@ impl OpenAiCallerBridge {
         ));
 
         // Pump 3: audio out → mic source.
-        let mic_task = tokio::spawn(pump_mic_shared(out_rx, source.clone()));
+        let rec_sim = self.recorder.clone();
+        let mic_task = tokio::spawn(pump_mic_shared(out_rx, source.clone(), rec_sim));
 
         // Wait for end_call, or a hard slice cap (P2: 45 s) so runs always terminate.
         let mut room_events_watch = room_events;
@@ -272,6 +283,7 @@ async fn pump_agent_audio(
         Message,
     >,
     mut end_call: broadcast::Receiver<()>,
+    recorder: Option<crate::script::SharedRecorder>,
 ) {
     // Wait for the agent's audio track, then stream 24k PCM into OpenAI.
     let mut agent_track: Option<livekit::webrtc::audio_stream::native::NativeAudioStream> = None;
@@ -328,6 +340,11 @@ async fn pump_agent_audio(
         }
         let pcm: &[i16] = frame.data.as_ref();
         let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        if let Some(rec) = &recorder {
+            if let Ok(mut r) = rec.lock() {
+                r.push_agent(&bytes, OPENAI_IN_RATE);
+            }
+        }
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
         let msg = serde_json::json!({
             "type": "input_audio_buffer.append",
@@ -478,14 +495,26 @@ async fn pump_openai_events(
 pub async fn pump_mic_shared(
     mut out_rx: mpsc::Receiver<Vec<i16>>,
     source: Arc<livekit::webrtc::audio_source::native::NativeAudioSource>,
+    recorder: Option<crate::script::SharedRecorder>,
 ) {
     // P2 slice: 10 ms frames at 24k = 240 samples. Re-chunk and capture.
+    if let Some(rec) = &recorder {
+        if let Ok(mut r) = rec.lock() {
+            r.mark_start();
+        }
+    }
     let mut buf: Vec<i16> = Vec::new();
     while let Some(samples) = out_rx.recv().await {
         buf.extend_from_slice(&samples);
         let frame_len = (OPENAI_OUT_RATE as usize) / 100;
         while buf.len() >= frame_len {
             let frame: Vec<i16> = buf.drain(..frame_len).collect();
+            if let Some(rec) = &recorder {
+                let bytes: Vec<u8> = frame.iter().flat_map(|s| s.to_le_bytes()).collect();
+                if let Ok(mut r) = rec.lock() {
+                    r.push_sim(&bytes, OPENAI_OUT_RATE);
+                }
+            }
             let mut af = livekit::webrtc::audio_frame::AudioFrame::new(
                 OPENAI_OUT_RATE,
                 1,

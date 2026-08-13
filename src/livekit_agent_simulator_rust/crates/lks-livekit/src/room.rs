@@ -18,6 +18,10 @@ pub enum SimRoomEvent {
         track_sid: String,
         participant_identity: String,
     },
+    TrackPublished {
+        track_sid: String,
+        participant_identity: String,
+    },
     ParticipantConnected {
         identity: String,
         name: String,
@@ -54,6 +58,13 @@ pub async fn connect_room(
                     publication,
                     participant,
                 } => Some(SimRoomEvent::TrackSubscribed {
+                    track_sid: publication.sid().to_string(),
+                    participant_identity: participant.identity().to_string(),
+                }),
+                RoomEvent::TrackPublished {
+                    publication,
+                    participant,
+                } => Some(SimRoomEvent::TrackPublished {
                     track_sid: publication.sid().to_string(),
                     participant_identity: participant.identity().to_string(),
                 }),
