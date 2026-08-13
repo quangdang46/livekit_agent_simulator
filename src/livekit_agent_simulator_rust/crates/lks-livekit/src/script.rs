@@ -251,6 +251,35 @@ impl ScriptRuntime {
                 }
                 _ => {
                     // speak
+                    if barge_in {
+                        // Typed interruption: the caller cut across the agent.
+                        let mut ispec = serde_json::Map::new();
+                        ispec.insert("by".into(), json!("sim"));
+                        ispec.insert("barge_in".into(), json!(true));
+                        ispec.insert(
+                            "class".into(),
+                            match &icls {
+                                Some(c) => json!(c),
+                                None => json!("correction"),
+                            },
+                        );
+                        ispec.insert("step_id".into(), json!(id));
+                        ispec.insert("label".into(), json!(label));
+                        ispec.insert("say".into(), json!(say));
+                        ispec.insert(
+                            "note".into(),
+                            json!("Script barge while agent was speaking (typed interruption)."),
+                        );
+                        w.emit(
+                            "interruption",
+                            Some(&ispec),
+                            "sim.script",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                    }
                     let mut spec = serde_json::Map::new();
                     spec.insert("step_id".into(), json!(id));
                     spec.insert("label".into(), json!(label));
