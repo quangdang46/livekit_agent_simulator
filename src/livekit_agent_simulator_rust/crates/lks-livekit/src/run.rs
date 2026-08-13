@@ -138,22 +138,60 @@ pub async fn execute_scenario(
         None
     };
 
-    // inbound_sip leg: the caller dials the agent's DID via a SIP trunk.
-    if scenario.effective_caller_mode() == "inbound_sip" {
-        let provider = cfg.simulator.provider.clone();
-        let leg = crate::sim_leg::run_inbound_sip(
-            &cfg,
-            &scenario,
-            &run_id,
-            persona_prompt,
-            writer_arc.clone(),
-            &provider,
-        )
-        .await;
+    // SIP legs: dispatch by caller_mode.
+    let mode = scenario.effective_caller_mode().to_string();
+    let sip_leg_result: Option<Result<(), RunError>> = match mode.as_str() {
+        "inbound_sip" => Some(
+            crate::sim_leg::run_inbound_sip(
+                &cfg,
+                &scenario,
+                &run_id,
+                persona_prompt.clone(),
+                writer_arc.clone(),
+                &cfg.simulator.provider,
+            )
+            .await,
+        ),
+        "outbound_sim_callee" => Some(
+            crate::sim_leg::run_outbound_sim_callee(
+                &cfg,
+                &scenario,
+                &run_id,
+                persona_prompt.clone(),
+                writer_arc.clone(),
+                &cfg.simulator.provider,
+            )
+            .await,
+        ),
+        "agent_dials" => Some(
+            crate::sim_leg::run_agent_dials(
+                &cfg,
+                &scenario,
+                &run_id,
+                persona_prompt.clone(),
+                writer_arc.clone(),
+                &cfg.simulator.provider,
+            )
+            .await,
+        ),
+        "outbound_human_pickup" => Some(
+            crate::sim_leg::run_outbound_human_pickup(
+                &cfg,
+                &scenario,
+                &run_id,
+                persona_prompt.clone(),
+                writer_arc.clone(),
+                &cfg.simulator.provider,
+            )
+            .await,
+        ),
+        _ => None,
+    };
+    if let Some(leg) = sip_leg_result {
         if let Some(t) = script_task {
             t.abort();
         }
-        match leg {
+        return match leg {
             Ok(()) => {
                 let mut w = writer_arc.lock().await;
                 let mut meta = serde_json::Map::new();
@@ -171,10 +209,10 @@ pub async fn execute_scenario(
                     serde_json::Value::String(report_dir.to_string_lossy().into_owned()),
                 );
                 out.insert("summary".into(), serde_json::Value::Object(summary));
-                return Ok(out);
+                Ok(out)
             }
-            Err(e) => return Err(e),
-        }
+            Err(e) => Err(e),
+        };
     }
 
     // Provider dispatch: config `simulator.provider` selects the caller bridge.
@@ -185,7 +223,7 @@ pub async fn execute_scenario(
         let bridge = crate::callers::GeminiCallerBridge::new(
             cfg.livekit.clone(),
             cfg.simulator.clone(),
-            persona_prompt,
+            persona_prompt.clone(),
             room_name,
             identity,
             writer_arc.clone(),
@@ -195,7 +233,7 @@ pub async fn execute_scenario(
         let bridge = OpenAiCallerBridge::new(
             cfg.livekit.clone(),
             cfg.simulator.clone(),
-            persona_prompt,
+            persona_prompt.clone(),
             run_spec.first_speaker.clone(),
             room_name,
             identity,
