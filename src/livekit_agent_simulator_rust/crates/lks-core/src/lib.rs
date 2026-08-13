@@ -13,3 +13,6 @@
 pub mod errors;
 
 pub mod config;
+
+pub mod scenario;
+pub mod scenario_yaml;
