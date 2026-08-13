@@ -150,6 +150,12 @@ function mountCueRow(c: Cue): HTMLLIElement {
       badge.textContent =
         origin === "script_barge" ? "barge_in" : "script";
       tags.appendChild(badge);
+      if (c.script_overlay) {
+        const ov = document.createElement("span");
+        ov.className = `tag overlay_${c.script_overlay}`;
+        ov.textContent = c.script_overlay;
+        tags.appendChild(ov);
+      }
       if (c.synthetic) {
         const syn = document.createElement("span");
         syn.className = "tag script_barge";

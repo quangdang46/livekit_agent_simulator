@@ -119,6 +119,8 @@ def _build_markers(
             during = bool(spec.get("during_agent_speech"))
             waited = int(spec.get("waited_ms") or 0)
             icls = str(spec.get("class") or spec.get("interrupt_class") or "").strip() or None
+            # overlay: line (forced say) vs fixture (PCM/barge/noise) — script overlay taxonomy.
+            overlay = str(spec.get("overlay") or "").strip() or None
             mtype = MARKER_BARGE_IN if barge else MARKER_SCRIPT_CUE
             # Non-recovery classes get distinct marker types for UI chips
             if icls == "backchannel":
@@ -133,6 +135,8 @@ def _build_markers(
             ]
             if icls:
                 detail_parts.append(f"class={icls}")
+            if overlay:
+                detail_parts.append(f"overlay={overlay}")
             if say:
                 detail_parts.append(f'say="{say}"')
             if waited:
@@ -163,6 +167,7 @@ def _build_markers(
                     "during_agent_speech": during,
                     "barge_in": barge,
                     "class": icls,
+                    "overlay": overlay,
                     "audio_ms": inj_dur or span,
                 }
             )

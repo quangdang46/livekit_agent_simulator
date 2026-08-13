@@ -129,6 +129,8 @@ def _pin_script_window(
         c["script_say"] = matched.get("say")
     if matched.get("label"):
         c["script_label"] = matched.get("label")
+    if matched.get("overlay"):
+        c["script_overlay"] = matched.get("overlay")
     inject_ms = int(matched.get("start_ms") or final_ms)
     try:
         audio_ms = int(matched.get("audio_ms") or 0)
