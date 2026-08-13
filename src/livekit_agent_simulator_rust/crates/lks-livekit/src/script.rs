@@ -98,6 +98,7 @@ impl ScriptRuntime {
         let mut fired: Vec<String> = Vec::new();
         let mut arm_idx: usize = 0;
         let mut trigger_since: Vec<Option<Instant>> = vec![None; self.steps.len()];
+        let mut awaiting_reply_since: Option<Instant> = None;
         let mut stop_rx = stop_rx;
 
         while arm_idx < self.steps.len() {
@@ -105,6 +106,20 @@ impl ScriptRuntime {
                 _ = stop_rx.recv() => return Ok(()),
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {}
             }
+            // Post-cue gap: after a speak step, wait for the agent to reply
+            // (up to 8s) before arming the next step — mirrors the Python
+            // _await_agent_reply window so steps don't fire over the agent.
+            if let Some(since) = awaiting_reply_since {
+                let state = self.state.lock().await;
+                let replied = state.agent_replied_this_turn || !state.agent_is_active_speaker;
+                drop(state);
+                if replied || since.elapsed() >= Duration::from_secs(8) {
+                    awaiting_reply_since = None;
+                } else {
+                    continue;
+                }
+            }
+
             let step = self.steps[arm_idx].clone();
             let id = Self::step_str(&step, "id", &format!("step-{arm_idx}"));
             if fired.contains(&id) {
@@ -268,6 +283,8 @@ impl ScriptRuntime {
                         interrupt_class: icls,
                         delivery,
                     });
+                    // Speak steps open a reply window before the next step.
+                    awaiting_reply_since = Some(Instant::now());
                 }
             }
             if once {
