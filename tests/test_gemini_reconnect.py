@@ -25,6 +25,10 @@ def _make_bridge() -> GeminiCallerBridge:
     bridge.transport_dropped = False
     bridge._resume_handle = None
     bridge._reconnect_required = asyncio.Event()
+    bridge._agent_stream_open = False
+    bridge._agent_stream_last_close_ms = None
+    bridge._agent_speech_frames = 0
+    bridge._agent_silence_ms = 0.0
     return bridge
 
 
@@ -159,6 +163,32 @@ async def test_pump_receive_timeout_with_handle_signals_reconnect() -> None:
     kinds = [e[0] for e in bridge.writer.events]
     assert "sim.gemini_socket_drop" in kinds
     assert "sim.error" in kinds
+
+
+@pytest.mark.asyncio
+async def test_activity_close_records_reopen_cooldown() -> None:
+    """activity_end records the last-close timestamp used to gate the reopen.
+
+    Gemini Live rejects an activity_start sent too soon after activity_end with
+    `1007 Precondition check failed` (rapid agent re-utterance after a silence
+    end). The close must stamp ``_agent_stream_last_close_ms`` so the agent-audio
+    pump can wait out the reopen cooldown before reopening.
+    """
+    bridge = _make_bridge()
+    bridge._agent_stream_open = True  # simulate an open activity
+
+    sent: list[str] = []
+
+    class _Session:
+        async def send_realtime_input(self, **kw):
+            sent.append(str(kw))
+
+    await bridge._flush_agent_audio_stream(_Session(), reason="agent_silence")
+    assert bridge._agent_stream_open is False
+    assert bridge._agent_stream_last_close_ms is not None
+    assert sent  # activity_end was sent
+    kinds = [e[0] for e in bridge.writer.events]
+    assert "sim.gemini_activity" in kinds
 
 
 def _session_yielding(messages: list, after_each: callable | None = None) -> object:

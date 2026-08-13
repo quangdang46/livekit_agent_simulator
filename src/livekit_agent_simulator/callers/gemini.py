@@ -59,6 +59,12 @@ _AGENT_SPEECH_RMS_THRESHOLD = 100.0
 _AGENT_STREAM_END_SILENCE_MS = 650
 _AGENT_SPEECH_START_FRAMES = 1
 _AGENT_TRAILING_PAD_MS = 120.0
+# Minimum gap (ms) between an activity_end and the next activity_start on the
+# agent-audio stream. Gemini Live rejects a reopen sent too soon after a close
+# with 1007 "Precondition check failed" / "invalid frame payload data". The
+# inject path already sleeps 150ms before reopening; use the same order of
+# magnitude so a quick agent re-utterance does not kill the Live socket.
+_AGENT_ACTIVITY_REOPEN_COOLDOWN_MS = 200.0
 
 __all__ = [
     "END_CALL_TOKEN",
@@ -286,6 +292,12 @@ class GeminiCallerBridge:
         self._agent_stream_open: bool = False
         self._agent_speech_frames: int = 0
         self._agent_silence_ms: float = 0.0
+        # Monotonic ms of the most recent activity_end close. Gemini Live rejects
+        # an activity_start sent too soon after a close with 1007 "Precondition
+        # check failed / invalid frame payload data" (observed: agent_silence end
+        # at T then a reopen ~140ms later kills the socket). The inject path
+        # already sleeps 150ms before reopening; the agent-audio reopen must too.
+        self._agent_stream_last_close_ms: float | None = None
         # Drop persona PCM after hang-up token / spoken "end call" is detected.
         self._mute_persona_audio = False
         # When Script steps remain, freestyle bye/[END_CALL] must not tear the room down.
@@ -673,6 +685,9 @@ class GeminiCallerBridge:
         self._agent_stream_open = False
         self._agent_speech_frames = 0
         self._agent_silence_ms = 0.0
+        # Record when the activity closed so the next activity_start can respect
+        # the reopen cooldown (prevents the 1007 rapid-reopen kill).
+        self._agent_stream_last_close_ms = time.monotonic() * 1000.0
 
     async def _emit_bootstrap_cues(self, session: Any) -> None:
         """Emit connect-time midcall texts (``kind=bootstrap`` only).
@@ -1270,6 +1285,20 @@ class GeminiCallerBridge:
                         self._agent_silence_ms = 0.0
                         if self._agent_speech_frames >= _AGENT_SPEECH_START_FRAMES:
                             if not self._agent_stream_open:
+                                # Respect the reopen cooldown: reopening an activity
+                                # within ~200ms of the last activity_end makes Gemini
+                                # Live close the socket with 1007 "Precondition check
+                                # failed" (rapid agent re-utterance after a silence
+                                # end). Wait out the cooldown before reopening so the
+                                # server accepts the new activity.
+                                if self._agent_stream_last_close_ms is not None:
+                                    now_ms = time.monotonic() * 1000.0
+                                    since_close = now_ms - self._agent_stream_last_close_ms
+                                    if since_close < _AGENT_ACTIVITY_REOPEN_COOLDOWN_MS:
+                                        await asyncio.sleep(
+                                            (_AGENT_ACTIVITY_REOPEN_COOLDOWN_MS - since_close)
+                                            / 1000.0
+                                        )
                                 await session.send_realtime_input(
                                     activity_start=types.ActivityStart()
                                 )
