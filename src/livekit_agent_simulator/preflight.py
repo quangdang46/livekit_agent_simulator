@@ -19,12 +19,16 @@ class PreflightResult:
             self.ok = False
 
 
-async def run_preflight(project_root: Path | str, connectivity: bool = True) -> tuple[PreflightResult, SimConfig | None]:
+async def run_preflight(
+    project_root: Path | str,
+    connectivity: bool = True,
+    profile: str | None = None,
+) -> tuple[PreflightResult, SimConfig | None]:
     """Validate config, timezone, folders, and (optionally) LiveKit API reachability."""
     result = PreflightResult(ok=True)
 
     try:
-        cfg = load_config(project_root)
+        cfg = load_config(project_root, profile=profile)
         result.add("config", "pass", str(cfg.dot_dir / "config.yaml"))
     except ConfigError as e:
         result.add("config", "fail", str(e))

@@ -67,6 +67,11 @@ class SimulatorConfig:
     OpenAI Realtime). ``mode`` picks the brain family (``realtime`` today;
     ``cascade`` reserved). ``api_key`` holds the active provider's key — there
     is no per-provider key alias (AGENTS.md: one clear API, no legacy names).
+
+    ``name`` is the selected profile label (``"default"`` for the legacy flat
+    ``simulator:`` block, or a ``simulator.profiles.<name>`` key when a
+    ``--profile`` was chosen). It is surfaced in report snapshots so runs are
+    attributable to a profile without leaking the key itself.
     """
 
     provider: ProviderName = "google"
@@ -74,6 +79,7 @@ class SimulatorConfig:
     api_key: str = ""
     language: str = DEFAULT_LANGUAGE
     voice: SimulatorVoiceConfig = field(default_factory=SimulatorVoiceConfig)
+    name: str = "default"
 
 
 @dataclass
@@ -179,6 +185,9 @@ class SimConfig:
     project: str | None = None
     cues: CuesConfig = field(default_factory=CuesConfig)
     telephony: TelephonyConfig = field(default_factory=TelephonyConfig)
+    # Name of the caller profile selected for this run (None = legacy flat
+    # `simulator:` block; else a `simulator.profiles.<name>` key).
+    active_profile: str | None = None
 
     @property
     def dot_dir(self) -> Path:
@@ -217,7 +226,50 @@ def _require(section: dict[str, Any], key: str, section_name: str) -> Any:
     return value
 
 
-def load_config(project_root: Path | str) -> SimConfig:
+def _build_simulator_config(
+    sim_raw: dict[str, Any], *, name: str
+) -> SimulatorConfig:
+    """Parse one ``simulator:`` mapping (flat block or a named profile).
+
+    ``sim_raw`` is a dict that may contain only a subset of keys — missing
+    provider/mode/voice fall back to the same defaults the legacy flat block
+    uses, and ``api_key`` is required. The ``default`` marker key (if present
+    in a profile) is consumed by profile selection and is not a config field.
+    """
+    # ``default`` is a profile-selection marker, never a simulator field.
+    sim_raw = {k: v for k, v in sim_raw.items() if k != "default"}
+    provider_raw = str(sim_raw.get("provider", "google")).strip().lower()
+    if provider_raw not in _PROVIDER_VALUES:
+        raise ConfigError(
+            "`simulator.provider` must be `google` or `openai` "
+            f"(got {provider_raw!r})."
+        )
+    mode_raw = str(sim_raw.get("mode", "realtime")).strip().lower()
+    if mode_raw not in _BRAIN_MODE_VALUES:
+        raise ConfigError(
+            "`simulator.mode` must be `realtime` "
+            f"(got {mode_raw!r}); cascade is reserved for a future brain."
+        )
+    voice_raw = sim_raw.get("voice") or {}
+    # `simulator.language` is the legacy default; `voice.language` is the
+    # authoritative sim locale once set (portable default en-US otherwise).
+    default_lang = str(sim_raw.get("language", DEFAULT_LANGUAGE))
+    voice = SimulatorVoiceConfig(
+        model=str(voice_raw.get("model", DEFAULT_VOICE_MODEL)),
+        voice=str(voice_raw.get("voice", "Puck")),
+        language=str(voice_raw.get("language", default_lang)),
+    )
+    return SimulatorConfig(
+        provider=provider_raw,  # type: ignore[assignment]
+        mode=mode_raw,  # type: ignore[assignment]
+        api_key=str(_require(sim_raw, "api_key", "simulator")),
+        language=default_lang,
+        voice=voice,
+        name=name,
+    )
+
+
+def load_config(project_root: Path | str, profile: str | None = None) -> SimConfig:
     project_root = Path(project_root).resolve()
     config_path = project_root / DOT_FOLDER / CONFIG_FILENAME
     if not config_path.exists():
@@ -253,34 +305,77 @@ def load_config(project_root: Path | str) -> SimConfig:
     sim_raw = raw.get("simulator")
     if not isinstance(sim_raw, dict):
         raise ConfigError(f"Missing `simulator:` section in {config_path}.")
-    provider_raw = str(sim_raw.get("provider", "google")).strip().lower()
-    if provider_raw not in _PROVIDER_VALUES:
-        raise ConfigError(
-            "`simulator.provider` must be `google` or `openai` "
-            f"(got {provider_raw!r})."
-        )
-    mode_raw = str(sim_raw.get("mode", "realtime")).strip().lower()
-    if mode_raw not in _BRAIN_MODE_VALUES:
-        raise ConfigError(
-            "`simulator.mode` must be `realtime` "
-            f"(got {mode_raw!r}); cascade is reserved for a future brain."
-        )
-    voice_raw = sim_raw.get("voice") or {}
-    # `simulator.language` is the legacy default; `voice.language` is the
-    # authoritative sim locale once set (portable default en-US otherwise).
-    default_lang = str(sim_raw.get("language", DEFAULT_LANGUAGE))
-    voice = SimulatorVoiceConfig(
-        model=str(voice_raw.get("model", DEFAULT_VOICE_MODEL)),
-        voice=str(voice_raw.get("voice", "Puck")),
-        language=str(voice_raw.get("language", default_lang)),
-    )
-    simulator = SimulatorConfig(
-        provider=provider_raw,  # type: ignore[assignment]
-        mode=mode_raw,  # type: ignore[assignment]
-        api_key=str(_require(sim_raw, "api_key", "simulator")),
-        language=default_lang,
-        voice=voice,
-    )
+
+    # Legacy flat `simulator:` block = the fallback when no profile is active.
+    # Named profiles live under `simulator.profiles:`. Selection rules:
+    #   * `--profile <name>` given   → that profile (explicit; must exist).
+    #   * `--profile` absent + exactly one profile has `default: true`
+    #                               → that profile.
+    #   * `--profile` absent + no defaults → the legacy flat `simulator:` block
+    #     (backward compatible).
+    #   * 2+ profiles marked `default: true` → error (no "first wins").
+    # A selected profile inherits unspecified fields (voice/language/mode) from
+    # the flat block.
+    raw_profiles = sim_raw.get("profiles")
+    profiles_map: dict[str, Any] = {}
+    if isinstance(raw_profiles, dict):
+        profiles_map = raw_profiles
+
+    selected_profile: str | None = None
+    if profile is not None:
+        if not profiles_map:
+            raise ConfigError(
+                f"`--profile {profile}` requested but `simulator.profiles:` is "
+                f"not a non-empty map in {config_path}."
+            )
+        if profile not in profiles_map:
+            raise ConfigError(
+                f"Profile {profile!r} not found. Available profiles: "
+                + ", ".join(sorted(profiles_map)) or "none"
+            )
+        selected_profile = profile
+    elif profiles_map:
+        defaults = [
+            name
+            for name, p in profiles_map.items()
+            if isinstance(p, dict) and bool(p.get("default"))
+        ]
+        if len(defaults) > 1:
+            raise ConfigError(
+                "Multiple profiles marked `default: true` in "
+                f"{config_path}: {', '.join(sorted(defaults))}. "
+                "Mark at most one profile as default (or use `--profile <name>`)."
+            )
+        if len(defaults) == 1:
+            selected_profile = defaults[0]
+
+    # Profiles exist but nothing selects one: if the flat `simulator:` block is
+    # also not usable (no api_key), there is no caller config at all — say so
+    # explicitly instead of a generic missing-key error.
+    if selected_profile is None and profiles_map:
+        if not (sim_raw.get("api_key") or "").strip():
+            raise ConfigError(
+                "No default profile configured and no legacy `simulator:` "
+                f"credentials found in {config_path}. Mark one profile with "
+                "`default: true`, pass `--profile <name>`, or fill "
+                "`simulator.api_key`."
+            )
+
+    active_profile: str | None = None
+    if selected_profile is not None:
+        prof_raw = profiles_map[selected_profile]
+        if not isinstance(prof_raw, dict):
+            raise ConfigError(
+                f"`simulator.profiles.{selected_profile}` must be a mapping."
+            )
+        # Profile inherits unspecified keys from the flat block. Drop the
+        # `profiles:` key itself so it is not re-parsed as a scalar field.
+        merged = {k: v for k, v in sim_raw.items() if k != "profiles"}
+        merged.update(prof_raw)
+        sim_raw = merged
+        active_profile = selected_profile
+
+    simulator = _build_simulator_config(sim_raw, name=active_profile or "default")
 
     judge: JudgeConfig | None = None
     judge_raw = raw.get("judge")
@@ -405,6 +500,7 @@ def load_config(project_root: Path | str) -> SimConfig:
         project=raw.get("project"),
         cues=cues,
         telephony=telephony,
+        active_profile=active_profile,
     )
 
 
@@ -428,6 +524,7 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
             "voice_model": cfg.simulator.voice.model,
             "voice": cfg.simulator.voice.voice,
             "language": cfg.simulator.voice.language,
+            "active_profile": cfg.active_profile,
         },
         "judge_enabled": cfg.judge is not None,
         "judge": (

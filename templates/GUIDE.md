@@ -113,6 +113,36 @@ simulator:
     model: "gemini-3.1-flash-live-preview"
     voice: "Puck"          # any Gemini Live voice name your key supports
     language: "vi-VN"
+```
+
+**Switch provider without editing config** — define named profiles and pass
+`--profile <name>`:
+
+```yaml
+simulator:
+  provider: google        # flat block = fallback (no --profile / no default)
+  api_key: "…"
+  profiles:
+    gemini:
+      default: true       # auto-selected when no --profile flag
+      provider: google
+      api_key: "…"
+    openai:               # lks execute <scenario> --profile openai
+      provider: openai
+      api_key: "sk-…"
+      voice:
+        model: "gpt-realtime-2.1-mini"
+        voice: "marin"
+```
+
+Selection (no `--profile`): one `default: true` profile wins; else the flat
+block. 2+ defaults → error. `profiles:` with no default and no flat creds →
+config error. `--profile <name>` always wins over any default. Profile names
+are **case-sensitive**.
+Precedence: **profile → flat `simulator:` → built-in default**; profiles
+inherit unspecified fields (voice/language/mode) from the flat block. Presence
+of `profiles:` never changes what runs without `--profile` and without a
+default profile; a missing profile name fails loudly with the available list.
 
 judge:
   # Gemini (default when base_url omitted) — uses simulator.api_key (provider: google)
