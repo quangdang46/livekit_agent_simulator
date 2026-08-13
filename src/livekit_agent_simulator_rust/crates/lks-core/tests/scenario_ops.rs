@@ -148,3 +148,58 @@ fn is_valid_scenario_id_cases() {
     assert!(!is_valid_scenario_id(""));
     assert!(!is_valid_scenario_id(&"a".repeat(65)));
 }
+
+#[test]
+fn convert_scenario_jsonl_to_yaml() {
+    let dir = temp_scenarios_dir("convert");
+    write_scenario(
+        &dir,
+        "legacy.jsonl",
+        "{\"apiVersion\":\"agent-sim/v1\",\"kind\":\"Scenario\",\"metadata\":{\"id\":\"legacy\"}}\n{\"kind\":\"Persona\",\"spec\":{\"brief\":\"Hi\"}}\n{\"kind\":\"Execute\",\"spec\":{\"max_turns\":2,\"timeout_s\":90,\"first_speaker\":\"user\"}}\n",
+    );
+    let res = lks_core::scenario_ops::convert_scenario(&dir, "legacy", false).expect("convert");
+    assert_eq!(
+        res.get("scenario_id").and_then(|v| v.as_str()),
+        Some("legacy")
+    );
+    // The .yaml now exists and parses.
+    let s =
+        lks_core::scenario_yaml::load_scenario_yaml(&dir.join("legacy.yaml")).expect("yaml parses");
+    assert_eq!(s.id, "legacy");
+    assert_eq!(s.run_spec().max_turns, 2);
+    // Original jsonl left in place.
+    assert!(dir.join("legacy.jsonl").exists());
+}
+
+#[test]
+fn convert_scenario_existing_yaml_requires_force() {
+    let dir = temp_scenarios_dir("convert_force");
+    write_scenario(
+        &dir,
+        "legacy.jsonl",
+        "{\"apiVersion\":\"agent-sim/v1\",\"kind\":\"Scenario\",\"metadata\":{\"id\":\"legacy\"}}\n{\"kind\":\"Persona\",\"spec\":{\"brief\":\"Hi\"}}\n",
+    );
+    write_scenario(
+        &dir,
+        "legacy.yaml",
+        "apiVersion: agent-sim/v1\nkind: Scenario\nmetadata:\n  id: legacy\npersona:\n  brief: Hi\n",
+    );
+    let err = lks_core::scenario_ops::convert_scenario(&dir, "legacy", false)
+        .expect_err("no force fails");
+    assert!(err.to_string().contains("already exists"), "got: {err}");
+    // force=true overwrites
+    let res =
+        lks_core::scenario_ops::convert_scenario(&dir, "legacy", true).expect("force converts");
+    assert!(res.get("written_to").is_some());
+}
+
+#[test]
+fn convert_scenario_missing_jsonl() {
+    let dir = temp_scenarios_dir("convert_missing");
+    let err =
+        lks_core::scenario_ops::convert_scenario(&dir, "ghost", false).expect_err("missing fails");
+    assert!(
+        err.to_string().contains("not found as a .jsonl"),
+        "got: {err}"
+    );
+}

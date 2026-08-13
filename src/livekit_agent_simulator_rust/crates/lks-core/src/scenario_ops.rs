@@ -219,3 +219,97 @@ pub fn export_scenario(scenarios_dir: &Path, scenario_id: &str) -> Map<String, J
         }
     }
 }
+
+/// Convert an existing `.jsonl` scenario to `.yaml` (idempotent) — mirror
+/// `ops.convert_scenario`. Returns {source, written_to, scenario_id, note} or
+/// raises a ConfigError-equivalent (ScenarioError here) on failure.
+pub fn convert_scenario(
+    scenarios_dir: &Path,
+    scenario_id: &str,
+    force: bool,
+) -> Result<Map<String, Json>, ScenarioError> {
+    if !is_valid_scenario_id(scenario_id) {
+        return Err(ScenarioError(format!(
+            "Invalid scenario_id {scenario_id:?}: use letters/digits/[_-], start with alnum, max 64 chars"
+        )));
+    }
+    // Resolve the .jsonl directly (find_scenario prefers .yaml so can't see it).
+    let jsonl_path = scenarios_dir.join(format!("{scenario_id}.jsonl"));
+    let jsonl_path = if jsonl_path.exists() {
+        jsonl_path
+    } else {
+        // metadata.id scan across .jsonl files.
+        let mut found = None;
+        for f in iter_scenario_files(scenarios_dir) {
+            let lower = f
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if lower != "jsonl" {
+                continue;
+            }
+            if let Ok(s) = parse_scenario(&f) {
+                if s.id == scenario_id {
+                    found = Some(f);
+                    break;
+                }
+            }
+        }
+        match found {
+            Some(p) => p,
+            None => {
+                return Err(ScenarioError(format!(
+                    "Scenario `{scenario_id}` not found as a .jsonl in {} (convert applies to legacy .jsonl scenarios; .yaml is already canonical).",
+                    scenarios_dir.display()
+                )))
+            }
+        }
+    };
+
+    let scenario = parse_scenario(&jsonl_path)?;
+    let dest = jsonl_path.with_extension("yaml");
+    if dest.exists() && !force {
+        return Err(ScenarioError(format!(
+            "{} already exists. Pass force=true / --force to overwrite, or pick another id.",
+            dest.display()
+        )));
+    }
+    let text = crate::scenario_yaml::scenario_to_yaml_text(&scenario);
+    write_yaml_atomic(&dest, &text)?;
+
+    let mut m = Map::new();
+    m.insert(
+        "source".into(),
+        Json::String(jsonl_path.to_string_lossy().into_owned()),
+    );
+    m.insert(
+        "written_to".into(),
+        Json::String(dest.to_string_lossy().into_owned()),
+    );
+    m.insert("scenario_id".into(), Json::String(scenario.id.clone()));
+    m.insert(
+        "note".into(),
+        Json::String("Original .jsonl left in place; both formats are supported.".into()),
+    );
+    Ok(m)
+}
+
+/// `_write_yaml_atomic`: write `<dest>.yaml.tmp`, validate via load_scenario_yaml
+/// BEFORE `os.replace` — broken YAML never lands on dest.
+fn write_yaml_atomic(dest: &Path, text: &str) -> Result<(), ScenarioError> {
+    let tmp = dest.with_extension("yaml.tmp");
+    let result = (|| -> Result<(), ScenarioError> {
+        std::fs::write(&tmp, text)
+            .map_err(|e| ScenarioError(format!("{}: write error — {e}", tmp.display())))?;
+        // Validate the temp parses as a YAML scenario before replacing.
+        load_scenario_yaml(&tmp)?;
+        std::fs::rename(&tmp, dest)
+            .map_err(|e| ScenarioError(format!("{}: rename error — {e}", dest.display())))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
