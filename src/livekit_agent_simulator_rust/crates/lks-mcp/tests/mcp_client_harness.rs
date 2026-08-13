@@ -9,8 +9,12 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-/// Path to the built `lksr` binary (workspace target dir).
+/// Path to the built `lksr` binary. When lks is a dev-dependency of this crate,
+/// cargo provides CARGO_BIN_EXE_lksr; fall back to the workspace target dir.
 fn lksr_bin() -> PathBuf {
+    if let Ok(p) = std::env::var("CARGO_BIN_EXE_lksr") {
+        return PathBuf::from(p);
+    }
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop(); // crates
     p.pop(); // livekit_agent_simulator_rust
