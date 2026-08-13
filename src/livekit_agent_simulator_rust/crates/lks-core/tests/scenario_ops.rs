@@ -17,8 +17,6 @@ fn write_scenario(dir: &PathBuf, fname: &str, body: &str) {
     std::fs::write(dir.join(fname), body).unwrap();
 }
 
-const HEADER: &str = "{\"apiVersion\":\"agent-sim/v1\",\"kind\":\"Scenario\",\"metadata\":{\"id\":\"smoke\",\"locale\":\"en-US\"}}\n";
-
 #[test]
 fn find_scenario_direct_yaml() {
     let dir = temp_scenarios_dir("direct_yaml");

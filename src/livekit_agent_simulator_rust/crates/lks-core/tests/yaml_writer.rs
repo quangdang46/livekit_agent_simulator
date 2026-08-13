@@ -3,7 +3,7 @@
 use lks_core::scenario_jsonl::parse_scenario_jsonl;
 use lks_core::scenario_yaml::{load_scenario_yaml, scenario_to_yaml_text};
 use lks_core::yaml_writer::{clean, to_yaml_string};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::path::PathBuf;
 
 fn repo_root() -> PathBuf {
