@@ -472,3 +472,64 @@ pub async fn judge_run(
     let parsed = parse_judgment_payload(&repair_json(&text));
     apply_relevancy(parsed).to_dict()
 }
+
+/// Multi-judge run (port of `runner.judge_run_multi`): evaluate each judge in
+/// `pass_judges` (config judges list or per-judge overrides) then aggregate.
+pub async fn judge_run_multi(
+    judge_cfg: Option<&crate::config::JudgeConfig>,
+    sim_api_key: &str,
+    pass_criteria: &[String],
+    turns: &[Map<String, Json>],
+    tool_events: &[Map<String, Json>],
+    judges: &[Map<String, Json>],
+    mode: &str,
+) -> Map<String, Json> {
+    if pass_criteria.is_empty() {
+        return crate::evals::JudgmentResult {
+            verdict: "skipped".into(),
+            notes: "No criteria.".into(),
+            ..Default::default()
+        }
+        .to_dict();
+    }
+    // Per-judge overrides: judge_id, model, temperature, base_url, api_key.
+    let mut results: Vec<Map<String, Json>> = Vec::new();
+    for j in judges {
+        let judge_id = j
+            .get("judge_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("judge")
+            .to_string();
+        let per = crate::config::JudgeConfig {
+            model: j
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .or_else(|| judge_cfg.and_then(|c| c.model.clone())),
+            temperature: j
+                .get("temperature")
+                .and_then(|v| v.as_f64())
+                .or_else(|| judge_cfg.map(|c| c.temperature))
+                .unwrap_or(0.0),
+            base_url: j
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .or_else(|| judge_cfg.and_then(|c| c.base_url.clone())),
+            api_key: j
+                .get("api_key")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .or_else(|| judge_cfg.and_then(|c| c.api_key.clone())),
+            endpoint_type: judge_cfg
+                .map(|c| c.endpoint_type.clone())
+                .unwrap_or_default(),
+        };
+        let mut v = judge_run(Some(&per), sim_api_key, pass_criteria, turns, tool_events).await;
+        if !judge_id.is_empty() {
+            v.insert("judge_id".into(), serde_json::Value::String(judge_id));
+        }
+        results.push(v);
+    }
+    crate::evals::aggregate_judges(&results, mode)
+}

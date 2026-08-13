@@ -167,3 +167,27 @@ async fn room_pcm_plays_into_source() {
     let r = lks_livekit::script::play_pcm_to_source(&shared, &samples, 24_000).await;
     assert!(r.is_ok(), "playback succeeded: {r:?}");
 }
+
+#[test]
+fn recorder_writes_stereo_wav() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rec = lks_livekit::audio::LocalConversationRecorder::new();
+    rec.mark_start();
+    // 24k mono sim frames + agent frames → resampled into 16k stereo.
+    let sim: Vec<u8> = (0..4800i16).flat_map(|i| i.to_le_bytes()).collect();
+    let agent: Vec<u8> = (0..4800i16)
+        .map(|i| -i)
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    rec.push_sim(&sim, 24_000);
+    rec.push_agent(&agent, 24_000);
+    let path = dir.path().join("conversation.wav");
+    let res = rec.save(&path).unwrap();
+    assert!(res.duration_ms > 0);
+    let reader = hound::WavReader::open(&path).unwrap();
+    let spec = reader.spec();
+    assert_eq!(spec.channels, 2, "stereo L=sim R=agent");
+    assert_eq!(spec.sample_rate, 16_000);
+    let frames: Vec<i16> = reader.samples::<i16>().filter_map(Result::ok).collect();
+    assert!(frames.len() >= 2, "interleaved stereo samples");
+}

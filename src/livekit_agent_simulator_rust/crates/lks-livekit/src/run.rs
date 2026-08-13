@@ -97,6 +97,9 @@ pub async fn execute_scenario(
     // --- end_call channel ---
     let (end_tx, end_rx) = broadcast::channel::<()>(1);
 
+    // Local conversation recorder → conversation.wav (16k stereo).
+    let recorder = std::sync::Mutex::new(crate::audio::LocalConversationRecorder::new());
+
     // --- persona prompt (minimal: persona brief + goals) ---
     let persona_prompt = build_persona_prompt(&scenario);
 
@@ -363,20 +366,38 @@ pub async fn execute_scenario(
             .cloned()
             .collect();
         let criteria: Vec<String> = scenario.pass_criteria.clone();
-        let verdict = lks_core::judge::judge_run(
-            cfg.judge.as_ref(),
-            &cfg.simulator.api_key,
-            &criteria,
-            &turns,
-            &tool_events,
-        )
-        .await;
+        let verdict = if scenario.pass_judges.is_empty() {
+            lks_core::judge::judge_run(
+                cfg.judge.as_ref(),
+                &cfg.simulator.api_key,
+                &criteria,
+                &turns,
+                &tool_events,
+            )
+            .await
+        } else {
+            lks_core::judge::judge_run_multi(
+                cfg.judge.as_ref(),
+                &cfg.simulator.api_key,
+                &criteria,
+                &turns,
+                &tool_events,
+                &scenario.pass_judges,
+                &scenario.pass_criteria_mode,
+            )
+            .await
+        };
         summary.insert("verdict".into(), serde_json::Value::Object(verdict));
         // Re-write summary.json with the verdict (finalize wrote it already).
         let _ = std::fs::write(
             report_dir.join("summary.json"),
             serde_json::to_string_pretty(&summary).unwrap_or_default(),
         );
+    }
+
+    // Save conversation.wav (agent audio captured during the run).
+    if let Ok(mut rec) = recorder.lock() {
+        let _ = rec.save(&report_dir.join("conversation.wav"));
     }
 
     // Finish the sqlite row.
