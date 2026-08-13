@@ -18,6 +18,7 @@ pub mod asserts;
 pub mod authoring;
 pub mod behavior_compile;
 pub mod caller_policy;
+pub mod evals;
 pub mod persona_traits;
 pub mod prompt_sections;
 pub mod scenario;
