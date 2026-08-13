@@ -19,6 +19,7 @@ pub mod authoring;
 pub mod behavior_compile;
 pub mod caller_policy;
 pub mod evals;
+pub mod logging;
 pub mod metrics;
 pub mod optimize;
 pub mod persona_traits;
