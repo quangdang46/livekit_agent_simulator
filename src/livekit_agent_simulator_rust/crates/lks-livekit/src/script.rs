@@ -45,6 +45,12 @@ pub enum ScriptAction {
     Dtmf {
         digits: String,
     },
+    RoomPcm {
+        asset: String,
+        gain: f64,
+        r#loop: bool,
+        label: String,
+    },
 }
 
 pub struct ScriptRuntime {
@@ -216,6 +222,33 @@ impl ScriptRuntime {
                     let _ = self.end_tx.send(());
                     return Ok(());
                 }
+                "room_pcm" => {
+                    let asset = Self::step_str(&step, "asset", "");
+                    let gain = step.get("gain").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                    let rloop = Self::step_bool(&step, "loop", false);
+                    let mut spec = serde_json::Map::new();
+                    spec.insert("step_id".into(), json!(id));
+                    spec.insert("label".into(), json!(label));
+                    spec.insert("say".into(), json!(say));
+                    spec.insert("asset".into(), json!(asset));
+                    spec.insert("gain".into(), json!(gain));
+                    w.emit(
+                        "sim.script.cue",
+                        Some(&spec),
+                        "sim.script",
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
+                    drop(w);
+                    let _ = (self.on_action)(ScriptAction::RoomPcm {
+                        asset,
+                        gain,
+                        r#loop: rloop,
+                        label,
+                    });
+                }
                 "dtmf" => {
                     let digits = Self::step_str(&step, "digits", "");
                     let mut spec = serde_json::Map::new();
@@ -251,6 +284,39 @@ impl ScriptRuntime {
                 }
                 _ => {
                     // speak
+                    if delivery == "room_pcm" {
+                        let asset = Self::step_str(&step, "asset", "");
+                        let gain = step.get("gain").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                        let rloop = Self::step_bool(&step, "loop", false);
+                        let mut spec = serde_json::Map::new();
+                        spec.insert("step_id".into(), json!(id));
+                        spec.insert("label".into(), json!(label));
+                        spec.insert("say".into(), json!(say));
+                        spec.insert("asset".into(), json!(asset));
+                        spec.insert("gain".into(), json!(gain));
+                        spec.insert("delivery".into(), json!("room_pcm"));
+                        w.emit(
+                            "sim.script.cue",
+                            Some(&spec),
+                            "sim.script",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                        drop(w);
+                        let _ = (self.on_action)(ScriptAction::RoomPcm {
+                            asset,
+                            gain,
+                            r#loop: rloop,
+                            label,
+                        });
+                        if once {
+                            fired.push(id);
+                        }
+                        arm_idx += 1;
+                        continue;
+                    }
                     if barge_in {
                         // Typed interruption: the caller cut across the agent.
                         let mut ispec = serde_json::Map::new();
