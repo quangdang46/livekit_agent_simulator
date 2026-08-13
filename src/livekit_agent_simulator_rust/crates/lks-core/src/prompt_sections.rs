@@ -454,3 +454,125 @@ pub fn script_timing_section(ctx: &CallerPolicyContext) -> Vec<String> {
             .to_string(),
     ]
 }
+
+/// NaturalSpeechSection — anti-repetition + driving conversation (natural/chatty).
+pub fn natural_speech_section(ctx: &CallerPolicyContext) -> Vec<String> {
+    if ctx.resolved_verbosity() == Verbosity::Quiet {
+        return Vec::new();
+    }
+    let verbosity = ctx.resolved_verbosity();
+    let mut lines = vec![
+        "".to_string(),
+        "## CRITICAL: NEVER REPEAT YOURSELF".to_string(),
+        "If you just asked a question and the assistant answered it, do NOT ask the same question again.".to_string(),
+        "If the assistant gave a long answer: listen, acknowledge it briefly, and move to your next point.".to_string(),
+        "Repeating the exact same question or statement across turns sounds like a recording, not a person.".to_string(),
+        "If you are unsure what the assistant said, ask a CLARIFYING question — never echo your own prior turn.".to_string(),
+        "".to_string(),
+        "## DRIVING THE CONVERSATION".to_string(),
+        "You are a real human caller — not a passive questionnaire respondent.".to_string(),
+        "If the assistant takes longer than a few seconds to respond, you may:".to_string(),
+        "- Say 'Hello?' or 'Are you still there?' to re-engage after 5+ seconds of silence.".to_string(),
+        "- Repeat or rephrase your question if the assistant didn't seem to catch it.".to_string(),
+        "- Add more context unprompted: 'I'm just trying to figure out... because...'".to_string(),
+        "- Express impatience or confusion naturally: 'Sorry, did I lose you?'".to_string(),
+        "A real caller does NOT sit in dead silence waiting. If you hear nothing for several seconds, speak up.".to_string(),
+    ];
+    if verbosity == Verbosity::Chatty {
+        lines.push(
+            "If the assistant is being slow, fill the gap with extra context or ask \
+             'Are you still looking that up?'"
+                .to_string(),
+        );
+    }
+    lines.extend([
+        "",
+        "## NATURAL SPEECH",
+        "You are on a phone call, NOT writing an email or chat message. Real callers speak the \
+         way people actually talk: with filler words, restarts, soft pauses, and sentences that \
+         meander a little.",
+        "Speech patterns that make you sound human:",
+        "- Start turns with natural openers and vary them; never repeat the same opener twice in a row.",
+        "- Use occasional filler where a real person would — sparingly, when thinking or softening.",
+        "- Restart mid-sentence like people do.",
+        "- Use contractions always: \"I'm,\" \"that's,\" \"don't,\" \"can't\" — never \"I am going to\" in spoken turns.",
+        "- Ask real follow-up questions instead of just answering.",
+        "The ONE rule: sound like an ordinary person on the phone, not a script.",
+        "Stay goal-bound; do not invent goodbye while Script steps remain.",
+    ]
+    .map(String::from));
+    lines.extend([
+        "",
+        "## ANTI-REPETITION",
+        "IMPORTANT: Never repeat the same exact phrase or idea across consecutive turns.",
+        "Real callers naturally advance the conversation — they do not echo themselves.",
+        "- If the assistant keeps selling after you declined, re-engage or escalate with fresh words.",
+        "- If you are ready to end the call, say a clear goodbye and stop.",
+        "- A real person does not repeat themselves hoping the other person will listen.",
+    ]
+    .map(String::from));
+    lines
+}
+
+/// GuardrailsSection — caller guardrails + persona-prompt extension point.
+pub fn guardrails_section(ctx: &CallerPolicyContext) -> Vec<String> {
+    let n = ctx.goals().len();
+    let has_script = !ctx.script_steps.is_empty();
+    let verbosity = ctx.resolved_verbosity();
+    let between = if has_script {
+        match verbosity {
+            Verbosity::Quiet => "If the assistant asks a direct question between Script cues, answer in one short spoken clause; do not start a long freestyle monologue or goodbye.".to_string(),
+            Verbosity::Chatty => "If the assistant asks between Script cues, stay talkative: answer in several natural clauses with relevant context, keep the loop going, and never go mute after one short line or freestyle a goodbye.".to_string(),
+            Verbosity::Natural => "If the assistant asks between Script cues, answer in about 2–5 natural clauses and keep the loop going until the next cue; do not go mute after one short line or freestyle a goodbye.".to_string(),
+        }
+    } else {
+        "If the assistant says something irrelevant, steer back to your current goal.".to_string()
+    };
+    let mut lines = vec![
+        "".to_string(),
+        "## GUARDRAILS".to_string(),
+        "Your job is to pursue your goals as the caller. You are not solving the assistant's job.".to_string(),
+        "Never switch roles mid-call: if you catch yourself sounding like staff → stop and resume as the customer.".to_string(),
+        if has_script {
+            "A timed Script hang-up will end the call — do not freestyle an ending.".to_string()
+        } else {
+            "Only end the call when ALL goals are done (or unmistakably impossible after you tried).".to_string()
+        },
+        "If you say goodbye or [END_CALL] early, the automated test will FAIL.".to_string(),
+        between,
+        "The assistant may pause for several seconds. That is NOT a cue to end the call. Instead, re-engage: say 'Hello?' or repeat your question.".to_string(),
+    ];
+    if has_script {
+        lines.extend([
+            "Script overlay active: do NOT freestyle a goodbye or barge outside Script cues.".to_string(),
+            "Natural answers to the assistant are OK; wait for the simulator hang-up cue to end the call.".to_string(),
+        ]);
+    } else {
+        lines.extend([
+            "When your desired outcome is met (or unmistakably impossible after you tried), say ONE short goodbye in your language and stop speaking.".to_string(),
+            "NEVER pronounce the English words \"end call\", \"hang up\", or \"END CALL\", and do not read brackets aloud.".to_string(),
+        ]);
+    }
+    if n > 0 && !has_script {
+        lines.push(format!(
+            "You have {n} numbered goal(s). Ending before they are addressed is a failure."
+        ));
+    }
+    lines
+}
+
+/// Compose all sections in Google Live order (persona → rules → guardrails).
+pub fn all_sections(ctx: &CallerPolicyContext) -> Vec<Vec<String>> {
+    vec![
+        role_section(ctx),
+        goals_section(ctx),
+        style_traits_section(ctx),
+        natural_speech_section(ctx),
+        constraints_section(ctx),
+        speech_conditions_section(ctx),
+        context_section(ctx),
+        script_timing_section(ctx),
+        first_speaker_section(ctx),
+        guardrails_section(ctx),
+    ]
+}

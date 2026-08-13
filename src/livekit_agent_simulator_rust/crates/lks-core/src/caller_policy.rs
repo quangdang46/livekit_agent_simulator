@@ -226,3 +226,118 @@ pub fn neutralize_style_length_hints(style: &str, verbosity: Verbosity) -> (Stri
         .collect();
     (parts.join(", "), stripped)
 }
+
+/// Midcall text cue (bootstrap | reground | custom).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MidcallCue {
+    pub text: String,
+    pub kind: String,
+    pub label: String,
+}
+
+/// DefaultCallerPolicy — composes prompt sections + on-demand midcall cues.
+pub struct DefaultCallerPolicy {
+    pub policy_source: String,
+}
+
+impl DefaultCallerPolicy {
+    pub fn new() -> Self {
+        Self {
+            policy_source: "builtin".into(),
+        }
+    }
+
+    /// Full system instruction: join all section lines with "\n" (no trailing).
+    pub fn build_system_instruction(&self, ctx: &CallerPolicyContext) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        for part in crate::prompt_sections::all_sections(ctx) {
+            for line in part {
+                lines.push(line);
+            }
+        }
+        lines.join("\n")
+    }
+
+    /// Optional connect kicks + reground texts. No bootstrap when Script owns opening.
+    pub fn midcall_cues(&self, ctx: &CallerPolicyContext) -> Vec<MidcallCue> {
+        let mut cues: Vec<MidcallCue> = Vec::new();
+        let verbosity = ctx.resolved_verbosity();
+        let script_owns_opening = ctx.script_steps.iter().any(|step| {
+            let trigger = step
+                .get("trigger")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let action = step
+                .get("action")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let say = step
+                .get("say")
+                .map(|v| v.as_str().unwrap_or(&v.to_string()).to_string())
+                .unwrap_or_default();
+            (matches!(trigger.as_deref(), Some("time") | Some("silence") | None))
+                && (action.is_none() || action.as_deref() == Some("speak"))
+                && !say.trim().is_empty()
+        });
+        if ctx.first_speaker == "user" && !script_owns_opening {
+            let open_hint = match verbosity {
+                Verbosity::Quiet => {
+                    "greet briefly and state why you are calling in one short clause"
+                }
+                Verbosity::Chatty => {
+                    "greet and state why you are calling in a natural opening turn"
+                }
+                Verbosity::Natural => {
+                    "greet briefly and state why you are calling in one natural turn"
+                }
+            };
+            cues.push(MidcallCue {
+                text: format!(
+                    "(The call just connected. You speak first per PERSONA: {open_hint}.)"
+                ),
+                kind: "bootstrap".into(),
+                label: "first_speaker_user".into(),
+            });
+        }
+        let goals = ctx.goals();
+        if !goals.is_empty() {
+            let g0: String = goals[0].chars().take(120).collect();
+            cues.push(MidcallCue {
+                text: format!(
+                    "(Stay on your caller goals. Current focus: GOAL 1 — {g0}. \
+                     Do not end the call early. Do not switch into assistant mode.)"
+                ),
+                kind: "reground".into(),
+                label: "goal_reground".into(),
+            });
+        }
+        if !ctx.script_steps.is_empty() {
+            let between = match verbosity {
+                Verbosity::Quiet => "answer questions in one short spoken clause;",
+                Verbosity::Chatty => {
+                    "keep a conversational loop — answer in several spoken clauses \
+                     with context when helpful; do not go mute after one short line;"
+                }
+                Verbosity::Natural => {
+                    "keep a conversational loop — answer in about 2–5 natural spoken clauses \
+                     with context when helpful; do not go mute after one short line;"
+                }
+            };
+            cues.push(MidcallCue {
+                text: format!(
+                    "(Timed Script overlay is active. Do not say bye / goodbye / [END_CALL]. \
+                     Between cues, {between} the simulator will hang up.)"
+                ),
+                kind: "reground".into(),
+                label: "script_no_early_bye".into(),
+            });
+        }
+        cues
+    }
+}
+
+impl Default for DefaultCallerPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
