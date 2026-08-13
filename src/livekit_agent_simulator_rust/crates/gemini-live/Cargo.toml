@@ -1,7 +1,27 @@
 [package]
 name = "gemini-live"
-description = "Vendored fork of gemini-live 0.1.8 (jacoblincool/gemini-live-rs, MIT) + D4 fork patches (language_code, reconnect_on_drop, close codes). P2; stub at P0."
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
+version = "0.1.8"
+description = "Vendored fork of jacoblincool/gemini-live-rs (MIT/Apache) with D4 fork patches: SpeechConfig.language_code, reconnect_on_drop knob, close-code surfacing."
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.97"
+
+[features]
+default = []
+vertex-auth = ["dep:google-cloud-auth"]
+
+[dependencies]
+tokio = { version = "1.51", features = ["full"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+url = "2"
+google-cloud-auth = { version = "1.8", optional = true }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+# `ring` feature: the crate's transport uses the ring crypto provider.
+rustls = { version = "0.23", features = ["ring"] }
+thiserror = "2"
+tracing = "0.1"

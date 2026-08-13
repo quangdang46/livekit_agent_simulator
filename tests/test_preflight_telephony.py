@@ -31,7 +31,7 @@ async def test_preflight_warns_trunk_without_sim_inbound(tmp_path, monkeypatch):
     from livekit_agent_simulator import preflight as pf
 
     # Minimal load_config bypass: call the telephony block via run_preflight with mocked load
-    def fake_load(root):
+    def fake_load(root, profile=None):
         cfg = SimpleNamespace(
             telephony=SimpleNamespace(
                 outbound_trunk_id="ST_x",
@@ -72,7 +72,7 @@ async def test_preflight_warns_trunk_without_sim_inbound(tmp_path, monkeypatch):
 async def test_preflight_pass_when_trunk_and_sim_inbound(tmp_path, monkeypatch):
     from livekit_agent_simulator import preflight as pf
 
-    def fake_load(root):
+    def fake_load(root, profile=None):
         cfg = SimpleNamespace(
             telephony=SimpleNamespace(
                 outbound_trunk_id="ST_x",

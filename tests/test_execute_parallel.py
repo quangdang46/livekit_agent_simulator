@@ -52,7 +52,7 @@ simulator:
     max_active = 0
     lock = asyncio.Lock()
 
-    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None):
+    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None, profile=None):
         nonlocal active, max_active
         async with lock:
             active += 1
@@ -129,7 +129,7 @@ simulator:
     lock = asyncio.Lock()
     release = asyncio.Event()
 
-    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None):
+    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None, profile=None):
         async with lock:
             started.append(scenario_id)
         # Block until cancelled (or released for orderly finish).
@@ -208,7 +208,7 @@ simulator:
     max_active = 0
     lock = asyncio.Lock()
 
-    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None):
+    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None, profile=None):
         nonlocal active, max_active
         async with lock:
             active += 1
@@ -283,7 +283,7 @@ async def test_wait_cooldown_between_sequential(tmp_path) -> None:
     starts: list[float] = []
     loop = asyncio.get_running_loop()
 
-    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None):
+    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None, profile=None):
         starts.append(loop.time())
         await asyncio.sleep(0.02)
         return {
@@ -320,7 +320,7 @@ async def test_wait_holds_slot_before_next_parallel(tmp_path) -> None:
     lock = asyncio.Lock()
     loop = asyncio.get_running_loop()
 
-    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None):
+    async def fake_execute(project_root, scenario_id, *, repeat=1, pass_at_k=None, agent_name=None, run_name=None, profile=None):
         nonlocal active, max_active
         async with lock:
             active += 1

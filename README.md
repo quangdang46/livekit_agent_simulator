@@ -35,7 +35,7 @@ Paste into Claude Code, Cursor, Codex, AmpCode, Windsurf, or any coding agent **
 Install and configure livekit-agent-simulator (CLI: lks) for this project by following the instructions here:
 https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/docs/guide/installation.md
 
-Target project root is this workspace. Use absolute --root paths. Install the portable CLI if missing, run lks init, help fill .agent-sim/config.yaml from my local env or ask me for LiveKit + Gemini + agent_name, ensure .agent-sim is gitignored, run preflight, and stop before execute if the voice agent worker is not running. Do not edit agent application source outside .agent-sim/.
+Target project root is this workspace. Use absolute --root paths. Install the portable CLI if missing, run lks init, help fill .agent-sim/config.yaml from my local env or ask me for LiveKit + active caller provider key (Gemini Live or OpenAI Realtime) + agent_name, ensure .agent-sim is gitignored, run preflight, and stop before execute if the voice agent worker is not running. Do not edit agent application source outside .agent-sim/.
 ```
 
 Same idea, one line:
@@ -61,7 +61,7 @@ Voice agents fail in ways unit tests never see:
 
 ### The Solution
 
-**livekit-agent-simulator** drives a Gemini Live persona from scenario JSONL over one of three transport modes (`Caller.mode`), observes transcripts / tools / flow / room events, and writes a timestamped report you can play back.
+**livekit-agent-simulator** drives an AI simulated caller — Gemini Live or OpenAI Realtime (per `simulator.provider`) — from scenario JSONL over one of three transport modes (`Caller.mode`), observes transcripts / tools / flow / room events, and writes a timestamped report you can play back.
 
 | Surface | What you get |
 |---------|--------------|
@@ -128,7 +128,7 @@ lks web --root /path/to/target          # Ctrl+C to stop
 ```text
 1. Read <target>/.agent-sim/config.yaml
 2. Pick SimLeg from scenario Caller.mode (webrtc_sim | inbound_sip | outbound_human_pickup | outbound_sim_callee | agent_dials)
-3. Connect leg → LiveKit room(s) / SIP hairpin as needed; Gemini stays WebRTC in the sim room
+3. Connect leg → LiveKit room(s) / SIP hairpin as needed; the active caller provider (Gemini Live / OpenAI Realtime) stays WebRTC in the sim room
 4. Bridge audio; observe transcripts, tools, timing, interruptions
 5. Write reports/<run-id>/ + runs.sqlite
 6. Optional LLM judge vs PassCriteria
@@ -145,9 +145,10 @@ lks web --root /path/to/target          # Ctrl+C to stop
                  └────────────────┼────────────────┼───────────────────┘
                                   ▼
                     ┌──────────────────────────┐
-                    │  Gemini Live persona     │
-                    │  + LiveKit agent (black  │
-                    │    box under test)       │
+                    │  Sim caller persona      │
+                    │  (Gemini Live / OpenAI   │
+                    │   Realtime) + LiveKit    │
+                    │   agent (black box)      │
                     └────────────┬─────────────┘
                                  │ observe
                                  ▼
@@ -165,7 +166,7 @@ Mode details and config: [docs/telephony.md](docs/telephony.md). Templates: `inb
 | Manual phone QA | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Unit / mock STT | ❌ | ❌ | Partial | ❌ | ❌ |
 | In-repo agent tests | ⚠️ | ⚠️ | Varies | ❌ | Often coupled |
-| **lks** | ✅ LiveKit | ✅ Gemini Live | ✅ Full | ✅ | ✅ |
+| **lks** | ✅ LiveKit | ✅ Gemini Live / OpenAI Realtime | ✅ Full | ✅ | ✅ |
 
 **When to use lks:**
 - Regression suites for LiveKit voice agents
@@ -174,7 +175,7 @@ Mode details and config: [docs/telephony.md](docs/telephony.md). Templates: `inb
 
 **When it might not be ideal:**
 - Pure text chatbots with no LiveKit room
-- Offline environments without LiveKit + Gemini API access
+- Offline environments without LiveKit + an active caller provider API (Gemini Live or OpenAI Realtime)
 
 ---
 
@@ -303,12 +304,62 @@ Target-only data lives under `<target>/.agent-sim/` (**gitignored**). Created by
 | `simulator.api_key` | yes | Key of the **active** caller provider (`google` → Gemini, `openai` → OpenAI) |
 | `simulator.provider` / `mode` | no | Caller brain: `google` (default) or `openai`; `realtime` mode (cascade reserved) |
 | `simulator.voice.model` / `voice` / `language` | no | Provider-neutral voice bag; defaults flash-live, Puck, `en-US` |
+| `simulator.profiles` | no | **Named caller profiles** — switch provider without editing the file |
 | `judge.model` | no | If set + PassCriteria → post-run LLM judge |
 | `observe.record_audio` | no (default `true`) | Local stereo WAV (L=sim, R=agent); no Egress |
 | `observe.data_topics` | no | Empty = all topics |
 | `observe.tool_event_patterns` | no | Map data payloads → tool start/end/error |
 
 See template: [`templates/config.yaml`](templates/config.yaml). Consumer-specific wiring: [`docs/portability.md`](docs/portability.md).
+
+### Switching caller provider with `--profile`
+
+To A/B test the same scenario against **Gemini Live** vs **OpenAI Realtime** (or
+any set of provider/voice combos) **without editing `config.yaml` between runs**,
+define named profiles under `simulator.profiles:` and select one with
+`--profile <name>` on `execute` / `execute-all` / `preflight`.
+
+```yaml
+simulator:
+  # legacy flat block = fallback (used when no --profile flag and no default profile)
+  provider: google
+  mode: realtime
+  api_key: "AQ.Ab8..."                 # Gemini Live key
+
+  # named profiles — switch with --profile <name>
+  profiles:
+    gemini:
+      default: true                    # auto-selected when no --profile flag
+      provider: google
+      api_key: "AQ.Ab8..."             # Gemini Live key
+    openai:
+      provider: openai
+      api_key: "sk-..."                # OpenAI key
+      voice:
+        model: "gpt-realtime-2.1-mini"
+        voice: "marin"
+```
+
+```bash
+lks execute smoke-hello                    # `gemini` (marked default: true)
+lks execute smoke-hello --profile gemini   # Gemini Live caller
+lks execute smoke-hello --profile openai   # OpenAI Realtime caller
+```
+
+**Selection** (`--profile` absent): if **exactly one** profile has
+`default: true`, it is used; otherwise the legacy flat `simulator:` block runs.
+2+ profiles marked `default: true` is an error (no "first wins"). If `profiles:`
+exist with **no** default and **no** flat-block credentials, config loading
+errors loudly (no silent fallback). `--profile <name>` always wins regardless
+of which profile is default. A missing profile name fails loudly (lists
+available profiles) — no silent fallback. Profile names are **case-sensitive**.
+
+**Precedence:** profile field → flat `simulator:` field → built-in default. A
+profile **inherits** unspecified fields (voice, language, mode) from the flat
+block, so `openai` above only overrides `provider` + `api_key` + `voice`, and
+keeps `mode: realtime`. Presence of `profiles:` never changes what runs when
+neither `--profile` nor a `default: true` profile is present — that is the flat
+block (backward compatible).
 
 > **⚠️ Gemini caller model note (observed 2026-08):**
 > `gemini-3.1-flash-live-preview` — the historical default — is a **preview** model with known instability as the simulated caller: transient mid-call WebSocket drops (`APIError 1006 / 1008`, end reason `gemini_socket_drop`) in ~2/15 real runs, plus LiveKit-documented limits (`send_client_content` rejected after the first model turn, `update_instructions`/`generate_reply` unsupported). If you see calls ending with `gemini_socket_drop`, switch the caller model to a stable release, e.g.:
@@ -424,7 +475,7 @@ src/livekit_agent_simulator/
 ├── config.py                  # .agent-sim/config.yaml
 ├── preflight.py
 ├── asserts.py / suite.py      # CI gates
-├── gemini/                    # Live caller + judge
+├── callers/                   # Live caller (gemini / openai)
 ├── livekit/                   # room, dispatch, observe
 ├── audio/ · script/ · plugins/
 └── web/                       # report player server
@@ -435,7 +486,7 @@ src/livekit_agent_simulator/
 | Target `.agent-sim/` | Config, scenarios, reports, local plugins/cues |
 | Package `templates/` | Scaffold defaults + built-in cues |
 | LiveKit | Room, dispatch, data topics, transcription |
-| Gemini Live | Simulated caller voice + optional judge |
+| Caller provider (Gemini Live / OpenAI Realtime) | Simulated caller voice (+ optional judge) |
 
 ---
 
@@ -476,7 +527,7 @@ lks preflight --no-connectivity --root /path/to/target
 - Increase `livekit.agent_join_timeout_ms` if cold start is slow.
 - Check dispatch metadata is valid JSON **string** if your worker requires it.
 
-### Gemini / simulator auth errors
+### Simulator / caller-provider auth errors
 
 Set `simulator.api_key` in `.agent-sim/config.yaml` for the active `simulator.provider` (`google` → Gemini Live, `openai` → OpenAI Realtime).
 
@@ -511,7 +562,7 @@ lks scenario-init my-case --root /path/to/target   # fresh scaffold with // guid
 ### What lks Doesn't Do (Yet)
 
 - **Not an agent framework** — it tests agents; it does not implement business tools
-- **Not offline-first** — needs LiveKit + Gemini (or configured backends)
+- **Not offline-first** — needs LiveKit + an active caller-provider API (Gemini Live or OpenAI Realtime)
 - **Not a load generator** — one simulated caller per run (batch via `execute-all`)
 
 ### Known Limitations
@@ -520,7 +571,7 @@ lks scenario-init my-case --root /path/to/target   # fresh scaffold with // guid
 |------------|---------------|-------|
 | Black-box dispatch | ✅ | Opaque metadata only |
 | Multi-caller rooms | ❌ | Single sim participant |
-| Non-Gemini caller backends | ⚠️ | Gemini Live is the supported path |
+| Caller backends | ✅ | Gemini Live and OpenAI Realtime are supported paths (per `simulator.provider`) |
 | Pixel-perfect ASR scoring | ❌ | Use PassCriteria + judge / asserts |
 | Secrets in config | ⚠️ Paste in gitignored YAML | Do not commit `.agent-sim/` |
 

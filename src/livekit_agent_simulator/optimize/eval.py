@@ -43,13 +43,15 @@ async def evaluate_variant(
     pass_at_k: int | None = None,
     agent_name: str | None = None,
     optimize: str | None = None,
+    profile: str | None = None,
 ) -> dict[str, Any]:
     """Run a variant over a scenario set (via injected execute_scenario) → dataset metric.
 
     ``execute_scenario`` is injected so tests can mock it; production passes
     ``ops.execute_scenario``. ``optimize`` = the saved artifact name to apply
-    (optional; ``None`` runs the builtin persona). Returns {variant_id,
-    pass_rate, ok, total, passed_gate, per_scenario: [...]}.
+    (optional; ``None`` runs the builtin persona). ``profile`` selects a named
+    caller profile (optional). Returns {variant_id, pass_rate, ok, total,
+    passed_gate, per_scenario: [...]}.
     """
     per_scenario: list[dict[str, Any]] = []
     for sid in scenario_ids:
@@ -58,6 +60,8 @@ async def evaluate_variant(
         )
         if optimize is not None:
             kwargs["optimized"] = optimize
+        if profile is not None:
+            kwargs["profile"] = profile
         result = await execute_scenario(project_root, sid, **kwargs)
         gate = evaluate_run_result(result, strict_judge=strict_judge)
         per_scenario.append(

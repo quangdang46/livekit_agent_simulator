@@ -213,10 +213,45 @@ Open `$TARGET_ROOT/.agent-sim/config.yaml`. Required:
 Recommended defaults (already in template):
 
 - `simulator.provider: google`, `simulator.mode: realtime`
-- `simulator.voice.model`: `gemini-3.1-flash-live-preview`
+- `simulator.voice.model`: `gemini-3.1-flash-live-preview` (or `gpt-realtime-2.1-mini` + `marin` when `provider: openai`)
 - `observe.record_audio: true` (stereo WAV L=sim R=agent)
 - `observe.lk_agent_session: true` (automatic SDK tool/session events)
 - `judge.model`: `gemini-3.1-flash-lite` (only used if scenario has `PassCriteria`)
+
+**Switch caller provider without editing the file — `simulator.profiles` + `--profile <name>`:**
+
+```yaml
+simulator:
+  # legacy flat block = fallback (used when no --profile and no default profile)
+  provider: google
+  mode: realtime
+  api_key: "AQ.Ab8..."          # Gemini Live key
+
+  profiles:                      # optional named caller profiles
+    gemini:                      #   lks execute <scenario> --profile gemini
+      default: true              # auto-selected when no --profile flag
+      provider: google
+      api_key: "AQ.Ab8..."
+    openai:                      #   lks execute <scenario> --profile openai
+      provider: openai
+      api_key: "sk-..."
+      voice:
+        model: "gpt-realtime-2.1-mini"
+        voice: "marin"
+```
+
+**Selection** (no `--profile`): exactly one `default: true` profile wins;
+otherwise the legacy flat `simulator:` block runs. 2+ defaults → error.
+`profiles:` with no default and no flat credentials → config error (no silent
+fallback). `--profile <name>` always wins regardless of which profile is
+default. Profile names are **case-sensitive**.
+
+Precedence: **profile field → flat `simulator:` field → built-in default**. A
+profile inherits unspecified fields (voice/language/mode) from the flat block.
+Presence of `profiles:` never changes behavior when neither `--profile` nor a
+`default: true` profile is present — that is always the flat block (backward
+compatible). A missing profile name fails loudly (lists available profiles),
+no silent fallback.
 
 Optional but common:
 
@@ -269,6 +304,7 @@ protocol. For those agents, map custom data messages with
 | `LIVEKIT_API_KEY` | `livekit.api_key` |
 | `LIVEKIT_API_SECRET` | `livekit.api_secret` |
 | `GOOGLE_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_GENAI_API_KEY` | `simulator.api_key` (when `provider: google`) |
+| `OPENAI_API_KEY` | `simulator.api_key` (when `provider: openai`) |
 | Consumer-specific (search docs — not one global name) | `livekit.agent_name` |
 | `SIP_OUTBOUND_TRUNK_ID` (optional) | `telephony.outbound_trunk_id` |
 | `SIP_INBOUND_TRUNK_ID` (optional) | `telephony.inbound_trunk_id` (docs/preflight) |
@@ -340,7 +376,7 @@ Rules:
     },
     {
       "id": "credentials",
-      "prompt": "How should I fill LiveKit URL, API key/secret, and Gemini key?",
+      "prompt": "How should I fill LiveKit URL, API key/secret, and the active caller-provider key (Gemini Live or OpenAI Realtime)?",
       "options": [
         {"id": "read_env", "label": "Read from TARGET_ROOT/.env with my permission (Recommended if .env exists)"},
         {"id": "i_edit_yaml", "label": "I'll paste secrets into .agent-sim/config.yaml myself"},
@@ -361,9 +397,10 @@ Rules:
 
 **After answers:** write `config.yaml`. If `credentials=read_env`, map env vars (table above). If `i_edit_yaml`, stop and tell user which keys are still `YOUR_*` placeholders.
 
-**Gemini key hint** (chat or comment in yaml — not an `AskQuestion` option):
+**Provider key hint** (chat or comment in yaml — not an `AskQuestion` option):
 
-> Create at [Google AI Studio](https://aistudio.google.com/apikey). Same key as the agent under test `GOOGLE_API_KEY` is fine. Needs Gemini Live access for `gemini-3.1-flash-live-preview`.
+> `provider: google` → create at [Google AI Studio](https://aistudio.google.com/apikey); the agent under test's `GOOGLE_API_KEY` is fine. Needs Gemini Live access for `gemini-3.1-flash-live-preview`.
+> `provider: openai` → OpenAI API key (`sk-…`) with Realtime access; set `simulator.voice.model` / `voice` (e.g. `gpt-realtime-2.1-mini`, `marin`).
 
 #### Turn 2 — only if still ambiguous after discover (second `AskQuestion`, optional)
 
@@ -486,7 +523,7 @@ lks preflight --root "$TARGET_ROOT"
 lks preflight --no-connectivity --root "$TARGET_ROOT"
 ```
 
-**Success:** JSON `ok: true` with checks for config, livekit.url, folders, google key, and (if connectivity on) `livekit.api` list_rooms.
+**Success:** JSON `ok: true` with checks for config, livekit.url, folders, active provider key, and (if connectivity on) `livekit.api` list_rooms.
 
 Common failures:
 
@@ -542,9 +579,12 @@ lks execute smoke-hello --name demo --root "$TARGET_ROOT"
 
 # flake control (each iteration gets its own NNN folder):
 lks execute smoke-hello --root "$TARGET_ROOT" --repeat 3 --pass-at-k 2
+# named caller profile (provider/key from simulator.profiles.<name>):
+lks execute smoke-hello --profile openai --root "$TARGET_ROOT"
 # suite:
 lks execute-all --tag smoke --root "$TARGET_ROOT"
 # lks execute-all --tag smoke --parallel 2 --root "$TARGET_ROOT"
+# lks execute-all --tag smoke --profile openai --root "$TARGET_ROOT"
 ```
 
 `run_id` format: `{NNN}-{slug}-{YYYYMMDD}-{HHMMSS}-{xxxx}` — default slug is the scenario id;
@@ -735,7 +775,7 @@ SIP asserts: `Assert.spec.sip.participant_present` / `dial_answered` / `call_sta
 Mark setup complete only when **all** of these are true:
 
 - [ ] `lks --help` works on PATH
-- [ ] `$TARGET_ROOT/.agent-sim/config.yaml` exists with LiveKit + `agent_name` + Gemini key set
+- [ ] `$TARGET_ROOT/.agent-sim/config.yaml` exists with LiveKit + `agent_name` + active provider key (Gemini Live / OpenAI Realtime) set
 - [ ] `.agent-sim/` is gitignored
 - [ ] `lks preflight --root "$TARGET_ROOT"` → `ok: true`
 - [ ] User knows the agent under test must be running before `execute`
