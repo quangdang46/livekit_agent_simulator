@@ -11,3 +11,12 @@
 //! P5: scenario_from_run; P7: evals, judge; P9: optimize).
 
 pub mod errors;
+
+pub mod config;
+
+pub mod authoring;
+pub mod scenario;
+pub mod scenario_jsonl;
+pub mod scenario_ops;
+pub mod scenario_yaml;
+pub mod yaml_writer;

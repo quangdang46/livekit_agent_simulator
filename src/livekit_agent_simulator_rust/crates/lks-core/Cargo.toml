@@ -16,4 +16,5 @@ env_logger.workspace = true
 uuid.workspace = true
 jiff.workspace = true
 rand.workspace = true
-gemini-live = "0.1.8"
+yaml_serde = "0.10.6"
+regex = "1.13.1"
