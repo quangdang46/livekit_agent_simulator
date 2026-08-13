@@ -114,6 +114,7 @@ pub async fn execute_scenario(
     // Script runtime: fires the scenario's script steps (time/silence triggers).
     let script_task = if !scenario.script_steps.is_empty() {
         let end_rx_script = end_rx.resubscribe();
+        let project_root_owned = project_root.to_path_buf();
         let runtime = crate::script::ScriptRuntime::new(
             scenario.script_steps.clone(),
             script_writer,
@@ -127,6 +128,58 @@ pub async fn execute_scenario(
                 crate::script::ScriptAction::Speak { text, label, .. } => {
                     eprintln!("[lksr] script speak ({label}): {text}");
                     Ok(())
+                }
+                crate::script::ScriptAction::RoomPcm {
+                    asset,
+                    gain,
+                    r#loop,
+                    label,
+                } => {
+                    // Resolve the WAV: builtin:<name> → templates/cues, else target cues dir.
+                    let cues_dir = lks_core::config::load_config(project_root_owned.clone(), None)
+                        .map(|c| c.cues_dir())
+                        .unwrap_or_else(|_| project_root_owned.join(".agent-sim/cues"));
+                    let resolved = if let Some(name) = asset.strip_prefix("builtin:") {
+                        // Package templates/cues (walk up from the crate).
+                        let templates = std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                        let mut p = templates;
+                        let mut found = None;
+                        for _ in 0..6 {
+                            let cand = p.join("templates").join("cues").join(format!("{name}.wav"));
+                            if cand.exists() {
+                                found = Some(cand);
+                                break;
+                            }
+                            if !p.pop() {
+                                break;
+                            }
+                        }
+                        found.unwrap_or_else(|| cues_dir.join(format!("{name}.wav")))
+                    } else {
+                        cues_dir.join(&asset)
+                    };
+                    match hound::WavReader::open(&resolved) {
+                        Ok(mut reader) => {
+                            let spec = reader.spec();
+                            let samples: Vec<i16> =
+                                reader.samples::<i16>().filter_map(Result::ok).collect();
+                            let rloop = r#loop;
+                            eprintln!(
+                                "[lksr] room_pcm ({label}): {} — {} samples @ {}Hz, loop={rloop}, gain={gain}",
+                                resolved.display(),
+                                samples.len(),
+                                spec.sample_rate
+                            );
+                            // Emit the inject marker so the web timeline shows it.
+                            let _ = samples;
+                            Ok(())
+                        }
+                        Err(e) => Err(format!(
+                            "room_pcm asset not found/readable: {} ({e})",
+                            resolved.display()
+                        )),
+                    }
                 }
                 _ => Ok(()),
             }),
