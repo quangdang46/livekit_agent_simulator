@@ -11,3 +11,5 @@
 //! P5: scenario_from_run; P7: evals, judge; P9: optimize).
 
 pub mod errors;
+
+pub mod config;

@@ -16,3 +16,4 @@ env_logger.workspace = true
 uuid.workspace = true
 jiff.workspace = true
 rand.workspace = true
+yaml_serde = "0.10.6"
