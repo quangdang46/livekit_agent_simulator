@@ -162,7 +162,7 @@ impl Scenario {
 }
 
 /// `_parse_hold_timeout`: clamp [5.0, 300.0] inclusive; `:g` formatting in error.
-fn parse_hold_timeout(raw: Option<f64>, where_: &str) -> Result<Option<f64>, String> {
+pub fn parse_hold_timeout(raw: Option<f64>, where_: &str) -> Result<Option<f64>, String> {
     let Some(value) = raw else {
         return Ok(None);
     };
