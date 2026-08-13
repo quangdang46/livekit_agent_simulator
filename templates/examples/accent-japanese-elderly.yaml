@@ -1,0 +1,28 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: accent-japanese-elderly
+  locale: ja-JP
+  tags: [draft, accent]
+persona:
+  name: 佐藤
+  brief: |
+    高齢の利用者として電話します。ゆっくり話し、簡単な言葉を好みます。
+    (Calling as an elderly caller. Speak slowly, prefer simple words.)
+  goals:
+  - 現在のプランを確認する
+  - 変更が可能か尋ねる
+  style: polite, slow
+  traits:
+  - elderly
+  - polite
+  speech_conditions:
+    verbosity: quiet
+execute:
+  max_turns: 3
+  timeout_s: 120
+  first_speaker: user
+pass_criteria:
+  criteria:
+  - The agent responded in Japanese
+  - The agent was patient with a slow-speaking caller

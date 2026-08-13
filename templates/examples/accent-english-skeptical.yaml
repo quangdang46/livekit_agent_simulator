@@ -1,0 +1,28 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: accent-english-skeptical
+  locale: en-US
+  tags: [draft, accent]
+persona:
+  name: Marcus
+  brief: |
+    Calling about a service quote. English is your first language but you are
+    skeptical and want concrete next steps, not vague assurances.
+  goals:
+  - Get a firm quote in writing
+  - Confirm there are no hidden fees
+  style: direct, skeptical
+  traits:
+  - skeptical
+  - urgent
+  speech_conditions:
+    verbosity: chatty
+execute:
+  max_turns: 5
+  timeout_s: 90
+  first_speaker: user
+pass_criteria:
+  criteria:
+  - The agent gave a concrete quote or timeline
+  - The agent addressed the hidden-fee concern

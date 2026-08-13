@@ -1,0 +1,29 @@
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: accent-vietnamese-confirm
+  locale: vi-VN
+  tags: [draft, accent, smoke]
+persona:
+  name: Anh
+  brief: |
+    Bạn gọi để xác nhận đơn hàng đã đặt. Nói tiếng Việt, giao tiếp tự nhiên
+    nhưng hơi dè dặt. (Calling to confirm an order. Speak Vietnamese naturally
+    but somewhat reserved.)
+  goals:
+  - Xác nhận đơn hàng đã đặt
+  - Hỏi thời gian giao hàng dự kiến
+  style: polite, natural spoken language
+  traits:
+  - polite
+  - non_native
+  speech_conditions:
+    verbosity: natural
+execute:
+  max_turns: 4
+  timeout_s: 90
+  first_speaker: user
+pass_criteria:
+  criteria:
+  - The agent responded in Vietnamese
+  - The agent confirmed the order or asked a clarifying question

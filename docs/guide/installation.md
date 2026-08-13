@@ -591,6 +591,18 @@ Copy the ones you need to `<target>/.agent-sim/scenarios/`, then `lks validate <
 - `hold-timeout-agent-stall` — `hold_music_timeout_s` agent dead-air hang-up
 - `handoff-observe` — handoff observation
 
+**Accent / multi-voice matrix (trait + locale, no neural models):**
+- `accent-vietnamese-confirm` — `locale: vi-VN` + `non_native`/`polite` traits
+- `accent-japanese-elderly` — `locale: ja-JP` + `elderly`/`quiet` verbosity
+- `accent-english-skeptical` — `en-US` + `skeptical`/`urgent`/`chatty`
+
+To build a voice matrix, vary `metadata.locale` (the SI `RESPOND IN <lang>` line),
+persona `traits` (length band + interaction style), and `speech_conditions.verbosity`
+(`quiet`/`natural`/`chatty`) — no neural accent models are used; the caller's
+"accent" is conveyed through locale + `non_native`/`code_switch` traits + target
+audio cues. Pair each locale scenario with a `pass_criteria` that checks the agent
+responds in that language.
+
 Ops detail: **`lks guide`**.
 
 
