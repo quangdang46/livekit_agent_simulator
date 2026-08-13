@@ -16,9 +16,9 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             asset: lksr-macos-aarch64.tar.gz
-          - os: macos-14
-            target: x86_64-apple-darwin
-            asset: lksr-macos-x86_64.tar.gz
+          # x86_64-apple-darwin: webrtc-sys C++ fails on Xcode 15.4 x86_64 SDK
+          # (libwebrtc prebuilt mismatch) — ship aarch64 macos (Apple Silicon,
+          # the standard dev machine) + linux x86_64.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: lksr-linux-x86_64.tar.gz
