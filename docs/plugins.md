@@ -119,6 +119,56 @@ Shorthand for a single plugin: `"plugin": "adaptive_backchannel"` (same as `"plu
 `Script.verify.plugin_options` is also passed to lifecycle hooks as `ctx.options`
 (the full options map, not only one plugin’s slice).
 
+### Portable example: adaptive false-interrupt resume
+
+The `adaptive_backchannel` example above is **portable** — it uses only the
+`VerifyContext` API and the run’s own `events`, never a worker-specific agent ID,
+data topic, or business key. The same portable pattern applies to verifying that
+the agent **recovers** after a `noise`-class (false-interrupt) cue:
+
+```python
+from livekit_agent_simulator.plugins import VerifyContext, verify_plugin
+
+@verify_plugin("adaptive_false_interrupt_resume")
+def adaptive_false_interrupt_resume(ctx: VerifyContext) -> dict:
+    # A noise-class cue must not count as a recovery barge. Verify the agent
+    # spoke again after the false interrupt and no tool error leaked.
+    noise_cue_ms = ctx.first_cue_ms()
+    agent_finals = ctx.events_of_kind("transcript.agent.final")
+    resumed = any(
+        int(e.get("ts_mono_ms") or 0) >= noise_cue_ms
+        for e in agent_finals
+    ) if noise_cue_ms is not None else False
+    tool_errors = len(ctx.events_of_kind("tool.error"))
+    return {
+        "pass": resumed and tool_errors == 0,
+        "checks": [
+            {"check": "agent_resumed_after_false_interrupt", "pass": resumed},
+            {"check": "no_tool_error", "pass": tool_errors == 0},
+        ],
+    }
+```
+
+Reference it from JSONL exactly like `adaptive_backchannel`:
+
+```json
+{
+  "kind": "Script",
+  "spec": {
+    "steps": [{"id": "noise", "trigger": "agent_speaking", "delay_ms": 500, "say": "[noise]", "delivery": "room_pcm", "asset": "builtin:noise.loud", "barge_in": true, "class": "noise"}],
+    "verify": {
+      "plugins": ["adaptive_false_interrupt_resume"]
+    }
+  }
+}
+```
+
+> **Portability rule:** verify plugins are portable when they read only
+> `VerifyContext` (`events`, `steps`, `scenario`, `options`) and the run’s own
+> `events.jsonl`. A plugin that hardcodes a consumer agent identity, a
+> project-specific `data_topic`, or a business keyword is **not** portable and
+> belongs in the target’s `.agent-sim/plugins/`, not in this package.
+
 ## 3. Python API (CI / dynamic scenarios)
 
 ```python

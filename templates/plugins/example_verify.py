@@ -39,6 +39,30 @@ def example_backchannel_continue(ctx: VerifyContext) -> dict:
     }
 
 
+@verify_plugin("adaptive_false_interrupt_resume")
+def adaptive_false_interrupt_resume(ctx: VerifyContext) -> dict:
+    """Pass when the agent resumed speech after a noise-class (false-interrupt) cue.
+
+    Portable: reads only VerifyContext + the run's own events — no consumer IDs.
+    """
+    noise_cue_ms = ctx.first_cue_ms()
+    agent_finals = ctx.events_of_kind("transcript.agent.final")
+    resumed = (
+        any(int(e.get("ts_mono_ms") or 0) >= noise_cue_ms for e in agent_finals)
+        if noise_cue_ms is not None
+        else False
+    )
+    tool_errors = len(ctx.events_of_kind("tool.error"))
+    return {
+        "pass": resumed and tool_errors == 0,
+        "checks": [
+            {"check": "agent_resumed_after_false_interrupt", "pass": resumed},
+            {"check": "no_tool_error", "pass": tool_errors == 0},
+        ],
+        "detail": "portable example — replace with your project logic",
+    }
+
+
 @register_before_run
 def example_before_run(ctx: BeforeRunContext) -> None:
     """Optional: stamp meta / prepare external resources before connect."""
