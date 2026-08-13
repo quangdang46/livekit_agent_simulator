@@ -198,6 +198,14 @@ impl WebServer {
                 }));
             }
         }
+        // ---- Dedupe + ghost-STT filter (parity with web/transcript_cues.py) ----
+        cues = dedupe_cues(cues);
+        cues = ghost_filter(cues);
+
+        // ---- Dedupe + ghost-STT filter (parity with web/transcript_cues.py) ----
+        cues = dedupe_cues(cues);
+        cues = ghost_filter(cues);
+
         let summary: Value = std::fs::read_to_string(dir.join("summary.json"))
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
@@ -382,4 +390,173 @@ pub async fn serve(
     let addr = listener.local_addr()?;
     axum::serve(listener, app).await?;
     Ok(addr)
+}
+
+// ---------------------------------------------------------------------------
+// Transcript dedupe + ghost-STT filter (port of web/transcript_cues.py core).
+// ---------------------------------------------------------------------------
+
+fn norm_text(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn texts_similar(a: &str, b: &str) -> bool {
+    let na = norm_text(a);
+    let nb = norm_text(b);
+    if na.is_empty() || nb.is_empty() {
+        return false;
+    }
+    if na == nb || na.contains(&nb) || nb.contains(&na) {
+        return true;
+    }
+    // Token-canonical overlap (aliases okey→okay etc.) — subset check.
+    let ta: Vec<&str> = na.split(' ').collect();
+    let tb: Vec<&str> = nb.split(' ').collect();
+    let min_len = ta.len().min(tb.len());
+    let inter = ta.iter().filter(|t| tb.contains(t)).count();
+    inter >= 1.max(min_len.div_ceil(2))
+}
+
+fn source_rank(source: Option<&str>, role: &str) -> i64 {
+    let s = source.unwrap_or("");
+    match (role, s) {
+        ("user", "sim.gemini") | ("user", "sim.openai") => 0,
+        ("user", "data") => 2,
+        ("user", "lk.transcription") => 3,
+        ("agent", "data") => 0,
+        ("agent", "lk.transcription") => 1,
+        ("agent", "sim.gemini") | ("agent", "sim.openai") => 2,
+        _ => 9,
+    }
+}
+
+fn dedupe_cues(cues: Vec<Value>) -> Vec<Value> {
+    let mut sorted = cues.clone();
+    sorted.sort_by(|a, b| {
+        let ka = a["final_ms"].as_i64().unwrap_or(0);
+        let kb = b["final_ms"].as_i64().unwrap_or(0);
+        ka.cmp(&kb)
+    });
+    let mut out: Vec<Value> = Vec::new();
+    for c in sorted {
+        let role = c["role"].as_str().unwrap_or("").to_string();
+        let text = c["text"].as_str().unwrap_or("").to_string();
+        let cur_src = c["source"].as_str().unwrap_or("").to_string();
+        let mut replaced = false;
+        for i in (0..out.len()).rev() {
+            let prev = &out[i];
+            if prev["role"].as_str() != Some(role.as_str()) {
+                continue;
+            }
+            let delta = (prev["final_ms"].as_i64().unwrap_or(0)
+                - c["final_ms"].as_i64().unwrap_or(0))
+            .abs();
+            let similar = texts_similar(prev["text"].as_str().unwrap_or(""), &text);
+            let prev_src = prev["source"].as_str().unwrap_or("").to_string();
+            let cross = !prev_src.is_empty() && !cur_src.is_empty() && prev_src != cur_src;
+            let max_delta = if similar && cross {
+                if role == "user" {
+                    15000
+                } else {
+                    6000
+                }
+            } else if similar {
+                4000
+            } else {
+                2500
+            };
+            if delta > max_delta {
+                break;
+            }
+            if !similar {
+                continue;
+            }
+            let pr = source_rank(Some(&prev_src), &role);
+            let cr = source_rank(Some(&cur_src), &role);
+            if cr < pr || (cr == pr && text.len() > prev["text"].as_str().unwrap_or("").len()) {
+                out[i] = c.clone();
+            }
+            replaced = true;
+            break;
+        }
+        if !replaced {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn ghost_filter(cues: Vec<Value>) -> Vec<Value> {
+    let has_provider = cues.iter().any(|c| {
+        c["role"].as_str() == Some("user")
+            && matches!(
+                c["source"].as_str(),
+                Some("sim.gemini") | Some("sim.openai")
+            )
+    });
+    if !has_provider {
+        return cues;
+    }
+    let provider_ms: Vec<i64> = cues
+        .iter()
+        .filter(|c| {
+            c["role"].as_str() == Some("user")
+                && matches!(
+                    c["source"].as_str(),
+                    Some("sim.gemini") | Some("sim.openai")
+                )
+        })
+        .filter_map(|c| c["final_ms"].as_i64())
+        .collect();
+    let provider_texts: Vec<String> = cues
+        .iter()
+        .filter(|c| {
+            c["role"].as_str() == Some("user")
+                && matches!(
+                    c["source"].as_str(),
+                    Some("sim.gemini") | Some("sim.openai")
+                )
+        })
+        .filter_map(|c| c["text"].as_str().map(String::from))
+        .collect();
+    cues.into_iter()
+        .filter(|c| {
+            if c["role"].as_str() != Some("user") {
+                return true;
+            }
+            let src = c["source"].as_str().unwrap_or("");
+            if matches!(src, "sim.gemini" | "sim.openai") {
+                return true;
+            }
+            if src != "lk.transcription" && !src.contains("transcript") {
+                return true;
+            }
+            // Ghost iff NOT similar to a near provider user final (±2.5s).
+            let fm = c["final_ms"].as_i64().unwrap_or(0);
+            let text = c["text"].as_str().unwrap_or("");
+            let near_ms: Vec<i64> = provider_ms
+                .iter()
+                .copied()
+                .filter(|m| (*m - fm).abs() <= 2500)
+                .collect();
+            if near_ms.is_empty() {
+                return true;
+            }
+            // Similar to ANY near provider final → keep (it's the same utterance).
+            let text_owned = text.to_string();
+            let near_texts: Vec<String> = provider_texts
+                .iter()
+                .zip(provider_ms.iter())
+                .filter(|(_, m)| (**m - fm).abs() <= 2500)
+                .map(|(t, _)| t.clone())
+                .collect();
+            near_texts.iter().any(|t| texts_similar(&text_owned, t))
+        })
+        .collect()
 }
