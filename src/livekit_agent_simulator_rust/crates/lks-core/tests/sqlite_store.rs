@@ -20,13 +20,27 @@ fn schema_creates_tables() {
     assert_eq!(n, 3);
 }
 
+/// Locate the Python ground-truth source relative to the workspace root
+/// (repo-root `src/livekit_agent_simulator/…`), so I2 byte-parity runs on any
+/// machine, not just the author's.
+fn python_source_path(rel: &str) -> std::path::PathBuf {
+    let mut p = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    loop {
+        let cand = p.join("src").join("livekit_agent_simulator").join(rel);
+        if cand.exists() {
+            return cand;
+        }
+        if !p.pop() {
+            break;
+        }
+    }
+    std::path::PathBuf::from("src/livekit_agent_simulator").join(rel)
+}
+
 #[test]
 fn ddl_byte_identical() {
     // SCHEMA must match the Python source exactly (I2) — whitespace-insensitive compare.
-    let py_schema = std::fs::read_to_string(
-        "C:/Users/ADMIN/Documents/Projects/livekit-agent-simulator/src/livekit_agent_simulator/logging/sqlite_store.py",
-    )
-    .unwrap();
+    let py_schema = std::fs::read_to_string(python_source_path("logging/sqlite_store.py")).unwrap();
     let start = py_schema.find("CREATE TABLE IF NOT EXISTS runs").unwrap();
     let end = py_schema[start..].find("\"\"\"").unwrap();
     let py_ddl = &py_schema[start..start + end];

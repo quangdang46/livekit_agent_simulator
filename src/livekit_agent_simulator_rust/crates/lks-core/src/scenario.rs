@@ -333,12 +333,24 @@ pub fn scenario_from_dict(
             }
         });
 
-    // script (steps + verify) — full parse deferred to P1 script module; store raw.
+    // script (steps + verify). Steps are normalized through the typed parser so
+    // exports carry the full Python field set with defaults (P5 export parity);
+    // verify stays raw JSON (typed parse happens on demand).
     let mut script_steps = Vec::new();
     let mut script_verify = None;
     if let Some(script) = data.get("script").and_then(|v| v.as_object()) {
-        if let Some(steps) = script.get("steps").and_then(|v| v.as_array()) {
-            script_steps = steps.clone();
+        if script.get("steps").and_then(|v| v.as_array()).is_some() {
+            match crate::script::parse::parse_script_steps(script, path_label) {
+                Ok(typed) => {
+                    script_steps = typed
+                        .iter()
+                        .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
+                        .collect();
+                }
+                Err(e) => {
+                    return Err(ScenarioError(e));
+                }
+            }
         }
         script_verify = script.get("verify").cloned();
     }
