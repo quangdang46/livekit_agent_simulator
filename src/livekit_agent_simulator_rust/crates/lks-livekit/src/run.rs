@@ -105,16 +105,6 @@ pub async fn execute_scenario(
     let identity = format!("lks-caller-{}", &run_id[..8]);
     let writer_arc = Arc::new(Mutex::new(writer));
 
-    let bridge = OpenAiCallerBridge::new(
-        cfg.livekit.clone(),
-        cfg.simulator.clone(),
-        persona_prompt,
-        run_spec.first_speaker.clone(),
-        room_name,
-        identity,
-        writer_arc.clone(),
-    );
-
     // Observer state shared with the script runtime.
     let script_state = Arc::new(Mutex::new(crate::script::ScriptObserverState::default()));
     let script_writer = writer_arc.clone();
@@ -123,6 +113,7 @@ pub async fn execute_scenario(
 
     // Script runtime: fires the scenario's script steps (time/silence triggers).
     let script_task = if !scenario.script_steps.is_empty() {
+        let end_rx_script = end_rx.resubscribe();
         let runtime = crate::script::ScriptRuntime::new(
             scenario.script_steps.clone(),
             script_writer,
@@ -140,14 +131,42 @@ pub async fn execute_scenario(
                 _ => Ok(()),
             }),
         );
-        let rx = end_rx.resubscribe();
-        Some(tokio::spawn(async move { runtime.run(rx).await }))
+        Some(tokio::spawn(
+            async move { runtime.run(end_rx_script).await },
+        ))
     } else {
         None
     };
 
+    // Provider dispatch: config `simulator.provider` selects the caller bridge.
+    let provider = cfg.simulator.provider.trim().to_lowercase();
+    let bridge_future: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), RunError>> + Send>,
+    > = if provider == "google" {
+        let bridge = crate::callers::GeminiCallerBridge::new(
+            cfg.livekit.clone(),
+            cfg.simulator.clone(),
+            persona_prompt,
+            room_name,
+            identity,
+            writer_arc.clone(),
+        );
+        Box::pin(async move { bridge.run(end_rx.resubscribe()).await })
+    } else {
+        let bridge = OpenAiCallerBridge::new(
+            cfg.livekit.clone(),
+            cfg.simulator.clone(),
+            persona_prompt,
+            run_spec.first_speaker.clone(),
+            room_name,
+            identity,
+            writer_arc.clone(),
+        );
+        Box::pin(async move { bridge.run(end_rx).await })
+    };
+
     // The slice ends on the bridge's internal cap (agent hangup later).
-    let run_result = bridge.run(end_rx).await;
+    let run_result = bridge_future.await;
     if let Some(t) = script_task {
         t.abort();
     }
