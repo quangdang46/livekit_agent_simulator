@@ -19,4 +19,5 @@ pub mod scenario;
 pub mod scenario_jsonl;
 pub mod scenario_ops;
 pub mod scenario_yaml;
+pub mod script;
 pub mod yaml_writer;
