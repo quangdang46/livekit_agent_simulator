@@ -1,0 +1,11 @@
+[package]
+name = "lks-web"
+description = "Web report player + REST API for livekit-agent-simulator (axum + rust-embed web/dist). P3.5; stub at P0."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lks-core = { path = "../lks-core" }
+lks-livekit = { path = "../lks-livekit" }

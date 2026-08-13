@@ -1,0 +1,10 @@
+[package]
+name = "lks-plugins"
+description = "pyo3 embedded CPython for existing .py verify plugins. P8; stub at P0 (pyo3 deferred)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lks-core = { path = "../lks-core" }

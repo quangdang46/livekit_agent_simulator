@@ -1,0 +1,67 @@
+name: Rust CI
+
+# Rust full-port (src/livekit_agent_simulator_rust/) — offline gates only.
+# P0/P1 run `cargo test -p lks-core` WITHOUT building libwebrtc — that is the whole
+# point of the fine-grained workspace split (D1): `livekit` (C++ libwebrtc) only
+# enters via lks-livekit from P2. Windows is `cargo check` only (research §1.6
+# VERIFY: no Windows release promise in v1).
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            runs: "-p lks-core -p lks"
+          - os: macos-latest
+            runs: "-p lks-core -p lks"
+          - os: windows-latest
+            runs: "-p lks-core -p lks" # cargo check only
+    defaults:
+      run:
+        working-directory: src/livekit_agent_simulator_rust
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/livekit_agent_simulator_rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src/livekit_agent_simulator_rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Format check
+        if: matrix.os != 'windows-latest'
+        run: cargo fmt --check
+
+      - name: Clippy (workspace)
+        if: matrix.os != 'windows-latest'
+        run: cargo clippy -- -D warnings
+
+      - name: Build + test (offline core)
+        if: matrix.os != 'windows-latest'
+        run: cargo test ${{ matrix.runs }}
+
+      - name: Cargo check only (Windows — no libwebrtc build guarantee)
+        if: matrix.os == 'windows-latest'
+        run: cargo check ${{ matrix.runs }}

@@ -1,0 +1,4 @@
+# Pin the toolchain to match livekit/rust-sdks (research R1 §1.1).
+[toolchain]
+channel = "1.97.1"
+profile = "default"
