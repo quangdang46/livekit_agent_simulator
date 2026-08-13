@@ -121,22 +121,12 @@ async def test_pump_transport_drop_marks_bridge() -> None:
     bridge = _make_bridge()
     bridge._mute_persona_audio = False
 
-    class _RaisingIter:
-        def __init__(self):
-            self._raised = False
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            if not self._raised:
-                self._raised = True
-                raise ConnectionError("APIError: 1006 None. abnormal closure [internal]")
-            raise StopAsyncIteration
-
     class _RaisingSession:
-        def receive(self):
-            return _RaisingIter()
+        async def receive(self):
+            # Async generator — raises on first iteration, cross-platform
+            # (a custom __anext__ iter can behave differently across Python/OS).
+            raise ConnectionError("APIError: 1006 None. abnormal closure [internal]")
+            yield  # pragma: no cover — never reached
 
     await bridge._pump_gemini_events(_RaisingSession(), None)
     assert bridge.transport_dropped is True

@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, AsyncIterator, Sequence
 
 from google import genai
 from google.genai import types
@@ -191,6 +191,26 @@ def resolve_voice_gain(persona: dict[str, Any] | None) -> float:
             f"(got {gain})"
         )
     return gain
+
+
+async def _receive_with_timeout(
+    session: genai.live.AsyncSession, *, timeout_s: float
+) -> AsyncIterator[Any]:
+    """Yield from ``session.receive()`` with a per-message timeout.
+
+    ``asyncio.timeout`` (Python 3.11+) is not available on 3.10, so we wrap each
+    ``__anext__`` pull with ``asyncio.wait_for``. On timeout, raise TimeoutError
+    (the caller treats it as a transient transport drop → reconnect). The
+    underlying receive iterator is obtained ONCE — re-calling ``receive()`` per
+    message would replay from the start (and mock iterables would never end).
+    """
+    receive_iter = session.receive().__aiter__()
+    while True:
+        try:
+            message = await asyncio.wait_for(receive_iter.__anext__(), timeout=timeout_s)
+        except StopAsyncIteration:
+            return
+        yield message
 
 
 class GeminiCallerBridge:
@@ -1293,12 +1313,13 @@ class GeminiCallerBridge:
         """Play Gemini audio into the room; log transcriptions and interruptions."""
         try:
             while not self.end_call.is_set():
-                async with asyncio.timeout(15.0):
-                    async for response in session.receive():
-                        # Gemini session resumption: the server periodically sends a
-                        # resumable handle so the client can reconnect (a fresh
-                        # WebSocket) and keep the conversation context past the ~10-min
-                        # connection cap. Save it; run() uses it on go_away reconnect.
+                # `asyncio.timeout` is Python 3.11+ only; use a compatible helper
+                # so the 15s receive-timeout also works on Python 3.10.
+                async for response in _receive_with_timeout(session, timeout_s=15.0):
+                    # Gemini session resumption: the server periodically sends a
+                    # resumable handle so the client can reconnect (a fresh
+                    # WebSocket) and keep the conversation context past the ~10-min
+                    # connection cap. Save it; run() uses it on go_away reconnect.
                         if response.session_resumption_update is not None:
                             upd = response.session_resumption_update
                             if upd.resumable and upd.new_handle:
