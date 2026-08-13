@@ -1,9 +1,17 @@
 [package]
 name = "agent-sim-proto"
-description = "prost-generated AgentSessionMessage from the lk.agent.session byte stream protocol. P3; stub at P0 (prost deferred)."
+description = "prost-generated AgentSessionMessage from the livekit agent_session proto (lk.agent.session byte stream protocol). Consumed by lks-livekit's agent_session_observer.rs in P3."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+prost = "0.13"
+prost-types = "0.13"
+
+[build-dependencies]
+# protoc-bin-vendored bundles a prebuilt protoc binary — no system protoc /
+# no C++ compile needed (protobuf-src was too heavy/fragile on Windows).
+prost-build = "0.13"
+protoc-bin-vendored = "3.2"
