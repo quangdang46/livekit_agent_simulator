@@ -526,7 +526,20 @@ class GeminiCallerBridge:
                         asyncio.create_task(self._pump_gemini_events(session, source), name="gemini->lk"),
                     ]
                     try:
-                        await self.end_call.wait()
+                        # Block until the dialogue ends OR the pump signals a
+                        # reconnect (go_away, or a mid-call transport drop with a
+                        # resumption handle). The pump does not set `end_call` on
+                        # those paths — it sets `_reconnect_required` and returns —
+                        # so waiting on `end_call` alone would hang the run loop.
+                        # `asyncio.wait` requires Tasks (not bare coroutines) on
+                        # 3.12+, so wrap each Event.wait in a Task.
+                        await asyncio.wait(
+                            {
+                                asyncio.create_task(self.end_call.wait()),
+                                asyncio.create_task(self._reconnect_required.wait()),
+                            },
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
                     finally:
                         await self._flush_agent_audio_stream(
                             session, reason="session_teardown"
@@ -1502,7 +1515,7 @@ class GeminiCallerBridge:
             raise
         except Exception as e:
             is_transport = (
-                isinstance(e, ConnectionError)
+                isinstance(e, (ConnectionError, asyncio.TimeoutError))
                 or "1006" in str(e)
                 or "1008" in str(e)  # known Gemini preview-model transient (tool-call crash)
                 or "1011" in str(e)  # server internal error — transient; resumable w/ handle

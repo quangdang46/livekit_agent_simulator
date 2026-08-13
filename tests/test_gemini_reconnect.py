@@ -135,6 +135,32 @@ async def test_pump_transport_drop_marks_bridge() -> None:
     assert "sim.error" in kinds
 
 
+@pytest.mark.asyncio
+async def test_pump_receive_timeout_with_handle_signals_reconnect() -> None:
+    """A receive() TimeoutError with a resumption handle is a retryable drop.
+
+    The pump must signal `_reconnect_required` (so run() reconnects) and NOT
+    set `end_call` — otherwise a transient 15s receive-timeout mid-call would
+    kill the call instead of resuming with the saved handle.
+    """
+    bridge = _make_bridge()
+    bridge._mute_persona_audio = False
+    bridge._resume_handle = "h123"  # handle already saved by an earlier update
+
+    class _TimeoutSession:
+        async def receive(self):
+            raise asyncio.TimeoutError
+            yield  # pragma: no cover — never reached
+
+    await bridge._pump_gemini_events(_TimeoutSession(), None)
+    assert bridge._reconnect_required.is_set()
+    assert not bridge.end_call.is_set()  # do not kill the call
+    assert bridge.transport_dropped is False  # resumable → not a fatal drop
+    kinds = [e[0] for e in bridge.writer.events]
+    assert "sim.gemini_socket_drop" in kinds
+    assert "sim.error" in kinds
+
+
 def _session_yielding(messages: list, after_each: callable | None = None) -> object:
     """A session whose receive() yields the given LiveServerMessage objects.
 

@@ -83,6 +83,7 @@ async def optimize_persona(
     pass_at_k: int | None = None,
     agent_name: str | None = None,
     name: str | None = None,
+    profile: str | None = None,
     execute_scenario: Any = None,
     proposer: OptimizeProposer | None = None,
 ) -> dict[str, Any]:
@@ -90,6 +91,7 @@ async def optimize_persona(
 
     ``execute_scenario`` / ``proposer`` are injectable for tests; production
     defaults to ``ops.execute_scenario`` and the configured judge backend.
+    ``profile`` selects a named caller profile for every run in the loop.
     """
     from .. import ops
 
@@ -103,6 +105,7 @@ async def optimize_persona(
         project_root, None, train_ids,
         execute_scenario=run_scenario, strict_judge=strict_judge,
         repeat=repeat, pass_at_k=pass_at_k, agent_name=agent_name,
+        profile=profile,
     )
 
     current_si = _compose_instruction(project_root, train_ids[0], None) if train_ids else ""
@@ -120,7 +123,7 @@ async def optimize_persona(
                 project_root, v, train_ids,
                 execute_scenario=run_scenario, strict_judge=strict_judge,
                 repeat=repeat, pass_at_k=pass_at_k, agent_name=agent_name,
-                optimize=stage,
+                optimize=stage, profile=profile,
             )
         finally:
             _remove_stage(project_root, f"__candidate__{v.id}")
@@ -135,6 +138,7 @@ async def optimize_persona(
             project_root, None, heldout_ids,
             execute_scenario=run_scenario, strict_judge=strict_judge,
             repeat=repeat, pass_at_k=pass_at_k, agent_name=agent_name,
+            profile=profile,
         )
     if evaluated:
         winner = select_winner(
