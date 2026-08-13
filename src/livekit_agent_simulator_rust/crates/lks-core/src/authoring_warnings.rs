@@ -66,7 +66,7 @@ fn persona_traits(persona: &Map<String, Json>) -> Vec<String> {
     };
     list.into_iter()
         .filter_map(|t| {
-            let key = t.trim().to_lowercase().replace(' ', "_").replace('-', "_");
+            let key = t.trim().to_lowercase().replace([' ', '-'], "_");
             if key.is_empty() {
                 None
             } else {
@@ -193,6 +193,7 @@ fn has_ended_by_proof(asserts: Option<&Json>) -> bool {
 /// Port of `authoring.collect_authoring_warnings` — the flat soft warning list
 /// merged into `validate_scenario` output. Message strings byte-exact with
 /// Python (parity-tested against the Python reference).
+#[allow(clippy::too_many_arguments)]
 pub fn collect_authoring_warnings(
     persona: &Map<String, Json>,
     tags: &[String],

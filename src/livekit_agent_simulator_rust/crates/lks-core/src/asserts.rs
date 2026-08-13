@@ -329,7 +329,7 @@ fn collect_barge_ms(events: &[Map<String, Json>]) -> Vec<i64> {
 }
 
 /// Evaluate deterministic asserts. Returns {pass, skipped, checks}.
-
+///
 /// Parse an Assert section (raw scenario JSON) into a typed AssertSpec
 /// (port of `asserts.parse_assert_spec`). Error strings mirror Python.
 pub fn parse_assert_spec(spec: &Map<String, Json>, path_label: &str) -> Result<AssertSpec, String> {

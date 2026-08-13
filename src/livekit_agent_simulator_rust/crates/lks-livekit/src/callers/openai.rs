@@ -154,7 +154,6 @@ impl OpenAiCallerBridge {
         );
 
         // Initial kick: with VAD off the model never starts on its own.
-        let mut response_in_flight = false;
         if self.first_speaker == "user" {
             ws_tx
                 .send(Message::Text(
@@ -164,11 +163,10 @@ impl OpenAiCallerBridge {
                 ))
                 .await
                 .map_err(|e| RunError(format!("response.create failed: {e}")))?;
-            response_in_flight = true;
         }
 
         // 4. Two pumps: room agent audio → OpenAI; OpenAI audio → room mic.
-        let (audio_tx, audio_rx) = mpsc::channel::<Vec<i16>>(128);
+        let (audio_tx, _audio_rx) = mpsc::channel::<Vec<i16>>(128);
         let (out_tx, out_rx) = mpsc::channel::<Vec<i16>>(128);
 
         // Pump 1: agent room audio → OpenAI input buffer.
@@ -193,16 +191,12 @@ impl OpenAiCallerBridge {
 
         // Wait for end_call, or a hard slice cap (P2: 45 s) so runs always terminate.
         let mut room_events_watch = room_events;
-        let mut last_agent_audio = std::time::Instant::now();
         tokio::select! {
             _ = end_rx.recv() => {}
             ev = room_events_watch.recv() => {
                 // Natural end: agent left the room, or dead-call silence elapsed.
-                match ev {
-                    Ok(SimRoomEvent::ParticipantDisconnected { identity }) => {
-                        eprintln!("[lksr] agent disconnected ({identity}) — ending run");
-                    }
-                    _ => {}
+                if let Ok(SimRoomEvent::ParticipantDisconnected { identity }) = ev {
+                    eprintln!("[lksr] agent disconnected ({identity}) — ending run");
                 }
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(45)) => {
@@ -271,7 +265,7 @@ async fn pump_agent_audio(
             _ = end_call.recv() => return,
             ev = room_events.recv() => {
                 match ev {
-                    Ok(SimRoomEvent::TrackSubscribed { track_sid, .. }) => {
+                    Ok(SimRoomEvent::TrackSubscribed { .. }) => {
                         // Find the subscribed audio track on the room and open a 24k stream.
                         if let Some(track) = find_subscribed_audio(&room) {
                             let stream = livekit::webrtc::audio_stream::native::NativeAudioStream::new(track, OPENAI_IN_RATE as i32, 1);
@@ -284,7 +278,7 @@ async fn pump_agent_audio(
                 }
             }
         }
-        if let Some(stream) = &mut agent_track {
+        if agent_track.is_some() {
             break;
         }
     }
@@ -340,10 +334,8 @@ fn find_subscribed_audio(
     for (_, participant) in room.remote_participants() {
         for (_, publication) in participant.track_publications() {
             if publication.kind() == livekit::prelude::TrackKind::Audio {
-                if let Some(track) = publication.track() {
-                    if let livekit::prelude::RemoteTrack::Audio(audio) = track {
-                        return Some(audio.rtc_track());
-                    }
+                if let Some(livekit::prelude::RemoteTrack::Audio(audio)) = publication.track() {
+                    return Some(audio.rtc_track());
                 }
             }
         }
@@ -359,7 +351,7 @@ async fn pump_openai_events(
     >,
     out_tx: mpsc::Sender<Vec<i16>>,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
-    mut end_call: broadcast::Receiver<()>,
+    _end_call: broadcast::Receiver<()>,
 ) {
     let mut agent_text = String::new();
     let mut caller_text = String::new();

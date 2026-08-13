@@ -36,7 +36,7 @@ pub enum SimRoomEvent {
 pub async fn connect_room(
     url: &str,
     token: &str,
-    room_name: &str,
+    _room_name: &str,
 ) -> Result<(Arc<Room>, broadcast::Receiver<SimRoomEvent>), RunError> {
     let (room, mut events) = Room::connect(url, token, RoomOptions::default())
         .await
@@ -50,7 +50,7 @@ pub async fn connect_room(
         while let Some(event) = events.recv().await {
             let sim = match event {
                 RoomEvent::TrackSubscribed {
-                    track,
+                    track: _,
                     publication,
                     participant,
                 } => Some(SimRoomEvent::TrackSubscribed {
@@ -96,9 +96,11 @@ pub fn make_token(
 ) -> Result<String, RunError> {
     use livekit_api::access_token::{AccessToken, VideoGrants};
 
-    let mut grants = VideoGrants::default();
-    grants.room_join = true;
-    grants.room = room_name.to_string();
+    let grants = VideoGrants {
+        room_join: true,
+        room: room_name.to_string(),
+        ..Default::default()
+    };
 
     let token = AccessToken::with_api_key(api_key, api_secret)
         .with_identity(identity)

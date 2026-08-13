@@ -284,17 +284,17 @@ fn data_plane_tools_work_end_to_end() {
     );
     assert_eq!(st.get("found").and_then(|x| x.as_bool()), Some(false));
 
-    // execute_scenario → explicit not-implemented error (fail-loud until P2)
+    // execute_scenario → wired to the real run path. The temp root's config
+    // points at a non-existent LiveKit server, so the run errors out — but it
+    // must NOT be the old "not available in the Rust build" stub.
     let ex = c.call(
         "execute_scenario",
         json!({"project_root": root_s, "scenario_id": "smoke"}),
     );
+    let err = ex.get("error").and_then(|v| v.as_str()).unwrap_or("");
     assert!(
-        ex.get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .contains("not available in the Rust build"),
-        "execute_scenario fails loud: {ex}"
+        !err.contains("not available in the Rust build"),
+        "execute_scenario must be wired to the run path, got: {ex}"
     );
 }
 

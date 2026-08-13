@@ -95,13 +95,13 @@ pub async fn execute_scenario(
     );
 
     // --- end_call channel ---
-    let (end_tx, end_rx) = broadcast::channel::<()>(1);
+    let (_end_tx, end_rx) = broadcast::channel::<()>(1);
 
     // --- persona prompt (minimal: persona brief + goals) ---
     let persona_prompt = build_persona_prompt(&scenario);
 
     // --- caller bridge (webrtc_sim + openai provider) ---
-    let room_name = format!("lks-{}", &run_id);
+    let room_name = format!("lks-{run_id}");
     let identity = format!("lks-caller-{}", &run_id[..8]);
     let writer_arc = Arc::new(Mutex::new(writer));
 
