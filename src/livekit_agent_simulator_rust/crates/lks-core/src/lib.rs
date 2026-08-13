@@ -14,6 +14,7 @@ pub mod errors;
 
 pub mod config;
 
+pub mod authoring;
 pub mod scenario;
 pub mod scenario_jsonl;
 pub mod scenario_ops;
