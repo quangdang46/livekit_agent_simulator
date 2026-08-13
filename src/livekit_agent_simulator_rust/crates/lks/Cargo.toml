@@ -1,0 +1,15 @@
+[package]
+name = "lks"
+description = "livekit-agent-simulator CLI — black-box LiveKit agent testing. Binary crate; thin main, all logic in lks-core / lks-livekit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lks"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+lks-core = { path = "../lks-core" }

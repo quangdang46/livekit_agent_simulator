@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# All crates in the workspace share the same version (single-version workspace).
+[workspace.package]
+version = "0.1.0-rust"
+edition = "2021"
+rust-version = "1.97"
+license = "MIT"
+
+# Shared dependency versions, overridable per-crate.
+[workspace.dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+thiserror = "2.0.20"
+anyhow = "1.0.104"
+log = "0.4.33"
+env_logger = "0.11.11"
+uuid = { version = "1.24.0", features = ["v4"] }
+jiff = "0.2.35"
+rand = "0.10.2"
+
+[profile.release]
+lto = "thin"
+strip = true

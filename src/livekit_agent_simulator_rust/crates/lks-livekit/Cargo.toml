@@ -1,0 +1,10 @@
+[package]
+name = "lks-livekit"
+description = "Media/network for livekit-agent-simulator: room, dispatch, observer, sim legs, callers, audio. Adds the livekit + gemini-live deps (P2+); stub at P0 so the workspace resolves without building libwebrtc."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lks-core = { path = "../lks-core" }

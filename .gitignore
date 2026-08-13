@@ -23,3 +23,6 @@ BUG-7-01-INVESTIGATION-REPORT.md
 
 # livekit-agent-simulator
 .agent-sim/
+
+# Rust full-port workspace build output
+src/livekit_agent_simulator_rust/target/

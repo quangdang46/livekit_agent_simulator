@@ -1,0 +1,9 @@
+[package]
+name = "agent-sim-proto"
+description = "prost-generated AgentSessionMessage from the lk.agent.session byte stream protocol. P3; stub at P0 (prost deferred)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
