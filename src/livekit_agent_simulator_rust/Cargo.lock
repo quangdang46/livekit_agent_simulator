@@ -1926,6 +1926,7 @@ dependencies = [
  "lks-core",
  "lks-livekit",
  "lks-mcp",
+ "serde_json",
  "tokio",
 ]
 
@@ -1963,6 +1964,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.30.0",
 ]
@@ -1972,6 +1974,7 @@ name = "lks-mcp"
 version = "0.1.0-rust"
 dependencies = [
  "anyhow",
+ "lks",
  "lks-core",
  "lks-livekit",
  "rmcp",

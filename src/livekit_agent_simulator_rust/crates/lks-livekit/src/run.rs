@@ -95,7 +95,7 @@ pub async fn execute_scenario(
     );
 
     // --- end_call channel ---
-    let (_end_tx, end_rx) = broadcast::channel::<()>(1);
+    let (end_tx, end_rx) = broadcast::channel::<()>(1);
 
     // --- persona prompt (minimal: persona brief + goals) ---
     let persona_prompt = build_persona_prompt(&scenario);
@@ -115,8 +115,42 @@ pub async fn execute_scenario(
         writer_arc.clone(),
     );
 
+    // Observer state shared with the script runtime.
+    let script_state = Arc::new(Mutex::new(crate::script::ScriptObserverState::default()));
+    let script_writer = writer_arc.clone();
+    let script_state2 = script_state.clone();
+    let end_tx2 = end_tx.clone();
+
+    // Script runtime: fires the scenario's script steps (time/silence triggers).
+    let script_task = if !scenario.script_steps.is_empty() {
+        let runtime = crate::script::ScriptRuntime::new(
+            scenario.script_steps.clone(),
+            script_writer,
+            script_state2,
+            end_tx2,
+            Box::new(move |action| match action {
+                crate::script::ScriptAction::HangUp { farewell, label } => {
+                    eprintln!("[lksr] script hang_up ({label}): {farewell}");
+                    Ok(())
+                }
+                crate::script::ScriptAction::Speak { text, label, .. } => {
+                    eprintln!("[lksr] script speak ({label}): {text}");
+                    Ok(())
+                }
+                _ => Ok(()),
+            }),
+        );
+        let rx = end_rx.resubscribe();
+        Some(tokio::spawn(async move { runtime.run(rx).await }))
+    } else {
+        None
+    };
+
     // The slice ends on the bridge's internal cap (agent hangup later).
     let run_result = bridge.run(end_rx).await;
+    if let Some(t) = script_task {
+        t.abort();
+    }
 
     // --- finalize ---
     let status = match &run_result {
