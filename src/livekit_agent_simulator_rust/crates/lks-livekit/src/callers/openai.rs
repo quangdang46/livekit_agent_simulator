@@ -85,7 +85,7 @@ impl OpenAiCallerBridge {
         let (room, room_events) = connect_room(&livekit_cfg.url, &token, &self.room_name).await?;
 
         // Publish a 24 kHz mono audio source as the caller mic.
-        let source = publish_mic(&room)?;
+        let source = publish_mic_shared(&room)?;
         let source = Arc::new(source);
 
         // 2. Dispatch the agent into the room (server API).
@@ -187,7 +187,7 @@ impl OpenAiCallerBridge {
         ));
 
         // Pump 3: audio out → mic source.
-        let mic_task = tokio::spawn(pump_mic(out_rx, source.clone()));
+        let mic_task = tokio::spawn(pump_mic_shared(out_rx, source.clone()));
 
         // Wait for end_call, or a hard slice cap (P2: 45 s) so runs always terminate.
         let mut room_events_watch = room_events;
@@ -214,7 +214,7 @@ impl OpenAiCallerBridge {
     }
 }
 
-fn publish_mic(
+pub fn publish_mic_shared(
     room: &Arc<livekit::Room>,
 ) -> Result<livekit::webrtc::audio_source::native::NativeAudioSource, RunError> {
     use livekit::prelude::*;
@@ -328,7 +328,7 @@ async fn pump_agent_audio(
     }
 }
 
-fn find_subscribed_audio(
+pub fn find_subscribed_audio(
     room: &Arc<livekit::Room>,
 ) -> Option<livekit::webrtc::audio_track::RtcAudioTrack> {
     for (_, participant) in room.remote_participants() {
@@ -441,7 +441,7 @@ async fn pump_openai_events(
     }
 }
 
-async fn pump_mic(
+pub async fn pump_mic_shared(
     mut out_rx: mpsc::Receiver<Vec<i16>>,
     source: Arc<livekit::webrtc::audio_source::native::NativeAudioSource>,
 ) {

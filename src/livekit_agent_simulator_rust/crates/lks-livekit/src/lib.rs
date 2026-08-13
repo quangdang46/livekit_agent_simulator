@@ -4,6 +4,7 @@
 
 pub mod callers;
 pub mod dispatch;
+pub mod preflight;
 pub mod room;
 pub mod run;
 pub mod script;

@@ -1992,6 +1992,7 @@ dependencies = [
  "lks-livekit",
  "lks-mcp",
  "lks-web",
+ "rustls",
  "serde_json",
  "tokio",
 ]
@@ -2008,6 +2009,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2022,6 +2024,7 @@ dependencies = [
  "anyhow",
  "base64 0.23.1",
  "futures-util",
+ "gemini-live",
  "jiff",
  "livekit",
  "livekit-api",

@@ -128,6 +128,12 @@ enum Command {
     },
     /// Start the MCP server over stdio (same 21 tools as the Python server).
     Mcp,
+    /// Check config + folders + optional LiveKit API connectivity.
+    Preflight {
+        /// Skip the LiveKit API connectivity check.
+        #[arg(long)]
+        no_connectivity: bool,
+    },
     /// Start the local report player (audio + transcript sync). (MCP: web)
     Web {
         /// Run id under .agent-sim/reports/ (default: home list of all runs).
@@ -142,6 +148,8 @@ enum Command {
 }
 
 fn main() -> anyhow::Result<()> {
+    // reqwest + livekit both use rustls — install one default CryptoProvider.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
     let root = cli.root.clone();
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -158,6 +166,25 @@ fn main() -> anyhow::Result<()> {
                 .enable_all()
                 .build()?;
             rt.block_on(lks_mcp::serve_stdio())
+        }
+        Some(Command::Preflight { no_connectivity }) => {
+            let cfg =
+                lks_core::config::load_config(std::path::Path::new(&root).to_path_buf(), None)?;
+            let mut checks: Vec<String> = Vec::new();
+            checks.push(format!("config: {} OK", cfg.dot_dir().display()));
+            if !no_connectivity {
+                match rt.block_on(lks_livekit::preflight::check_livekit_api(&cfg)) {
+                    Ok(()) => checks.push("livekit.api: list_rooms OK".into()),
+                    Err(e) => {
+                        eprintln!("[lksr] preflight: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            for c in &checks {
+                println!("✓ {c}");
+            }
+            Ok(())
         }
         Some(Command::Web { run_id, port, host }) => {
             let server = Arc::new(lks_web::WebServer::new(std::path::Path::new(&root)));
