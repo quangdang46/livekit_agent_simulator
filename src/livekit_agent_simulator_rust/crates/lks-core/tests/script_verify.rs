@@ -132,3 +132,64 @@ fn verify_min_interruptions() {
     );
     assert_eq!(res["interruptions"], json!(1));
 }
+
+#[test]
+fn build_caller_behavior_summary_aggregates() {
+    use lks_core::script::summary::build_caller_behavior_summary;
+    let events = vec![
+        ev(
+            "sim.script.cue",
+            100,
+            json!({
+                "step_id": "g1", "during_agent_speech": true,
+                "barge_in": true, "class": "correction"
+            }),
+        ),
+        ev(
+            "sim.script.cue",
+            200,
+            json!({
+                "step_id": "g2", "during_agent_speech": false,
+                "barge_in": true, "class": "noise"
+            }),
+        ),
+        ev(
+            "sim.script.wait",
+            300,
+            json!({"step_id": "w1", "trigger": "silence"}),
+        ),
+        ev("transcript.agent.final", 500, json!({"text": "ok"})),
+        ev("interruption", 150, json!({"by": "sim"})),
+    ];
+    let s = build_caller_behavior_summary(&events);
+    assert_eq!(s["script_cues_fired"], json!(2));
+    assert_eq!(s["waits_fired"], json!(1));
+    // barges_fired counts recovery barges only (correction counts, noise doesn't)
+    assert_eq!(s["barges_fired"], json!(1));
+    assert_eq!(s["barges_during_agent"], json!(1));
+    assert_eq!(s["cues_during_agent"], json!(1));
+    assert_eq!(s["silences_held"], json!(1));
+    assert_eq!(s["silence_events"], json!(0));
+    assert_eq!(s["interruptions"], json!(1));
+    // agent final at 500 > barge at 100 → after_barge=1, recovery=400
+    assert_eq!(s["agent_finals_after_barge"], json!(1));
+    assert_eq!(s["agent_finals_after_silence"], json!(1));
+    assert_eq!(s["recovery_ms"], json!(400));
+    // by_class includes both classes
+    let by_class = s["by_class"].as_object().unwrap();
+    assert_eq!(by_class["correction"], json!(1));
+    assert_eq!(by_class["noise"], json!(1));
+}
+
+#[test]
+fn build_caller_behavior_summary_zero_when_empty() {
+    use lks_core::script::summary::build_caller_behavior_summary;
+    let s = build_caller_behavior_summary(&[]);
+    assert_eq!(s["script_cues_fired"], json!(0));
+    assert_eq!(s["waits_fired"], json!(0));
+    assert_eq!(s["barges_fired"], json!(0));
+    assert_eq!(s["agent_finals_after_barge"], json!(0));
+    assert_eq!(s["recovery_ms"], Json::Null);
+    assert_eq!(s["cue_assets"], json!([]));
+    assert_eq!(s["by_class"], json!({}));
+}

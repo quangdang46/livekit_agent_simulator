@@ -7,6 +7,7 @@
 pub mod farewell;
 pub mod hang_up_gate;
 pub mod parse;
+pub mod summary;
 pub mod verify;
 
 use serde_json::{Map, Value as Json};
