@@ -170,7 +170,39 @@ pub async fn execute_scenario(
         "scenario_id".into(),
         serde_json::Value::String(scenario.id.clone()),
     );
-    let summary = w.finalize(status, Some(&meta), None);
+    let mut summary = w.finalize(status, Some(&meta), None);
+
+    // LLM judge over pass_criteria (P7) — HTTP backend (judge.base_url + key).
+    if !scenario.pass_criteria.is_empty() {
+        let turns: Vec<serde_json::Map<String, serde_json::Value>> = w
+            .events()
+            .iter()
+            .filter_map(|e| e.get("kind").and_then(|k| k.as_str()).map(|k| (k, e)))
+            .filter(|(k, _)| *k == "transcript.user.final" || *k == "transcript.agent.final")
+            .map(|(_, e)| e.clone())
+            .collect();
+        let tool_events: Vec<serde_json::Map<String, serde_json::Value>> = w
+            .events()
+            .iter()
+            .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some("tool.start"))
+            .cloned()
+            .collect();
+        let criteria: Vec<String> = scenario.pass_criteria.clone();
+        let verdict = lks_core::judge::judge_run(
+            cfg.judge.as_ref(),
+            &cfg.simulator.api_key,
+            &criteria,
+            &turns,
+            &tool_events,
+        )
+        .await;
+        summary.insert("verdict".into(), serde_json::Value::Object(verdict));
+        // Re-write summary.json with the verdict (finalize wrote it already).
+        let _ = std::fs::write(
+            report_dir.join("summary.json"),
+            serde_json::to_string_pretty(&summary).unwrap_or_default(),
+        );
+    }
 
     // Finish the sqlite row.
     {
