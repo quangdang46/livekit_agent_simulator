@@ -127,3 +127,43 @@ async fn hang_up_ends_run() {
     runtime.run(end_rx).await.unwrap();
     assert!(*ended.lock().unwrap(), "hang_up action fired");
 }
+
+#[tokio::test]
+async fn room_pcm_plays_into_source() {
+    // Build a tiny 24 kHz mono WAV, read it, and play it into a shared source.
+    let dir = tempfile::tempdir().unwrap();
+    let wav = dir.path().join("cue.wav");
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 24_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    {
+        let mut w = hound::WavWriter::create(&wav, spec).unwrap();
+        for i in 0..4800 {
+            let v = ((i as f32 * 0.1).sin() * 1000.0) as i16;
+            w.write_sample(v).unwrap();
+        }
+    }
+    let mut reader = hound::WavReader::open(&wav).unwrap();
+    let samples: Vec<i16> = reader.samples::<i16>().filter_map(Result::ok).collect();
+    assert_eq!(samples.len(), 4800);
+    assert_eq!(reader.spec().sample_rate, 24_000);
+
+    let shared: lks_livekit::script::SharedMicSource = Arc::new(TokioMutex::new(None));
+    // Without a published source → error (not crash).
+    let err = lks_livekit::script::play_pcm_to_source(&shared, &samples, 24_000).await;
+    assert!(err.is_err(), "no source → error");
+
+    // With a real NativeAudioSource → frames pushed (capture_frame OK).
+    use livekit::webrtc::audio_source::native::NativeAudioSource;
+    use livekit::webrtc::prelude::*;
+    let source = NativeAudioSource::new(AudioSourceOptions::default(), 24_000, 1, 1000);
+    {
+        let mut guard = shared.lock().await;
+        *guard = Some(Arc::new(source));
+    }
+    let r = lks_livekit::script::play_pcm_to_source(&shared, &samples, 24_000).await;
+    assert!(r.is_ok(), "playback succeeded: {r:?}");
+}

@@ -105,6 +105,9 @@ pub async fn execute_scenario(
     let identity = format!("lks-caller-{}", &run_id[..8]);
     let writer_arc = Arc::new(Mutex::new(writer));
 
+    // Shared mic source so room_pcm cues play into the room (set by the bridge).
+    let shared_mic: crate::script::SharedMicSource = Arc::new(Mutex::new(None));
+
     // Observer state shared with the script runtime.
     let script_state = Arc::new(Mutex::new(crate::script::ScriptObserverState::default()));
     let script_writer = writer_arc.clone();
@@ -115,6 +118,7 @@ pub async fn execute_scenario(
     let script_task = if !scenario.script_steps.is_empty() {
         let end_rx_script = end_rx.resubscribe();
         let project_root_owned = project_root.to_path_buf();
+        let shared_mic_closure = shared_mic.clone();
         let runtime = crate::script::ScriptRuntime::new(
             scenario.script_steps.clone(),
             script_writer,
@@ -171,8 +175,30 @@ pub async fn execute_scenario(
                                 samples.len(),
                                 spec.sample_rate
                             );
-                            // Emit the inject marker so the web timeline shows it.
-                            let _ = samples;
+                            // Actually play the cue into the room (24 kHz mono).
+                            let samples = if r#loop {
+                                // Loop the samples to fill ~5s of playback.
+                                let target = spec.sample_rate as usize * 5;
+                                let mut out = Vec::with_capacity(target);
+                                while out.len() < target {
+                                    out.extend_from_slice(&samples);
+                                }
+                                out
+                            } else {
+                                samples
+                            };
+                            let mic = shared_mic_closure.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = crate::script::play_pcm_to_source(
+                                    &mic,
+                                    &samples,
+                                    spec.sample_rate,
+                                )
+                                .await
+                                {
+                                    eprintln!("[lksr] room_pcm playback: {e}");
+                                }
+                            });
                             Ok(())
                         }
                         Err(e) => Err(format!(
