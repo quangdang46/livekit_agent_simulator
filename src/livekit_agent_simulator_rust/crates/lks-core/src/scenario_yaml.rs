@@ -127,3 +127,181 @@ fn collect_sections(v: &yaml_serde::Value, out: &mut Vec<Map<String, Json>>) {
         _ => {}
     }
 }
+
+// ---------------------------------------------------------------------------
+// Serialization — scenario_to_dict / scenario_to_yaml_text (mirror scenario_yaml.py)
+// ---------------------------------------------------------------------------
+
+/// Build the section-object dict for a Scenario (round-trip faithful).
+/// Mirrors `scenario_to_dict`: header, persona, context, execute/simulator,
+/// dispatch, caller, telephony, behavior, script + verify, assert, pass_criteria.
+pub fn scenario_to_dict(s: &crate::scenario::Scenario) -> Map<String, Json> {
+    let mut data: Map<String, Json> = Map::new();
+    data.insert("apiVersion".into(), Json::String("agent-sim/v1".into()));
+    data.insert("kind".into(), Json::String("Scenario".into()));
+    let mut metadata = Map::new();
+    metadata.insert("id".into(), Json::String(s.id.clone()));
+    metadata.insert("locale".into(), Json::String(s.effective_locale()));
+    metadata.insert(
+        "tags".into(),
+        Json::Array(s.tags.iter().map(|t| Json::String(t.clone())).collect()),
+    );
+    data.insert("metadata".into(), Json::Object(metadata));
+    data.insert("persona".into(), Json::Object(s.persona.clone()));
+
+    if !s.context.is_empty() {
+        data.insert("context".into(), Json::Object(s.context.clone()));
+    }
+    if let Some(ex) = &s.execute {
+        let mut m = Map::new();
+        m.insert(
+            "max_turns".into(),
+            ex.max_turns
+                .map(|v| Json::Number(v.into()))
+                .unwrap_or(Json::Null),
+        );
+        m.insert(
+            "timeout_s".into(),
+            ex.timeout_s
+                .map(|v| Json::Number(v.into()))
+                .unwrap_or(Json::Null),
+        );
+        m.insert(
+            "first_speaker".into(),
+            ex.first_speaker
+                .clone()
+                .map(Json::String)
+                .unwrap_or(Json::Null),
+        );
+        m.insert(
+            "hold_music_timeout_s".into(),
+            ex.hold_music_timeout_s
+                .map(|v| {
+                    serde_json::Number::from_f64(v)
+                        .map(Json::Number)
+                        .unwrap_or(Json::Null)
+                })
+                .unwrap_or(Json::Null),
+        );
+        data.insert("execute".into(), Json::Object(m));
+    } else if s.simulator.max_turns != 6
+        || s.simulator.timeout_s != 120
+        || s.simulator.first_speaker != "agent"
+    {
+        let mut m = Map::new();
+        m.insert(
+            "max_turns".into(),
+            Json::Number(s.simulator.max_turns.into()),
+        );
+        m.insert(
+            "timeout_s".into(),
+            Json::Number(s.simulator.timeout_s.into()),
+        );
+        m.insert(
+            "first_speaker".into(),
+            Json::String(s.simulator.first_speaker.clone()),
+        );
+        data.insert("simulator".into(), Json::Object(m));
+    }
+    if let Some(d) = &s.dispatch {
+        if let Some(meta) = &d.metadata {
+            let mut m = Map::new();
+            m.insert("metadata".into(), Json::String(meta.clone()));
+            data.insert("dispatch".into(), Json::Object(m));
+        }
+    }
+    if let Some(c) = &s.caller {
+        let mut m = Map::new();
+        m.insert("mode".into(), Json::String(c.mode.clone()));
+        data.insert("caller".into(), Json::Object(m));
+    }
+    if let Some(t) = &s.telephony {
+        let mut m = Map::new();
+        if let Some(v) = &t.call_to {
+            m.insert("call_to".into(), Json::String(v.clone()));
+        }
+        if let Some(v) = &t.dial_in {
+            m.insert("dial_in".into(), Json::String(v.clone()));
+        }
+        if let Some(v) = &t.sip_trunk_id {
+            m.insert("sip_trunk_id".into(), Json::String(v.clone()));
+        }
+        if let Some(v) = t.prepare_ms {
+            m.insert("prepare_ms".into(), Json::Number(v.into()));
+        }
+        if let Some(v) = t.wait_until_answered {
+            m.insert("wait_until_answered".into(), Json::Bool(v));
+        }
+        if let Some(v) = t.krisp_enabled {
+            m.insert("krisp_enabled".into(), Json::Bool(v));
+        }
+        if let Some(v) = &t.agent_room {
+            m.insert("agent_room".into(), Json::String(v.clone()));
+        }
+        if let Some(v) = &t.agent_room_name_template {
+            m.insert("agent_room_name_template".into(), Json::String(v.clone()));
+        }
+        if let Some(v) = &t.handset_isolation {
+            m.insert("handset_isolation".into(), Json::String(v.clone()));
+        }
+        data.insert("telephony".into(), Json::Object(m));
+    }
+    if let Some(beh) = &s.behavior_spec {
+        data.insert("behavior".into(), Json::Object(beh.clone()));
+    }
+    if !s.script_steps.is_empty() {
+        let mut m = Map::new();
+        m.insert("steps".into(), Json::Array(s.script_steps.clone()));
+        if let Some(v) = &s.script_verify {
+            m.insert("verify".into(), v.clone());
+        }
+        data.insert("script".into(), Json::Object(m));
+    }
+    if !s.plugin_modules.is_empty() {
+        data.insert(
+            "plugin_modules".into(),
+            Json::Array(
+                s.plugin_modules
+                    .iter()
+                    .map(|m| Json::String(m.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(a) = &s.asserts {
+        data.insert("assert".into(), a.clone());
+    }
+    if !s.pass_criteria.is_empty() || !s.pass_judges.is_empty() {
+        let mut m = Map::new();
+        m.insert(
+            "criteria".into(),
+            Json::Array(
+                s.pass_criteria
+                    .iter()
+                    .map(|c| Json::String(c.clone()))
+                    .collect(),
+            ),
+        );
+        if !s.pass_judges.is_empty() {
+            m.insert("mode".into(), Json::String(s.pass_criteria_mode.clone()));
+            m.insert(
+                "judges".into(),
+                Json::Array(
+                    s.pass_judges
+                        .iter()
+                        .map(|j| Json::Object(j.clone()))
+                        .collect(),
+                ),
+            );
+        }
+        data.insert("pass_criteria".into(), Json::Object(m));
+    }
+    data
+}
+
+/// Serialize a Scenario to the section-object YAML shape.
+pub fn scenario_to_yaml_text(s: &crate::scenario::Scenario) -> String {
+    let dict = scenario_to_dict(s);
+    let cleaned = crate::yaml_writer::clean(Json::Object(dict)).unwrap_or(Json::Object(Map::new()));
+    crate::yaml_writer::to_yaml_string(&cleaned)
+}
