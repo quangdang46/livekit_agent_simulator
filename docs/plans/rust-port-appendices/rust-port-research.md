@@ -2,7 +2,7 @@
 
 > Research companion to `docs/plans/PLAN-20260813-rust-full-port.md`.
 > Status: **research complete, decisions sealed** (2026-08-13). Revision 2: cross-checked against
-> the Python ground truth (21 MCP tools / 22 CLI commands / 25.1 kLOC / 105 files / 16 kHz
+> the Python ground truth (21 MCP tools / 23 CLI commands — 22 data + `mcp` / 25.1 kLOC / 105 files / 16 kHz
 > conversation.wav / `publish_dtmf` API) and the crate sources (gemini-live `SpeechConfig`
 > lacks `language_code`; reconnect policy differs from Python by design). Corrected items are
 > marked **REVISED**.
@@ -29,8 +29,8 @@ Evidence sources used:
 | R2 | On-disk Gemini Live Rust client sources in `/tmp/glsrc/` (`session.rs`, `transport.rs`, `config.rs`, `client_message.rs`, `server_message.rs`, `protocol.md`) | Confirms this is the `gemini-live` crate (jacoblincool/gemini-live-rs); wire-level design; confirms `SpeechConfig` has NO `language_code` field (REVISED) |
 | R3 | Web verification (crates.io / docs.rs / GitHub, 2026-08-13) | Current published versions of `livekit`, `livekit-api`, `gemini-live`, `rmcp`, `rusqlite`, `rust-embed`, `pyo3` |
 | R4 | Python package source in this repo (`src/livekit_agent_simulator/…`) | Report format, config schema, scenario schema, event kinds, MCP/CLI tool counts (REVISED) |
-| R5 | Real run artifact: `demo/dtmf-feature/.agent-sim/reports/114-people-pleaser-refuse-card-20260809-201652-8b32/` | Ground-truth `events.jsonl`, `summary.json`, `meta.json` shapes (REVISED: conversation.wav is 16 kHz; metrics block is 31 keys) |
-| R6 | `AGENTS.md`, `docs/plans/PLAN-20260806-openai-caller.md`, `install.sh`, `templates/`, `web/dist/` | Repo rules, plan template, packaging, assets (REVISED: web/dist is ~200 KB, 4 files) |
+| R5 | **REVISED (2026-08-13 audit): the `114-people-pleaser-refuse-card-20260809-201652-8b32` report dir is NOT in this repo** (it lived on the author's machine; the Aug-11 reports in `demo/base-agent/.agent-sim/reports/` e.g. `001-frontdesk-hours-20260811-071837-8197` are the on-disk stand-ins and are a **31-key** metrics fixture predating the audio-onset commit `504577a`). Ground truth for `events.jsonl`, `summary.json`, `meta.json` shapes: conversation.wav is 16 kHz; the CURRENT metrics block is **36 keys** (audio-onset keys unconditional in `metrics.py`). Capture a fresh Python run for parity fixtures before P3/P3.5. |
+| R6 | `AGENTS.md`, `docs/plans/PLAN-20260806-openai-caller.md`, `install.sh`, `templates/`, `web/dist/` | Repo rules, plan template, packaging, assets (REVISED: web/dist is ~200 KB, **6 files** — `index.html`, `favicon.svg`, `icons.svg`, `assets/index-DNs624kh.js`, `assets/index-DNs624kh.js.map`, `assets/index-EYhUFLj5.css`) |
 
 ---
 
@@ -306,7 +306,8 @@ the port is a *behavioral* port with byte-compatible artifacts, not a redesign.
 ### 5.1 Report format reuse (byte-compatible)
 
 Ground truth: real run `114-people-pleaser-refuse-card-20260809-201652-8b32`
-(R5). Report dir contains: `events.jsonl`, `summary.json`, `meta.json`, `timeline.md`,
+(R5 — REVISED: this exact dir is not in the repo; use a fresh Python-captured run as the
+golden fixture, see R5 note above). Report dir contains: `events.jsonl`, `summary.json`, `meta.json`, `timeline.md`,
 `review.md`, `conversation.wav` (+ `cues.json` written by `web/cues.py`).
 
 - **events.jsonl** envelope (R5 first line):
@@ -340,18 +341,20 @@ Ground truth: real run `114-people-pleaser-refuse-card-20260809-201652-8b32`
   `data.message`/`data.raw` (topical topics), `sim.gemini`/`sim.openai` raw wire frames
   (`source="sim.gemini"`, R4 gemini.py). The full set is frozen by R4 grep; the port's
   `EventKind` enum must accept the union.
-- **summary.json** (R5; REVISED — full 31-key `metrics` block verified):
+- **summary.json** (R5; REVISED — full **36-key** `metrics` block per current `metrics.py`, incl. the unconditional audio-onset keys `ttfa_run_ms`/`ttfa_source`/`turn_taking_audio_ms`/`user_audio_source_count`/`agent_audio_onset_count`; the 31-key R5-era block predates commit `504577a`):
   top-level keys `run_id, status, duration_ms, turn_count, event_count, turn_taking_ms,
   metrics, tool_calls, tool_errors, interruptions, silences, verdict, turns` (13 keys in
   the R5 file; `caller_mode`, `end_reason`, `dial_ms` and the merged `script_verify`,
   `assert_verify`, `caller` blocks appear from summary_extra when present — port
-  `finalize()`'s merge logic verbatim). `metrics` has `schema`, `turn_taking_ms`,
-  `ttfw_ms`, `ttfw_source`, `recovery_ms`, `barge_count`, `barges_recovered`,
-  `barge_recovery_rate`, `interruption_count`, `silence_events`, `agent_finals`,
-  `user_finals`, `tool_calls`, `tool_errors`, `tool_error_rate`, `talk_ratio`,
-  `agent_chars`, `user_chars`, `user_words_count`, `user_words_p10/p50/mean`,
-  `user_words_natural_count/p10/p50/mean`, `user_words_script_count/p50/mean`,
-  `slow_turns_over_2500ms`, `slow_turns_over_5000ms` (R4 `metrics.py` key set).
+  `finalize()`'s merge logic verbatim). `metrics` (36 keys, REVISED) has `schema`,
+  `turn_taking_ms`, `ttfw_ms`, `ttfw_source`, `ttfa_run_ms`, `ttfa_source`,
+  `turn_taking_audio_ms`, `user_audio_source_count`, `agent_audio_onset_count`,
+  `recovery_ms`, `barge_count`, `barges_recovered`, `barge_recovery_rate`,
+  `interruption_count`, `silence_events`, `agent_finals`, `user_finals`, `tool_calls`,
+  `tool_errors`, `tool_error_rate`, `talk_ratio`, `agent_chars`, `user_chars`,
+  `user_words_count`, `user_words_p10/p50/mean`, `user_words_natural_count/p10/p50/mean`,
+  `user_words_script_count/p50/mean`, `slow_turns_over_2500ms`, `slow_turns_over_5000ms`
+  (R4 `metrics.py` key set — the 5 audio-onset keys are unconditional since commit `504577a`).
 - **meta.json** (R5; REVISED — `config_snapshot` shape verified): scenario id, room
   name, agent_name, config snapshot (redacted) with keys `project`, `livekit`
   (`url_host`, `agent_name`, `agent_join_timeout_ms`, `dispatch_metadata_set`),
@@ -441,7 +444,7 @@ intentional divergence (plan defers to parity).
 
 `web/` is a Vite/TS app; `pnpm build` → `web/dist/` (**~200 KB — REVISED, measured:
 index.html 395 B + favicon.svg 9.3 KB + icons.svg 4.9 KB + assets/; earlier draft's
-"few hundred kB" guess is confirmed, 4 files**). Python embeds it in the wheel as
+"few hundred kB" guess is confirmed, **6 files** — REVISED: `index.html`, `favicon.svg`, `icons.svg`, `assets/index-DNs624kh.js`, `assets/index-DNs624kh.js.map`, `assets/index-EYhUFLj5.css`). Python embeds it in the wheel as
 `web_static` (R4 `web/server.py`). Rust embeds `web/dist` via **rust-embed 8.12** with
 `debug-embed` so `lks web` works from `cargo run` and from the release binary; served by
 the report server (default host `127.0.0.1`, port 8765, R4 `web/server.py`). The REST
@@ -465,8 +468,8 @@ parameter names + same JSON return shapes** (they are the agent-facing contract;
 existing Claude Code configs reference them). `rmcp` 3.1.2 with the `server` feature and
 `#[tool]` macros is the implementation vehicle.
 
-REVISED — CLI surface (R4 `cli.py`, verified `@app.command` decorators): 22 data
-commands — `init, guide, web, serve, preflight, scenarios, cues, plugins, validate,
+REVISED — CLI surface (R4 `cli.py`, verified `@app.command` decorators): **23 commands — 22 data
+commands + the `mcp` subcommand** — `init, guide, web, serve, preflight, scenarios, cues, plugins, validate,
 export, convert, scenario-init, execute, execute-all, execute-dict, optimize, status,
 log, report, compare, runs, scenario-from-run` — plus the `mcp` subcommand. Exit codes:
 0 success; 1 on ConfigError/ScenarioError/RuntimeError/gate-fail; **130 on Ctrl+C**

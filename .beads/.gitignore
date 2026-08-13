@@ -3,6 +3,8 @@
 *.db-journal
 *.db-shm
 *.db-wal
+# br runtime sidecar files (fsqlite ns-gate / lock-pending / reserved / shared)
+beads.db-*
 
 # Lock files
 *.lock
