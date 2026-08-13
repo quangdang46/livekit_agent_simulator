@@ -234,6 +234,14 @@ class GeminiCallerBridge:
         # orchestrator can distinguish a natural hang-up from a connection failure
         # instead of masking it as `sim_end_call`.
         self.transport_dropped = False
+        # Gemini Live session resumption (connection ~10-min cap, Google docs).
+        # The server sends session_resumption_update(new_handle) periodically and
+        # go_away before closing; we save the handle and reconnect so calls can
+        # exceed ~10 min without losing conversation context.
+        self._resume_handle: str | None = None
+        self._reconnect_required = asyncio.Event()
+        self._reconnect_count = 0
+        self._session_generation = 0
         self._agent_track_queue: asyncio.Queue[rtc.RemoteAudioTrack] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
         self._source: rtc.AudioSource | None = None
@@ -424,76 +432,129 @@ class GeminiCallerBridge:
     # -------------------------------------------------------------------- run
 
     async def run(self) -> None:
-        client = genai.Client(api_key=self.cfg.simulator.api_key)
+        # websockets 16 defaults ping_interval=20s / ping_timeout=20s: Gemini Live
+        # sometimes misses a pong during long model processing, the library then
+        # closes with 1011 "keepalive ping timeout" → APIError 1006 → the caller
+        # marks the drop retryable=false and the run dies mid-call (~4 min in).
+        # Raise both via HttpOptions.async_client_args (passed through as
+        # ws_connect kwargs by google-genai live.connect).
+        client = genai.Client(
+            api_key=self.cfg.simulator.api_key,
+            http_options=types.HttpOptions(
+                async_client_args={"ping_interval": 30, "ping_timeout": 60},
+            ),
+        )
         voice = self.cfg.simulator.voice
 
-        # Manual activity markers (auto VAD disabled). Speech-gated PCM +
-        # activity_end commits the agent turn so Live generates caller freestyle.
-        config = types.LiveConnectConfig(
-            response_modalities=[types.Modality.AUDIO],  # AUDIO only — TEXT → 1011 close
-            input_audio_transcription=types.AudioTranscriptionConfig(),
-            output_audio_transcription=types.AudioTranscriptionConfig(),
-            realtime_input_config=types.RealtimeInputConfig(
-                automatic_activity_detection=types.AutomaticActivityDetection(
-                    disabled=True,
-                ),
-            ),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice.voice)
-                ),
-                language_code=voice.language,
-            ),
-            system_instruction=types.Content(
-                parts=[types.Part(text=self.persona_system_prompt)]
-            ),
-        )
-
+        # publish_mic() publishes the sim mic track + starts the mixer ONCE —
+        # it must NOT be re-run on a session reconnect (would double-publish).
         source = await self.publish_mic()
 
-        session_cm, session = await self._connect_live_with_retry(
-            client, voice.model, config
-        )
+        session_cm: Any | None = None
         try:
-            self._live_session = session
-            self.writer.emit(
-                "sim.gemini_connected",
-                spec={
-                    "model": voice.model,
-                    "voice": voice.voice,
-                    "language": voice.language,
-                    "voice_gain": self._voice_gain,
-                    "silent_mode": bool(getattr(self, "_silent_mode", False)),
-                },
-                source="sim",
-                include_dialogue=False,
-            )
-            await self._emit_bootstrap_cues(session)
-
-            self._tasks = [
-                asyncio.create_task(self._pump_agent_audio(session), name="agent->gemini"),
-                asyncio.create_task(self._pump_gemini_events(session, source), name="gemini->lk"),
-            ]
-            try:
-                await self.end_call.wait()
-            finally:
-                await self._flush_agent_audio_stream(
-                    session, reason="session_teardown"
+            while True:
+                # Manual activity markers (auto VAD disabled). Speech-gated PCM +
+                # activity_end commits the agent turn so Live generates caller freestyle.
+                # session_resumption: first connect uses no handle; reconnects (after
+                # go_away) pass the saved handle to resume conversation context past
+                # the ~10-min connection cap.
+                config = types.LiveConnectConfig(
+                    response_modalities=[types.Modality.AUDIO],  # AUDIO only — TEXT → 1011 close
+                    input_audio_transcription=types.AudioTranscriptionConfig(),
+                    output_audio_transcription=types.AudioTranscriptionConfig(),
+                    realtime_input_config=types.RealtimeInputConfig(
+                        automatic_activity_detection=types.AutomaticActivityDetection(
+                            disabled=True,
+                        ),
+                    ),
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice.voice)
+                        ),
+                        language_code=voice.language,
+                    ),
+                    system_instruction=types.Content(
+                        parts=[types.Part(text=self.persona_system_prompt)]
+                    ),
+                    session_resumption=types.SessionResumptionConfig(
+                        handle=self._resume_handle,
+                    ),
                 )
-                self._live_session = None
-                for t in self._tasks:
-                    t.cancel()
-                await asyncio.gather(*self._tasks, return_exceptions=True)
-                if self._mixer is not None:
-                    await self._mixer.aclose()
-                    self._mixer = None
+
+                session_cm, session = await self._connect_live_with_retry(
+                    client, voice.model, config
+                )
+                try:
+                    self._live_session = session
+                    self.writer.emit(
+                        "sim.gemini_connected",
+                        spec={
+                            "model": voice.model,
+                            "voice": voice.voice,
+                            "language": voice.language,
+                            "voice_gain": self._voice_gain,
+                            "silent_mode": bool(getattr(self, "_silent_mode", False)),
+                            "resume": bool(self._resume_handle),
+                        },
+                        source="sim",
+                        include_dialogue=False,
+                    )
+                    await self._emit_bootstrap_cues(session)
+
+                    self._tasks = [
+                        asyncio.create_task(self._pump_agent_audio(session), name="agent->gemini"),
+                        asyncio.create_task(self._pump_gemini_events(session, source), name="gemini->lk"),
+                    ]
+                    try:
+                        await self.end_call.wait()
+                    finally:
+                        await self._flush_agent_audio_stream(
+                            session, reason="session_teardown"
+                        )
+                        self._live_session = None
+                        for t in self._tasks:
+                            t.cancel()
+                        await asyncio.gather(*self._tasks, return_exceptions=True)
+                finally:
+                    # Close this connection's SDK context manager before reconnecting.
+                    try:
+                        await session_cm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+                    session_cm = None
+
+                # Normal end (stop / sim_hang_up / end-call token / fatal drop) → done.
+                if not self._reconnect_required.is_set():
+                    break
+
+                # Gemini sent go_away (connection about to be reset, ~10-min cap)
+                # OR mid-call transport drop (1006/1011 with a resumption handle) —
+                # resume the session on a fresh connection with the saved handle.
+                self._reconnect_required.clear()
+                self.end_call.clear()
+                self._session_generation += 1
+                self._reconnect_count += 1
+                if self._reconnect_count > 2:
+                    # Bounded mid-call reconnect: a server that keeps resetting the
+                    # socket won't recover; stop hammering and end the call.
+                    self.end_call.set()
+                    break
+                self.writer.emit(
+                    "sim.gemini_reconnecting",
+                    spec={"generation": self._session_generation},
+                    source="sim",
+                    include_dialogue=False,
+                )
         finally:
-            # Close the SDK context manager (releases the WebSocket + loop
-            # resources). Safe to call even if `__aenter__` failed above.
-            try:
-                await session_cm.__aexit__(None, None, None)
-            except Exception:
-                pass
+            if session_cm is not None:
+                try:
+                    await session_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            # Mixer is torn down once, after the whole session (incl. reconnects).
+            if self._mixer is not None:
+                await self._mixer.aclose()
+                self._mixer = None
 
     async def _connect_live_with_retry(
         self, client: Any, model: str, config: Any
@@ -1232,161 +1293,190 @@ class GeminiCallerBridge:
         """Play Gemini audio into the room; log transcriptions and interruptions."""
         try:
             while not self.end_call.is_set():
-                async for response in session.receive():
-                    sc = response.server_content
-                    if sc is None:
-                        continue
-
-                    if sc.interrupted:
-                        self.writer.emit(
-                            "interruption",
-                            spec={"by": "agent", "note": "Gemini output interrupted by agent audio"},
-                            source="sim",
-                        )
-
-                    # Caller-side transcriptions: what the sim heard itself say (output)
-                    # and what it heard from the agent (input).
-                    if sc.output_transcription and sc.output_transcription.text:
-                        if self._allow_persona_room_audio():
-                            chunk = sc.output_transcription.text
-                            if self._inject_turn_active:
-                                self._inject_heard_text += chunk
-                            self._sim_out_text += chunk
-                            # Freestyle role-flip: Live continues as the assistant after
-                            # hearing them. Cut mic ASAP — midcall text kicks make it worse.
-                            if (
-                                not self._inject_turn_active
-                                and not self._script_hangup_farewell
-                                and looks_like_assistant_persona(self._sim_out_text)
-                            ):
-                                if self._mixer is not None:
-                                    self._mixer.clear_speech()
-                                self.suppress_persona_output(4000)
+                async with asyncio.timeout(15.0):
+                    async for response in session.receive():
+                        # Gemini session resumption: the server periodically sends a
+                        # resumable handle so the client can reconnect (a fresh
+                        # WebSocket) and keep the conversation context past the ~10-min
+                        # connection cap. Save it; run() uses it on go_away reconnect.
+                        if response.session_resumption_update is not None:
+                            upd = response.session_resumption_update
+                            if upd.resumable and upd.new_handle:
+                                self._resume_handle = upd.new_handle
                                 self.writer.emit(
-                                    "sim.caller_role_flip_suppressed",
-                                    spec={
-                                        "heard": self._sim_out_text.strip()[:240],
-                                        "note": "freestyle matched assistant-persona cues",
-                                    },
+                                    "sim.gemini_resumption_handle",
+                                    spec={"resumable": True, "handle_set": True},
                                     source="sim",
                                     include_dialogue=False,
                                 )
-                                self._sim_out_text = ""
-                                continue
-                            pending = self._script_steps_pending()
-                            early_bye = contains_farewell_signal(self._sim_out_text)
-                            scripted_farewell = self._script_hangup_farewell
-                            if (
-                                (early_bye or contains_end_call_signal(self._sim_out_text))
-                                and not scripted_farewell
-                            ):
-                                # Mute ASAP so freestyle bye does not push more PCM to the agent.
-                                self._mute_hang_up_audio()
-                                if pending and early_bye:
-                                    self.suppress_persona_output(4000)
-                            log_text = (
-                                strip_farewell_signal(self._sim_out_text)
-                                if pending
-                                else strip_end_call_signal(self._sim_out_text)
+
+                        # Server will close the connection soon (connection cap). Signal
+                        # run() to resume the session on a fresh connection. Graceful —
+                        # do NOT set end_call or transport_dropped.
+                        if response.go_away is not None:
+                            self.writer.emit(
+                                "sim.gemini_go_away",
+                                spec={"time_left": response.go_away.time_left},
+                                source="sim",
+                                include_dialogue=False,
                             )
-                            self.observer.on_transcript(
-                                "user",
-                                log_text,
-                                final=False,
+                            self._reconnect_required.set()
+                            return
+
+                        sc = response.server_content
+                        if sc is None:
+                            continue
+
+                        if sc.interrupted:
+                            self.writer.emit(
+                                "interruption",
+                                spec={"by": "agent", "note": "Gemini output interrupted by agent audio"},
+                                source="sim",
+                            )
+
+                        # Caller-side transcriptions: what the sim heard itself say (output)
+                        # and what it heard from the agent (input).
+                        if sc.output_transcription and sc.output_transcription.text:
+                            if self._allow_persona_room_audio():
+                                chunk = sc.output_transcription.text
+                                if self._inject_turn_active:
+                                    self._inject_heard_text += chunk
+                                self._sim_out_text += chunk
+                                # Freestyle role-flip: Live continues as the assistant after
+                                # hearing them. Cut mic ASAP — midcall text kicks make it worse.
+                                if (
+                                    not self._inject_turn_active
+                                    and not self._script_hangup_farewell
+                                    and looks_like_assistant_persona(self._sim_out_text)
+                                ):
+                                    if self._mixer is not None:
+                                        self._mixer.clear_speech()
+                                    self.suppress_persona_output(4000)
+                                    self.writer.emit(
+                                        "sim.caller_role_flip_suppressed",
+                                        spec={
+                                            "heard": self._sim_out_text.strip()[:240],
+                                            "note": "freestyle matched assistant-persona cues",
+                                        },
+                                        source="sim",
+                                        include_dialogue=False,
+                                    )
+                                    self._sim_out_text = ""
+                                    continue
+                                pending = self._script_steps_pending()
+                                early_bye = contains_farewell_signal(self._sim_out_text)
+                                scripted_farewell = self._script_hangup_farewell
+                                if (
+                                    (early_bye or contains_end_call_signal(self._sim_out_text))
+                                    and not scripted_farewell
+                                ):
+                                    # Mute ASAP so freestyle bye does not push more PCM to the agent.
+                                    self._mute_hang_up_audio()
+                                    if pending and early_bye:
+                                        self.suppress_persona_output(4000)
+                                log_text = (
+                                    strip_farewell_signal(self._sim_out_text)
+                                    if pending
+                                    else strip_end_call_signal(self._sim_out_text)
+                                )
+                                self.observer.on_transcript(
+                                    "user",
+                                    log_text,
+                                    final=False,
+                                    source="sim.gemini",
+                                )
+                        if sc.input_transcription and sc.input_transcription.text:
+                            # Agent speech as heard by the sim. lk.transcription is the primary
+                            # agent transcript source; keep this as a low-priority mirror.
+                            self.writer.emit(
+                                "sim.heard_agent",
+                                spec={"text": sc.input_transcription.text},
                                 source="sim.gemini",
                             )
-                    if sc.input_transcription and sc.input_transcription.text:
-                        # Agent speech as heard by the sim. lk.transcription is the primary
-                        # agent transcript source; keep this as a low-priority mirror.
-                        self.writer.emit(
-                            "sim.heard_agent",
-                            spec={"text": sc.input_transcription.text},
-                            source="sim.gemini",
-                        )
 
-                    if sc.model_turn:
-                        for part in sc.model_turn.parts or []:
-                            blob = part.inline_data
-                            if blob and blob.data and self._allow_persona_room_audio():
-                                await self._play_pcm(blob.data)
+                        if sc.model_turn:
+                            for part in sc.model_turn.parts or []:
+                                blob = part.inline_data
+                                if blob and blob.data and self._allow_persona_room_audio():
+                                    await self._play_pcm(blob.data)
 
-                    if sc.turn_complete:
-                        if self._mixer is not None:
-                            # Allow silence pad / drain — stop mid-utterance underrun hold.
-                            self._mixer.end_speech_turn()
-                        inject_turn = self._inject_turn_active
-                        # inject_cue owns clearing _inject_turn_active after drain.
-                        if inject_turn:
-                            # The injected text turn fully played out — safe to
-                            # let the inject coroutine resume agent audio.
-                            self._inject_playout_done.set()
-                        if not inject_turn:
-                            self._inject_playback_gain = 1.0
-                        # TTL suppress / scripted silence only — do not drop freestyle
-                        # answers while Script steps remain (caller may reply to questions).
-                        if (
-                            not inject_turn
-                            and not self._script_hangup_farewell
-                            and self._persona_output_suppressed()
-                        ):
-                            self._sim_out_text = ""
-                            self._mute_persona_audio = False
-                            continue
-                        text = self._sim_out_text.strip()
-                        if text:
-                            ended = contains_end_call_signal(text)
-                            farewell = contains_farewell_signal(text)
-                            pending = self._script_steps_pending()
-                            clean = (
-                                strip_farewell_signal(text)
-                                if pending
-                                else strip_end_call_signal(text)
-                            )
-                            if clean:
-                                self.observer.on_transcript(
-                                    "user", clean, final=True, source="sim.gemini"
-                                )
-                            self._sim_out_text = ""
-                            # A freestyle utterance committed — arm the caller-audio
-                            # onset latch so the next utterance emits again.
-                            self._reset_user_audio_source_latch()
+                        if sc.turn_complete:
+                            if self._mixer is not None:
+                                # Allow silence pad / drain — stop mid-utterance underrun hold.
+                                self._mixer.end_speech_turn()
+                            inject_turn = self._inject_turn_active
+                            # inject_cue owns clearing _inject_turn_active after drain.
+                            if inject_turn:
+                                # The injected text turn fully played out — safe to
+                                # let the inject coroutine resume agent audio.
+                                self._inject_playout_done.set()
+                            if not inject_turn:
+                                self._inject_playback_gain = 1.0
+                            # TTL suppress / scripted silence only — do not drop freestyle
+                            # answers while Script steps remain (caller may reply to questions).
                             if (
-                                pending
-                                and (ended or farewell)
+                                not inject_turn
                                 and not self._script_hangup_farewell
+                                and self._persona_output_suppressed()
                             ):
-                                # Script still owns hang-up — do not tear down the session.
-                                self._mute_persona_audio = True
-                                self.suppress_persona_output(5000)
-                                self.writer.emit(
-                                    "sim.script_deferred_end_call",
-                                    spec={"text": clean, "reason": "script_steps_pending"},
-                                    source="sim.gemini",
-                                )
+                                self._sim_out_text = ""
                                 self._mute_persona_audio = False
                                 continue
-                            if should_end_call_on_turn(
-                                pending_script=pending,
-                                ended=ended,
-                                farewell=farewell,
-                                scripted_farewell=self._script_hangup_farewell,
-                            ):
-                                # Dialogue: soft bye or [END_CALL] — one goodbye ends the call.
-                                self._mute_persona_audio = True
-                                await self._drain_persona_speech(timeout_s=3.0)
-                                self.writer.emit(
-                                    "sim.end_call_token",
-                                    spec={
-                                        "text": clean,
-                                        "reason": "end_call_token" if ended else "farewell",
-                                    },
-                                    source="sim.gemini",
+                            text = self._sim_out_text.strip()
+                            if text:
+                                ended = contains_end_call_signal(text)
+                                farewell = contains_farewell_signal(text)
+                                pending = self._script_steps_pending()
+                                clean = (
+                                    strip_farewell_signal(text)
+                                    if pending
+                                    else strip_end_call_signal(text)
                                 )
-                                self.end_call.set()
-                                return
-                            self._mute_persona_audio = False
-                        else:
-                            self._mute_persona_audio = False
+                                if clean:
+                                    self.observer.on_transcript(
+                                        "user", clean, final=True, source="sim.gemini"
+                                    )
+                                self._sim_out_text = ""
+                                # A freestyle utterance committed — arm the caller-audio
+                                # onset latch so the next utterance emits again.
+                                self._reset_user_audio_source_latch()
+                                if (
+                                    pending
+                                    and (ended or farewell)
+                                    and not self._script_hangup_farewell
+                                ):
+                                    # Script still owns hang-up — do not tear down the session.
+                                    self._mute_persona_audio = True
+                                    self.suppress_persona_output(5000)
+                                    self.writer.emit(
+                                        "sim.script_deferred_end_call",
+                                        spec={"text": clean, "reason": "script_steps_pending"},
+                                        source="sim.gemini",
+                                    )
+                                    self._mute_persona_audio = False
+                                    continue
+                                if should_end_call_on_turn(
+                                    pending_script=pending,
+                                    ended=ended,
+                                    farewell=farewell,
+                                    scripted_farewell=self._script_hangup_farewell,
+                                ):
+                                    # Dialogue: soft bye or [END_CALL] — one goodbye ends the call.
+                                    self._mute_persona_audio = True
+                                    await self._drain_persona_speech(timeout_s=3.0)
+                                    self.writer.emit(
+                                        "sim.end_call_token",
+                                        spec={
+                                            "text": clean,
+                                            "reason": "end_call_token" if ended else "farewell",
+                                        },
+                                        source="sim.gemini",
+                                    )
+                                    self.end_call.set()
+                                    return
+                                self._mute_persona_audio = False
+                            else:
+                                self._mute_persona_audio = False
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1394,17 +1484,23 @@ class GeminiCallerBridge:
                 isinstance(e, ConnectionError)
                 or "1006" in str(e)
                 or "1008" in str(e)  # known Gemini preview-model transient (tool-call crash)
+                or "1011" in str(e)  # server internal error — transient; resumable w/ handle
                 or "abnormal closure" in str(e).lower()
                 or "ConnectionClosed" in type(e).__name__
             )
             if is_transport:
-                self.transport_dropped = True
+                # transport_dropped only when we are NOT going to resume (no handle
+                # or reconnect already queued); a resumable drop is retryable.
+                self.transport_dropped = (
+                    self._resume_handle is None or self._reconnect_required.is_set()
+                )
                 self.writer.emit(
                     "sim.gemini_socket_drop",
                     spec={
                         "phase": "mid_call",
                         "error": f"{type(e).__name__}: {e}",
-                        "retryable": False,  # dialogue already began; do not reconnect
+                        "retryable": self._resume_handle is not None
+                        and not self._reconnect_required.is_set(),
                     },
                     source="sim",
                     include_dialogue=False,
@@ -1415,6 +1511,20 @@ class GeminiCallerBridge:
                 source="sim",
                 include_dialogue=False,
             )
+            # Mid-call transport drop (1006 / 1011 / ConnectionClosed) — Gemini
+            # closed the socket for a transient reason. If a resumption handle is
+            # available, signal run() to reconnect and resume the session instead
+            # of killing the call. Once the socket has died, `send_realtime_input`
+            # is no longer safe to call, so run() must *not* emit per-connection
+            # cues on the resume — the persona's context survives via the handle.
+            if (
+                is_transport
+                and self._resume_handle is not None
+                and not self._reconnect_required.is_set()
+            ):
+                self.transport_dropped = False
+                self._reconnect_required.set()
+                return
             self.end_call.set()
 
     def _mute_hang_up_audio(self) -> None:

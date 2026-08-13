@@ -6,6 +6,8 @@ import asyncio
 
 import pytest
 
+from google.genai import types
+
 from livekit_agent_simulator.callers.gemini import GeminiCallerBridge
 
 
@@ -21,6 +23,8 @@ def _make_bridge() -> GeminiCallerBridge:
     bridge.writer = W()
     bridge.end_call = asyncio.Event()
     bridge.transport_dropped = False
+    bridge._resume_handle = None
+    bridge._reconnect_required = asyncio.Event()
     return bridge
 
 
@@ -139,3 +143,88 @@ async def test_pump_transport_drop_marks_bridge() -> None:
     kinds = [e[0] for e in bridge.writer.events]
     assert "sim.gemini_socket_drop" in kinds
     assert "sim.error" in kinds
+
+
+def _session_yielding(messages: list, after_each: callable | None = None) -> object:
+    """A session whose receive() yields the given LiveServerMessage objects.
+
+    ``after_each`` is called after each yield (e.g. to set end_call so the pump's
+    ``while not end_call`` loop terminates after the control message).
+    """
+
+    class _Iter:
+        def __init__(self, msgs):
+            self._msgs = list(msgs)
+            self._i = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._i >= len(self._msgs):
+                raise StopAsyncIteration
+            m = self._msgs[self._i]
+            self._i += 1
+            if after_each:
+                after_each()
+            return m
+
+    class _S:
+        def __init__(self, msgs):
+            self._msgs = msgs
+
+        def receive(self):
+            return _Iter(self._msgs)
+
+    return _S(messages)
+
+
+@pytest.mark.asyncio
+async def test_pump_go_away_signals_reconnect() -> None:
+    """go_away sets _reconnect_required (not end_call / transport_dropped)."""
+    bridge = _make_bridge()
+    go = types.LiveServerMessage(go_away=types.LiveServerGoAway(time_left="30s"))
+    await bridge._pump_gemini_events(_session_yielding([go]), None)
+
+    assert bridge._reconnect_required.is_set()
+    assert not bridge.end_call.is_set()  # graceful, not a hang-up
+    assert bridge.transport_dropped is False  # not an abnormal drop
+    kinds = [e[0] for e in bridge.writer.events]
+    assert "sim.gemini_go_away" in kinds
+
+
+@pytest.mark.asyncio
+async def test_pump_saves_resumption_handle() -> None:
+    """session_resumption_update(new_handle, resumable) is saved for reconnect."""
+    bridge = _make_bridge()
+    msg = types.LiveServerMessage(
+        session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            resumable=True, new_handle="h123"
+        )
+    )
+    # A resumption-only message has no server_content → loop continues; set
+    # end_call right after the yield so the pump's while-loop terminates.
+    await bridge._pump_gemini_events(
+        _session_yielding([msg], after_each=lambda: bridge.end_call.set()), None
+    )
+
+    assert bridge._resume_handle == "h123"
+    kinds = [e[0] for e in bridge.writer.events]
+    assert "sim.gemini_resumption_handle" in kinds
+
+
+@pytest.mark.asyncio
+async def test_pump_ignores_non_resumable_update() -> None:
+    """resumable=False must NOT overwrite the saved handle."""
+    bridge = _make_bridge()
+    bridge._resume_handle = "prev"
+    msg = types.LiveServerMessage(
+        session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            resumable=False, new_handle="stale"
+        )
+    )
+    await bridge._pump_gemini_events(
+        _session_yielding([msg], after_each=lambda: bridge.end_call.set()), None
+    )
+
+    assert bridge._resume_handle == "prev"  # unchanged

@@ -440,7 +440,10 @@ async def run_scenario_instance(
                     rate_task.cancel()
                     await asyncio.gather(rate_task, return_exceptions=True)
                 bridge.stop()
-                await asyncio.wait_for(asyncio.shield(_settle(bridge_task)), timeout=10)
+                # After a mid-call reconnect the pump may take up to ~15 s to
+                # notice end_call (bounded receive). Give the bridge time to
+                # settle instead of failing the run with a TimeoutError.
+                await asyncio.wait_for(asyncio.shield(_settle(bridge_task)), timeout=60)
 
             writer.emit("run.end_condition", spec={"reason": end_reason}, include_dialogue=False)
             session_snapshot_attempted = True
