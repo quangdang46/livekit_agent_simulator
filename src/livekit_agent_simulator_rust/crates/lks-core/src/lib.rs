@@ -14,6 +14,7 @@ pub mod errors;
 
 pub mod config;
 
+pub mod asserts;
 pub mod authoring;
 pub mod behavior_compile;
 pub mod caller_policy;
