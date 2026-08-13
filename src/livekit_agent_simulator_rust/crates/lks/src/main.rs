@@ -4,6 +4,7 @@
 //! Python `lks` CLI. `--version`/`--help` from clap (typer-equivalent).
 
 use clap::{Parser, Subcommand};
+use std::sync::Arc;
 
 use lks_core::ops;
 
@@ -127,6 +128,17 @@ enum Command {
     },
     /// Start the MCP server over stdio (same 21 tools as the Python server).
     Mcp,
+    /// Start the local report player (audio + transcript sync). (MCP: web)
+    Web {
+        /// Run id under .agent-sim/reports/ (default: home list of all runs).
+        run_id: Option<String>,
+        /// Port to serve on.
+        #[arg(long, default_value_t = 8765)]
+        port: u16,
+        /// Host to bind.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -146,6 +158,14 @@ fn main() -> anyhow::Result<()> {
                 .enable_all()
                 .build()?;
             rt.block_on(lks_mcp::serve_stdio())
+        }
+        Some(Command::Web { run_id, port, host }) => {
+            let server = Arc::new(lks_web::WebServer::new(std::path::Path::new(&root)));
+            let _ = run_id;
+            let addr = rt.block_on(lks_web::serve(server, &host, port))?;
+            eprintln!("[lksr] report UI: http://{addr} — Ctrl+C to stop");
+            std::thread::park();
+            Ok(())
         }
         Some(Command::Init) => {
             print_map(&ops::op_init_project(std::path::Path::new(&root))?)?;

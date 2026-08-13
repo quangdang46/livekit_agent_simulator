@@ -15,6 +15,7 @@ clap = { version = "4.6.6", features = ["derive"] }
 lks-core = { path = "../lks-core" }
 lks-mcp = { path = "../lks-mcp" }
 lks-livekit = { path = "../lks-livekit" }
+lks-web = { path = "../lks-web" }
 tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
 serde_json = { workspace = true }

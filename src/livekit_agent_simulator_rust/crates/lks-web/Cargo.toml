@@ -1,6 +1,6 @@
 [package]
 name = "lks-web"
-description = "Web report player + REST API for livekit-agent-simulator (axum + rust-embed web/dist). P3.5; stub at P0."
+description = "Web report player + REST API for livekit-agent-simulator (P3.5 slice)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,4 +8,9 @@ license.workspace = true
 
 [dependencies]
 lks-core = { path = "../lks-core" }
-lks-livekit = { path = "../lks-livekit" }
+
+axum = { version = "0.8.9", features = ["http1"] }
+tokio = { version = "1.48.0", features = ["full"] }
+tower-http = { version = "0.6.11", features = ["fs"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

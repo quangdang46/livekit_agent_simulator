@@ -20,6 +20,7 @@ pub mod authoring_warnings;
 pub mod behavior_compile;
 pub mod caller_policy;
 pub mod evals;
+pub mod judge;
 pub mod logging;
 pub mod metrics;
 pub mod ops;

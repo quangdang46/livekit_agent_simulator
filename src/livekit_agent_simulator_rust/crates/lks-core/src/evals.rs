@@ -118,6 +118,28 @@ pub struct JudgmentResult {
     pub final_assessment: Map<String, Json>,
 }
 
+impl Default for JudgmentResult {
+    fn default() -> Self {
+        Self {
+            verdict: String::new(),
+            score: None,
+            criteria: Vec::new(),
+            confidence: None,
+            needs_human_review: false,
+            critical_failure: false,
+            notes: String::new(),
+            judge_id: None,
+            conversation_feedback: Vec::new(),
+            overall_summary: String::new(),
+            strengths: Vec::new(),
+            issues: Vec::new(),
+            missing_checks: Vec::new(),
+            language_naturalness: Vec::new(),
+            final_assessment: Map::new(),
+        }
+    }
+}
+
 impl JudgmentResult {
     /// Python `to_dict`: omits falsy keys (needs_human_review/critical_failure only when True).
     pub fn to_dict(&self) -> Map<String, Json> {
@@ -209,6 +231,61 @@ fn str_list(raw: &Json) -> Vec<String> {
 }
 
 /// Normalize LLM JSON into JudgmentResult (tolerant of partial payloads).
+/// Repair + parse LLM JSON output (port of `_parse_llm_json` core: fence strip,
+/// first-`{` slice, balanced-container truncation). Returns a serde Map.
+pub fn repair_json(text: &str) -> Map<String, Json> {
+    let mut t = text.trim().to_string();
+    // Strip markdown fences.
+    if t.starts_with("```") {
+        if let Some(idx) = t.find('\n') {
+            t = t[idx + 1..].to_string();
+        }
+        if t.ends_with("```") {
+            t = t[..t.len() - 3].to_string();
+        }
+    }
+    // Slice from the first `{`.
+    let Some(start) = t.find('{') else {
+        return Map::new();
+    };
+    t = t[start..].to_string();
+    // Truncate at the first top-level `}` close.
+    let mut depth = 0i32;
+    let mut end = 0usize;
+    let bytes = t.as_bytes();
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if b == b'\\' {
+                esc = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if end == 0 {
+        end = t.len();
+    }
+    let candidate = &t[..end];
+    serde_json::from_str(candidate).unwrap_or_default()
+}
+
 pub fn parse_judgment_payload(raw: &Map<String, Json>) -> JudgmentResult {
     let mut verdict_raw = as_str(raw.get("verdict").unwrap_or(&Json::String("error".into())))
         .trim()
