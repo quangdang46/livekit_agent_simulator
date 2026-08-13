@@ -16,6 +16,8 @@ livekit:
 
 simulator:
   # Caller brain: provider google | openai, mode realtime (cascade reserved).
+  # This flat block is the "default" profile — used when no --profile flag is
+  # passed (unchanged legacy behavior).
   provider: google
   mode: realtime
   # API key of the ACTIVE provider (Google or OpenAI).
@@ -25,6 +27,26 @@ simulator:
     model: "gemini-3.1-flash-live-preview"
     voice: "Puck"
     language: "en-US"
+
+  # Optional named caller profiles — switch provider without editing the file:
+  #   lks execute <scenario> --profile gemini
+  #   lks execute <scenario> --profile openai
+  # Selection: `--profile <name>` wins; otherwise a profile marked
+  # `default: true` (at most one) wins; otherwise the flat block above runs
+  # (backward compatible). Precedence: profile field → flat simulator field →
+  # built-in default. Each profile inherits unspecified fields (voice,
+  # language, mode) from the flat block; a profile only needs what it overrides.
+  # profiles:
+  #   gemini:
+  #     default: true                  # auto-selected when no --profile flag
+  #     provider: google
+  #     api_key: "AQ.Ab8..."           # Gemini Live key
+  #   openai:
+  #     provider: openai
+  #     api_key: "sk-..."              # OpenAI key
+  #     voice:
+  #       model: "gpt-realtime-2.1-mini"
+  #       voice: "marin"
 
 judge:
   model: "gemini-3.1-flash-lite"

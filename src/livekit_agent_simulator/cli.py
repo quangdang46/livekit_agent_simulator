@@ -42,6 +42,15 @@ ROOT_OPTION = typer.Option(None, "--root", help="Project root (default: current 
 # Typer derives the flag name from the Option string, not the param name.
 JSON_OPTION = typer.Option(False, "--json", help="Emit raw JSON instead of a human-readable table")
 
+# Shared --profile flag: select a named `simulator.profiles.<name>` caller
+# profile for this invocation. Absent → the legacy flat `simulator:` block.
+PROFILE_OPTION = typer.Option(
+    None,
+    "--profile",
+    help="Named simulator.profiles.<name> caller profile (provider + key). "
+    "Omit to use the legacy flat `simulator:` block.",
+)
+
 
 def _root(root: Optional[Path]) -> Path:
     return (root or Path.cwd()).resolve()
@@ -152,10 +161,13 @@ def serve(
 def preflight(
     root: Optional[Path] = ROOT_OPTION,
     no_connectivity: bool = typer.Option(False, "--no-connectivity", help="Skip LiveKit API check"),
+    profile: Optional[str] = PROFILE_OPTION,
     as_json: bool = JSON_OPTION,
 ) -> None:
     """Check config + LiveKit connectivity without running a scenario. (MCP: preflight)"""
-    result = _run(ops.preflight(_root(root), connectivity=not no_connectivity))
+    result = _run(
+        ops.preflight(_root(root), connectivity=not no_connectivity, profile=profile)
+    )
     _emit(result, as_json, cli_render.render_preflight)
     if not result.get("ok"):
         raise typer.Exit(1)
@@ -303,6 +315,7 @@ def execute(
         help="Apply a saved `lks optimize` artifact (.agent-sim/optimized/<name>/prompt.yaml) "
         "as the persona-prompt override for this run.",
     ),
+    profile: Optional[str] = PROFILE_OPTION,
     as_json: bool = JSON_OPTION,
 ) -> None:
     """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)"""
@@ -315,6 +328,7 @@ def execute(
             run_name=name,
             agent_name=agent_name,
             optimized=optimized,
+            profile=profile,
         )
     )
     from .suite import evaluate_run_result
@@ -377,6 +391,7 @@ def execute_all_cmd(
         "agent under a distinct name via VOICE_AI_AGENT_NAME and you point lks "
         "at it per invocation.",
     ),
+    profile: Optional[str] = PROFILE_OPTION,
     root: Optional[Path] = ROOT_OPTION,
     as_json: bool = JSON_OPTION,
 ) -> None:
@@ -393,6 +408,7 @@ def execute_all_cmd(
             parallel=parallel,
             wait_s=wait,
             agent_name=agent_name,
+            profile=profile,
         )
     )
     _emit(result, as_json, cli_render.render_execute_all)
@@ -419,6 +435,7 @@ def execute_dict_cmd(
         "--agent-name",
         help="Override the target LiveKit worker name for this run (no config edit).",
     ),
+    profile: Optional[str] = PROFILE_OPTION,
     as_json: bool = JSON_OPTION,
 ) -> None:
     """Validate then run an in-memory scenario JSON. (MCP: execute_scenario_dict)"""
@@ -434,7 +451,9 @@ def execute_dict_cmd(
         typer.secho("Scenario JSON must be an object", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
     result = _run(
-        ops.execute_scenario_dict(_root(root), scenario, run_name=name, agent_name=agent_name)
+        ops.execute_scenario_dict(
+            _root(root), scenario, run_name=name, agent_name=agent_name, profile=profile
+        )
     )
     from .suite import evaluate_run_result
 
@@ -463,6 +482,7 @@ def optimize(
     pass_at_k: Optional[int] = typer.Option(None, "--pass-at-k", "-k", help="Min hard-pass iterations"),
     agent_name: Optional[str] = typer.Option(None, "--agent-name", help="Override target worker name"),
     name: Optional[str] = typer.Option(None, "--name", help="Artifact slug (default auto)"),
+    profile: Optional[str] = PROFILE_OPTION,
     root: Optional[Path] = ROOT_OPTION,
     as_json: bool = JSON_OPTION,
 ) -> None:
@@ -487,6 +507,7 @@ def optimize(
             pass_at_k=pass_at_k,
             agent_name=agent_name,
             name=name,
+            profile=profile,
         )
     )
     _emit(result, as_json, cli_render.render_optimize)

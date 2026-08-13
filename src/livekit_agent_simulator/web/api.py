@@ -138,12 +138,18 @@ class RestApiHandler(BaseHTTPRequestHandler):
                     pass_at_k=body.get("pass_at_k"),
                     run_name=body.get("run_name"),
                     agent_name=body.get("agent_name"),
+                    profile=body.get("profile"),
                 )
                 return self._json(result)
             if rest == "preflight":
                 connectivity = bool(body.get("connectivity", True))
                 return self._json(
-                    _run_op(ops.preflight, self.project_root, connectivity=connectivity)
+                    _run_op(
+                        ops.preflight,
+                        self.project_root,
+                        connectivity=connectivity,
+                        profile=body.get("profile"),
+                    )
                 )
             return self._json_error(404, f"unknown POST route: {rest}")
 

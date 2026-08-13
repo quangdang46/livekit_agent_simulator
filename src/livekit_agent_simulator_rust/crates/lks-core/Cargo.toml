@@ -17,3 +17,4 @@ uuid.workspace = true
 jiff.workspace = true
 rand.workspace = true
 yaml_serde = "0.10.6"
+regex = "1.13.1"
