@@ -31,7 +31,7 @@ jobs:
           - os: macos-latest
             runs: "-p lks-core -p lks -p lks-mcp -p lks-livekit"
           - os: windows-latest
-            runs: "-p lks-core -p lks" # check only; libwebrtc (lks-livekit + lks-mcp tests) not supported on Windows
+            runs: "-p lks-core" # check only; the lks binary pulls libwebrtc via lks-livekit/lks-mcp (not supported on Windows)
     defaults:
       run:
         working-directory: src/livekit_agent_simulator_rust
