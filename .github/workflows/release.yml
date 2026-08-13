@@ -1,185 +1,67 @@
-name: Release
+name: Release (Rust binary)
 
 on:
   push:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-
 jobs:
-  wheel:
-    name: Test + wheel
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-
-      - name: Build web UI
-        working-directory: web
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
-          test -f dist/index.html
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Python + tests
-        run: |
-          uv python install 3.12
-          uv sync --frozen --extra dev
-          uv run pytest -q
-          uv run lks --help
-
-      - name: Build wheel
-        run: |
-          rm -rf dist
-          uv build --wheel
-          ls -la dist/
-          uv run python - <<'PY'
-          import zipfile
-          from pathlib import Path
-          whl = next(Path("dist").glob("*.whl"))
-          with zipfile.ZipFile(whl) as z:
-              names = z.namelist()
-          assert any("web_static/index.html" in n for n in names), names[:30]
-          print("wheel ok", whl)
-          PY
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheel
-          path: dist/*.whl
-          if-no-files-found: error
-
-  portable:
-    name: Portable (${{ matrix.asset }})
-    needs: wheel
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            asset: windows-x64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: lksr-macos-aarch64.tar.gz
+          - os: macos-14
+            target: x86_64-apple-darwin
+            asset: lksr-macos-x86_64.tar.gz
           - os: ubuntu-latest
-            asset: linux-x64
-          - os: macos-latest
-            asset: macos-arm64
-          # macos-x64 (macos-13) often queues forever on free runners; add later if needed
-    runs-on: ${{ matrix.os }}
+            target: x86_64-unknown-linux-gnu
+            asset: lksr-linux-x86_64.tar.gz
+    defaults:
+      run:
+        working-directory: src/livekit_agent_simulator_rust
     steps:
       - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: wheel
-          path: dist
-
-      - name: Build portable pack
-        shell: bash
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Install libwebrtc deps (linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libssl-dev pkg-config
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }} -p lks
+      - name: Package tarball
         run: |
-          set -euo pipefail
-          uv python install 3.12
-          WHL=$(ls dist/*.whl | head -1)
-          echo "wheel=$WHL"
-          uv run --no-project python scripts/build_portable.py --wheel "$WHL" --out-dir dist/portable
-          ls -la dist/portable/
-          # Expect zip named by host arch; rename to matrix.asset for stable release names
-          ZIP=$(ls dist/portable/lks-*.zip | head -1)
-          DEST="dist/portable/lks-${{ matrix.asset }}.zip"
-          if [ "$(basename "$ZIP")" != "$(basename "$DEST")" ]; then
-            cp "$ZIP" "$DEST"
-          fi
-          ls -la "$DEST"
-
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/lksr dist/lksr
+          tar -czf ${{ matrix.asset }} -C dist lksr
       - uses: actions/upload-artifact@v4
         with:
-          name: portable-${{ matrix.asset }}
-          path: dist/portable/lks-${{ matrix.asset }}.zip
-          if-no-files-found: error
+          name: ${{ matrix.asset }}
+          path: src/livekit_agent_simulator_rust/${{ matrix.asset }}
 
   release:
-    name: GitHub Release
-    needs: [wheel, portable]
+    name: Publish release
+    needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          merge-multiple: false
-
-      - name: Stage release files
+          path: dist
+          merge-multiple: true
+      - name: Checksums
         run: |
-          set -euo pipefail
-          mkdir -p release-assets
-          cp install.sh install.ps1 release-assets/
-          # wheel
-          find artifacts -name '*.whl' -exec cp {} release-assets/ \;
-          # portable zips
-          find artifacts -name 'lks-*.zip' -exec cp {} release-assets/ \;
-          ls -la release-assets/
-          test -f release-assets/install.ps1
-          test -f release-assets/lks-windows-x64.zip
-          test -f release-assets/lks-linux-x64.zip
-
-      - name: Create GitHub Release
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          ls -la
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          files: release-assets/*
-          body: |
-            ## Install (user machine = download only)
-
-            CI ships **portable packs** (embedded Python + deps + report player).
-            Installers **do not** run uv/pip/build on your machine.
-
-            ### Windows PowerShell
-
-            ```powershell
-            irm "https://github.com/quangdang46/livekit-agent-simulator/releases/download/${{ github.ref_name }}/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
-            powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
-            ```
-
-            ### macOS / Linux
-
-            ```bash
-            curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/releases/download/${{ github.ref_name }}/install.sh" | bash -s -- --verify
-            ```
-
-            ### Assets
-
-            | Asset | Who |
-            |-------|-----|
-            | `lks-windows-x64.zip` | Windows |
-            | `lks-linux-x64.zip` | Linux |
-            | `lks-macos-arm64.zip` | Apple Silicon |
-            | `install.ps1` / `install.sh` | one-shot installers |
-            | `*.whl` | optional (devs) |
-
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "## Release ${GITHUB_REF_NAME}"
-            echo "- wheel + portable packs (windows/linux/macos)"
-            echo "- installers download pack only (no user-side uv/build)"
-            ls -la release-assets/ || true
-          } >> "$GITHUB_STEP_SUMMARY"
+          files: dist/*
+          fail_on_unmatched_files: true
