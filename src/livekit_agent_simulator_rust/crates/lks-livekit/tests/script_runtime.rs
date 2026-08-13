@@ -184,7 +184,7 @@ fn recorder_writes_stereo_wav() {
     let path = dir.path().join("conversation.wav");
     let res = rec.save(&path).unwrap();
     assert!(res.duration_ms > 0);
-    let reader = hound::WavReader::open(&path).unwrap();
+    let mut reader = hound::WavReader::open(&path).unwrap();
     let spec = reader.spec();
     assert_eq!(spec.channels, 2, "stereo L=sim R=agent");
     assert_eq!(spec.sample_rate, 16_000);
