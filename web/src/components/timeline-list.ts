@@ -96,13 +96,20 @@ function mountCueRow(c: Cue): HTMLLIElement {
   const col = roleClass(r, origin);
   const isScriptInject =
     origin === "script_barge" || origin === "script_cue";
+  // A forced caller line (overlay=line) is the CALLER speaking — collapse the
+  // script meta under the caller card instead of a separate SCRIPT INJECT card.
+  // Audio fixtures (overlay=fixture / barge) stay inject cards.
+  const isCallerLine =
+    isScriptInject && c.script_overlay === "line" && origin !== "script_barge";
+  const isFixture =
+    isScriptInject && !isCallerLine;
   li.className = `cue-row ${col}`;
   li.dataset.role = r;
   li.dataset.origin = origin;
   li.dataset.start = String(c.start_ms);
   li.dataset.end = String(c.end_ms);
 
-  li.innerHTML = isScriptInject
+  li.innerHTML = isFixture
     ? `
     <div class="cue-card ${col} inject-card">
       <div class="script-banner" aria-hidden="true">
@@ -127,7 +134,7 @@ function mountCueRow(c: Cue): HTMLLIElement {
         <span class="tags"></span>
       </div>
       <div class="cue-text"></div>
-      <div class="cue-detail script-origin hidden"></div>
+      <div class="cue-detail script-origin${isCallerLine ? "" : " hidden"}"></div>
     </div>
   `;
 
@@ -144,7 +151,7 @@ function mountCueRow(c: Cue): HTMLLIElement {
   }
   if (text) text.textContent = c.text;
   if (tags) {
-    if (isScriptInject) {
+    if (isFixture) {
       const badge = document.createElement("span");
       badge.className = "tag script_barge";
       badge.textContent =
@@ -161,6 +168,18 @@ function mountCueRow(c: Cue): HTMLLIElement {
         syn.className = "tag script_barge";
         syn.textContent = "from Script";
         tags.appendChild(syn);
+      }
+    } else if (isCallerLine && c.script_overlay) {
+      // Caller line: script meta nested under the caller card, not a fixture.
+      const ov = document.createElement("span");
+      ov.className = `tag overlay_${c.script_overlay}`;
+      ov.textContent = c.script_overlay;
+      tags.appendChild(ov);
+      if (c.script_step_id) {
+        const step = document.createElement("span");
+        step.className = "tag script_cue";
+        step.textContent = `script ${c.script_step_id}`;
+        tags.appendChild(step);
       }
     }
     if (c.marker_tags?.length) {
@@ -179,7 +198,9 @@ function mountCueRow(c: Cue): HTMLLIElement {
       c.script_say && c.script_say !== c.text
         ? `script say: “${c.script_say}”`
         : null,
-      "Do not treat as persona Caller turn",
+      isCallerLine
+        ? "forced caller line (Script overlay)"
+        : "Do not treat as persona Caller turn",
     ]
       .filter(Boolean)
       .join(" · ");
