@@ -473,3 +473,223 @@ pub fn apply_relevancy(result: JudgmentResult) -> JudgmentResult {
     };
     JudgmentResult { verdict, ..result }
 }
+
+/// Multi-judge aggregation (port of `evals/aggregate.py`) — LiveKit
+/// JudgeGroup-shaped (all|majority|any).
+pub fn verdict_points(verdict: &str) -> f64 {
+    match verdict.to_lowercase().as_str() {
+        "pass" => 1.0,
+        "maybe" => 0.5,
+        _ => 0.0,
+    }
+}
+
+fn flatten_str_list(results: &[Map<String, Json>], key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for r in results {
+        if let Some(arr) = r.get(key).and_then(|v| v.as_array()) {
+            for item in arr {
+                let text = if let Some(obj) = item.as_object() {
+                    obj.get("point")
+                        .or_else(|| obj.get("item"))
+                        .or_else(|| obj.get("issue"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    item.as_str().unwrap_or("").to_string()
+                };
+                if !text.is_empty() {
+                    out.push(text);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn flatten_issues(results: &[Map<String, Json>]) -> Vec<Json> {
+    let mut out = Vec::new();
+    for r in results {
+        if let Some(arr) = r.get("issues").and_then(|v| v.as_array()) {
+            for item in arr {
+                if item.is_object() {
+                    out.push(item.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Aggregate per-judge results (all|majority|any). Returns the combined dict.
+pub fn aggregate_judges(results: &[Map<String, Json>], mode: &str) -> Map<String, Json> {
+    let mut combined = Map::new();
+    if results.is_empty() {
+        combined.insert("verdict".into(), json!("skipped"));
+        combined.insert("notes".into(), json!("No judges."));
+        return combined;
+    }
+    let verdict_of = |r: &Map<String, Json>| {
+        r.get("verdict")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase()
+    };
+    let passes: Vec<&Map<String, Json>> =
+        results.iter().filter(|r| verdict_of(r) == "pass").collect();
+    let fails: Vec<&Map<String, Json>> =
+        results.iter().filter(|r| verdict_of(r) == "fail").collect();
+    let maybes: Vec<&Map<String, Json>> = results
+        .iter()
+        .filter(|r| verdict_of(r) == "maybe")
+        .collect();
+    let errors: Vec<&Map<String, Json>> = results
+        .iter()
+        .filter(|r| verdict_of(r) == "error")
+        .collect();
+    let mut n = results.len();
+    let mode_l = mode.to_lowercase();
+
+    if !errors.is_empty() && passes.is_empty() && fails.is_empty() && maybes.is_empty() {
+        let notes: Vec<String> = errors
+            .iter()
+            .map(|r| {
+                r.get("notes")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("error")
+                    .to_string()
+            })
+            .collect();
+        combined.insert("verdict".into(), json!("error"));
+        combined.insert("score".into(), Json::Null);
+        combined.insert("mode".into(), json!(mode_l));
+        combined.insert(
+            "judges".into(),
+            Json::Array(results.iter().cloned().map(Json::Object).collect()),
+        );
+        combined.insert("passed_count".into(), json!(0));
+        combined.insert("failed_count".into(), json!(0));
+        combined.insert("maybe_count".into(), json!(0));
+        combined.insert("error_count".into(), json!(errors.len()));
+        combined.insert("needs_human_review".into(), json!(true));
+        combined.insert(
+            "notes".into(),
+            json!(format!("multi-judge errors: {}", notes.join("; "))
+                .chars()
+                .take(500)
+                .collect::<String>()),
+        );
+        return combined;
+    }
+
+    let (ok, soft) = match mode_l.as_str() {
+        "any" => (
+            !passes.is_empty(),
+            passes.is_empty() && !maybes.is_empty() && fails.is_empty(),
+        ),
+        "majority" => (
+            passes.len() as f64 > n as f64 / 2.0,
+            passes.len() as f64 + 0.5 * maybes.len() as f64 > n as f64 / 2.0,
+        ),
+        _ => {
+            // all: errors/skips excluded from scoring
+            let scored: Vec<&Map<String, Json>> = results
+                .iter()
+                .filter(|r| !matches!(verdict_of(r).as_str(), "error" | "skipped"))
+                .collect();
+            if scored.is_empty() {
+                combined.insert("verdict".into(), json!("error"));
+                combined.insert("score".into(), Json::Null);
+                combined.insert("mode".into(), json!(mode_l));
+                combined.insert(
+                    "judges".into(),
+                    Json::Array(results.iter().cloned().map(Json::Object).collect()),
+                );
+                combined.insert("needs_human_review".into(), json!(true));
+                combined.insert(
+                    "notes".into(),
+                    json!("multi-judge: no scorable groups (errors/skips only)"),
+                );
+                return combined;
+            }
+            n = scored.len();
+            let s_pass = scored.iter().filter(|r| verdict_of(r) == "pass").count();
+            let s_maybe = scored.iter().filter(|r| verdict_of(r) == "maybe").count();
+            (
+                scored.iter().all(|r| verdict_of(r) == "pass"),
+                s_pass + s_maybe == scored.len(),
+            )
+        }
+    };
+    let verdict = if ok {
+        "pass"
+    } else if soft {
+        "maybe"
+    } else {
+        "fail"
+    };
+
+    // Score: mean of numeric scores; else verdict-points × 100.
+    let scores: Vec<f64> = results
+        .iter()
+        .filter_map(|r| r.get("score").and_then(|v| v.as_f64()))
+        .collect();
+    let avg: f64 = if !scores.is_empty() {
+        scores.iter().sum::<f64>() / scores.len() as f64
+    } else {
+        results
+            .iter()
+            .map(|r| verdict_points(&verdict_of(r)))
+            .sum::<f64>()
+            / n as f64
+            * 100.0
+    };
+    let needs_review = results.iter().any(|r| {
+        r.get("needs_human_review")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }) || verdict == "maybe";
+
+    combined.insert("verdict".into(), json!(verdict));
+    combined.insert("score".into(), json!(avg));
+    combined.insert("mode".into(), json!(mode_l));
+    combined.insert(
+        "judges".into(),
+        Json::Array(results.iter().cloned().map(Json::Object).collect()),
+    );
+    combined.insert("passed_count".into(), json!(passes.len()));
+    combined.insert("failed_count".into(), json!(fails.len()));
+    combined.insert("maybe_count".into(), json!(maybes.len()));
+    combined.insert("needs_human_review".into(), json!(needs_review));
+    combined.insert(
+        "notes".into(),
+        json!(format!(
+            "multi-judge mode={mode_l}: {}/{} passed",
+            passes.len(),
+            n
+        )),
+    );
+    combined.insert(
+        "overall_summary".into(),
+        json!(results
+            .iter()
+            .filter_map(|r| r.get("overall_summary").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n")),
+    );
+    combined.insert(
+        "strengths".into(),
+        json!(flatten_str_list(results, "strengths")),
+    );
+    combined.insert("issues".into(), json!(flatten_issues(results)));
+    combined.insert(
+        "missing_checks".into(),
+        json!(flatten_str_list(results, "missing_checks")),
+    );
+    combined.insert(
+        "language_naturalness".into(),
+        json!(flatten_str_list(results, "language_naturalness")),
+    );
+    combined
+}
