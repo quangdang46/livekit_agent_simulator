@@ -1,0 +1,90 @@
+{
+  "run_id": "023-short-greet-20260813-080411-5cea",
+  "run_name": null,
+  "scenario_id": "short-greet",
+  "scenario_file": "C:\\Users\\ADMIN\\Documents\\Projects\\voice-ai-agent\\.agent-sim\\scenarios\\short-greet.yaml",
+  "run_spec": {
+    "max_turns": 3,
+    "timeout_s": 60,
+    "first_speaker": "agent"
+  },
+  "dispatch_metadata_set": false,
+  "agent_name": "voice-ai-worker-local",
+  "started_utc": "2026-08-13T08:04:11.216429+00:00",
+  "config_snapshot": {
+    "project": "voice-ai-worker",
+    "livekit": {
+      "url_host": "aw-5zgaucwc.livekit.cloud",
+      "agent_name": "voice-ai-worker-local",
+      "agent_join_timeout_ms": 25000,
+      "dispatch_metadata_set": false
+    },
+    "simulator": {
+      "provider": "google",
+      "mode": "realtime",
+      "voice_model": "gemini-3.1-flash-live-preview",
+      "voice": "Puck",
+      "language": "en-US",
+      "active_profile": "gemini"
+    },
+    "judge_enabled": true,
+    "judge": {
+      "model": "wwwww",
+      "http": true,
+      "endpoint_type": "openai",
+      "api_key_set": true
+    },
+    "cues": {
+      "dirs": [],
+      "alias_keys": [],
+      "target_cues_dir": "C:\\Users\\ADMIN\\Documents\\Projects\\voice-ai-agent\\.agent-sim\\cues"
+    },
+    "observe": {
+      "lk_transcription": true,
+      "lk_agent_session": true,
+      "record_audio": true,
+      "data_topics": [
+        "voice_ai.flow",
+        "voice_ai.transcript"
+      ],
+      "silence_threshold_ms": 22000,
+      "audio_onset_enabled": true,
+      "audio_onset_threshold": 0.012
+    },
+    "telephony": {
+      "outbound_trunk_set": true,
+      "inbound_trunk_set": false,
+      "dial_in_set": false,
+      "sim_inbound_number_set": false,
+      "prepare_ms": 3000,
+      "wait_until_answered": true,
+      "krisp_enabled": false
+    },
+    "observe_gaps": []
+  },
+  "plugins_loaded": {
+    "loaded": [],
+    "errors": [],
+    "verify_plugins": []
+  },
+  "caller_mode": "webrtc_sim",
+  "room_name": "lks-023-short-greet-20260813-080411-5cea",
+  "sim_room_name": "lks-023-short-greet-20260813-080411-5cea",
+  "agent_identity": "agent-AJ_tXDjbSPstfVA",
+  "sim_identity": "lks-caller",
+  "leg": {
+    "dispatch_id": "AD_vUy8Rt4ab6fx"
+  },
+  "audio": {
+    "path": "C:\\Users\\ADMIN\\Documents\\Projects\\voice-ai-agent\\.agent-sim\\reports\\023-short-greet-20260813-080411-5cea\\conversation.wav",
+    "sample_rate": 16000,
+    "duration_ms": 17446,
+    "channels": {
+      "left": "sim",
+      "right": "agent"
+    },
+    "sim_samples": 262064,
+    "agent_samples": 279151,
+    "t0_mono_ms": 8359
+  }
+}

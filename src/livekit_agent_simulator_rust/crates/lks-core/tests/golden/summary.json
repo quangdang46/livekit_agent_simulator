@@ -1,0 +1,154 @@
+{
+  "run_id": "023-short-greet-20260813-080411-5cea",
+  "status": "done",
+  "duration_ms": 39187,
+  "turn_count": 0,
+  "event_count": 18,
+  "turn_taking_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null,
+    "max": null,
+    "count": 0
+  },
+  "metrics": {
+    "schema": "agent-sim/metrics/v1",
+    "turn_taking_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null,
+      "max": null,
+      "min": null,
+      "mean": null
+    },
+    "ttfw_ms": null,
+    "ttfw_source": null,
+    "ttfa_run_ms": null,
+    "ttfa_source": "agent.audio_onset",
+    "turn_taking_audio_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null,
+      "max": null,
+      "min": null,
+      "mean": null
+    },
+    "user_audio_source_count": 0,
+    "agent_audio_onset_count": 0,
+    "recovery_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null,
+      "max": null,
+      "min": null,
+      "mean": null
+    },
+    "barge_count": 0,
+    "barges_recovered": 0,
+    "barge_recovery_rate": null,
+    "interruption_count": 0,
+    "silence_events": 0,
+    "agent_finals": 0,
+    "user_finals": 0,
+    "tool_calls": 0,
+    "tool_errors": 0,
+    "tool_error_rate": null,
+    "talk_ratio": null,
+    "agent_chars": 0,
+    "user_chars": 0,
+    "user_words_count": 0,
+    "user_words_p10": null,
+    "user_words_p50": null,
+    "user_words_mean": null,
+    "user_words_natural_count": 0,
+    "user_words_natural_p10": null,
+    "user_words_natural_p50": null,
+    "user_words_natural_mean": null,
+    "user_words_script_count": 0,
+    "user_words_script_p50": null,
+    "user_words_script_mean": null,
+    "slow_turns_over_2500ms": 0,
+    "slow_turns_over_5000ms": 0
+  },
+  "tool_calls": 0,
+  "tool_errors": 0,
+  "interruptions": 0,
+  "silences": 0,
+  "verdict": {
+    "verdict": "fail",
+    "score": 0.0,
+    "criteria": [
+      {
+        "criterion": "The agent responded to the caller",
+        "met": false,
+        "evidence": "The transcript is empty, so no response exists.",
+        "relevant": true
+      },
+      {
+        "criterion": "The agent answered the hours question",
+        "met": false,
+        "evidence": "There is no content at all, and specifically no answer about hours.",
+        "relevant": true
+      }
+    ],
+    "notes": "The flow events are also empty, indicating no conversational node activity was recorded. This is a total absence of interaction rather than a partial or incorrect one.",
+    "overall_summary": "The transcript is empty, so no conversation occurred. The agent never responded to the caller and therefore did not answer the hours question. This is a complete failure of the interaction.",
+    "issues": [
+      {
+        "title": "Agent did not respond at all",
+        "severity": "Critical",
+        "evidence": "The transcript is empty; no agent line appears.",
+        "impact": "The caller receives no assistance, and the primary purpose of the call is entirely unfulfilled.",
+        "recommendation": "Ensure the agent is invoked and a response is generated for every caller turn. Investigate why no transcript or response was produced."
+      },
+      {
+        "title": "Hours question was not answered",
+        "severity": "Critical",
+        "evidence": "The transcript contains no mention of hours or any answer from the agent.",
+        "impact": "The caller's explicit need for hours information remains unmet, causing frustration and forcing them to seek help elsewhere.",
+        "recommendation": "Make sure the agent can detect and answer hours-of-operation questions reliably, and that the conversation is recorded for verification."
+      }
+    ],
+    "missing_checks": [
+      "No evidence of the caller's original greeting or question because the transcript is empty.",
+      "No evidence of whether the agent attempted to understand or clarify the request."
+    ],
+    "language_naturalness": [
+      "No conversational content to assess for naturalness; the complete absence of an agent response is itself highly unnatural for a real interaction."
+    ],
+    "final_assessment": {
+      "goal_achievement": 0,
+      "understanding": 0,
+      "conversation_flow": 0,
+      "clarity": 0,
+      "user_experience": 0,
+      "conclusion": "The interaction never took place based on the provided transcript. The caller's needs were entirely disregarded."
+    },
+    "confidence": "high",
+    "needs_human_review": true,
+    "critical_failure": true
+  },
+  "turns": [],
+  "caller_mode": "webrtc_sim",
+  "end_reason": "gemini_socket_drop",
+  "caller": {
+    "behavior_summary": {
+      "script_cues_fired": 0,
+      "waits_fired": 0,
+      "barges_fired": 0,
+      "barges_during_agent": 0,
+      "cues_during_agent": 0,
+      "silences_held": 0,
+      "silence_events": 0,
+      "interruptions": 0,
+      "agent_finals_after_barge": 0,
+      "agent_finals_after_silence": 0,
+      "recovery_ms": null,
+      "cue_assets": [],
+      "by_class": {}
+    }
+  }
+}

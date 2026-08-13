@@ -1,22 +1,23 @@
-//! lks — livekit-agent-simulator CLI entry point.
+//! lksr — livekit-agent-simulator Rust CLI entry point.
 //!
 //! P0: thin binary that parses `--version`/`--help` via clap. The full 23-command
 //! CLI (22 data + `mcp`) lands in P4 (plan §P4). There is NO `version` subcommand
-//! in the Python CLI — `lks --version` comes from clap's built-in flag
+//! in the Python CLI — `lksr --version` comes from clap's built-in flag
 //! (`#[command(version)]`), mirroring typer's built-in flag.
+//! Binary name is `lksr` to distinguish from the Python `lks`.
 
 use clap::Parser;
 
 /// Dial any LiveKit voice agent with an AI simulated caller and keep a full
 /// forensic log. Same public ops as the MCP server.
 #[derive(Parser, Debug)]
-#[command(name = "lks", version, about)]
+#[command(name = "lksr", version, about)]
 struct Cli {}
 
 fn main() {
     let _cli = Cli::parse();
     // P0 smoke: no commands yet. P4 wires the 23-command surface.
-    println!("lks {}", env!("CARGO_PKG_VERSION"));
+    println!("lksr {}", env!("CARGO_PKG_VERSION"));
 }
 
 #[cfg(test)]
@@ -30,7 +31,7 @@ mod tests {
         // clap also handles by exiting) must not panic. We can't invoke the
         // exiting `--version`/`--help` flags inside a test (they call process::exit),
         // so assert the struct parses cleanly and the package version is wired.
-        let cli = Cli::parse_from(["lks"]);
+        let cli = Cli::parse_from(["lksr"]);
         assert!(matches!(cli, Cli {}));
         assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.0-rust");
     }
