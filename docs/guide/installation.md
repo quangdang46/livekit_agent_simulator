@@ -562,7 +562,34 @@ These are **not** required for install — use when writing scenarios under `.ag
 | `noise_when: "background"` / Script `"loop": true` | Continuous ambient noise under the call |
 | `lks validate` → `authoring.tier` / `warning_codes` | Soft authoring quality gate (no LLM; does not flip `valid`) |
 
-Package examples: `templates/examples/quiet-caller-confirm.yaml`, `silent-caller-dead-air.yaml`, `ambient-loop-office.yaml`, `interrupt-rate-medium.yaml`, `hold-timeout-agent-stall.yaml`.
+### Example scenario pack (`templates/examples/`)
+
+Copy the ones you need to `<target>/.agent-sim/scenarios/`, then `lks validate <id> --root <target>`. Each pair (`.yaml` canonical + `.jsonl` legacy twin where present) is smoke-validated.
+
+**Dialogue (freestyle caller):**
+- `dialogue-signup-basic` — first_speaker=user, open goals
+- `quiet-caller-confirm` — quiet verbosity, short confirmation
+- `character-impatient` — impatient traits + no Script
+- `people-pleaser-refuse-card` / `people-pleaser-hangup-threat` — constraint + hang-up-threat pressure
+
+**Interrupt / stress (Script overlay):**
+- `interrupt-correction` — barge with `class: correction`
+- `interrupt-rate-medium` — `interruption_rate: medium` timer
+- `degraded-call` — dropout/degradation
+- `constraint-no-card` — hard constraint vs agent pressure
+
+**Silent / unresponsive:**
+- `silent-caller-dead-air` — `silent_mode: true` (no freestyle)
+- `amd-silent-caller` / `amd-slow-pickup` / `amd-voicemail-greeting` — AMD / machine answer (greeting → beep → silence)
+
+**IVR / DTMF:**
+- `ivr-pin-dtmf` — `action: dtmf` digits
+- `multi-judge-smoke` — multi-judge PassCriteria
+
+**Ambient / hold:**
+- `ambient-loop-office` — `noise_when: background` continuous bed
+- `hold-timeout-agent-stall` — `hold_music_timeout_s` agent dead-air hang-up
+- `handoff-observe` — handoff observation
 
 Ops detail: **`lks guide`**.
 
