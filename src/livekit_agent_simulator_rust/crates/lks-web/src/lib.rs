@@ -201,10 +201,96 @@ impl WebServer {
         // ---- Dedupe + ghost-STT filter (parity with web/transcript_cues.py) ----
         cues = dedupe_cues(cues);
         cues = ghost_filter(cues);
+        // ---- Speech-origin tagging (parity with web/speech_origin.py core) ----
+        let markers_for_tag: Vec<(i64, String)> = markers
+            .iter()
+            .filter(|m| {
+                m["type"].as_str() == Some("script_cue") || m["type"].as_str() == Some("barge_in")
+            })
+            .map(|m| {
+                (
+                    m["ms"].as_i64().unwrap_or(0),
+                    m.get("say")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            })
+            .collect();
+        for c in cues.iter_mut() {
+            if c["role"].as_str() == Some("user") {
+                let fm = c["final_ms"].as_i64().unwrap_or(0);
+                let text = c["text"].as_str().unwrap_or("").to_string();
+                let best = markers_for_tag
+                    .iter()
+                    .filter(|(m, say)| {
+                        let delta = fm - m;
+                        (-800..=15000).contains(&delta)
+                            && !say.is_empty()
+                            && texts_similar(&text, say)
+                    })
+                    .min_by_key(|(m, _)| fm - m);
+                if let Some((_, say)) = best {
+                    let origin = if say.starts_with('[') {
+                        "script_cue"
+                    } else {
+                        "script_barge"
+                    };
+                    c["speech_origin"] = json!(origin);
+                } else {
+                    c["speech_origin"] = json!("natural");
+                }
+            } else {
+                c["speech_origin"] = json!("natural");
+            }
+        }
 
         // ---- Dedupe + ghost-STT filter (parity with web/transcript_cues.py) ----
         cues = dedupe_cues(cues);
         cues = ghost_filter(cues);
+        // ---- Speech-origin tagging (parity with web/speech_origin.py core) ----
+        let markers_for_tag: Vec<(i64, String)> = markers
+            .iter()
+            .filter(|m| {
+                m["type"].as_str() == Some("script_cue") || m["type"].as_str() == Some("barge_in")
+            })
+            .map(|m| {
+                (
+                    m["ms"].as_i64().unwrap_or(0),
+                    m.get("say")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            })
+            .collect();
+        for c in cues.iter_mut() {
+            if c["role"].as_str() == Some("user") {
+                let fm = c["final_ms"].as_i64().unwrap_or(0);
+                let text = c["text"].as_str().unwrap_or("").to_string();
+                let best = markers_for_tag
+                    .iter()
+                    .filter(|(m, say)| {
+                        let delta = fm - m;
+                        (-800..=15000).contains(&delta)
+                            && !say.is_empty()
+                            && texts_similar(&text, say)
+                    })
+                    .min_by_key(|(m, _)| fm - m);
+                if let Some((_, say)) = best {
+                    let origin = if say.starts_with('[') {
+                        "script_cue"
+                    } else {
+                        "script_barge"
+                    };
+                    c["speech_origin"] = json!(origin);
+                } else {
+                    c["speech_origin"] = json!("natural");
+                }
+            } else {
+                c["speech_origin"] = json!("natural");
+            }
+        }
 
         let summary: Value = std::fs::read_to_string(dir.join("summary.json"))
             .ok()

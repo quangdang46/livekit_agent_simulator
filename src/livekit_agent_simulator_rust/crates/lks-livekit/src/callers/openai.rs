@@ -14,6 +14,7 @@ use tokio_tungstenite::tungstenite::Message;
 use lks_core::config::{LiveKitConfig, SimulatorConfig};
 use lks_core::errors::RunError;
 use lks_core::logging::event::EventWriter;
+use serde_json::json;
 
 use crate::room::{connect_room, make_token, SimRoomEvent};
 
@@ -364,6 +365,25 @@ async fn pump_openai_events(
                 let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
                 let etype = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match etype {
+                    "input_audio_buffer.speech_started" => {
+                        // Agent audio started while the model was speaking — a
+                        // real caller barge (agent cut across the simulated caller).
+                        let mut w = writer.lock().await;
+                        let mut ispec = serde_json::Map::new();
+                        ispec.insert("by".into(), json!("agent"));
+                        ispec.insert("barge_in".into(), json!(false));
+                        ispec.insert("note".into(), json!("Agent speech detected while caller speaking (input buffer speech_started)."));
+                        w.emit(
+                            "interruption",
+                            Some(&ispec),
+                            "sim.openai",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                        drop(w);
+                    }
                     "response.output_audio.delta" => {
                         if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
                             if let Ok(pcm) = base64::engine::general_purpose::STANDARD.decode(delta) {
