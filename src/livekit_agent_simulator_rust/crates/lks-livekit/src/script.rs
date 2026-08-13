@@ -13,6 +13,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use livekit::webrtc::audio_source::native::NativeAudioSource;
+
 use lks_core::errors::RunError;
 use lks_core::logging::event::EventWriter;
 use serde_json::json;
@@ -389,4 +391,36 @@ impl ScriptRuntime {
         }
         Ok(())
     }
+}
+
+/// Shared mic-source handle so the script runtime can play room_pcm cues.
+pub type SharedMicSource = Arc<tokio::sync::Mutex<Option<Arc<NativeAudioSource>>>>;
+
+/// Play raw PCM16 samples into the mic source in ~10 ms frames (24 kHz mono).
+pub async fn play_pcm_to_source(
+    source: &SharedMicSource,
+    samples: &[i16],
+    sample_rate: u32,
+) -> Result<(), String> {
+    let guard = source.lock().await;
+    let Some(src) = guard.as_ref() else {
+        return Err("sim mic not published yet — cannot play room_pcm cue".into());
+    };
+    let src: &NativeAudioSource = src;
+    if sample_rate != src.sample_rate() {
+        return Err(format!(
+            "room_pcm asset rate {sample_rate} != sim mic {} (resample cue WAV)",
+            src.sample_rate()
+        ));
+    }
+    let frame_len = (sample_rate as usize) / 100;
+    for chunk in samples.chunks(frame_len) {
+        let mut af =
+            livekit::webrtc::audio_frame::AudioFrame::new(sample_rate, 1, chunk.len() as u32);
+        af.data = std::borrow::Cow::Owned(chunk.to_vec());
+        src.capture_frame(&af)
+            .await
+            .map_err(|e| format!("capture_frame: {e}"))?;
+    }
+    Ok(())
 }

@@ -44,6 +44,7 @@ pub struct OpenAiCallerBridge {
     room_name: String,
     identity: String,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
+    shared_mic: Option<crate::script::SharedMicSource>,
 }
 
 impl OpenAiCallerBridge {
@@ -64,7 +65,14 @@ impl OpenAiCallerBridge {
             room_name,
             identity,
             writer,
+            shared_mic: None,
         }
+    }
+
+    /// Share the published mic source so script room_pcm cues can play.
+    pub fn with_shared_mic(mut self, shared: crate::script::SharedMicSource) -> Self {
+        self.shared_mic = Some(shared);
+        self
     }
 
     /// Run the caller: connect room → dispatch agent → open OpenAI WS →
@@ -88,6 +96,12 @@ impl OpenAiCallerBridge {
         // Publish a 24 kHz mono audio source as the caller mic.
         let source = publish_mic_shared(&room)?;
         let source = Arc::new(source);
+        // Expose the source to the script runtime for room_pcm playback.
+        if let Some(shared) = &self.shared_mic {
+            let mut guard = shared.lock().await;
+            *guard = Some(source.clone());
+        }
+        let _ = source;
 
         // 2. Dispatch the agent into the room (server API).
         let api_host = livekit_cfg

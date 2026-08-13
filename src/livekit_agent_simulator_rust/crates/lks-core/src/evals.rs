@@ -427,3 +427,49 @@ pub fn parse_judgment_payload(raw: &Map<String, Json>) -> JudgmentResult {
             .unwrap_or_default(),
     }
 }
+
+/// Relevancy gate (port of `evals/relevancy.py`) — drop irrelevant criteria from
+/// the pass/fail math and recompute the verdict.
+pub fn apply_relevancy(result: JudgmentResult) -> JudgmentResult {
+    if result.verdict == "skipped" || result.verdict == "error" {
+        return result;
+    }
+    if result.criteria.is_empty() {
+        return result;
+    }
+    let relevant: Vec<&CriterionScore> = result.criteria.iter().filter(|c| c.relevant).collect();
+    if relevant.is_empty() {
+        return JudgmentResult {
+            verdict: "maybe".into(),
+            confidence: result.confidence.clone().or_else(|| Some("low".into())),
+            needs_human_review: true,
+            notes: {
+                let mut n = result.notes.clone();
+                if !n.is_empty() {
+                    n.push(' ');
+                }
+                n.push_str("All criteria marked irrelevant.");
+                n
+            },
+            ..result
+        };
+    }
+    let unmet = relevant.iter().any(|c| !c.met);
+    if unmet {
+        return JudgmentResult {
+            verdict: "fail".into(),
+            needs_human_review: result.needs_human_review
+                || result.confidence.as_deref() == Some("low"),
+            ..result
+        };
+    }
+    // All relevant criteria met — promote fail → pass (irrelevant fails), sanitize.
+    let verdict = if result.verdict == "fail" {
+        "pass".to_string()
+    } else if result.verdict == "pass" || result.verdict == "maybe" {
+        result.verdict.clone()
+    } else {
+        "pass".to_string()
+    };
+    JudgmentResult { verdict, ..result }
+}

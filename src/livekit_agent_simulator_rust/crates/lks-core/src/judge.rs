@@ -10,7 +10,7 @@
 use serde_json::{json, Map, Value as Json};
 
 use crate::config::JudgeConfig;
-use crate::evals::{parse_judgment_payload, repair_json, JudgmentResult};
+use crate::evals::{apply_relevancy, parse_judgment_payload, repair_json, JudgmentResult};
 
 pub const DEFAULT_JUDGE_MODEL: &str = "gemini-2.5-flash";
 
@@ -468,7 +468,7 @@ pub async fn judge_run(
             .to_dict();
         }
     };
-    // Parse + repair truncated JSON.
+    // Parse + repair truncated JSON, then apply the relevancy gate.
     let parsed = parse_judgment_payload(&repair_json(&text));
-    parsed.to_dict()
+    apply_relevancy(parsed).to_dict()
 }
