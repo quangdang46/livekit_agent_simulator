@@ -131,8 +131,10 @@ pub fn op_validate_scenario(
         );
     }
     if !s.plugin_modules.is_empty() {
+        // P8 decision: the Rust build does NOT embed CPython (binary size + CI
+        // complexity). Plugins fail loudly instead of silently skipping.
         warnings.push(
-            "verify plugins are a P8 (embedded CPython) surface in the Rust build; validation of plugin modules lands there.".to_string(),
+            "verify plugins require the Python build (lks); the Rust build does not embed CPython — remove plugin_modules or use lks.".to_string(),
         );
     }
     // P1.G authoring rubric (port of `authoring.collect_authoring_warnings`).

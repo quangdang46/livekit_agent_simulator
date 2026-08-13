@@ -138,6 +138,45 @@ pub async fn execute_scenario(
         None
     };
 
+    // inbound_sip leg: the caller dials the agent's DID via a SIP trunk.
+    if scenario.effective_caller_mode() == "inbound_sip" {
+        let provider = cfg.simulator.provider.clone();
+        let leg = crate::sim_leg::run_inbound_sip(
+            &cfg,
+            &scenario,
+            &run_id,
+            persona_prompt,
+            writer_arc.clone(),
+            &provider,
+        )
+        .await;
+        if let Some(t) = script_task {
+            t.abort();
+        }
+        match leg {
+            Ok(()) => {
+                let mut w = writer_arc.lock().await;
+                let mut meta = serde_json::Map::new();
+                meta.insert("run_id".into(), serde_json::Value::String(run_id.clone()));
+                meta.insert(
+                    "scenario_id".into(),
+                    serde_json::Value::String(scenario.id.clone()),
+                );
+                let summary = w.finalize("done", Some(&meta), None);
+                let mut out = serde_json::Map::new();
+                out.insert("run_id".into(), serde_json::Value::String(run_id));
+                out.insert("status".into(), serde_json::Value::String("done".into()));
+                out.insert(
+                    "report_dir".into(),
+                    serde_json::Value::String(report_dir.to_string_lossy().into_owned()),
+                );
+                out.insert("summary".into(), serde_json::Value::Object(summary));
+                return Ok(out);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
     // Provider dispatch: config `simulator.provider` selects the caller bridge.
     let provider = cfg.simulator.provider.trim().to_lowercase();
     let bridge_future: std::pin::Pin<
