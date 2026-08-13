@@ -614,6 +614,26 @@ lks execute-all --tag smoke --root "$TARGET_ROOT"
 # lks execute-all --tag smoke --profile openai --root "$TARGET_ROOT"
 ```
 
+#### Risk-tier recipe (skip exploratory in CI)
+
+Tag scenarios with a lifecycle/risk tag (`smoke`, `draft`, `blocking`, `scheduled`,
+`exploratory`, `regression`) and filter suites by it — CI runs only the tiers you
+want, so exploratory scenarios don't gate merges:
+
+```bash
+# CI merge gate: blocking + regression only
+lks execute-all --tag blocking --root "$TARGET_ROOT"
+lks execute-all --tag regression --root "$TARGET_ROOT"
+
+# nightly: include scheduled + exploratory
+lks execute-all --tag scheduled --root "$TARGET_ROOT"
+lks execute-all --tag exploratory --root "$TARGET_ROOT"
+```
+
+`authoring.tier` from `lks validate --json` and the `risk_tags` score also surface
+these tiers; `lks execute-all --tag <tier>` is the execution-side filter. A
+scenario with **no** risk tag is reported by `lks validate` (`no_risk_tag`).
+
 `run_id` format: `{NNN}-{slug}-{YYYYMMDD}-{HHMMSS}-{xxxx}` — default slug is the scenario id;
 `--name` / MCP `run_name` replaces the slug only (`scenario_id` remains in `meta.json`).
 Timestamp + hex keep ids unique when a report folder was deleted but SQLite still has the row.
