@@ -43,16 +43,16 @@ Update this file when gaps close or priorities change.
 | Real LiveKit room | ✅ | ✅ | ❌ |
 | AI persona caller | ✅ Gemini Live | ✅ | ❌ |
 | Barge / silence / noise | ✅ | ✅ | ❌ |
-| **Typed interruption classes** | ❌ gap | ✅ | ❌ |
+| **Typed interruption classes** | ✅ | ✅ | ❌ |
 | Recovery + latency hard gates | ✅ | ✅ | partial |
 | Forensic local + web + MCP | ✅ strong | cloud / rare MCP | partial |
 | pass@k / fail→golden | ✅ | ✅ | manual |
 | SIP modes | ✅ SimLeg | ✅ | ❌ |
-| DTMF / IVR scripting | ❌ | ✅ | ❌ |
-| AMD / voicemail sim | ❌ | ✅ | ❌ |
+| DTMF / IVR scripting | ✅ | ✅ | ❌ |
+| AMD / voicemail sim | ✅ | ✅ | ❌ |
 | Warm transfer observe | ❌ | partial | ❌ |
-| Multi-judge / golden baseline | ⚠️ thin | ✅ | partial |
-| Authoring quality gate | ⚠️ weak | ✅ rubric | n/a |
+| Multi-judge / golden baseline | ✅ | ✅ | partial |
+| Authoring quality gate | ✅ rubric | ✅ rubric | n/a |
 | Accent / load / prod SaaS | ❌ | ✅ | ❌ |
 
 **Niche:** open-source, local-first, forensic-first, MCP-native black-box LiveKit.
@@ -91,23 +91,23 @@ Ranked by ROI. Feature **and** logic gaps from research.
 
 | ID | Gap | Type | Why | Candidate work | Research |
 |---|---|---|---|---|---|
-| **P1.A** | **DTMF / IVR scripting** | Feature + E2E logic | LiveKit `GetDtmfTask` / `send_dtmf_events`; Hamming/Coval IVR | Script action `dtmf` (`"1234#"`, `w`=pause); events `sim.dtmf` / `sip.dtmf.*`; Assert sequence; templates `ivr-pin-entry` | C2 / F1 / L3 |
-| **P1.F** | **Typed interruption classes** | **Logic (core)** | Hamming: barge is not a bool | `class`: `correction` \| `backchannel` \| `noise` \| `dtmf` \| `silence` \| `escalate`; Behavior fields `barge_ins` / `backchannels` / `false_interrupts`; events + web chips by class | C1 / L1 |
-| **P1.F1** | **Backchannel non-barge path** | Logic + feature | “uh-huh” must not cancel critical agent audio | `barge_in=false` + short PCM; assert agent continued (heuristic/judge); separate from recovery | F2 |
-| **P1.F2** | **False-interrupt / noise click** | Logic + events | Hamming false_positive | Typed noise cue mid-agent; event `interruption.false_positive`; don’t count as recovery success | F3 |
-| **P1.B** | **AMD / voicemail / machine personas** | Feature + state machine | LiveKit AMD; outbound leave-message | Presets: greeting WAV → beep → silence; optional no Gemini chat until timeout; assert leave-msg / hang / tools | C3 / F5 / L4 |
-| **P1.B1** | **Silent mode (dead caller)** | Feature + logic | Coval Silent Mode | Full silence; disable barge+noise when silent; assert agent reprompt; interact with `caller_nudge` policy | F4 / L6 |
-| **P1.G** | **Authoring quality gate** | Process + validate | Hamming persona rubric 0–14 | `validate` warnings: empty goals; barge without recovery assert; `interrupts` trait without Behavior/Script; risk tags; optional score | C4 / L2 |
-| **P1.G1** | **Trait → Script enforcement** | Logic | Traits are soft; CI needs hard interaction | Soft default: `interrupts` → one barge if no Script; **warn** if trait implies stress but zero steps; never trust prompt alone for CI | L2 |
-| **P1.H** | **Constraint-respect assert** | Assert + judge | Constraints only in prompt today | Outcome `constraint_respected` / must_not phrases + optional judge; people-pleaser counter | C8 / F9 / L8 |
-| **P1.H1** | **People-pleaser counters** | Logic + authoring | Coval: LLM callers over-cooperate | Force refuse Script lines; wrong-date correction step; hang_up after threat path; don’t rely on traits alone | L8 |
-| **P1.C** | **Multi-judge PassCriteria** | Feature | LiveKit JudgeGroup; Hamming layered eval | `judges[]` all / majority / weighted; backward compatible single list | C5 / F7 |
-| **P1.D** | **Golden baseline compare** | Feature | CI before/after | `compare --baseline <run-id\|suite>` hard-fail latency/assert deltas | F8 |
-| **P1.E** | **outbound_sim_callee reliability** | Ops | DID hairpin (`docs/PROBLEM.md`) | Preflight + DID/dispatch recipe; T6 sip-to-ai only if needed | P1.E |
-| **P1.I** | **Tool required_order ledger** | Assert | Hamming workflow | Assert tools in order (not only min_count); fail on wrong sequence | Workflow |
+| **P1.A** | **DTMF / IVR scripting** ✅ | Feature + E2E logic | LiveKit `GetDtmfTask` / `send_dtmf_events`; Hamming/Coval IVR | Done: Script action `dtmf` (`"1234#"`, `w`=pause); `publish_dtmf`; `sim.script.dtmf` events; assert sequence; templates `ivr-pin-entry` | C2 / F1 / L3 |
+| **P1.F** | **Typed interruption classes** ✅ | **Logic (core)** | Hamming: barge is not a bool | Done: `class`: `correction` \| `backchannel` \| `noise` \| `dtmf` \| `silence` \| `escalate`; Behavior `barge_ins`/`backchannels`/`false_interrupts`; events + web chips by class | C1 / L1 |
+| **P1.F1** | **Backchannel non-barge path** ✅ | Logic + feature | “uh-huh” must not cancel critical agent audio | Done: `barge_in=false` + short PCM; assert `backchannel_agent_continued`; separate from recovery | F2 |
+| **P1.F2** | **False-interrupt / noise click** ✅ | Logic + events | Hamming false_positive | Done: typed noise cue mid-agent; class `noise`; don’t count as recovery success | F3 |
+| **P1.B** | **AMD / voicemail / machine personas** ✅ | Feature + state machine | LiveKit AMD; outbound leave-message | Done: presets `templates/examples/amd-*.jsonl` (greeting WAV → beep → silence); assert leave-msg / hang; `tests/test_amd_templates.py` | C3 / F5 / L4 |
+| **P1.B1** | **Silent mode (dead caller)** ✅ | Feature + logic | Coval Silent Mode | Done: full silence; disable barge+noise when silent; assert agent reprompt; interacts with `caller_nudge` policy | F4 / L6 |
+| **P1.G** | **Authoring quality gate** ✅ | Process + validate | Hamming persona rubric 0–14 | Done: `validate` warnings: empty goals; barge without recovery assert; trait warnings; risk tags; authoring scorecard/tier | C4 / L2 |
+| **P1.G1** | **Trait → Script enforcement** | Logic | Traits are soft; CI needs hard interaction | Open (bead `7b0`): warn if trait=interrupts without Script barge; warn if stress trait but zero stress steps; never trust prompt alone for CI | L2 |
+| **P1.H** | **Constraint-respect assert** ✅ | Assert + judge | Constraints only in prompt today | Done: outcome `constraint_respected` / must_not phrases + optional judge; people-pleaser counters | C8 / F9 / L8 |
+| **P1.H1** | **People-pleaser counters** ✅ | Logic + authoring | Coval: LLM callers over-cooperate | Done: force-refuse Script lines; wrong-date correction step; hang_up after threat path | L8 |
+| **P1.C** | **Multi-judge PassCriteria** ✅ | Feature | LiveKit JudgeGroup; Hamming layered eval | Done: `judges[]` all / majority / weighted; backward compatible single list | C5 / F7 |
+| **P1.D** | **Golden baseline compare** ✅ | Feature | CI before/after | Done: `compare --baseline <run-id\|suite>` hard-fail latency/assert deltas | F8 |
+| **P1.E** | **outbound_sim_callee reliability** ✅ | Ops | DID hairpin (`docs/PROBLEM.md`) | Done: preflight + DID/dispatch recipe | P1.E |
+| **P1.I** | **Tool required_order ledger** ✅ | Assert | Hamming workflow | Done: assert tools in order (not only min_count); fail on wrong sequence | Workflow |
 | **P1.J** | **scenario-from-run extract quality** ✅ | Logic | Fail→golden flywheel | Done (#34): goals/constraints preferred over transcript; brief = mission statement; 1 Behavior barge/noise/backchannel stub from `sim.script.cue` markers; transcript sample → Context.notes; Script open when `first_speaker=user`; review checklist in draft header | C6 / L7 |
-| **P1.K** | **Interruption rate timer** | ✅ done (#25) | Coval None/Low/Med/High (~never/90s/45s/30s) | `speech_conditions.interruption_rate` → parallel `InterruptRateRunner` (fires only while agent is active speaker; `interruption_*` overrides; disabled by silent_mode) | C7 / F10 |
-| **P1.L** | **Event taxonomy polish** | Events + web | Hamming interruption lifecycle | `interruption.recovered`, class on cues, behavior_summary by class; web chips | Events |
+| **P1.K** | **Interruption rate timer** ✅ | ✅ done (#25) | Coval None/Low/Med/High (~never/90s/45s/30s) | `speech_conditions.interruption_rate` → parallel `InterruptRateRunner` (fires only while agent is active speaker; `interruption_*` overrides; disabled by silent_mode) | C7 / F10 |
+| **P1.L** | **Event taxonomy polish** ✅ | Events + web | Hamming interruption lifecycle | Done: class on cues, behavior_summary by class; web chips by interruption | Events |
 
 ### P2 — Production-adjacent (defer unless a target needs it)
 
@@ -245,8 +245,8 @@ needed:   + backchannels[], false_interrupts[], dtmf[]
 | Sim hard hangup | ✅ | — |
 | Suite before ship | ✅ | P1.G quality |
 | Inbound / outbound SIP | ✅ modes | P1.E DID |
-| DTMF / PIN / IVR | ❌ | P1.A |
-| Voicemail / machine answer | ❌ | P1.B |
+| DTMF / PIN / IVR | ✅ | P1.A |
+| Voicemail / machine answer | ✅ | P1.B |
 | Silent / unresponsive caller | ⚠️ | P1.B1 |
 | Constraint “won’t share card” hard | ⚠️ prompt only | P1.H |
 | Warm transfer QA | ❌ | P2.A |
