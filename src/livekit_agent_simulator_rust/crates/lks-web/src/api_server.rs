@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
@@ -33,9 +33,30 @@ impl ApiServer {
 
 type PathBuf = std::path::PathBuf;
 
+/// Pretty JSON response — Python web/api.py sends `indent=2`,
+/// `ensure_ascii=false` bodies with Content-Length + Cache-Control: no-store.
+fn json_resp_headers(v: &Value, status: StatusCode) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let body = serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".to_string());
+    let len = body.len();
+    let mut resp = (status, body).into_response();
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    if let Ok(v) = header::HeaderValue::from_str(&len.to_string()) {
+        resp.headers_mut().insert(header::CONTENT_LENGTH, v);
+    }
+    resp
+}
+
 /// JSON helper: `{"error": msg}` (no indent, ensure_ascii=false).
-fn err_body(msg: &str) -> Json<Value> {
-    Json(json!({"error": msg}))
+fn err_body(msg: &str) -> Value {
+    json!({"error": msg})
 }
 
 /// Run an ops fn that may be sync or async (Python `asyncio.run` per-request
@@ -61,97 +82,105 @@ where
 // Routes
 // ---------------------------------------------------------------------------
 
-async fn health(State(s): State<Arc<ApiServer>>) -> (StatusCode, Json<Value>) {
-    (
+async fn health(State(s): State<Arc<ApiServer>>) -> axum::response::Response {
+    json_resp_headers(
+        &json!({"ok": true, "root": s.project_root.display().to_string()}),
         StatusCode::OK,
-        Json(json!({"ok": true, "root": s.project_root.display().to_string()})),
     )
 }
 
 async fn list_runs(
     State(s): State<Arc<ApiServer>>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, axum::response::Response> {
     match ops::op_list_runs(&s.project_root, 20, None) {
-        Ok(rows) => Ok(Json(Value::Array(
-            rows.into_iter().map(Value::Object).collect(),
-        ))),
-        Err(e) => Err((StatusCode::NOT_FOUND, err_body(&e.0))),
+        Ok(rows) => Ok(json_resp_headers(
+            &Value::Array(rows.into_iter().map(Value::Object).collect()),
+            StatusCode::OK,
+        )),
+        Err(e) => Err(json_resp_headers(&err_body(&e.0), StatusCode::NOT_FOUND)),
     }
 }
 
 async fn run_status(
     State(s): State<Arc<ApiServer>>,
     axum::extract::Path(run_id): axum::extract::Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, axum::response::Response> {
     if run_id.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, err_body("missing run id")));
+        return Err(json_resp_headers(
+            &err_body("missing run id"),
+            StatusCode::BAD_REQUEST,
+        ));
     }
     match ops::op_get_run_status(&s.project_root, &run_id) {
-        Ok(m) => Ok(Json(Value::Object(m))),
-        Err(e) => Err((StatusCode::NOT_FOUND, err_body(&e.0))),
+        Ok(m) => Ok(json_resp_headers(&Value::Object(m), StatusCode::OK)),
+        Err(e) => Err(json_resp_headers(&err_body(&e.0), StatusCode::NOT_FOUND)),
     }
 }
 
 async fn run_report(
     State(s): State<Arc<ApiServer>>,
     axum::extract::Path(run_id): axum::extract::Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, axum::response::Response> {
     match ops::op_get_run_report(&s.project_root, &run_id) {
-        Ok(m) => Ok(Json(Value::Object(m))),
-        Err(e) => Err((StatusCode::NOT_FOUND, err_body(&e.0))),
+        Ok(m) => Ok(json_resp_headers(&Value::Object(m), StatusCode::OK)),
+        Err(e) => Err(json_resp_headers(&err_body(&e.0), StatusCode::NOT_FOUND)),
     }
 }
 
 async fn list_scenarios(
     State(s): State<Arc<ApiServer>>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, axum::response::Response> {
     match ops::op_list_scenarios(&s.project_root) {
-        Ok(rows) => Ok(Json(Value::Array(
-            rows.into_iter().map(Value::Object).collect(),
-        ))),
-        Err(e) => Err((StatusCode::NOT_FOUND, err_body(&e.0))),
+        Ok(rows) => Ok(json_resp_headers(
+            &Value::Array(rows.into_iter().map(Value::Object).collect()),
+            StatusCode::OK,
+        )),
+        Err(e) => Err(json_resp_headers(&err_body(&e.0), StatusCode::NOT_FOUND)),
     }
 }
 
 async fn export_scenario(
     State(s): State<Arc<ApiServer>>,
     axum::extract::Path(scenario_id): axum::extract::Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, axum::response::Response> {
     if scenario_id.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, err_body("missing scenario id")));
+        return Err(json_resp_headers(
+            &err_body("missing scenario id"),
+            StatusCode::BAD_REQUEST,
+        ));
     }
     match ops::op_export_scenario(&s.project_root, &scenario_id) {
-        Ok(m) => Ok(Json(Value::Object(m))),
-        Err(e) => Err((StatusCode::NOT_FOUND, err_body(&e.0))),
+        Ok(m) => Ok(json_resp_headers(&Value::Object(m), StatusCode::OK)),
+        Err(e) => Err(json_resp_headers(&err_body(&e.0), StatusCode::NOT_FOUND)),
     }
 }
 
 async fn validate_scenario(
     State(s): State<Arc<ApiServer>>,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, axum::response::Response> {
     let sid = body.get("scenario_id").and_then(|v| v.as_str());
     let Some(sid) = sid else {
-        return Err((
+        return Err(json_resp_headers(
+            &err_body("validate needs scenario_id"),
             StatusCode::BAD_REQUEST,
-            err_body("validate needs scenario_id"),
         ));
     };
     match ops::op_validate_scenario(&s.project_root, sid) {
-        Ok(m) => Ok(Json(Value::Object(m))),
-        Err(e) => Err((StatusCode::NOT_FOUND, err_body(&e.0))),
+        Ok(m) => Ok(json_resp_headers(&Value::Object(m), StatusCode::OK)),
+        Err(e) => Err(json_resp_headers(&err_body(&e.0), StatusCode::NOT_FOUND)),
     }
 }
 
 async fn execute_scenario(
     State(s): State<Arc<ApiServer>>,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, axum::response::Response> {
     let sid = body.get("scenario_id").and_then(|v| v.as_str());
     let Some(sid) = sid else {
-        return Err((
+        return Err(json_resp_headers(
+            &err_body("execute needs scenario_id"),
             StatusCode::BAD_REQUEST,
-            err_body("execute needs scenario_id"),
         ));
     };
     // int(repeat): float truncates toward zero, "3" works, "abc" → 400.
@@ -161,16 +190,16 @@ async fn execute_scenario(
         Some(Value::String(s)) => match s.trim().parse::<i64>() {
             Ok(n) => n,
             Err(_) => {
-                return Err((
+                return Err(json_resp_headers(
+                    &err_body(&format!("invalid literal for int(): '{s}'")),
                     StatusCode::BAD_REQUEST,
-                    err_body(&format!("invalid literal for int(): '{s}'")),
                 ));
             }
         },
         Some(Value::Bool(_)) | Some(Value::Array(_)) | Some(Value::Object(_)) => {
-            return Err((
+            return Err(json_resp_headers(
+                &err_body("invalid literal for int()"),
                 StatusCode::BAD_REQUEST,
-                err_body("invalid literal for int()"),
             ));
         }
     };
@@ -201,15 +230,18 @@ async fn execute_scenario(
     })
     .await;
     match result {
-        Ok(v) => Ok(Json(v)),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, err_body(&e))),
+        Ok(v) => Ok(json_resp_headers(&v, StatusCode::OK)),
+        Err(e) => Err(json_resp_headers(
+            &err_body(&e),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )),
     }
 }
 
 async fn preflight(
     State(s): State<Arc<ApiServer>>,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, axum::response::Response> {
     // bool(connectivity): only JSON false/0/""/null are falsy; string "false" is truthy.
     let connectivity = match body.get("connectivity") {
         None | Some(Value::Null) => true,
@@ -233,8 +265,11 @@ async fn preflight(
     })
     .await;
     match result {
-        Ok(v) => Ok(Json(v)),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, err_body(&e))),
+        Ok(v) => Ok(json_resp_headers(&v, StatusCode::OK)),
+        Err(e) => Err(json_resp_headers(
+            &err_body(&e),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )),
     }
 }
 
