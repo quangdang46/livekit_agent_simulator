@@ -67,3 +67,21 @@ jobs:
         with:
           files: dist/*
           fail_on_unmatched_files: true
+
+  install-smoke:
+    # Post-release verification: the tagged release must already exist before the
+    # tarballs are downloadable, so this runs after `release` publishes and is
+    # informational (not a merge gate). Exercises install.sh's full path:
+    # asset resolution → download → SHA256 verify → extract → install → --verify.
+    name: Install smoke (linux)
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install via install.sh against the tagged release
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          bash install.sh --ref "${TAG}" --verify --no-mcp --quiet
+          export PATH="$HOME/.local/bin:$PATH"
+          "$HOME/.local/bin/lksr" --version
+          "$HOME/.local/bin/lksr" guide | head -5

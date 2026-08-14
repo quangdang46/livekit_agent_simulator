@@ -6,8 +6,8 @@
 
 <div align="center">
 
-![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue.svg)
-![Python](https://img.shields.io/badge/Python-3.10%E2%80%933.13-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue.svg)
+![Rust](https://img.shields.io/badge/Rust-1.97-blue.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/quangdang46/livekit_agent_simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/quangdang46/livekit_agent_simulator/actions/workflows/ci.yml)
 [![GitHub release](https://img.shields.io/github/v/release/quangdang46/livekit_agent_simulator)](https://github.com/quangdang46/livekit_agent_simulator/releases)
@@ -15,7 +15,7 @@
 </div>
 
 **Dial any LiveKit voice agent with an AI simulated caller — WebRTC room, inbound SIP, or outbound SIP — and keep a full forensic log.**  
-Standalone MCP server + CLI (`lks`). Black-box testing: no imports from the agent under test, no edits to its code or `.env`.
+Standalone MCP server + CLI (`lksr`, the Rust build). Black-box testing: no imports from the agent under test, no edits to its code or `.env`.
 
 <div align="center">
 <h3>Quick Install</h3>
@@ -32,10 +32,10 @@ curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulato
 Paste into Claude Code, Cursor, Codex, AmpCode, Windsurf, or any coding agent **from the repo you want to test**:
 
 ```text
-Install and configure livekit-agent-simulator (CLI: lks) for this project by following the instructions here:
+Install and configure livekit-agent-simulator (CLI: lksr) for this project by following the instructions here:
 https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/docs/guide/installation.md
 
-Target project root is this workspace. Use absolute --root paths. Install the portable CLI if missing, run lks init, help fill .agent-sim/config.yaml from my local env or ask me for LiveKit + active caller provider key (Gemini Live or OpenAI Realtime) + agent_name, ensure .agent-sim is gitignored, run preflight, and stop before execute if the voice agent worker is not running. Do not edit agent application source outside .agent-sim/.
+Target project root is this workspace. Use absolute --root paths. Install the CLI if missing, run lksr init, help fill .agent-sim/config.yaml from my local env or ask me for LiveKit + active caller provider key (Gemini Live or OpenAI Realtime) + agent_name, ensure .agent-sim is gitignored, run preflight, and stop before execute if the voice agent worker is not running. Do not edit agent application source outside .agent-sim/.
 ```
 
 Same idea, one line:
@@ -65,7 +65,7 @@ Voice agents fail in ways unit tests never see:
 
 | Surface | What you get |
 |---------|--------------|
-| `lks` CLI | init → preflight → execute → report → web |
+| `lksr` CLI | init → preflight → execute → report → web |
 | MCP server | Same ops for Claude Code, Cursor, Codex, … |
 | Transport modes | `webrtc_sim` · `inbound_sip` · `outbound_human_pickup` · `outbound_sim_callee` (optional `agent_dials`) |
 | Reports | `events.jsonl`, `timeline.md`, `summary.json`, optional stereo WAV |
@@ -93,13 +93,13 @@ curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulato
   | bash -s -- --verify
 
 # In the repo you want to test (agent worker must already be running)
-lks init --root /path/to/target
+lksr init --root /path/to/target
 # edit /path/to/target/.agent-sim/config.yaml  (LiveKit + active provider keys, agent_name)
 
-lks preflight --root /path/to/target
-lks execute smoke-hello --root /path/to/target
-lks report <run-id> --root /path/to/target
-lks web --root /path/to/target          # Ctrl+C to stop
+lksr preflight --root /path/to/target
+lksr execute smoke-hello --root /path/to/target
+lksr report <run-id> --root /path/to/target
+lksr web --root /path/to/target          # Ctrl+C to stop
 ```
 
 ---
@@ -183,7 +183,7 @@ Mode details and config: [docs/telephony.md](docs/telephony.md). Templates: `inb
 
 ### Quick install (recommended)
 
-**Download only — no uv/pip/build on your machine.** CI ships a portable pack (embedded Python + deps + report player).
+**Download only — no uv/pip/build on your machine.** CI ships a single static `lksr` binary (SHA256-verified).
 
 ```bash
 # macOS / Linux
@@ -192,26 +192,20 @@ curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulato
 ```
 
 ```powershell
-# Windows PowerShell
+# Windows PowerShell (installs the Python build — a Rust Windows binary is not yet shipped)
 irm "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
 ```
 
-Also available from a release asset:
-
-```bash
-curl -fsSL "https://github.com/quangdang46/livekit_agent_simulator/releases/download/v0.1.0/install.sh" \
-  | bash -s -- --verify
-```
-
 | Flag | Purpose |
 |------|---------|
-| `--verify` | Checksum verification |
-| `--ref v0.1.0` | Pin release tag |
+| `--verify` | Post-install check (`lksr --version` + `lksr guide`) |
+| `--ref v0.1.0-rust` | Pin release tag |
 | `--no-mcp` | Skip MCP registration into coding tools |
+| `--easy-mode` | Append install dir to shell `PATH` in rc files |
 | `--uninstall` | Remove install |
 
-By default the installer registers the MCP server `livekit-agent-simulator` (`lks mcp`) into detected tools: Claude Code, Cursor, Cline, Windsurf, VS Code Copilot, Gemini CLI, Amazon Q, OpenCode, Codex, Warp.
+By default the installer registers the MCP server `livekit-agent-simulator` (`lksr mcp`) into detected tools: Claude Code, Cursor, Cline, Windsurf, VS Code Copilot, Gemini CLI, Amazon Q, OpenCode, Codex, Warp.
 
 **Agent-oriented install playbook (long form):** [docs/guide/installation.md](docs/guide/installation.md)  
 Raw URL for paste into agents:  
@@ -235,7 +229,7 @@ Users never build this — CI packs `web/dist` into the wheel as `web_static`. S
 ```bash
 pnpm --dir web install
 pnpm --dir web build                    # → web/dist/ (attached by Hatch on uv build)
-pnpm --dir web dev                      # HMR; proxy /api + /runs → lks web :8765
+pnpm --dir web dev                      # HMR; proxy /api + /runs → lksr web :8765
 ```
 
 See `web/README.md`.
@@ -246,17 +240,17 @@ See `web/README.md`.
 
 ```bash
 # Agent worker must be running and registered with LiveKit
-lks guide
-lks init --root /path/to/target
+lksr guide
+lksr init --root /path/to/target
 # fill .agent-sim/config.yaml
 
-lks preflight --root /path/to/target
-lks scenario-init smoke-hello --root /path/to/target   # if needed
-lks validate smoke-hello --root /path/to/target
-lks execute smoke-hello --root /path/to/target
-lks runs --root /path/to/target
-lks report <run-id> --root /path/to/target
-lks web --root /path/to/target
+lksr preflight --root /path/to/target
+lksr scenario-init smoke-hello --root /path/to/target   # if needed
+lksr validate smoke-hello --root /path/to/target
+lksr execute smoke-hello --root /path/to/target
+lksr runs --root /path/to/target
+lksr report <run-id> --root /path/to/target
+lksr web --root /path/to/target
 ```
 
 ### Minimal scenario (`smoke-hello`)
@@ -285,7 +279,7 @@ pass_criteria:
   - The agent responded in the caller's language
 ```
 
-Optional multi-judge PassCriteria: `judges[]` + `mode` (`all` \| `majority` \| `any`). Assert highlights (`tool_order`, `constraint_respected`, recovery/latency): `lks guide`.
+Optional multi-judge PassCriteria: `judges[]` + `mode` (`all` \| `majority` \| `any`). Assert highlights (`tool_order`, `constraint_respected`, recovery/latency): `lksr guide`.
 
 Full-line `#` comments in scaffolded YAML are guides — runtime ignores them. Legacy `*.jsonl` scenarios are still read.
 
@@ -341,9 +335,9 @@ simulator:
 ```
 
 ```bash
-lks execute smoke-hello                    # `gemini` (marked default: true)
-lks execute smoke-hello --profile gemini   # Gemini Live caller
-lks execute smoke-hello --profile openai   # OpenAI Realtime caller
+lksr execute smoke-hello                    # `gemini` (marked default: true)
+lksr execute smoke-hello --profile gemini   # Gemini Live caller
+lksr execute smoke-hello --profile openai   # OpenAI Realtime caller
 ```
 
 **Selection** (`--profile` absent): if **exactly one** profile has
@@ -374,7 +368,7 @@ block (backward compatible).
 
 ## Commands
 
-CLI and MCP share the same public ops (`ops.py`). Prefer `execute` (validate then run).
+CLI and MCP share the same public ops. Prefer `execute` (validate then run). All commands below run as `lksr <command>`. MCP tool names are identical (accessed via the `livekit-agent-simulator` server).
 
 | CLI | MCP tool | Purpose |
 |-----|----------|---------|
@@ -401,15 +395,15 @@ CLI and MCP share the same public ops (`ops.py`). Prefer `execute` (validate the
 | `mcp` | — | Start MCP server (stdio) |
 
 ```bash
-lks execute smoke-hello --root /path/to/target
-lks execute-all --tag smoke --root /path/to/target
-lks serve --root /path/to/target    # REST API on :8787 (same ops as CLI/MCP)
-lks log <run-id> --root /path/to/target
-lks compare <run-a> <run-b> --root /path/to/target
-lks compare <baseline> <candidate> --baseline --root /path/to/target
-lks optimize scen-a,scen-b --held-out scen-c --root /path/to/target   # → optimized/<name>/
-lks execute scen-a --optimized <name> --root /path/to/target           # apply the winner
-lks web --port 8765 --root /path/to/target
+lksr execute smoke-hello --root /path/to/target
+lksr execute-all --tag smoke --root /path/to/target
+lksr serve --root /path/to/target    # REST API on :8787 (same ops as CLI/MCP)
+lksr log <run-id> --root /path/to/target
+lksr compare <run-a> <run-b> --root /path/to/target
+lksr compare <baseline> <candidate> --baseline --root /path/to/target
+lksr optimize scen-a,scen-b --held-out scen-c --root /path/to/target   # → optimized/<name>/
+lksr execute scen-a --optimized <name> --root /path/to/target           # apply the winner
+lksr web --port 8765 --root /path/to/target
 ```
 
 Every MCP tool needs `project_root` **except** `guide`.
@@ -424,9 +418,9 @@ the MCP tools return. Single-dict commands (`init`, `export`, `convert`,
 `scenario-init`, `scenario-from-run`, `guide`, `web`) always print JSON.
 
 ```bash
-lks scenarios                          # human table
-lks scenarios --json                   # raw JSON for scripts / CI / agents
-lks execute-all --json | jq '.suite'   # pipe JSON to jq
+lksr scenarios                          # human table
+lksr scenarios --json                   # raw JSON for scripts / CI / agents
+lksr execute-all --json | jq '.suite'   # pipe JSON to jq
 ```
 
 **Agents & CI:** use `--json` — the default table is for humans.
@@ -439,7 +433,7 @@ Installer writes this when tools are detected. Manual Cursor:
 {
   "mcpServers": {
     "livekit-agent-simulator": {
-      "command": "lks",
+      "command": "lksr",
       "args": ["mcp"],
       "env": {}
     }
@@ -447,20 +441,20 @@ Installer writes this when tools are detected. Manual Cursor:
 }
 ```
 
-Dev checkout (package not installed globally):
+Dev checkout (Rust build from source, not installed globally):
 
 ```json
 {
   "mcpServers": {
     "livekit-agent-simulator": {
-      "command": "uv",
-      "args": ["run", "--directory", "/abs/path/livekit-agent-simulator", "lks", "mcp"]
+      "command": "cargo",
+      "args": ["run", "--manifest-path", "/abs/path/livekit-agent-simulator/src/livekit_agent_simulator_rust/crates/lks/Cargo.toml", "--", "mcp"]
     }
   }
 }
 ```
 
-Equivalent one-shot entry: `lks-mcp` (same process as `lks mcp`).
+Equivalent one-shot entry: `lksr mcp`.
 
 ---
 
@@ -494,8 +488,8 @@ src/livekit_agent_simulator/
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [CI](.github/workflows/ci.yml) | PR / push → `main` | web UI build, `pytest` (3.10 + 3.12), `lks --help` |
-| [Release](.github/workflows/release.yml) | tag `v*` | pytest → wheel → portable packs (win/linux/mac) → GitHub Release |
+| [Rust CI](.github/workflows/rust-ci.yml) | PR / push → `main` | `cargo fmt`/`clippy`/`test` on the Rust workspace (offline; Windows `cargo check` only) |
+| [Release](.github/workflows/release.yml) | tag `v*` | Build `lksr` release binaries (macOS aarch64 + Linux x86_64), tarballs + `SHA256SUMS.txt` → GitHub Release; post-release install smoke |
 
 ```bash
 # Local check
@@ -515,10 +509,10 @@ git push origin v0.1.0
 ### `preflight` fails connectivity
 
 ```bash
-lks preflight --root /path/to/target
+lksr preflight --root /path/to/target
 # Confirm livekit.url / api_key / api_secret and that the project is reachable.
 # Skip API check while editing config:
-lks preflight --no-connectivity --root /path/to/target
+lksr preflight --no-connectivity --root /path/to/target
 ```
 
 ### Agent never joins the room
@@ -536,13 +530,13 @@ Set `simulator.api_key` in `.agent-sim/config.yaml` for the active `simulator.pr
 With `observe.record_audio` enabled (default `true`): `reports/<run-id>/conversation.wav`
 
 ```bash
-lks web --root /path/to/target
+lksr web --root /path/to/target
 ```
 
 ### MCP tools not listed
 
 ```bash
-lks mcp   # must be what the host launches
+lksr mcp   # must be what the host launches
 # or reinstall without --no-mcp
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh?$(date +%s)" \
   | bash -s -- --verify
@@ -551,8 +545,8 @@ curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulato
 ### Scenario validation errors
 
 ```bash
-lks validate my-case --root /path/to/target
-lks scenario-init my-case --root /path/to/target   # fresh scaffold with // guides
+lksr validate my-case --root /path/to/target
+lksr scenario-init my-case --root /path/to/target   # fresh scaffold with // guides
 ```
 
 ---
@@ -593,7 +587,7 @@ Same ops. Use CLI in terminals/CI; MCP inside coding agents. Prefer `execute_*` 
 
 ### Can I assert on tool calls?
 
-Yes — `Assert.spec.tools`, **`tool_order`** (required `tool.start` subsequence), `observe.tool_event_patterns`, Script/assert plugins, and/or PassCriteria + judge. See [`docs/plugins.md`](docs/plugins.md) and `lks guide`.
+Yes — `Assert.spec.tools`, **`tool_order`** (required `tool.start` subsequence), `observe.tool_event_patterns`, Script/assert plugins, and/or PassCriteria + judge. See [`docs/plugins.md`](docs/plugins.md) and `lksr guide`.
 
 ### Where are reports stored?
 
@@ -601,7 +595,7 @@ Yes — `Assert.spec.tools`, **`tool_order`** (required `tool.start` subsequence
 
 ### Is the report player separate?
 
-No — `lks web` serves the prebuilt player from the install pack. Maintainers build from `web/`.
+No — `lksr web` serves the prebuilt player from the install pack. Maintainers build from `web/`.
 
 ---
 
@@ -615,7 +609,7 @@ No — `lks web` serves the prebuilt player from the install pack. Maintainers b
 | [docs/plugins.md](docs/plugins.md) | Verify plugins + Python API |
 | [docs/telephony.md](docs/telephony.md) | SIP modes + outbound_sim_callee preflight |
 | [docs/interrupt-scenario-matrix.md](docs/interrupt-scenario-matrix.md) | Barge / backchannel / noise authoring |
-| `lks guide` | On-demand setup/ops guide (Assert, compare --baseline, PassCriteria) |
+| `lksr guide` | On-demand setup/ops guide (Assert, compare --baseline, PassCriteria) |
 
 ---
 
