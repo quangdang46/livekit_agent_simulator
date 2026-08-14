@@ -1,8 +1,8 @@
-# Agent install guide — livekit-agent-simulator (`lks`)
+# Agent install guide — livekit-agent-simulator (`lksr`)
 
 **Audience:** coding agents (Claude Code, Cursor, Codex, AmpCode, Windsurf, …) and humans who paste this URL into an agent.
 
-**Goal:** install the `lks` CLI on the user’s machine, scaffold `.agent-sim/` inside **the user’s project repo** (the LiveKit voice agent under test), fill config safely, register MCP if useful, and prove the setup with `preflight` (and optionally a smoke run).
+**Goal:** install the `lksr` CLI on the user’s machine, scaffold `.agent-sim/` inside **the user’s project repo** (the LiveKit voice agent under test), fill config safely, register MCP if useful, and prove the setup with `preflight` (and optionally a smoke run). On Windows the installed CLI is still `lks` (the Python build).
 
 **Hard rules for the agent:**
 
@@ -12,7 +12,7 @@
 4. **Discover before `AskQuestion`.** Read target docs and existing `.agent-sim/` (read-only). Do not assume consumer-specific file paths or metadata keys (e.g. one repo’s `job-metadata.ts` or `yourProjectKey` is not universal).
 5. Prefer **non-interactive** commands. Use `--root <absolute-path>` always.
 6. Prefer the **portable installer** (no uv/pip on the user machine) unless the user is developing the simulator package itself.
-7. **CLI is `lks`**. Runtime IDs: sim participant `lks-caller` / room prefix `lks-<run-id>`.
+7. **CLI is `lksr`** on macOS/Linux (Rust build); **`lks`** on Windows (Python build). Runtime IDs: sim participant `lks-caller` / room prefix `lks-<run-id>`.
 
 ---
 
@@ -20,8 +20,8 @@
 
 | Piece | Purpose |
 |-------|---------|
-| CLI `lks` | Black-box LiveKit room tester + report player |
-| MCP server `livekit-agent-simulator` | Same ops for coding agents (`lks mcp`) |
+| CLI `lksr` (macOS/Linux) / `lks` (Windows) | Black-box LiveKit room tester + report player |
+| MCP server `livekit-agent-simulator` | Same ops for coding agents (`lksr mcp` / `lks mcp`) |
 | Target folder `.agent-sim/` | Config, scenarios, reports, local cues/plugins (gitignored) |
 
 The simulator joins LiveKit as `lks-caller`, talks to the user’s already-running agent under test via Gemini Live, and writes forensic reports.
@@ -30,7 +30,8 @@ The simulator joins LiveKit as `lks-caller`, talks to the user’s already-runni
 
 | Need | Why |
 |------|-----|
-| macOS / Linux / Windows | Portable packs ship for these |
+| macOS / Linux | Install the Rust `lksr` binary via `install.sh` |
+| Windows | Installs the Python `lks` build via `install.ps1` (a Rust Windows binary is not yet shipped) |
 | Network access | Download release + LiveKit + Gemini |
 | A **running** LiveKit agent under test | Registered with a known `agent_name` |
 | LiveKit Cloud (or self-host) URL + API key/secret | Room create + dispatch |
@@ -48,8 +49,8 @@ macOS / Linux (bash):
 
 ```bash
 uname -s
-which lks || true
-lks --help 2>/dev/null | head -5 || true
+which lksr || true
+lksr --version 2>/dev/null || true
 pwd
 # If the user said "this project", use the current workspace root as TARGET_ROOT
 ```
@@ -77,13 +78,13 @@ $TARGET_ROOT = (Get-Location).Path   # or the path the user named
 # Optional pin: $env:LK_SIM_REF = "v0.1.0"
 ```
 
-If `lks --help` already works, skip §2 install and go to §3 init.
+If `lksr --version` (macOS/Linux) or `lks --help` (Windows) already works, skip §2 install and go to §3 init.
 
 ---
 
-## 2. Install `lks` (portable)
+## 2. Install `lksr` / `lks`
 
-### macOS / Linux
+### macOS / Linux (Rust binary)
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
@@ -94,30 +95,30 @@ Pin a release (recommended for CI / reproducible agent setups):
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
-  | bash -s -- --ref v0.1.0 --verify
+  | bash -s -- --ref v0.1.0-rust --verify
 ```
 
 Flags:
 
 | Flag | Meaning |
 |------|---------|
-| `--verify` | Run post-install check (`lks --help`) |
+| `--verify` | Run post-install check (`lksr --version` + `lksr guide`) |
 | `--ref vX.Y.Z` / `--version` | Pin release tag (default: latest) |
 | `--no-mcp` | Skip auto MCP registration |
 | `--easy-mode` | Append install dir to shell PATH in rc files |
 | `--uninstall` | Remove install |
 
-Default binary location: `$HOME/.local/bin/lks`  
-If `lks` is not found after install, ensure `~/.local/bin` is on `PATH` for this shell:
+Default binary location: `$HOME/.local/bin/lksr`  
+If `lksr` is not found after install, ensure `~/.local/bin` is on `PATH` for this shell:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 hash -r 2>/dev/null || true
-command -v lks
-lks --help | head -20
+command -v lksr
+lksr --version
 ```
 
-### Windows PowerShell
+### Windows PowerShell (Python build)
 
 ```powershell
 irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
@@ -147,10 +148,12 @@ Get-Command lks, lks
 lks --help | Select-Object -First 20
 ```
 
+> **Windows note:** `install.ps1` still installs the **Python build** (`lks`). A Rust Windows binary is not yet shipped (tracked in the Rust-port plan §1.6). The Python build downloads a portable zip, so it needs no `uv`/`pip` on the user machine.
+
 ### Installer success criteria
 
-- `command -v lks` / `Get-Command lks` resolves
-- `lks --help` exits 0 and lists: `init`, `preflight`, `execute`, `scenario-from-run`, `web`, `mcp`, …
+- macOS/Linux: `command -v lksr` resolves; `lksr --version` prints a version
+- Windows: `Get-Command lks` resolves; `lks --help` exits 0 and lists: `init`, `preflight`, `execute`, `scenario-from-run`, `web`, `mcp`, …
 - Prefer not to use `uv run` / `pip install` for end users
 
 ### From source (only if user is developing the simulator package)
@@ -169,7 +172,7 @@ uv run lks init --root /abs/path/to/target
 ## 3. Init project scaffold in the user’s repo
 
 ```bash
-lks init --root "$TARGET_ROOT"
+lksr init --root "$TARGET_ROOT"
 ```
 
 This creates (if missing):
@@ -183,7 +186,7 @@ $TARGET_ROOT/.agent-sim/
   cues/README.md
 ```
 
-Plugin API (verify + lifecycle): [plugins.md](../plugins.md). Ops detail: `lks guide`.
+Plugin API (verify + lifecycle): [plugins.md](../plugins.md). Ops detail: `lksr guide`.
 Re-running `init` also ensures `.agent-sim/` is listed in `$TARGET_ROOT/.gitignore`.
 
 **Idempotent:** re-running `init` does **not** overwrite existing `config.yaml`, scenarios, or reports — only creates missing scaffold files.
@@ -194,7 +197,7 @@ Re-running `init` also ensures `.agent-sim/` is listed in `$TARGET_ROOT/.gitigno
 test -f "$TARGET_ROOT/.agent-sim/config.yaml"
 test -d "$TARGET_ROOT/.agent-sim/scenarios"
 grep -q '\.agent-sim/' "$TARGET_ROOT/.gitignore" || true
-lks guide | head -5
+lksr guide | head -5
 ```
 
 ---
@@ -228,11 +231,11 @@ simulator:
   api_key: "AQ.Ab8..."          # Gemini Live key
 
   profiles:                      # optional named caller profiles
-    gemini:                      #   lks execute <scenario> --profile gemini
+    gemini:                      #   lksr execute <scenario> --profile gemini
       default: true              # auto-selected when no --profile flag
       provider: google
       api_key: "AQ.Ab8..."
-    openai:                      #   lks execute <scenario> --profile openai
+    openai:                      #   lksr execute <scenario> --profile openai
       provider: openai
       api_key: "sk-..."
       voice:
@@ -385,7 +388,7 @@ Rules:
     },
     {
       "id": "record_audio",
-      "prompt": "Enable local call recording for lks web replay?",
+      "prompt": "Enable local call recording for lksr web replay?",
       "options": [
         {"id": "yes", "label": "Yes — observe.record_audio: true (Recommended)"},
         {"id": "no", "label": "No — skip conversation.wav"}
@@ -468,35 +471,35 @@ observe:
   timezone: "Asia/Ho_Chi_Minh"
 ```
 
-More on dispatch / data topics: [portability.md](../portability.md). Voice / cues / plugins after setup: `lks guide`.
+More on dispatch / data topics: [portability.md](../portability.md). Voice / cues / plugins after setup: `lksr guide`.
 
 ---
 
 ## 5. MCP registration (coding agents)
 
-Default installer registers MCP server name **`livekit-agent-simulator`** → command `lks mcp` into detected tools (Claude Code, Cursor, Cline, Windsurf, VS Code Copilot, Gemini CLI, Amazon Q, OpenCode, Codex, Warp).
+Default installer registers MCP server name **`livekit-agent-simulator`** → command `lksr mcp` (macOS/Linux) or `lks mcp` (Windows) into detected tools (Claude Code, Cursor, Cline, Windsurf, VS Code Copilot, Gemini CLI, Amazon Q, OpenCode, Codex, Warp).
 
-If the user skipped MCP or tools were installed later, manual MCP config example:
+If the user skipped MCP or tools were installed later, manual MCP config example (macOS/Linux):
 
 ```json
 {
   "mcpServers": {
     "livekit-agent-simulator": {
-      "command": "lks",
+      "command": "lksr",
       "args": ["mcp"]
     }
   }
 }
 ```
 
-Dev checkout (package not on PATH):
+Dev checkout (Rust build from source, not on PATH):
 
 ```json
 {
   "mcpServers": {
     "livekit-agent-simulator": {
-      "command": "uv",
-      "args": ["run", "--directory", "/abs/path/livekit-agent-simulator", "lks", "mcp"]
+      "command": "cargo",
+      "args": ["run", "--manifest-path", "/abs/path/livekit-agent-simulator/src/livekit_agent_simulator_rust/crates/lks/Cargo.toml", "--", "mcp"]
     }
   }
 }
@@ -518,9 +521,9 @@ Typical MCP flow:
 ## 6. Preflight (must pass before promising a full call)
 
 ```bash
-lks preflight --root "$TARGET_ROOT"
+lksr preflight --root "$TARGET_ROOT"
 # offline config-only:
-lks preflight --no-connectivity --root "$TARGET_ROOT"
+lksr preflight --no-connectivity --root "$TARGET_ROOT"
 ```
 
 **Success:** JSON `ok: true` with checks for config, livekit.url, folders, active provider key, and (if connectivity on) `livekit.api` list_rooms.
@@ -529,7 +532,7 @@ Common failures:
 
 | Symptom | Fix |
 |---------|-----|
-| config missing | `lks init --root …` first |
+| config missing | `lksr init --root …` first |
 | livekit.api 401 | Wrong URL / api_key / api_secret |
 | agent timeout later | Agent not running or `agent_name` mismatch |
 | Windows: `No module named 'encodings'` / `Could not find platform independent libraries` | Broken portable layout from older installer — run `install.ps1 -Repair -Verify` or reinstall with latest `install.ps1` |
@@ -541,9 +544,9 @@ Common failures:
 List / scaffold:
 
 ```bash
-lks scenarios --root "$TARGET_ROOT"
-lks scenario-init my-case --root "$TARGET_ROOT"   # scaffolds a .yaml with # guide comments
-lks validate smoke-hello --root "$TARGET_ROOT"
+lksr scenarios --root "$TARGET_ROOT"
+lksr scenario-init my-case --root "$TARGET_ROOT"   # scaffolds a .yaml with # guide comments
+lksr validate smoke-hello --root "$TARGET_ROOT"
 ```
 
 ### Scenario knobs after setup (STT / dead-air / noise / authoring)
@@ -560,11 +563,11 @@ These are **not** required for install — use when writing scenarios under `.ag
 | Script `action: wait` + `silence_after_cue_ms` | Intentional caller silence hold (suppresses freestyle). On `action: speak`, `silence_after_cue_ms` does **not** long-mute freestyle after the line. |
 | Soft metrics `user_words_natural_*` | Freestyle word stats excluding Script-matched finals; prefer over overall `user_words_p50` for naturalness on Script-heavy packs |
 | `noise_when: "background"` / Script `"loop": true` | Continuous ambient noise under the call |
-| `lks validate` → `authoring.tier` / `warning_codes` | Soft authoring quality gate (no LLM; does not flip `valid`) |
+| `lksr validate` → `authoring.tier` / `warning_codes` | Soft authoring quality gate (no LLM; does not flip `valid`) |
 
 ### Example scenario pack (`templates/examples/`)
 
-Copy the ones you need to `<target>/.agent-sim/scenarios/`, then `lks validate <id> --root <target>`. Each pair (`.yaml` canonical + `.jsonl` legacy twin where present) is smoke-validated.
+Copy the ones you need to `<target>/.agent-sim/scenarios/`, then `lksr validate <id> --root <target>`. Each pair (`.yaml` canonical + `.jsonl` legacy twin where present) is smoke-validated.
 
 **Dialogue (freestyle caller):**
 - `dialogue-signup-basic` — first_speaker=user, open goals
@@ -603,27 +606,27 @@ persona `traits` (length band + interaction style), and `speech_conditions.verbo
 audio cues. Pair each locale scenario with a `pass_criteria` that checks the agent
 responds in that language.
 
-Ops detail: **`lks guide`**.
+Ops detail: **`lksr guide`**.
 
 
 
 **Agent under test must be running** and registered with the same `livekit.agent_name` before execute.
 
 ```bash
-lks execute smoke-hello --root "$TARGET_ROOT"
+lksr execute smoke-hello --root "$TARGET_ROOT"
 # → .agent-sim/reports/001-smoke-hello-YYYYMMDD-HHMMSS-xxxx/  (NNN + UTC stamp; unique vs SQLite)
 
-lks execute smoke-hello --name demo --root "$TARGET_ROOT"
+lksr execute smoke-hello --name demo --root "$TARGET_ROOT"
 # → .agent-sim/reports/002-demo-YYYYMMDD-HHMMSS-xxxx/  (--name overrides the slug after the seq prefix)
 
 # flake control (each iteration gets its own NNN folder):
-lks execute smoke-hello --root "$TARGET_ROOT" --repeat 3 --pass-at-k 2
+lksr execute smoke-hello --root "$TARGET_ROOT" --repeat 3 --pass-at-k 2
 # named caller profile (provider/key from simulator.profiles.<name>):
-lks execute smoke-hello --profile openai --root "$TARGET_ROOT"
+lksr execute smoke-hello --profile openai --root "$TARGET_ROOT"
 # suite:
-lks execute-all --tag smoke --root "$TARGET_ROOT"
-# lks execute-all --tag smoke --parallel 2 --root "$TARGET_ROOT"
-# lks execute-all --tag smoke --profile openai --root "$TARGET_ROOT"
+lksr execute-all --tag smoke --root "$TARGET_ROOT"
+# lksr execute-all --tag smoke --parallel 2 --root "$TARGET_ROOT"
+# lksr execute-all --tag smoke --profile openai --root "$TARGET_ROOT"
 ```
 
 #### Risk-tier recipe (skip exploratory in CI)
@@ -634,17 +637,17 @@ want, so exploratory scenarios don't gate merges:
 
 ```bash
 # CI merge gate: blocking + regression only
-lks execute-all --tag blocking --root "$TARGET_ROOT"
-lks execute-all --tag regression --root "$TARGET_ROOT"
+lksr execute-all --tag blocking --root "$TARGET_ROOT"
+lksr execute-all --tag regression --root "$TARGET_ROOT"
 
 # nightly: include scheduled + exploratory
-lks execute-all --tag scheduled --root "$TARGET_ROOT"
-lks execute-all --tag exploratory --root "$TARGET_ROOT"
+lksr execute-all --tag scheduled --root "$TARGET_ROOT"
+lksr execute-all --tag exploratory --root "$TARGET_ROOT"
 ```
 
-`authoring.tier` from `lks validate --json` and the `risk_tags` score also surface
-these tiers; `lks execute-all --tag <tier>` is the execution-side filter. A
-scenario with **no** risk tag is reported by `lks validate` (`no_risk_tag`).
+`authoring.tier` from `lksr validate --json` and the `risk_tags` score also surface
+these tiers; `lksr execute-all --tag <tier>` is the execution-side filter. A
+scenario with **no** risk tag is reported by `lksr validate` (`no_risk_tag`).
 
 `run_id` format: `{NNN}-{slug}-{YYYYMMDD}-{HHMMSS}-{xxxx}` — default slug is the scenario id;
 `--name` / MCP `run_name` replaces the slug only (`scenario_id` remains in `meta.json`).
@@ -653,24 +656,24 @@ Timestamp + hex keep ids unique when a report folder was deleted but SQLite stil
 Inspect:
 
 ```bash
-lks runs --root "$TARGET_ROOT"
-lks report 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"
-lks log 001-smoke-hello-20260716-144623-a1b2 --kind "transcript.*" --root "$TARGET_ROOT"
+lksr runs --root "$TARGET_ROOT"
+lksr report 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"
+lksr log 001-smoke-hello-20260716-144623-a1b2 --kind "transcript.*" --root "$TARGET_ROOT"
 # --kind accepts one kind or one prefix (e.g. sim.script*); not a comma list
-lks web --root "$TARGET_ROOT"    # http://127.0.0.1:8765 — list auto-updates ~3s; Ctrl+C to stop
+lksr web --root "$TARGET_ROOT"    # http://127.0.0.1:8765 — list auto-updates ~3s; Ctrl+C to stop
 # CI golden gate (exit 1 on regression):
-# lks compare <baseline-run> <candidate-run> --baseline --root "$TARGET_ROOT"
+# lksr compare <baseline-run> <candidate-run> --baseline --root "$TARGET_ROOT"
 ```
 
 Promote a failure to a draft regression case:
 
 ```bash
-lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"           # dry-run
-lks scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT" --write  # write .yaml draft
+lksr scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT"           # dry-run
+lksr scenario-from-run 001-smoke-hello-20260716-144623-a1b2 --root "$TARGET_ROOT" --write  # write .yaml draft
 # then human/agent reviews Persona + Assert before treating as golden
 ```
 
-Draft extract (see `lks guide` → promote section): goals/constraints (not transcript paste into brief),
+Draft extract (see `lksr guide` → promote section): goals/constraints (not transcript paste into brief),
 one Behavior barge stub from run markers when present, Script open when `first_speaker=user`,
 transcript sample in `Context.notes` only.
 
@@ -701,7 +704,7 @@ assert:
   tool_order: [lookup, book]
 ```
 
-PassCriteria can use flat `criteria[]` or multi-judge `judges[]` + `mode` (`all` \| `majority` \| `any`). Full recipes: `lks guide`.
+PassCriteria can use flat `criteria[]` or multi-judge `judges[]` + `mode` (`all` \| `majority` \| `any`). Full recipes: `lksr guide`.
 
 #### Audio-onset latency (perceived vs transcript)
 
@@ -777,7 +780,7 @@ pass_criteria:
   criteria: [builtin:conversation_naturalness]
 ```
 
-Available presets (package `src/livekit_agent_simulator/evals/presets.py`, `lks plugins`/`list_presets`):
+Available presets (package `src/livekit_agent_simulator/evals/presets.py`, `lksr plugins`/`list_presets`):
 
 | builtin key | What it grades |
 |---|---|
@@ -817,13 +820,13 @@ Package templates (copy into `.agent-sim/scenarios/`):
 
 ```bash
 # After telephony: block in config.yaml (trunk + dial_in / sim_inbound_number):
-lks validate inbound-caller-sim --root "$TARGET_ROOT"
-# lks execute inbound-caller-sim --root "$TARGET_ROOT"   # needs real trunk + DID routing
+lksr validate inbound-caller-sim --root "$TARGET_ROOT"
+# lksr execute inbound-caller-sim --root "$TARGET_ROOT"   # needs real trunk + DID routing
 ```
 
 Mode is **only** in scenario `Caller` — never in `config.yaml`.  
 Guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/telephony.md  
-Ops detail: `lks guide` (templates/GUIDE.md).
+Ops detail: `lksr guide` (templates/GUIDE.md).
 
 SIP asserts: `Assert.spec.sip.participant_present` / `dial_answered` / `call_status_any`.
 
@@ -833,17 +836,17 @@ SIP asserts: `Assert.spec.sip.participant_present` / `dial_answered` / `call_sta
 
 Mark setup complete only when **all** of these are true:
 
-- [ ] `lks --help` works on PATH
+- [ ] `lksr --version` works on PATH (macOS/Linux)
 - [ ] `$TARGET_ROOT/.agent-sim/config.yaml` exists with LiveKit + `agent_name` + active provider key (Gemini Live / OpenAI Realtime) set
 - [ ] `.agent-sim/` is gitignored
-- [ ] `lks preflight --root "$TARGET_ROOT"` → `ok: true`
+- [ ] `lksr preflight --root "$TARGET_ROOT"` → `ok: true`
 - [ ] User knows the agent under test must be running before `execute`
 - [ ] Consumer dispatch metadata / `data_topics` set when discovery (§4.0) shows they are required
 - [ ] (Tool scenarios) report contains `tool.*` and `session.chat_history`, with no `tool_events` observe gap
 - [ ] (Optional) MCP `livekit-agent-simulator` registered if they use a coding agent
-- [ ] (Optional) `lks execute smoke-hello --root "$TARGET_ROOT"` → `status: done` or a clear next fix (agent timeout / Gemini quota)
+- [ ] (Optional) `lksr execute smoke-hello --root "$TARGET_ROOT"` → `status: done` or a clear next fix (agent timeout / Gemini quota)
 - [ ] (Optional SIP) `telephony:` trunk/DID filled when testing `inbound_sip` / `outbound_human_pickup` / `outbound_sim_callee`; scenarios validated
-- [ ] (Optional) new surfaces known: `lks serve` (REST API on :8787), `lks optimize` (persona-prompt optimizer), `speech_conditions.effects` (audio degradation), `handoff` / `no_unplanned_handoff` asserts — see `lks guide`
+- [ ] (Optional) new surfaces known: `lksr serve` (REST API on :8787), `lksr optimize` (persona-prompt optimizer), `speech_conditions.effects` (audio degradation), `handoff` / `no_unplanned_handoff` asserts — see `lksr guide`
 
 **Do not claim “fully working E2E”** if preflight failed or the agent is not registered.
 
@@ -868,16 +871,16 @@ export PATH="$HOME/.local/bin:$PATH"
 TARGET_ROOT="$(pwd)"   # change if needed
 
 # 1) Install CLI (skip if already present)
-if ! command -v lks >/dev/null 2>&1; then
+if ! command -v lksr >/dev/null 2>&1; then
   curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
     | bash -s -- --verify
   export PATH="$HOME/.local/bin:$PATH"
   hash -r 2>/dev/null || true
 fi
-lks --help >/dev/null
+lksr --version >/dev/null
 
 # 2) Scaffold target project
-lks init --root "$TARGET_ROOT"
+lksr init --root "$TARGET_ROOT"
 
 # 3) STOP: discover TARGET_ROOT (§4.0), then fill $TARGET_ROOT/.agent-sim/config.yaml
 #    livekit.url / api_key / api_secret / agent_name
@@ -885,10 +888,10 @@ lks init --root "$TARGET_ROOT"
 #    optional: livekit.dispatch_metadata, observe.data_topics (from consumer docs/search)
 #    Then continue:
 
-lks preflight --root "$TARGET_ROOT"
+lksr preflight --root "$TARGET_ROOT"
 # 4) Ensure agent under test is running with matching agent_name
-# lks execute smoke-hello --root "$TARGET_ROOT"
-# lks web --root "$TARGET_ROOT"
+# lksr execute smoke-hello --root "$TARGET_ROOT"
+# lksr web --root "$TARGET_ROOT"
 ```
 
 ### Windows (PowerShell)
@@ -928,14 +931,14 @@ lks preflight --root $TARGET_ROOT
 | Resource | URL |
 |----------|-----|
 | Repo | https://github.com/quangdang46/livekit-agent-simulator |
-| Installer (macOS/Linux) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh |
-| Installer (Windows) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1 |
+| Installer (macOS/Linux, Rust binary) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh |
+| Installer (Windows, Python build) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1 |
 | This guide (raw) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md |
-| Ops guide | package `lks guide` or `templates/GUIDE.md` (voice, cues, plugins) |
+| Ops guide | package `lksr guide` or `templates/GUIDE.md` (voice, cues, plugins) |
 | Plugins (verify + before_run / after_run) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md |
 | Portability | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md |
 | Telephony (SIP modes) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/telephony.md |
 | Smoke notes | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/smoke-test.md |
 | L3 observer design | `docs/plans/PLAN-20260713-lk-agent-session-observer.md` |
 
-When instructions conflict: **this file + `lks guide`** beat outdated blog snippets. Prefer latest release unless the user pins a tag.
+When instructions conflict: **this file + `lksr guide`** beat outdated blog snippets. Prefer latest release unless the user pins a tag.
