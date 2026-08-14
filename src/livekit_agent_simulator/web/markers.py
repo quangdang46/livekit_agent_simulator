@@ -22,6 +22,61 @@ from .report_time import (
 from .speech_origin import _text_overlap
 from .tool_events import _build_tool_spans, _tool_spans_to_markers
 
+# Gap between two audio_onset detections that still counts as the SAME agent
+# speech burst. The RMS detector re-arms on short intra-utterance pauses
+# (~100ms exit_frames), so a single agent turn can emit many onsets. Coalesce
+# them so the report player shows one "agent audio onset" per utterance, not one
+# per detected window. Does NOT affect the TTFA/turn_taking_audio metrics, which
+# read sim.agent.audio_onset events directly.
+AUDIO_ONSET_BURST_MS = 2000
+# A single coalesced onset marker must not visually span longer than this —
+# otherwise a chain of close onsets collapses into one huge band that obscures
+# the conversation (observed 30s spans chaining across real pauses).
+AUDIO_ONSET_MAX_SPAN_MS = 5000
+
+
+def _coalesce_audio_onsets(
+    markers: list[dict[str, Any]],
+    duration_ms: int | None,
+) -> list[dict[str, Any]]:
+    """Merge audio_onset markers closer than AUDIO_ONSET_BURST_MS into one.
+
+    Keeps the first onset's start_ms (perceived speech start) and spans the
+    burst end so the scrubber/highlight still covers the audible speech. All
+    non-audio_onset markers pass through untouched.
+    """
+    onsets = [m for m in markers if m.get("type") == MARKER_AUDIO_ONSET]
+    if len(onsets) < 2:
+        return markers
+    others = [m for m in markers if m.get("type") != MARKER_AUDIO_ONSET]
+    bursts: list[dict[str, Any]] = []
+    cur = dict(onsets[0])
+    cur_prev_start = int(onsets[0]["start_ms"])
+    for m in onsets[1:]:
+        start = int(m["start_ms"])
+        too_wide = start - int(cur["start_ms"]) > AUDIO_ONSET_MAX_SPAN_MS
+        if start - cur_prev_start <= AUDIO_ONSET_BURST_MS and not too_wide:
+            # Same burst: keep earliest onset, extend span to cover the latest.
+            cur["start_ms"] = min(int(cur["start_ms"]), start)
+            cur["end_ms"] = max(int(cur.get("end_ms") or start), int(m.get("end_ms") or start))
+            if not cur.get("detail") and m.get("detail"):
+                cur["detail"] = m["detail"]
+            cur_prev_start = start
+        else:
+            bursts.append(cur)
+            cur = dict(m)
+            cur_prev_start = start
+    bursts.append(cur)
+    # Normalize merged spans (at least the default 300ms onset span).
+    for b in bursts:
+        start = int(b["start_ms"])
+        end = int(b.get("end_ms") or start)
+        if end <= start:
+            end = start + 300
+        b["end_ms"] = _clamp_end(start, end, duration_ms)
+    return others + bursts
+
+
 def _collect_script_injects(
     events: list[dict[str, Any]],
     t0: int,
@@ -303,6 +358,7 @@ def _build_markers(
     tool_spans = _build_tool_spans(events, t0, duration_ms)
     markers.extend(_tool_spans_to_markers(tool_spans))
 
+    markers = _coalesce_audio_onsets(markers, duration_ms)
     markers.sort(key=lambda m: (m["start_ms"], m["type"]))
     return markers
 

@@ -135,13 +135,38 @@ impl WebServer {
         runs
     }
 
-    /// Minimal cues payload: transcript finals + markers from events.jsonl.
+    /// Cues payload: transcript finals + behavior markers from events.jsonl,
+    /// time-aligned to the conversation audio via `meta.audio.t0_mono_ms`.
+    ///
+    /// Markers/cues carry `start_ms`/`end_ms` in audio-relative ms so the SPA
+    /// can interleave them chronologically (parity with Python `web/cues.py`).
     fn cues_for_run(&self, run_id: &str) -> Option<Value> {
         let dir = self.reports_dir.join(run_id);
         let events_path = dir.join("events.jsonl");
         if !events_path.exists() {
             return None;
         }
+        let meta: Value = std::fs::read_to_string(dir.join("meta.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null);
+        let summary: Value = std::fs::read_to_string(dir.join("summary.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null);
+        let t0 = resolve_audio_t0_ms(&meta, &events_path);
+        let duration_ms = wav_duration_ms(&dir.join("conversation.wav"));
+        // Audio-relative milliseconds: audio_ms = ts_mono_ms - t0. Events beyond
+        // 2 s past the audio end are dropped (parity with `_mono_to_audio_ms`).
+        let audio_ms = |mono: i64| -> Option<i64> {
+            let start = mono.saturating_sub(t0).max(0);
+            if let Some(d) = duration_ms {
+                if start > d + 2000 {
+                    return None;
+                }
+            }
+            Some(start)
+        };
         let mut cues: Vec<Value> = Vec::new();
         let mut markers: Vec<Value> = Vec::new();
         let Ok(text) = std::fs::read_to_string(&events_path) else {
@@ -163,6 +188,9 @@ impl WebServer {
                 .cloned()
                 .unwrap_or_default();
             let mono = e.get("ts_mono_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+            let Some(start_ms) = audio_ms(mono) else {
+                continue;
+            };
             if kind == "transcript.user.final" || kind == "transcript.agent.final" {
                 let role = if kind.contains("agent") {
                     "agent"
@@ -174,27 +202,90 @@ impl WebServer {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let est = estimate_utterance_ms(&text, role);
+                let c_start = start_ms.saturating_sub(est).max(0);
+                let c_end = start_ms + 350;
                 cues.push(json!({
                     "role": role,
-                    "final_ms": mono,
+                    "final_ms": start_ms,
+                    "start_ms": c_start,
+                    "end_ms": c_end,
                     "text": text,
                     "source": e.get("source").cloned().unwrap_or(Value::Null),
                     "turn": e.get("turn").cloned().unwrap_or(Value::Null),
                 }));
             }
             if kind == "sim.script.cue" {
+                let barge = spec
+                    .get("barge_in")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let during = spec
+                    .get("during_agent_speech")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let span = if barge { if during { 2200 } else { 1400 } } else { 1000 };
                 markers.push(json!({
-                    "type": if spec.get("barge_in").and_then(|v| v.as_bool()).unwrap_or(false) { "barge_in" } else { "script_cue" },
+                    "type": if barge { "barge_in" } else { "script_cue" },
+                    "start_ms": start_ms,
+                    "end_ms": clamp_end(start_ms, start_ms + span, duration_ms),
                     "ms": mono,
                     "label": spec.get("label").cloned().unwrap_or(Value::Null),
                     "say": spec.get("say").cloned().unwrap_or(Value::Null),
+                    "during_agent_speech": during,
+                    "barge_in": barge,
+                }));
+            }
+            if kind == "sim.script.wait" {
+                let waited = spec.get("waited_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+                let span = if waited > 0 { waited } else { 1500 };
+                let win_start = start_ms.saturating_sub(span).max(0);
+                markers.push(json!({
+                    "type": "silence_wait",
+                    "start_ms": win_start,
+                    "end_ms": clamp_end(win_start, start_ms + 200, duration_ms),
+                    "ms": mono,
+                    "label": spec.get("label").cloned().or_else(|| spec.get("step_id").cloned()).unwrap_or(json!("user pause")),
+                }));
+            }
+            if kind == "silence.detected" {
+                let dur = spec.get("duration_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+                let span = if dur > 0 { dur } else { 4000 };
+                let win_start = start_ms.saturating_sub(span).max(0);
+                markers.push(json!({
+                    "type": "silence",
+                    "start_ms": win_start,
+                    "end_ms": clamp_end(win_start, start_ms, duration_ms),
+                    "ms": mono,
+                    "label": "silence detected",
+                    "duration_ms": span,
                 }));
             }
             if kind == "interruption" {
                 markers.push(json!({
                     "type": "interruption",
+                    "start_ms": start_ms,
+                    "end_ms": clamp_end(start_ms, start_ms + 500, duration_ms),
                     "ms": mono,
-                    "label": spec.get("class").cloned().unwrap_or(Value::Null),
+                    "label": format!("interruption ({})", spec.get("by").and_then(|v| v.as_str()).unwrap_or("unknown")),
+                }));
+            }
+            if kind == "sim.agent.audio_onset" {
+                markers.push(json!({
+                    "type": "audio_onset",
+                    "start_ms": start_ms,
+                    "end_ms": clamp_end(start_ms, start_ms + 300, duration_ms),
+                    "ms": mono,
+                    "label": "agent audio onset",
+                }));
+            }
+            if kind == "sim.caller.audio_source_start" {
+                markers.push(json!({
+                    "type": "user_audio_source",
+                    "start_ms": start_ms,
+                    "end_ms": clamp_end(start_ms, start_ms + 300, duration_ms),
+                    "ms": mono,
+                    "label": "caller audio source",
                 }));
             }
         }
@@ -292,21 +383,13 @@ impl WebServer {
             }
         }
 
-        let summary: Value = std::fs::read_to_string(dir.join("summary.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or(Value::Null);
-        let meta: Value = std::fs::read_to_string(dir.join("meta.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or(Value::Null);
         Some(json!({
             "run_id": run_id,
             "scenario_id": meta.get("scenario_id").cloned().or_else(|| summary.get("scenario_id").cloned()).unwrap_or(Value::Null),
             "audio": {
                 "file": if dir.join("conversation.wav").exists() { json!("conversation.wav") } else { Value::Null },
-                "duration_ms": Value::Null,
-                "t0_mono_ms": 0,
+                "duration_ms": duration_ms.map(|d| json!(d)).unwrap_or(Value::Null),
+                "t0_mono_ms": t0,
                 "channels": {"left": "sim", "right": "agent"},
             },
             "cues": cues,
@@ -479,6 +562,100 @@ pub async fn serve(
 }
 
 // ---------------------------------------------------------------------------
+// Report-time helpers (port of web/report_time.py + web/cue_helpers/windows.py).
+// ---------------------------------------------------------------------------
+
+/// Audio length of a WAV in ms (`int(data_bytes * 1000 / byte_rate)`); None on
+/// missing/corrupt header. Mirrors Python `wave.getnframes()*1000/getframerate()`
+/// where frames = data_bytes / block_align and byte_rate = block_align * rate.
+fn wav_duration_ms(path: &Path) -> Option<i64> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut fmt: Option<(u32, u32)> = None; // (byte_rate, block_align)
+    let mut data_size: Option<u32> = None;
+    let mut off = 12usize;
+    while off + 8 <= bytes.len() {
+        let id = &bytes[off..off + 4];
+        let size = u32::from_le_bytes(bytes[off + 4..off + 8].try_into().ok()?) as usize;
+        if id == b"fmt " && off + 8 + 16 <= bytes.len() {
+            // u16 audio_format, u16 num_channels, u32 sample_rate, u32 byte_rate,
+            // u16 block_align, u16 bits_per_sample
+            let br = u32::from_le_bytes(bytes[off + 8 + 8..off + 8 + 12].try_into().ok()?);
+            let ba = u16::from_le_bytes(bytes[off + 8 + 12..off + 8 + 14].try_into().ok()?);
+            fmt = Some((br, ba as u32));
+        } else if id == b"data" {
+            data_size = Some(u32::from_le_bytes(bytes[off + 4..off + 8].try_into().ok()?));
+        }
+        off += 8 + size + (size & 1);
+    }
+    let (byte_rate, _block_align) = fmt?;
+    let data_bytes = data_size?;
+    if byte_rate > 0 {
+        return Some(data_bytes as i64 * 1000 / byte_rate as i64);
+    }
+    None
+}
+
+/// Audio t0 (mono → audio offset): `meta.audio.t0_mono_ms`, else the first
+/// transcript-ish event's `ts_mono_ms`, else 0 (parity with `_resolve_audio_t0_ms`).
+fn resolve_audio_t0_ms(meta: &Value, events_path: &Path) -> i64 {
+    if let Some(t0) = meta
+        .get("audio")
+        .and_then(|a| a.get("t0_mono_ms"))
+        .and_then(|v| v.as_i64())
+    {
+        return t0.max(0);
+    }
+    let Ok(text) = std::fs::read_to_string(events_path) else {
+        return 0;
+    };
+    for line in text.lines() {
+        let Ok(e) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind.starts_with("transcript.")
+            || matches!(kind, "sim.mic_published" | "sim.gemini_connected")
+        {
+            return e.get("ts_mono_ms").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+        }
+    }
+    0
+}
+
+/// `max(start + 120, end)`, capped at duration when known.
+fn clamp_end(start_ms: i64, end_ms: i64, duration_ms: Option<i64>) -> i64 {
+    let end = (start_ms + 120).max(end_ms);
+    match duration_ms {
+        Some(d) => end.min((start_ms + 120).max(d)),
+        None => end,
+    }
+}
+
+/// Estimated utterance length in ms (agent 95 ms/word, user 85 ms/word; empty
+/// 800/600; clamps mirror Python).
+fn estimate_utterance_ms(text: &str, role: &str) -> i64 {
+    let t = text.trim();
+    if t.is_empty() {
+        return if role == "agent" { 800 } else { 600 };
+    }
+    let words = t
+        .replace('\n', " ")
+        .split(' ')
+        .filter(|w| !w.is_empty())
+        .count() as i64;
+    let units = words.max((t.len() as i64) / 4);
+    let ms = units * if role == "agent" { 95 } else { 85 };
+    if role == "agent" {
+        ms.clamp(700, 22_000)
+    } else {
+        ms.clamp(500, 14_000)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Transcript dedupe + ghost-STT filter (port of web/transcript_cues.py core).
 // ---------------------------------------------------------------------------
 
@@ -645,4 +822,156 @@ fn ghost_filter(cues: Vec<Value>) -> Vec<Value> {
             near_texts.iter().any(|t| texts_similar(&text_owned, t))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal report dir with events + meta and assert markers/cues
+    /// carry `start_ms`/`end_ms` (the SPA interleaves by those — a missing
+    /// field previously sank every marker below the conversation).
+    #[test]
+    fn cues_for_run_emits_start_end_on_markers_and_cues() {
+        let tmp = std::env::temp_dir().join(format!("lksweb-test-{}", std::process::id()));
+        let dir = tmp.join("run-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let t0 = 6515i64;
+        let events = [
+            format!(
+                r#"{{"kind":"run.started","ts_mono_ms":0,"spec":{{}}}}"#,
+            ),
+            format!(
+                r#"{{"kind":"sim.mic_published","ts_mono_ms":5000,"spec":{{}}}}"#,
+            ),
+            format!(
+                r#"{{"kind":"transcript.agent.final","ts_mono_ms":{t},"source":"lk.transcription","spec":{{"text":"Hello there"}}}}"#,
+                t = t0 + 10_500
+            ),
+            format!(
+                r#"{{"kind":"transcript.user.final","ts_mono_ms":{t},"source":"sim.gemini","spec":{{"text":"Hi, I need help"}}}}"#,
+                t = t0 + 13_400
+            ),
+            format!(
+                r#"{{"kind":"sim.agent.audio_onset","ts_mono_ms":{t},"source":"sim","spec":{{"onset_frame_idx":48000}}}}"#,
+                t = t0 + 8000
+            ),
+            format!(
+                r#"{{"kind":"sim.caller.audio_source_start","ts_mono_ms":{t},"source":"sim","spec":{{"provider":"gemini"}}}}"#,
+                t = t0 + 12_000
+            ),
+        ];
+        std::fs::write(dir.join("events.jsonl"), events.join("\n")).unwrap();
+        std::fs::write(
+            dir.join("meta.json"),
+            format!(
+                r#"{{"run_id":"run-1","audio":{{"t0_mono_ms":{t0},"duration_ms":25000}}}}"#,
+            ),
+        )
+        .unwrap();
+
+        let ws = WebServer {
+            player_dir: PathBuf::from("."),
+            reports_dir: tmp.clone(),
+        };
+        let payload = ws.cues_for_run("run-1").expect("payload");
+        let cues = payload["cues"].as_array().expect("cues array");
+        let markers = payload["markers"].as_array().expect("markers array");
+
+        assert!(!cues.is_empty(), "expected cues");
+        for c in cues {
+            assert!(
+                c.get("start_ms").and_then(|v| v.as_i64()).is_some(),
+                "cue missing start_ms: {c}"
+            );
+            assert!(
+                c.get("end_ms").and_then(|v| v.as_i64()).is_some(),
+                "cue missing end_ms: {c}"
+            );
+            assert!(
+                c.get("final_ms").and_then(|v| v.as_i64()).is_some(),
+                "cue missing final_ms: {c}"
+            );
+        }
+        assert!(!markers.is_empty(), "expected markers");
+        for m in markers {
+            assert!(
+                m.get("start_ms").and_then(|v| v.as_i64()).is_some(),
+                "marker missing start_ms: {m}"
+            );
+            assert!(
+                m.get("end_ms").and_then(|v| v.as_i64()).is_some(),
+                "marker missing end_ms: {m}"
+            );
+        }
+        assert_eq!(payload["audio"]["t0_mono_ms"].as_i64(), Some(t0));
+
+        // Every marker start_ms must be < its end_ms, and all must be audio-relative.
+        for m in markers {
+            let s = m["start_ms"].as_i64().unwrap();
+            let e = m["end_ms"].as_i64().unwrap();
+            assert!(e >= s, "marker end before start: {m}");
+            assert!(s >= 0, "negative marker start: {m}");
+        }
+        // audio_onset must be present (was previously never emitted).
+        assert!(
+            markers
+                .iter()
+                .any(|m| m["type"].as_str() == Some("audio_onset")),
+            "audio_onset marker missing: {markers:?}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Real-world regression: the voice-ai-agent run with 149 `audio_onset`
+    /// markers must interleave them chronologically — NOT sink all markers
+    /// below the conversation (the pre-fix bug: markers had no start_ms/end_ms).
+    #[test]
+    fn real_run_audio_onset_interleaves_with_cues() {
+        let run = std::path::Path::new(
+            "C:/Users/ADMIN/Documents/Projects/voice-ai-agent/.agent-sim/reports/\
+             001-nikko-en-clone-debug-20260813-031857-4281",
+        );
+        if !run.join("events.jsonl").exists() {
+            eprintln!("skipping: voice-ai-agent run not present");
+            return;
+        }
+        let ws = WebServer {
+            player_dir: PathBuf::from("."),
+            reports_dir: run.parent().unwrap().to_path_buf(),
+        };
+        let payload = ws.cues_for_run("001-nikko-en-clone-debug-20260813-031857-4281").unwrap();
+        let cues = payload["cues"].as_array().unwrap();
+        let markers = payload["markers"].as_array().unwrap();
+        let audio_onsets: Vec<i64> = markers
+            .iter()
+            .filter(|m| m["type"].as_str() == Some("audio_onset"))
+            .filter_map(|m| m["start_ms"].as_i64())
+            .collect();
+        assert!(!audio_onsets.is_empty(), "expected audio_onset markers");
+        // Monotonic + within audio bounds.
+        assert!(
+            audio_onsets.windows(2).all(|w| w[0] <= w[1]),
+            "audio_onset not sorted"
+        );
+        let dur = payload["audio"]["duration_ms"].as_i64().unwrap_or(i64::MAX);
+        // Parity with `_mono_to_audio_ms`: events within duration + 2000 are kept.
+        assert!(
+            audio_onsets.iter().all(|s| *s <= dur + 2000),
+            "audio_onset beyond audio duration + 2000"
+        );
+        // First onset should be early (audio-relative ~680ms), not after all cues.
+        let first_cue_start = cues
+            .iter()
+            .filter_map(|c| c["start_ms"].as_i64())
+            .min()
+            .unwrap_or(i64::MAX);
+        assert!(
+            audio_onsets.first().unwrap() < &first_cue_start,
+            "first audio_onset should precede the first cue start \
+             (onset={} first_cue={})",
+            audio_onsets.first().unwrap(),
+            first_cue_start
+        );
+    }
 }
