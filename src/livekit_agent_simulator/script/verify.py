@@ -19,7 +19,13 @@ def evaluate_script_log(
     cues = [
         e
         for e in events
-        if e.get("kind") in ("sim.script.cue", "sim.script.wait", "sim.script.hang_up")
+        if e.get("kind")
+        in (
+            "sim.script.cue",
+            "sim.script.dtmf",
+            "sim.script.wait",
+            "sim.script.hang_up",
+        )
     ]
     agent_finals = [e for e in events if e.get("kind") == "transcript.agent.final"]
     user_finals = [e for e in events if e.get("kind") == "transcript.user.final"]
@@ -259,6 +265,7 @@ def evaluate_script_log(
     return {
         "script_steps": len(steps),
         "cues_fired": len([e for e in cues if e.get("kind") == "sim.script.cue"]),
+        "dtmf_fired": len([e for e in cues if e.get("kind") == "sim.script.dtmf"]),
         "waits_fired": len([e for e in cues if e.get("kind") == "sim.script.wait"]),
         "hang_ups_fired": len([e for e in cues if e.get("kind") == "sim.script.hang_up"]),
         "agent_finals_after_first_cue": agent_after_cue,

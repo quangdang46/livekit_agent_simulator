@@ -318,7 +318,7 @@ class ScriptRunner:
                                         break
                     except Exception as e:
                         inject_error = f"{type(e).__name__}: {e}"
-            if step.action == "wait":
+            elif step.action == "wait":
                 kind = "sim.script.wait"
                 # User long-silence hold. Default keeps freestyle (human caller).
                 # mute_persona=true → intentional dead-air / unresponsive tests.
