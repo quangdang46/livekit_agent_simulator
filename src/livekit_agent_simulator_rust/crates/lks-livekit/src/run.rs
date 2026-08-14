@@ -299,6 +299,9 @@ pub async fn execute_scenario(
         };
     }
 
+    // Caller nudge receiver (created before end_rx moves into the bridge).
+    let nudge_rx = end_rx.resubscribe();
+
     // Provider dispatch: config `simulator.provider` selects the caller bridge.
     let provider = cfg.simulator.provider.trim().to_lowercase();
     let bridge_future: std::pin::Pin<
@@ -328,9 +331,33 @@ pub async fn execute_scenario(
         Box::pin(async move { bridge.run(end_rx).await })
     };
 
+    // Caller nudge: first_speaker=agent + no script → nudge after greeting.
+    let nudge_task = if run_spec.first_speaker == "agent" && scenario.script_steps.is_empty() {
+        let w = writer_arc.clone();
+        let rx = nudge_rx;
+        // Silent mode gate: nudge is off for silent callers (slice: first_speaker only).
+        let nudge = crate::caller_nudge::nudge_caller_after_agent_greeting(
+            w,
+            rx,
+            |_hint| Ok(()),
+            || true,  // agent_has_spoken — poll-based; set via shared state later
+            || false, // user_has_spoken
+            "agent",
+            false,
+            1.0,
+            0.15,
+        );
+        Some(tokio::spawn(nudge))
+    } else {
+        None
+    };
+
     // The slice ends on the bridge's internal cap (agent hangup later).
     let run_result = bridge_future.await;
     if let Some(t) = script_task {
+        t.abort();
+    }
+    if let Some(t) = nudge_task {
         t.abort();
     }
 

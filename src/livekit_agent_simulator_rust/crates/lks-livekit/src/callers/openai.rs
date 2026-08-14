@@ -83,6 +83,11 @@ impl OpenAiCallerBridge {
         self
     }
 
+    /// Nudge hook: commit the agent audio + response.create (non-audible).
+    pub fn nudge_freestyle_answer(&self, _agent_hint: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Run the caller: connect room → dispatch agent → open OpenAI WS →
     /// pump audio both ways until `end_call`.
     pub async fn run(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {

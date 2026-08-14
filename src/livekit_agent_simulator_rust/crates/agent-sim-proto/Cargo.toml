@@ -1,9 +1,10 @@
 [package]
 name = "agent-sim-proto"
-description = "prost-generated AgentSessionMessage from the lk.agent.session byte stream protocol. P3; stub at P0 (prost deferred)."
+description = "Decode the lk.agent.session byte-stream protocol (AgentSessionMessage) — minimal hand-written prost-compatible subset."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+serde_json = { workspace = true }

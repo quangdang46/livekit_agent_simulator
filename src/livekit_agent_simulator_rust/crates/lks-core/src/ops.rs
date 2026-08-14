@@ -133,9 +133,10 @@ pub fn op_validate_scenario(
     if !s.plugin_modules.is_empty() {
         // P8 decision: the Rust build does NOT embed CPython (binary size + CI
         // complexity). Plugins fail loudly instead of silently skipping.
-        warnings.push(
-            "verify plugins require the Python build (lks); the Rust build does not embed CPython — remove plugin_modules or use lks.".to_string(),
-        );
+        warnings.push(format!(
+            "verify plugins require the Python build (lks): {} — the Rust build does not embed CPython. Remove plugin_modules or use lks.",
+            s.plugin_modules.join(", ")
+        ));
     }
     // P1.G authoring rubric (port of `authoring.collect_authoring_warnings`).
     warnings.extend(crate::authoring_warnings::collect_authoring_warnings(
