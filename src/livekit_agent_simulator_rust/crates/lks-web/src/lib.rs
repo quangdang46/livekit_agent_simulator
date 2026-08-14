@@ -224,7 +224,15 @@ impl WebServer {
                     .get("during_agent_speech")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let span = if barge { if during { 2200 } else { 1400 } } else { 1000 };
+                let span = if barge {
+                    if during {
+                        2200
+                    } else {
+                        1400
+                    }
+                } else {
+                    1000
+                };
                 markers.push(json!({
                     "type": if barge { "barge_in" } else { "script_cue" },
                     "start_ms": start_ms,
@@ -249,7 +257,10 @@ impl WebServer {
                 }));
             }
             if kind == "silence.detected" {
-                let dur = spec.get("duration_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+                let dur = spec
+                    .get("duration_ms")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 let span = if dur > 0 { dur } else { 4000 };
                 let win_start = start_ms.saturating_sub(span).max(0);
                 markers.push(json!({
@@ -619,7 +630,11 @@ fn resolve_audio_t0_ms(meta: &Value, events_path: &Path) -> i64 {
         if kind.starts_with("transcript.")
             || matches!(kind, "sim.mic_published" | "sim.gemini_connected")
         {
-            return e.get("ts_mono_ms").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+            return e
+                .get("ts_mono_ms")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                .max(0);
         }
     }
     0
@@ -838,12 +853,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let t0 = 6515i64;
         let events = [
-            format!(
-                r#"{{"kind":"run.started","ts_mono_ms":0,"spec":{{}}}}"#,
-            ),
-            format!(
-                r#"{{"kind":"sim.mic_published","ts_mono_ms":5000,"spec":{{}}}}"#,
-            ),
+            format!(r#"{{"kind":"run.started","ts_mono_ms":0,"spec":{{}}}}"#,),
+            format!(r#"{{"kind":"sim.mic_published","ts_mono_ms":5000,"spec":{{}}}}"#,),
             format!(
                 r#"{{"kind":"transcript.agent.final","ts_mono_ms":{t},"source":"lk.transcription","spec":{{"text":"Hello there"}}}}"#,
                 t = t0 + 10_500
@@ -864,9 +875,7 @@ mod tests {
         std::fs::write(dir.join("events.jsonl"), events.join("\n")).unwrap();
         std::fs::write(
             dir.join("meta.json"),
-            format!(
-                r#"{{"run_id":"run-1","audio":{{"t0_mono_ms":{t0},"duration_ms":25000}}}}"#,
-            ),
+            format!(r#"{{"run_id":"run-1","audio":{{"t0_mono_ms":{t0},"duration_ms":25000}}}}"#,),
         )
         .unwrap();
 
@@ -940,7 +949,9 @@ mod tests {
             player_dir: PathBuf::from("."),
             reports_dir: run.parent().unwrap().to_path_buf(),
         };
-        let payload = ws.cues_for_run("001-nikko-en-clone-debug-20260813-031857-4281").unwrap();
+        let payload = ws
+            .cues_for_run("001-nikko-en-clone-debug-20260813-031857-4281")
+            .unwrap();
         let cues = payload["cues"].as_array().unwrap();
         let markers = payload["markers"].as_array().unwrap();
         let audio_onsets: Vec<i64> = markers

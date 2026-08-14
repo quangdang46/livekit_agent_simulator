@@ -451,44 +451,64 @@ pub fn op_list_runs(
         .map_err(|e| ConfigError(format!("sqlite read error: {e}")))
 }
 
-/// metrics_digest — the 12-key flat digest used by compare_runs (port of
-/// `metrics.py:metrics_digest`, mirroring the Python `or` fallbacks).
+/// metrics_digest — the 13-key flat digest used by suite rows / compare_runs
+/// (port of `metrics.py:metrics_digest`, exact passthrough — ints stay ints).
 pub fn metrics_digest(metrics: Option<&Map<String, Json>>) -> Map<String, Json> {
     let mut out = Map::new();
     let get = |k: &str| metrics.and_then(|m| m.get(k)).cloned();
-    let get_inner = |outer: &str, inner: &str| {
-        metrics
-            .and_then(|m| m.get(outer))
-            .and_then(|v| v.as_object())
-            .and_then(|m| m.get(inner))
-            .cloned()
-    };
-    let num = |v: Option<Json>| v.and_then(|x| x.as_f64());
-    let num_or_null = |v: Option<Json>| num(v).map(Json::from).unwrap_or(Json::Null);
-
-    let p50 = num(get_inner("turn_taking_ms", "p50"));
-    out.insert("turn_p50_ms".into(), num_or_null(p50.map(Json::from)));
-    // Python `or` fallback: p95 from turn_taking_ms, else the flat key.
-    let p95 = num(get_inner("turn_taking_ms", "p95")).or_else(|| num(get("turn_taking_p95_ms")));
+    let tt = metrics
+        .and_then(|m| m.get("turn_taking_ms"))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let rec = metrics
+        .and_then(|m| m.get("recovery_ms"))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let att = metrics
+        .and_then(|m| m.get("turn_taking_audio_ms"))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    out.insert("ttfw_ms".into(), get("ttfw_ms").unwrap_or(Json::Null));
+    out.insert(
+        "turn_p50_ms".into(),
+        tt.get("p50").cloned().unwrap_or(Json::Null),
+    );
     out.insert(
         "turn_p95_ms".into(),
-        p95.map(Json::from).unwrap_or(Json::Null),
+        tt.get("p95").cloned().unwrap_or(Json::Null),
     );
-    out.insert("ttfw_ms".into(), num_or_null(get("ttfw_ms")));
     out.insert(
         "recovery_p50_ms".into(),
-        num_or_null(get_inner("recovery_ms", "p50")),
+        rec.get("p50").cloned().unwrap_or(Json::Null),
     );
-    out.insert("barge_count".into(), num_or_null(get("barge_count")));
+    out.insert(
+        "barge_count".into(),
+        get("barge_count").unwrap_or(Json::Null),
+    );
     out.insert(
         "barge_recovery_rate".into(),
-        num_or_null(get("barge_recovery_rate")),
+        get("barge_recovery_rate").unwrap_or(Json::Null),
     );
-    out.insert("talk_ratio".into(), num_or_null(get("talk_ratio")));
-    out.insert("ttfa_ms".into(), num_or_null(get("ttfa_run_ms")));
+    out.insert("talk_ratio".into(), get("talk_ratio").unwrap_or(Json::Null));
+    out.insert(
+        "user_words_p50".into(),
+        get("user_words_p50").unwrap_or(Json::Null),
+    );
+    out.insert(
+        "user_words_natural_p50".into(),
+        get("user_words_natural_p50").unwrap_or(Json::Null),
+    );
+    out.insert("ttfa_ms".into(), get("ttfa_run_ms").unwrap_or(Json::Null));
+    out.insert(
+        "turn_taking_audio_p50_ms".into(),
+        att.get("p50").cloned().unwrap_or(Json::Null),
+    );
     out.insert(
         "turn_taking_audio_p95_ms".into(),
-        num_or_null(get_inner("turn_taking_audio_ms", "p95")),
+        att.get("p95").cloned().unwrap_or(Json::Null),
     );
     out
 }
