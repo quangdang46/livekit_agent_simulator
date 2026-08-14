@@ -357,9 +357,16 @@ fn main() -> anyhow::Result<()> {
                     .unwrap_or_default()
                 {
                     let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let pass = c.get("pass").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                     let detail = c.get("detail").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("{} {name}: {detail}", if pass { "✓" } else { "✗" });
+                    println!(
+                        "{} {name}: {detail}",
+                        match status {
+                            "pass" => "✓",
+                            "fail" => "✗",
+                            _ => "⚠",
+                        }
+                    );
                 }
             }
             if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {

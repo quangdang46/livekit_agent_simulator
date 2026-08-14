@@ -45,7 +45,10 @@ async fn config_fail_early_return() {
         .as_object()
         .unwrap()
         .clone();
-    assert_eq!(cfg_check.get("pass").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(
+        cfg_check.get("status").and_then(|v| v.as_str()),
+        Some("fail")
+    );
 }
 
 #[tokio::test]
@@ -110,7 +113,10 @@ async fn bad_timezone_fails() {
         .as_object()
         .unwrap()
         .clone();
-    assert_eq!(tz_check.get("pass").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(
+        tz_check.get("status").and_then(|v| v.as_str()),
+        Some("fail")
+    );
     let detail = tz_check.get("detail").and_then(|v| v.as_str()).unwrap();
     assert!(detail.contains("Unknown IANA timezone"), "{detail}");
 }

@@ -8,7 +8,7 @@
 //! order. The structured `authoring` object (scorecard/tier/codes) is a P1.G
 //! follow-up.
 
-use serde_json::{Map, Value as Json};
+use serde_json::{json, Map, Value as Json};
 
 use crate::script::parse::parse_script_verify;
 
@@ -311,4 +311,387 @@ pub fn collect_authoring_warnings(
     }
 
     out
+}
+
+/// One structured authoring finding (port of `authoring.AuthoringWarning`).
+#[derive(Debug, Clone)]
+pub struct AuthoringFinding {
+    pub code: String,
+    pub severity: String, // "warn" | "info"
+    pub message: String,
+}
+
+/// Collect structured findings (port of `authoring.collect_authoring_findings`).
+/// Includes info-severity findings the flat warnings list omits.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_authoring_findings(
+    persona: &Map<String, Json>,
+    tags: &[String],
+    script_steps: &[Json],
+    script_verify: Option<&Json>,
+    asserts: Option<&Json>,
+    execute: Option<&crate::scenario::ExecuteSpec>,
+    sim: &crate::scenario::SimulatorSpec,
+    behavior_spec: Option<&Map<String, Json>>,
+) -> Vec<AuthoringFinding> {
+    let mut out: Vec<AuthoringFinding> = Vec::new();
+    let mut push = |code: &str, severity: &str, msg: String| {
+        out.push(AuthoringFinding {
+            code: code.to_string(),
+            severity: severity.to_string(),
+            message: msg,
+        });
+    };
+
+    let goals = persona_goals(persona);
+    if goals.is_empty() {
+        push(
+            "empty_goals",
+            "warn",
+            "Persona.goals is empty — Hamming: caller needs a job-to-be-done (underspecified personas pass on different agent workflows).".to_string(),
+        );
+    }
+
+    let brief = as_str(persona.get("brief").unwrap_or(&Json::Null))
+        .trim()
+        .to_string();
+    let situation = as_str(persona.get("situation").unwrap_or(&Json::Null))
+        .trim()
+        .to_string();
+    let steps = script_steps;
+    if brief.is_empty() && situation.is_empty() {
+        push(
+            "empty_brief",
+            "warn",
+            "Persona.brief and Persona.situation are empty — add who is calling and why (dialogue mode prefers situation + outcome).".to_string(),
+        );
+    } else if situation.is_empty() && steps.is_empty() {
+        push(
+            "dialogue_missing_situation",
+            "info",
+            "Dialogue scenario (no Script): consider Persona.situation + Persona.outcome so the caller has a world problem and a clear done-state.".to_string(),
+        );
+    }
+
+    let outcome = as_str(
+        persona
+            .get("outcome")
+            .or_else(|| persona.get("desired_outcome"))
+            .unwrap_or(&Json::Null),
+    )
+    .trim()
+    .to_string();
+    if !situation.is_empty() && outcome.is_empty() && steps.is_empty() {
+        push(
+            "situation_without_outcome",
+            "info",
+            "Persona.situation set without Persona.outcome — add what “done” looks like for PassCriteria/Judge.".to_string(),
+        );
+    }
+
+    let fs = first_speaker(execute, sim);
+    if fs == "agent" && steps.is_empty() && !silent_mode(persona) {
+        push(
+            "agent_first_no_script",
+            "warn",
+            "Dialogue with first_speaker=agent and no Script: if the agent-under-test also waits for the caller to speak first, both sides stay silent — prefer first_speaker=user, silent_mode, or a Script open cue.".to_string(),
+        );
+    }
+
+    let tags_norm = scenario_tags(tags);
+    let has_risk = tags_norm
+        .iter()
+        .any(|t| RISK_TAGS.contains(&t.as_str()) || t.starts_with("risk:"));
+    if tags_norm.is_empty() {
+        push(
+            "no_tags",
+            "info",
+            "Scenario has no metadata.tags — add a risk/lifecycle tag (smoke, draft, blocking, scheduled, exploratory, regression).".to_string(),
+        );
+    } else if !has_risk {
+        push(
+            "no_risk_tag",
+            "warn",
+            "Scenario tags have no risk/lifecycle hint (prefer one of: smoke, draft, blocking, scheduled, exploratory, regression).".to_string(),
+        );
+    }
+
+    let traits = persona_traits(persona);
+    let stress: Vec<&String> = traits
+        .iter()
+        .filter(|t| STRESS_TRAITS.contains(&t.as_str()))
+        .collect();
+    let has_interaction = !steps.is_empty()
+        || behavior_spec.is_some()
+        || persona
+            .get("speech_conditions")
+            .and_then(|v| v.as_object())
+            .map(|sc| {
+                sc.get("barge_policy").is_some()
+                    || sc.get("noise").is_some()
+                    || sc.get("ambient").is_some()
+                    || sc.get("silence_ms").is_some()
+                    || sc.get("silent_mode").is_some()
+                    || sc.get("interruption_rate").is_some()
+            })
+            .unwrap_or(false);
+    if !stress.is_empty() && !has_interaction && !silent_mode(persona) {
+        let py_list = format!(
+            "[{}]",
+            stress
+                .iter()
+                .map(|t| format!("'{}'", t))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        push(
+            "stress_trait_without_interaction",
+            "warn",
+            format!("Traits {py_list} imply interaction stress but there is no Script/Behavior/speech_conditions step — CI cannot hard-prove interrupt/silence/hangup (prompt-only traits are soft)."),
+        );
+    }
+
+    let barges: Vec<&Json> = steps
+        .iter()
+        .filter(|s| counts_for_recovery_barge_step(s))
+        .collect();
+    if !barges.is_empty() && !has_recovery_proof(asserts, script_verify) {
+        let ids: Vec<String> = barges
+            .iter()
+            .take(5)
+            .map(|s| as_str(s.get("id").unwrap_or(&Json::Null)))
+            .collect();
+        push(
+            "barge_without_recovery",
+            "warn",
+            format!(
+                "Recovery barge step(s) present ({}) but no Assert outcome type=recovery and script_verify.min_agent_finals_after_barge_in is 0 — add recovery assert so CI proves agent re-engages.",
+                ids.join(", ")
+            ),
+        );
+    }
+
+    let hangups: Vec<&Json> = steps
+        .iter()
+        .filter(|s| as_str(s.get("action").unwrap_or(&Json::Null)).to_lowercase() == "hang_up")
+        .collect();
+    if !hangups.is_empty() && !has_ended_by_proof(asserts) {
+        push(
+            "hang_up_without_ended_by",
+            "warn",
+            "Script hang_up present but no Assert outcome type=ended_by — add ended_by to prove which side ended the call.".to_string(),
+        );
+    }
+
+    let constraints = persona_constraints(persona);
+    if !constraints.is_empty() && !has_constraint_proof(asserts) {
+        push(
+            "constraint_without_assert",
+            "warn",
+            "Persona.constraints present but no Assert outcome type=constraint_respected — prompt-only constraints are soft; add constraint_respected for hard CI.".to_string(),
+        );
+    }
+
+    let dtmf_steps: Vec<&Json> = steps
+        .iter()
+        .filter(|s| as_str(s.get("action").unwrap_or(&Json::Null)).to_lowercase() == "dtmf")
+        .collect();
+    if !dtmf_steps.is_empty() && !tags_norm.iter().any(|t| t == "draft") {
+        push(
+            "dtmf_untagged_draft",
+            "info",
+            "Script action=dtmf present — tag scenario draft until the agent under test handles SIP DTMF (sim can send; many agents only parse spoken digits).".to_string(),
+        );
+    }
+
+    if silent_mode(persona) {
+        push(
+            "silent_mode_active",
+            "info",
+            "silent_mode=true: freestyle/nudge/auto barge-noise are suppressed — assert agent reprompt/timeout/ended_by rather than goals_met speech.".to_string(),
+        );
+    }
+
+    out
+}
+
+/// Port of `authoring.authoring_scorecard` — the 6-dimension 0–2 rubric (max 12).
+pub fn authoring_scorecard(
+    persona: &Map<String, Json>,
+    tags: &[String],
+    script_steps: &[Json],
+    script_verify: Option<&Json>,
+    asserts: Option<&Json>,
+    behavior_spec: Option<&Map<String, Json>>,
+) -> Map<String, Json> {
+    let goals = persona_goals(persona);
+    let constraints = persona_constraints(persona);
+    let barges: Vec<&Json> = script_steps
+        .iter()
+        .filter(|s| counts_for_recovery_barge_step(s))
+        .collect();
+    let has_assert = asserts.is_some();
+    let tags_norm = scenario_tags(tags);
+    let has_risk = tags_norm
+        .iter()
+        .any(|t| RISK_TAGS.contains(&t.as_str()) || t.starts_with("risk:"));
+    let has_behavior = !barges.is_empty() || behavior_spec.is_some() || !script_steps.is_empty();
+    let has_interaction_proof = has_recovery_proof(asserts, script_verify)
+        || has_ended_by_proof(asserts)
+        || has_constraint_proof(asserts);
+
+    let mut dims = Map::new();
+    dims.insert("goals".into(), json!(if goals.is_empty() { 0 } else { 2 }));
+    dims.insert(
+        "constraints".into(),
+        json!(if !constraints.is_empty() {
+            2
+        } else if !goals.is_empty() {
+            1
+        } else {
+            0
+        }),
+    );
+    dims.insert("behavior".into(), json!(if has_behavior { 2 } else { 0 }));
+    dims.insert("assertion".into(), json!(0));
+    dims.insert(
+        "risk_tags".into(),
+        json!(if has_risk {
+            2
+        } else if !tags_norm.is_empty() {
+            1
+        } else {
+            0
+        }),
+    );
+    dims.insert(
+        "interaction_proof".into(),
+        json!(if has_interaction_proof {
+            2
+        } else if has_assert {
+            1
+        } else {
+            0
+        }),
+    );
+    if has_assert && !barges.is_empty() && !has_recovery_proof(asserts, script_verify) {
+        dims.insert("assertion".into(), json!(1));
+    } else if has_assert {
+        dims.insert("assertion".into(), json!(2));
+    }
+    let total: i64 = dims.values().filter_map(|v| v.as_i64()).sum();
+    let mut m = Map::new();
+    m.insert("dimensions".into(), Json::Object(dims));
+    m.insert("total".into(), json!(total));
+    m.insert("max".into(), json!(12));
+    m
+}
+
+/// Port of `authoring.authoring_tier` — score + warn codes → suite tier.
+pub fn authoring_tier(scorecard: &Map<String, Json>, findings: &[AuthoringFinding]) -> String {
+    let total = scorecard.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
+    let max_s = scorecard.get("max").and_then(|v| v.as_i64()).unwrap_or(12);
+    let codes: std::collections::HashSet<&str> = findings
+        .iter()
+        .filter(|f| f.severity == "warn")
+        .map(|f| f.code.as_str())
+        .collect();
+    let critical = [
+        "empty_goals",
+        "barge_without_recovery",
+        "stress_trait_without_interaction",
+    ];
+    let has_critical = codes.iter().any(|c| critical.contains(c));
+    if has_critical || total < std::cmp::max(4, max_s / 3) {
+        return "exploratory".to_string();
+    }
+    if total >= std::cmp::max(8, (max_s * 2) / 3) && !has_critical {
+        return "blocking".to_string();
+    }
+    "scheduled".to_string()
+}
+
+/// Full structured authoring payload for validate_scenario (port of
+/// `authoring.build_authoring_report`).
+#[allow(clippy::too_many_arguments)]
+pub fn build_authoring_report(
+    persona: &Map<String, Json>,
+    tags: &[String],
+    script_steps: &[Json],
+    script_verify: Option<&Json>,
+    asserts: Option<&Json>,
+    execute: Option<&crate::scenario::ExecuteSpec>,
+    sim: &crate::scenario::SimulatorSpec,
+    behavior_spec: Option<&Map<String, Json>>,
+) -> Map<String, Json> {
+    let findings = collect_authoring_findings(
+        persona,
+        tags,
+        script_steps,
+        script_verify,
+        asserts,
+        execute,
+        sim,
+        behavior_spec,
+    );
+    let scorecard = authoring_scorecard(
+        persona,
+        tags,
+        script_steps,
+        script_verify,
+        asserts,
+        behavior_spec,
+    );
+    let tier = authoring_tier(&scorecard, &findings);
+    let warn_findings: Vec<&AuthoringFinding> =
+        findings.iter().filter(|f| f.severity == "warn").collect();
+    let info_findings: Vec<&AuthoringFinding> =
+        findings.iter().filter(|f| f.severity == "info").collect();
+    let to_json = |f: &AuthoringFinding| {
+        let mut fm = Map::new();
+        fm.insert("code".into(), json!(f.code));
+        fm.insert("message".into(), json!(f.message));
+        fm.insert("severity".into(), json!(f.severity));
+        Json::Object(fm)
+    };
+    let mut m = Map::new();
+    m.insert("scorecard".into(), Json::Object(scorecard));
+    m.insert("tier".into(), json!(tier));
+    m.insert(
+        "warnings".into(),
+        Json::Array(warn_findings.iter().map(|f| to_json(f)).collect()),
+    );
+    m.insert(
+        "infos".into(),
+        Json::Array(info_findings.iter().map(|f| to_json(f)).collect()),
+    );
+    m.insert(
+        "warning_codes".into(),
+        json!(warn_findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect::<Vec<_>>()),
+    );
+    m.insert(
+        "info_codes".into(),
+        json!(info_findings
+            .iter()
+            .map(|f| f.code.clone())
+            .collect::<Vec<_>>()),
+    );
+    m.insert(
+        "message".into(),
+        json!(format!(
+            "authoring tier={tier} score={}/{} warns={} (soft — does not fail valid)",
+            m.get("scorecard")
+                .and_then(|v| v.as_object())
+                .and_then(|s| s.get("total"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+            12,
+            warn_findings.len()
+        )),
+    );
+    m.insert("soft".into(), json!(true));
+    m
 }

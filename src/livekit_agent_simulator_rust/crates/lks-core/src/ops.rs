@@ -150,6 +150,18 @@ pub fn op_validate_scenario(
         s.behavior_spec.as_ref(),
     ));
 
+    // Structured authoring payload (port of `authoring.build_authoring_report`).
+    let authoring = crate::authoring_warnings::build_authoring_report(
+        &s.persona,
+        &s.tags,
+        &s.script_steps,
+        s.script_verify.as_ref(),
+        s.asserts.as_ref(),
+        s.execute.as_ref(),
+        &s.simulator,
+        s.behavior_spec.as_ref(),
+    );
+
     let mut m = Map::new();
     m.insert("valid".into(), json!(true));
     m.insert("id".into(), json!(s.id));
@@ -164,6 +176,7 @@ pub fn op_validate_scenario(
     );
     m.insert("pass_criteria".into(), json!(s.pass_criteria));
     m.insert("warnings".into(), json!(warnings));
+    m.insert("authoring".into(), Json::Object(authoring));
     Ok(m)
 }
 
@@ -251,8 +264,23 @@ pub fn op_get_run_status(
         Ok(Some(run)) => {
             let mut m = Map::new();
             m.insert("found".into(), json!(true));
-            for (k, v) in run {
-                m.insert(k, v);
+            // Python get_run_status returns exactly these keys (no
+            // agent_name/verdict/summary_json) in this order.
+            for k in [
+                "run_id",
+                "status",
+                "scenario_id",
+                "room_name",
+                "started_utc",
+                "ended_utc",
+                "duration_ms",
+                "turn_count",
+                "tool_errors",
+                "report_dir",
+            ] {
+                if let Some(v) = run.get(k) {
+                    m.insert(k.to_string(), v.clone());
+                }
             }
             Ok(m)
         }
@@ -304,15 +332,14 @@ pub fn op_get_run_log(
         let Some(e) = v.as_object() else { continue };
         total += 1;
         let ekind = as_str(e.get("kind").unwrap_or(&Json::Null));
-        let Some(k) = kind else {
-            return Err(ConfigError("kind filter lost".into()));
-        };
-        if let Some(prefix) = k.strip_suffix('*') {
-            if !ekind.starts_with(prefix) {
+        if let Some(k) = kind {
+            if let Some(prefix) = k.strip_suffix('*') {
+                if !ekind.starts_with(prefix) {
+                    continue;
+                }
+            } else if ekind != k {
                 continue;
             }
-        } else if ekind != k {
-            continue;
         }
         if let Some(t) = turn {
             if e.get("turn").and_then(|v| v.as_i64()) != Some(t) {
@@ -924,12 +951,14 @@ pub fn op_preflight_core(
     let mut checks: Vec<Json> = Vec::new();
     let mut ok = true;
 
-    fn add(checks: &mut Vec<Json>, ok: &mut bool, name: &str, pass: bool, detail: String) {
+    /// Python preflight checks carry `status` ("pass"|"warn"|"fail"), not a
+    /// bool — replicate exactly. `fail` flips the aggregate `ok`.
+    fn add(checks: &mut Vec<Json>, ok: &mut bool, name: &str, status: &str, detail: String) {
         let mut c = Map::new();
         c.insert("name".into(), json!(name));
-        c.insert("pass".into(), json!(pass));
+        c.insert("status".into(), json!(status));
         c.insert("detail".into(), json!(detail));
-        if !pass {
+        if status == "fail" {
             *ok = false;
         }
         checks.push(Json::Object(c));
@@ -942,13 +971,13 @@ pub fn op_preflight_core(
                 &mut checks,
                 &mut ok,
                 "config",
-                true,
+                "pass",
                 cfg.dot_dir().join("config.yaml").display().to_string(),
             );
             cfg
         }
         Err(e) => {
-            add(&mut checks, &mut ok, "config", false, e.0);
+            add(&mut checks, &mut ok, "config", "fail", e.0);
             let mut m = Map::new();
             m.insert("ok".into(), json!(ok));
             m.insert("checks".into(), Json::Array(checks));
@@ -963,13 +992,13 @@ pub fn op_preflight_core(
         || url.starts_with("http://")
         || url.starts_with("https://")
     {
-        add(&mut checks, &mut ok, "livekit.url", true, url.clone());
+        add(&mut checks, &mut ok, "livekit.url", "pass", url.clone());
     } else {
         add(
             &mut checks,
             &mut ok,
             "livekit.url",
-            false,
+            "fail",
             format!("`{url}` must start with wss:// (LiveKit Cloud) or ws://"),
         );
     }
@@ -980,7 +1009,7 @@ pub fn op_preflight_core(
             &mut checks,
             &mut ok,
             "observe.timezone",
-            true,
+            "pass",
             cfg.observe.timezone.clone(),
         );
     } else {
@@ -988,7 +1017,7 @@ pub fn op_preflight_core(
             &mut checks,
             &mut ok,
             "observe.timezone",
-            false,
+            "fail",
             format!("Unknown IANA timezone `{}`", cfg.observe.timezone),
         );
     }
@@ -1000,7 +1029,7 @@ pub fn op_preflight_core(
         &mut checks,
         &mut ok,
         "folders",
-        true,
+        "pass",
         cfg.dot_dir().display().to_string(),
     );
 
@@ -1012,7 +1041,7 @@ pub fn op_preflight_core(
             &mut checks,
             &mut ok,
             &format!("simulator.api_key[{provider}]"),
-            false,
+            "fail",
             format!("missing — `simulator.api_key` required for provider {provider}"),
         );
     } else if key.len() < 20 {
@@ -1020,21 +1049,15 @@ pub fn op_preflight_core(
             &mut checks,
             &mut ok,
             &format!("simulator.api_key[{provider}]"),
-            true,
+            "warn",
             "Key looks unusually short".into(),
         );
-        // warn status is still pass=true in the checks array with a warn detail
-        if let Some(last) = checks.last_mut() {
-            if let Some(p) = last.get_mut("pass") {
-                *p = Json::Bool(true);
-            }
-        }
     } else {
         add(
             &mut checks,
             &mut ok,
             &format!("simulator.api_key[{provider}]"),
-            true,
+            "pass",
             "present".into(),
         );
     }
@@ -1072,7 +1095,11 @@ pub fn op_preflight_core(
             &mut checks,
             &mut ok,
             "telephony",
-            tel.outbound_trunk_id.is_some(),
+            if tel.outbound_trunk_id.is_some() {
+                "pass"
+            } else {
+                "warn"
+            },
             bits.join("; "),
         );
         if tel.outbound_trunk_id.is_some() && tel.sim_inbound_number.is_none() {
@@ -1080,7 +1107,7 @@ pub fn op_preflight_core(
                 &mut checks,
                 &mut ok,
                 "telephony.outbound_sim_callee",
-                true,
+                "warn",
                 "sim_inbound_number unset — outbound_sim_callee scenarios need a DID that \
                  hairpins into the sim-room (or Telephony.call_to per scenario). \
                  Dialing a real PSTN handset is outbound_human_pickup, not Gemini callee. \
@@ -1092,7 +1119,7 @@ pub fn op_preflight_core(
                 &mut checks,
                 &mut ok,
                 "telephony.outbound_sim_callee",
-                true,
+                "warn",
                 "sim_inbound_number set but outbound_trunk_id missing — SIP dial cannot run."
                     .into(),
             );
@@ -1101,7 +1128,7 @@ pub fn op_preflight_core(
                 &mut checks,
                 &mut ok,
                 "telephony.outbound_sim_callee",
-                true,
+                "warn",
                 "trunk + sim_inbound_number present — ensure LiveKit dispatch rule routes \
                  this DID into the lks room (Cloud hairpin). Real PSTN ≠ Gemini without that rule."
                     .into(),
@@ -1112,7 +1139,7 @@ pub fn op_preflight_core(
             &mut checks,
             &mut ok,
             "telephony",
-            true,
+            "pass",
             "not configured (WebRTC-only OK)".into(),
         );
     }

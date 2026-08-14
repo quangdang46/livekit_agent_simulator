@@ -234,12 +234,17 @@ impl RunStore {
     ) -> Result<Vec<Map<String, Json>>, rusqlite::Error> {
         let db = connect(&self.db_path)?;
         let mut out = Vec::new();
+        // Python sqlite_store.list_runs selects EXACTLY these columns (no
+        // ended_utc/report_dir/summary_json) — shape parity for list_runs.
+        let cols = "run_id, scenario_id, room_name, agent_name, status, started_utc, duration_ms, turn_count, tool_errors, verdict";
         let mut stmt = if scenario_id.is_some() {
-            db.prepare(
-                "SELECT * FROM runs WHERE scenario_id=?1 ORDER BY started_utc DESC LIMIT ?2",
-            )?
+            db.prepare(&format!(
+                "SELECT {cols} FROM runs WHERE scenario_id=?1 ORDER BY started_utc DESC LIMIT ?2"
+            ))?
         } else {
-            db.prepare("SELECT * FROM runs ORDER BY started_utc DESC LIMIT ?1")?
+            db.prepare(&format!(
+                "SELECT {cols} FROM runs ORDER BY started_utc DESC LIMIT ?1"
+            ))?
         };
         let mut rows = if let Some(sid) = scenario_id {
             stmt.query(params![sid, limit])?

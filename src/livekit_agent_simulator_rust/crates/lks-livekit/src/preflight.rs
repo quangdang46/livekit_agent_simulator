@@ -54,7 +54,7 @@ pub async fn op_preflight(
                     Ok(()) => {
                         let mut c = Map::new();
                         c.insert("name".into(), json!("livekit.api"));
-                        c.insert("pass".into(), json!(true));
+                        c.insert("status".into(), json!("pass"));
                         c.insert("detail".into(), json!("list_rooms OK"));
                         m.get_mut("checks")
                             .and_then(|v| v.as_array_mut())
@@ -64,7 +64,7 @@ pub async fn op_preflight(
                     Err(e) => {
                         let mut c = Map::new();
                         c.insert("name".into(), json!("livekit.api"));
-                        c.insert("pass".into(), json!(false));
+                        c.insert("status".into(), json!("fail"));
                         c.insert(
                             "detail".into(),
                             json!(e.0), // check_livekit_api already formats the full message
