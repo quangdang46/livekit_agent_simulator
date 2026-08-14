@@ -193,18 +193,35 @@ impl RunStore {
         Ok(())
     }
 
+    /// Convert a SQLite row to a JSON map with type fidelity — INTEGER columns
+    /// stay numbers (Python sqlite3 preserves ints; reading as strings was a
+    /// parity bug in get_run_status/list_runs/compare). Probes int → float →
+    /// string since rusqlite 0.40 has no public row column_type.
+    fn row_to_json(row: &rusqlite::Row<'_>) -> Map<String, Json> {
+        let stmt = row.as_ref();
+        let mut m = Map::new();
+        for i in 0..stmt.column_count() {
+            let name = stmt.column_name(i).unwrap_or("").to_string();
+            let val = if let Ok(Some(n)) = row.get::<_, Option<i64>>(i) {
+                Json::Number(n.into())
+            } else if let Ok(Some(f)) = row.get::<_, Option<f64>>(i) {
+                Json::from(f)
+            } else if let Ok(Some(s)) = row.get::<_, Option<String>>(i) {
+                Json::String(s)
+            } else {
+                Json::Null
+            };
+            m.insert(name, val);
+        }
+        m
+    }
+
     pub fn get_run(&self, run_id: &str) -> Result<Option<Map<String, Json>>, rusqlite::Error> {
         let db = connect(&self.db_path)?;
         let mut stmt = db.prepare("SELECT * FROM runs WHERE run_id=?1")?;
         let mut rows = stmt.query(params![run_id])?;
         if let Some(row) = rows.next()? {
-            let mut m = Map::new();
-            for i in 0..row.as_ref().column_count() {
-                let name = row.as_ref().column_name(i).unwrap_or("").to_string();
-                let val = row.get::<_, Option<String>>(i).unwrap_or(None);
-                m.insert(name, val.map(Json::String).unwrap_or(Json::Null));
-            }
-            Ok(Some(m))
+            Ok(Some(Self::row_to_json(row)))
         } else {
             Ok(None)
         }
@@ -230,13 +247,7 @@ impl RunStore {
             stmt.query(params![limit])?
         };
         while let Some(row) = rows.next()? {
-            let mut m = Map::new();
-            for i in 0..row.as_ref().column_count() {
-                let name = row.as_ref().column_name(i).unwrap_or("").to_string();
-                let val = row.get::<_, Option<String>>(i).unwrap_or(None);
-                m.insert(name, val.map(Json::String).unwrap_or(Json::Null));
-            }
-            out.push(m);
+            out.push(Self::row_to_json(row));
         }
         Ok(out)
     }
