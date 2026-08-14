@@ -5,6 +5,7 @@ pub mod caller_nudge;
 pub mod callers;
 pub mod degradation;
 pub mod dispatch;
+pub mod ops_execute;
 pub mod preflight;
 pub mod room;
 pub mod run;

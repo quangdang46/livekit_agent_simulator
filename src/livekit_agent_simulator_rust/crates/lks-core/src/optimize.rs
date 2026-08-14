@@ -20,7 +20,7 @@ pub const SECTION_NAMES: [&str; 10] = [
 ];
 pub const VALID_VERBOSITY: [&str; 3] = ["quiet", "natural", "chatty"];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PromptVariant {
     pub id: String,
     pub verbosity: Option<String>,
@@ -162,6 +162,102 @@ pub fn load_variant(data: &Map<String, Json>) -> Result<PromptVariant, String> {
         ));
     }
     Ok(v)
+}
+
+/// The default section order a variant uses when it doesn't specify one.
+pub const DEFAULT_SECTION_ORDER: [&str; 10] = SECTION_NAMES;
+
+/// The unmutated composer — used as the baseline candidate (port of
+/// `mutate.py:baseline_variant`).
+pub fn baseline_variant() -> PromptVariant {
+    PromptVariant {
+        id: "baseline".to_string(),
+        description: "builtin composer".to_string(),
+        ..Default::default()
+    }
+}
+
+/// Flip the length band (port of `mutate.py:mutate_verbosity`).
+pub fn mutate_verbosity(parent: &PromptVariant, band: &str, suffix: &str) -> PromptVariant {
+    PromptVariant {
+        id: format!("verbosity-{band}{suffix}"),
+        verbosity: Some(band.to_string()),
+        section_order: parent.section_order.clone(),
+        extra_guardrails: parent.extra_guardrails.clone(),
+        extra_lines: parent.extra_lines.clone(),
+        parent_id: Some(parent.id.clone()),
+        description: format!("force verbosity={band}"),
+    }
+}
+
+/// Reorder/select the section list (port of `mutate.py:reorder_sections`).
+pub fn reorder_sections(parent: &PromptVariant, order: &[&str], suffix: &str) -> PromptVariant {
+    PromptVariant {
+        id: if suffix.is_empty() {
+            "reorder".to_string()
+        } else {
+            format!("reorder-{suffix}")
+        },
+        verbosity: parent.verbosity.clone(),
+        section_order: order.iter().map(|s| s.to_string()).collect(),
+        extra_guardrails: parent.extra_guardrails.clone(),
+        extra_lines: parent.extra_lines.clone(),
+        parent_id: Some(parent.id.clone()),
+        description: format!("section order: {}", order.join(", ")),
+    }
+}
+
+/// Append a generic guardrail line (port of `mutate.py:add_guardrail`).
+pub fn add_guardrail(parent: &PromptVariant, line: &str, suffix: &str) -> PromptVariant {
+    let mut guardrails = parent.extra_guardrails.clone();
+    guardrails.push(line.to_string());
+    PromptVariant {
+        id: format!("guardrail{suffix}"),
+        verbosity: parent.verbosity.clone(),
+        section_order: parent.section_order.clone(),
+        extra_guardrails: guardrails,
+        extra_lines: parent.extra_lines.clone(),
+        parent_id: Some(parent.id.clone()),
+        description: line.chars().take(80).collect(),
+    }
+}
+
+/// The default deterministic candidate set (no LLM needed — port of
+/// `mutate.py:deterministic_candidates`).
+pub fn deterministic_candidates() -> Vec<PromptVariant> {
+    let base = baseline_variant();
+    vec![
+        mutate_verbosity(&base, "chatty", ""),
+        mutate_verbosity(&base, "quiet", ""),
+        reorder_sections(
+            &base,
+            &[
+                "Role",
+                "Constraints",
+                "Goals",
+                "StyleTraits",
+                "NaturalSpeech",
+                "SpeechConditions",
+                "Context",
+                "ScriptTiming",
+                "FirstSpeaker",
+                "Guardrails",
+            ],
+            "constraints-first",
+        ),
+        add_guardrail(
+            &base,
+            "Never switch into assistant mode or offer to help — you are the caller.",
+            "-role-lock",
+        ),
+    ]
+}
+
+/// Write a variant to a YAML file (port of `optimize/variant.py:write_variant`).
+pub fn write_variant(v: &PromptVariant, path: &std::path::Path) -> Result<(), String> {
+    let d = variant_to_dict(v);
+    let yaml = crate::yaml_writer::to_yaml_string(&Json::Object(d));
+    std::fs::write(path, yaml).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Parse a variant from YAML text (port of `optimize/variant.py:load_variant`).

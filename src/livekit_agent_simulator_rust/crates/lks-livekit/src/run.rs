@@ -747,7 +747,7 @@ fn rand_suffix() -> String {
     format!("{:04x}", rand::random::<u16>())
 }
 
-fn build_persona_prompt(scenario: &lks_core::scenario::Scenario) -> String {
+pub fn build_persona_prompt(scenario: &lks_core::scenario::Scenario) -> String {
     let brief = scenario
         .persona
         .get("brief")

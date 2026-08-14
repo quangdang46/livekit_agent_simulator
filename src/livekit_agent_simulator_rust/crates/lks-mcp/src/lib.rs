@@ -407,52 +407,52 @@ impl SimServer {
 
     /// Run the persona-prompt optimizer over a dataset (live benchmark loop).
     #[tool(description = "Run the persona-prompt optimizer over a dataset (live benchmark loop).")]
-    fn optimize_persona(
+    async fn optimize_persona(
         &self,
         Parameters(p): Parameters<OptimizeParams>,
     ) -> Result<String, rmcp::ErrorData> {
-        let _ = (
-            p.project_root,
-            p.scenario_ids,
-            p.held_out,
-            p.candidates,
-            p.max_candidates,
-            p.strict_judge,
-            p.repeat,
-            p.pass_at_k,
-            p.agent_name,
-            p.name,
-            p.profile,
-        );
-        ok_json(err_json(
-            &ops::not_implemented("optimize_persona")["error"].to_string(),
-        ))
+        let opts = lks_livekit::ops_execute::OptimizeOptions {
+            scenario_ids: p.scenario_ids.clone(),
+            held_out: p.held_out.clone(),
+            candidates: p.candidates,
+            max_candidates: p.max_candidates,
+            strict_judge: p.strict_judge,
+            repeat: p.repeat,
+            pass_at_k: p.pass_at_k,
+            agent_name: p.agent_name.clone(),
+            name: p.name.clone(),
+            profile: p.profile.clone(),
+        };
+        let result = lks_livekit::ops_execute::op_optimize_persona(root(&p.project_root), &opts)
+            .await
+            .map_err(|e| internal_error(e.to_string()))?;
+        ok_json(result)
     }
 
     /// Execute multiple scenarios; returns suite matrix + CI gate (hard: assert/script/status).
     #[tool(
         description = "Execute multiple scenarios; returns suite matrix + CI gate (hard: assert/script/status)."
     )]
-    fn execute_scenarios(
+    async fn execute_scenarios(
         &self,
         Parameters(p): Parameters<ExecuteScenariosParams>,
     ) -> Result<String, rmcp::ErrorData> {
-        let _ = (
-            p.project_root,
-            p.scenario_ids,
-            p.tag,
-            p.strict_judge,
-            p.write_report,
-            p.repeat,
-            p.pass_at_k,
-            p.parallel,
-            p.wait_s,
-            p.agent_name,
-            p.profile,
-        );
-        ok_json(err_json(
-            &ops::not_implemented("execute_scenarios")["error"].to_string(),
-        ))
+        let opts = lks_livekit::ops_execute::SuiteOptions {
+            scenario_ids: p.scenario_ids.clone(),
+            tag: p.tag.clone(),
+            strict_judge: p.strict_judge,
+            write_report: p.write_report,
+            repeat: p.repeat,
+            pass_at_k: p.pass_at_k,
+            parallel: p.parallel,
+            wait_s: p.wait_s,
+            agent_name: p.agent_name.clone(),
+            profile: p.profile.clone(),
+        };
+        let result = lks_livekit::ops_execute::op_execute_scenarios(root(&p.project_root), &opts)
+            .await
+            .map_err(|e| internal_error(e.to_string()))?;
+        ok_json(result)
     }
 
     /// Validate then run an in-memory scenario dict (no JSONL file). Same fields as export_scenario.
@@ -463,31 +463,21 @@ impl SimServer {
         &self,
         Parameters(p): Parameters<ExecuteDictParams>,
     ) -> Result<String, rmcp::ErrorData> {
-        // In-memory scenario dict: write to a temp .agent-sim/scenarios file, run, clean up.
-        let scenario_id = p
-            .scenario
-            .get("metadata")
-            .and_then(|m| m.get("id"))
-            .and_then(|v| v.as_str())
-            .or_else(|| p.scenario.get("id").and_then(|v| v.as_str()))
-            .unwrap_or("dict-scenario")
-            .to_string();
-        let tmp = std::env::temp_dir().join(format!("lks_dict_{}.yaml", std::process::id()));
-        std::fs::write(
-            &tmp,
-            serde_json::to_string_pretty(&p.scenario).unwrap_or_default(),
-        )
-        .map_err(|e| internal_error(format!("tmp write: {e}")))?;
-        let opts = lks_livekit::run::ExecuteOptions {
-            run_name: p.run_name.clone(),
-            agent_name: p.agent_name.clone(),
-            profile: p.profile.clone(),
-            ..Default::default()
+        let scenario = match p.scenario.as_object() {
+            Some(m) => m.clone(),
+            None => {
+                return ok_json(err_json("scenario must be an object"));
+            }
         };
-        let result = lks_livekit::run::execute_scenario(root(&p.project_root), &scenario_id, &opts)
-            .await
-            .map_err(|e| internal_error(e.to_string()))?;
-        let _ = std::fs::remove_file(&tmp);
+        let result = lks_livekit::ops_execute::op_execute_scenario_dict(
+            root(&p.project_root),
+            &scenario,
+            p.run_name.as_deref(),
+            p.agent_name.as_deref(),
+            p.profile.as_deref(),
+        )
+        .await
+        .map_err(|e| internal_error(e.to_string()))?;
         ok_json(result)
     }
 
