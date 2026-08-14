@@ -723,48 +723,10 @@ pub fn op_list_cues(project_root: &Path) -> Result<Map<String, Json>, ConfigErro
     ]
     .iter()
     .map(|asset| {
-        let mut m = Map::new();
-        m.insert("asset".into(), json!(asset));
-        let meta = builtin_cue_meta(asset);
-        let name = asset
-            .strip_prefix("builtin:")
-            .or_else(|| asset.strip_prefix('@'))
-            .unwrap_or(asset)
-            .trim();
-        let file = meta.map(|m| m.1.to_string());
-        let pkg_cand = cues_dir.join(file.clone().unwrap_or_else(|| name.to_string()));
-        let resolved = if pkg_cand.is_file() {
-            Some(pkg_cand)
-        } else {
-            let tdir_cand = target_dir.join(file.clone().unwrap_or_else(|| name.to_string()));
-            if tdir_cand.is_file() {
-                Some(tdir_cand)
-            } else {
-                None
-            }
-        };
-        match resolved {
-            Some(p) => {
-                m.insert("ok".into(), json!(true));
-                m.insert("path".into(), json!(p.to_string_lossy().into_owned()));
-                if let Some((_, fname, desc, kind, icls, locale, text)) = meta {
-                    m.insert("description".into(), json!(desc));
-                    m.insert("kind".into(), json!(kind));
-                    m.insert("interrupt_class".into(), json!(icls));
-                    m.insert("locale".into(), json!(locale));
-                    m.insert("text".into(), json!(text));
-                    m.insert("file".into(), json!(fname));
-                }
-            }
-            None => {
-                m.insert("ok".into(), json!(false));
-                m.insert(
-                    "error".into(),
-                    json!(format!("Cue asset not found: {asset}")),
-                );
-            }
-        }
-        (asset.to_string(), m)
+        (
+            asset.to_string(),
+            describe_cue_resolution(project_root, asset),
+        )
     })
     .collect();
     let mut rex = Map::new();
@@ -812,6 +774,60 @@ pub fn op_list_cues(project_root: &Path) -> Result<Map<String, Json>, ConfigErro
     );
     out.insert("resolve_examples".into(), Json::Object(rex));
     Ok(out)
+}
+
+/// Resolve one cue asset with metadata (port of `describe_resolution`):
+/// builtin alias → BUILTIN_CUES file (target dir override wins), bare name →
+/// target dir; error payload when unresolvable.
+pub fn describe_cue_resolution(project_root: &Path, asset: &str) -> Map<String, Json> {
+    let mut m = Map::new();
+    m.insert("asset".into(), json!(asset));
+    let cfg = load_config(project_root.to_path_buf(), None).ok();
+    let cues_dir = crate::authoring::package_templates_dir().join("cues");
+    let target_dir = cfg.map(|c| c.cues_dir());
+    let meta = builtin_cue_meta(asset);
+    let name = asset
+        .strip_prefix("builtin:")
+        .or_else(|| asset.strip_prefix('@'))
+        .unwrap_or(asset)
+        .trim();
+    let file = meta.map(|m| m.1.to_string());
+    let pkg_cand = cues_dir.join(file.clone().unwrap_or_else(|| name.to_string()));
+    let resolved = if pkg_cand.is_file() {
+        Some(pkg_cand)
+    } else {
+        let tdir = target_dir
+            .clone()
+            .unwrap_or_else(|| project_root.join(".agent-sim/cues"));
+        let tdir_cand = tdir.join(file.clone().unwrap_or_else(|| name.to_string()));
+        if tdir_cand.is_file() {
+            Some(tdir_cand)
+        } else {
+            None
+        }
+    };
+    match resolved {
+        Some(p) => {
+            m.insert("ok".into(), json!(true));
+            m.insert("path".into(), json!(p.to_string_lossy().into_owned()));
+            if let Some((_, fname, desc, kind, icls, locale, text)) = meta {
+                m.insert("description".into(), json!(desc));
+                m.insert("kind".into(), json!(kind));
+                m.insert("interrupt_class".into(), json!(icls));
+                m.insert("locale".into(), json!(locale));
+                m.insert("text".into(), json!(text));
+                m.insert("file".into(), json!(fname));
+            }
+        }
+        None => {
+            m.insert("ok".into(), json!(false));
+            m.insert(
+                "error".into(),
+                json!(format!("Cue asset not found: {asset}")),
+            );
+        }
+    }
+    m
 }
 
 /// Look up builtin cue metadata by alias (port of `builtin_cue_meta`).

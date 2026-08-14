@@ -442,22 +442,28 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Cues { resolve, json }) => {
             if let Some(asset) = &resolve {
+                // Full resolution (port of describe_resolution): builtin alias →
+                // the BUILTIN_CUES file, with ok/path/description/kind/icls/
+                // locale/text/file fields. Falls back to target dir for bare
+                // file names; error payload when unresolvable.
                 let root_path = std::path::Path::new(&root);
-                let dot = root_path.join(".agent-sim");
-                if dot.is_dir() {
-                    let cfg = lks_core::config::load_config(root_path.to_path_buf(), None).ok();
-                    if let Some(cfg) = cfg {
-                        let cues = cfg.cues_dir();
-                        let cand = if let Some(name) = asset.strip_prefix("builtin:") {
-                            cues.join(format!("{name}.wav"))
-                        } else {
-                            cues.join(asset)
-                        };
-                        println!("{}", cand.display());
-                        return Ok(());
+                let out = lks_core::ops::describe_cue_resolution(root_path, asset);
+                if json {
+                    print_json(&serde_json::to_value(out)?)?;
+                } else {
+                    let ok = out.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if ok {
+                        println!(
+                            "{}",
+                            out.get("path").and_then(|v| v.as_str()).unwrap_or("?")
+                        );
+                    } else {
+                        println!(
+                            "error: {}",
+                            out.get("error").and_then(|v| v.as_str()).unwrap_or("?")
+                        );
                     }
                 }
-                println!("{asset}");
                 return Ok(());
             }
             let c = ops::op_list_cues(std::path::Path::new(&root))?;
