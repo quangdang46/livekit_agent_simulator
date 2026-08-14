@@ -641,6 +641,17 @@ pub async fn execute_scenario_parsed(
     };
 
     let mut w = writer_arc.lock().await;
+    // Port of run_orchestrator.py:455-461 — a run failure emits run.error
+    // (spec {error, mode}) BEFORE finalize so the report carries the cause.
+    if let Err(e) = &run_result {
+        let mut err_spec = serde_json::Map::new();
+        err_spec.insert("error".into(), serde_json::Value::String(e.to_string()));
+        err_spec.insert(
+            "mode".into(),
+            serde_json::Value::String(scenario.effective_caller_mode().to_string()),
+        );
+        w.emit("run.error", Some(&err_spec), "mcp", None, None, false, None);
+    }
     // finalize() emits run.ended (source mcp) + writes summary.json (full 36-key
     // metrics) / meta.json / timeline.md, and returns the summary map.
     let mut meta = serde_json::Map::new();

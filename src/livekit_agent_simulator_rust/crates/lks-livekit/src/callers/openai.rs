@@ -105,6 +105,32 @@ impl OpenAiCallerBridge {
             &self.room_name,
         )?;
         let (room, room_events) = connect_room(&livekit_cfg.url, &token, &self.room_name).await?;
+        // sim.connected (port of webrtc.py sim_leg connect).
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "identity".into(),
+                serde_json::Value::String(self.identity.clone()),
+            );
+            spec_m.insert(
+                "room".into(),
+                serde_json::Value::String(self.room_name.clone()),
+            );
+            spec_m.insert(
+                "mode".into(),
+                serde_json::Value::String("webrtc_sim".into()),
+            );
+            w.emit(
+                "sim.connected",
+                Some(&spec_m),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
 
         // Publish a 24 kHz mono audio source as the caller mic.
         let source = publish_mic_shared(&room)?;
@@ -116,7 +142,8 @@ impl OpenAiCallerBridge {
         }
         let _ = source;
 
-        // 2. Dispatch the agent into the room (server API).
+        // 2. Dispatch the agent into the room (server API) — emit dispatch.created
+        //    (port of webrtc.py sim_leg connect).
         let api_host = livekit_cfg
             .url
             .replace("wss://", "https://")
@@ -130,6 +157,62 @@ impl OpenAiCallerBridge {
             None,
         )
         .await?;
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "room".into(),
+                serde_json::Value::String(self.room_name.clone()),
+            );
+            spec_m.insert(
+                "agent_name".into(),
+                serde_json::Value::String(livekit_cfg.agent_name.clone()),
+            );
+            spec_m.insert(
+                "dispatch_id".into(),
+                serde_json::Value::String(dispatch_id.clone()),
+            );
+            spec_m.insert("metadata_set".into(), serde_json::Value::Bool(false));
+            spec_m.insert(
+                "mode".into(),
+                serde_json::Value::String("webrtc_sim".into()),
+            );
+            w.emit(
+                "dispatch.created",
+                Some(&spec_m),
+                "mcp",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+
+        // Wait for the agent participant (port of adapter.wait_for_agent —
+        // AgentJoinTimeout on deadline).
+        let agent_identity =
+            crate::dispatch::wait_for_agent_join(&api_host, livekit_cfg, &self.room_name).await?;
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "identity".into(),
+                serde_json::Value::String(agent_identity.clone()),
+            );
+            spec_m.insert(
+                "mode".into(),
+                serde_json::Value::String("webrtc_sim".into()),
+            );
+            w.emit(
+                "dispatch.agent_joined",
+                Some(&spec_m),
+                "mcp",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
 
         // 3. OpenAI Realtime WebSocket.
         let url = format!("{OPENAI_WS_URL}?model={}", sim_cfg.voice.model);
