@@ -188,10 +188,17 @@ pub fn init_scenario(
 
     let next = vec![
         json!(format!(
-            "Edit .agent-sim/scenarios/{scenario_id}.yaml (persona.brief is required)"
+            "Edit {} — # lines are guides; remove unused sections",
+            dest.display()
         )),
-        json!("Validate: lks validate <id> --root ."),
-        json!("Run: lks execute <id> --root ."),
+        json!(format!(
+            "Validate: lks validate {scenario_id} --root {}",
+            root.display()
+        )),
+        json!(format!(
+            "Run: lks execute {scenario_id} --root {}",
+            root.display()
+        )),
     ];
 
     let mut out = Map::new();
