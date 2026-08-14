@@ -390,13 +390,18 @@ impl SimServer {
         &self,
         Parameters(p): Parameters<ExecuteParams>,
     ) -> Result<String, rmcp::ErrorData> {
-        let result = lks_livekit::run::execute_scenario(
-            root(&p.project_root),
-            &p.scenario_id,
-            p.run_name.as_deref(),
-        )
-        .await
-        .map_err(|e| internal_error(e.to_string()))?;
+        let opts = lks_livekit::run::ExecuteOptions {
+            run_name: p.run_name.clone(),
+            repeat: p.repeat,
+            pass_at_k: p.pass_at_k,
+            agent_name: p.agent_name.clone(),
+            optimized: p.optimized.clone(),
+            profile: p.profile.clone(),
+        };
+        let result =
+            lks_livekit::run::execute_scenario(root(&p.project_root), &p.scenario_id, &opts)
+                .await
+                .map_err(|e| internal_error(e.to_string()))?;
         ok_json(result)
     }
 
@@ -473,13 +478,15 @@ impl SimServer {
             serde_json::to_string_pretty(&p.scenario).unwrap_or_default(),
         )
         .map_err(|e| internal_error(format!("tmp write: {e}")))?;
-        let result = lks_livekit::run::execute_scenario(
-            root(&p.project_root),
-            &scenario_id,
-            p.run_name.as_deref(),
-        )
-        .await
-        .map_err(|e| internal_error(e.to_string()))?;
+        let opts = lks_livekit::run::ExecuteOptions {
+            run_name: p.run_name.clone(),
+            agent_name: p.agent_name.clone(),
+            profile: p.profile.clone(),
+            ..Default::default()
+        };
+        let result = lks_livekit::run::execute_scenario(root(&p.project_root), &scenario_id, &opts)
+            .await
+            .map_err(|e| internal_error(e.to_string()))?;
         let _ = std::fs::remove_file(&tmp);
         ok_json(result)
     }

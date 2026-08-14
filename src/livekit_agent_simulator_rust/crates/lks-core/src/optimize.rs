@@ -163,3 +163,115 @@ pub fn load_variant(data: &Map<String, Json>) -> Result<PromptVariant, String> {
     }
     Ok(v)
 }
+
+/// Parse a variant from YAML text (port of `optimize/variant.py:load_variant`).
+pub fn parse_variant_yaml(text: &str) -> Result<PromptVariant, String> {
+    let val: Json = yaml_serde::from_str(text).map_err(|e| format!("not valid YAML: {e}"))?;
+    let data = match val {
+        Json::Object(m) => m,
+        _ => return Err("optimized prompt artifact must be a mapping".to_string()),
+    };
+    load_variant(&data)
+}
+
+/// Compose the persona system instruction a saved variant would produce
+/// (port of `optimize/apply.py:policy_for_variant` + `build_persona_system_instruction`).
+///
+/// Applies the variant's verbosity to the persona speech_conditions and
+/// reorders sections (subset semantics — unlisted sections appended), then
+/// composes the full 10-section prompt. `persona` is the scenario persona map.
+pub fn render_variant_prompt_for_persona(
+    variant: &PromptVariant,
+    persona: &Map<String, Json>,
+    locale: &str,
+    context: &Map<String, Json>,
+    script_steps: &[Json],
+    first_speaker: &str,
+) -> String {
+    // Apply variant verbosity to a persona copy (apply_variant_to_persona).
+    let mut persona = persona.clone();
+    if let Some(verb) = &variant.verbosity {
+        let mut sc = persona
+            .get("speech_conditions")
+            .or_else(|| persona.get("speechConditions"))
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        sc.insert("verbosity".into(), Json::String(verb.clone()));
+        persona.insert("speech_conditions".into(), Json::Object(sc));
+    }
+
+    let ctx = crate::caller_policy::CallerPolicyContext {
+        persona,
+        locale: locale.to_string(),
+        context: context.clone(),
+        script_steps: script_steps.to_vec(),
+        first_speaker: first_speaker.to_string(),
+    };
+
+    // Compose with optional section reorder + guardrail extras.
+    let all = crate::prompt_sections::all_sections(&ctx);
+    let names: Vec<&str> = SECTION_NAMES.to_vec();
+    let mut by_name: std::collections::HashMap<&str, Vec<String>> =
+        std::collections::HashMap::new();
+    for (name, lines) in names.iter().zip(all.iter()) {
+        by_name.insert(name, lines.clone());
+    }
+
+    let mut ordered: Vec<&str> = Vec::new();
+    if !variant.section_order.is_empty() {
+        for name in &variant.section_order {
+            if names.contains(&name.as_str()) {
+                ordered.push(name.as_str());
+            }
+        }
+        // Append any default sections not listed (subset semantics).
+        for name in &names {
+            if !variant.section_order.contains(&name.to_string()) {
+                ordered.push(name);
+            }
+        }
+    } else {
+        ordered = names.clone();
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut seen_guardrails = false;
+    for name in ordered {
+        let mut section_lines = by_name.get(name).cloned().unwrap_or_default();
+        if name == "Guardrails" {
+            seen_guardrails = true;
+            let extras: Vec<String> = variant
+                .extra_guardrails
+                .iter()
+                .chain(
+                    variant
+                        .extra_lines
+                        .get("Guardrails")
+                        .map(|v| v.iter())
+                        .unwrap_or_else(|| [].iter()),
+                )
+                .cloned()
+                .collect();
+            if !extras.is_empty() {
+                section_lines.extend(extras);
+            }
+        }
+        lines.extend(section_lines);
+    }
+    // Guardrails not in the reorder → append at the end (subset semantics keeps it).
+    if !seen_guardrails {
+        lines.extend(by_name.get("Guardrails").cloned().unwrap_or_default());
+    }
+    lines.join("\n")
+}
+
+/// Parse a variant from YAML text and render the prompt it would produce.
+/// Used by the runtime `--optimized` seam (no persona override → builtin compose).
+pub fn render_variant_prompt(variant: &PromptVariant) -> String {
+    // Without a persona, the variant's structural knobs are the surface:
+    // compose the guardrail/extra-line deltas onto a minimal empty prompt.
+    // (The full persona-aware path runs through render_variant_prompt_for_persona.)
+    let empty = Map::new();
+    render_variant_prompt_for_persona(variant, &empty, "en-US", &empty, &[], "agent")
+}

@@ -68,6 +68,24 @@ enum Command {
         /// Override the run-name slug after the auto seq prefix.
         #[arg(long)]
         name: Option<String>,
+        /// Run the scenario N times for flake control (pass@k).
+        #[arg(long, short = 'n', default_value_t = 1)]
+        repeat: i64,
+        /// Minimum hard-pass iterations (default = repeat).
+        #[arg(long, short = 'k')]
+        pass_at_k: Option<i64>,
+        /// Override the target LiveKit worker name for this run.
+        #[arg(long)]
+        agent_name: Option<String>,
+        /// Apply a saved `lks optimize` artifact as the persona-prompt override.
+        #[arg(long)]
+        optimized: Option<String>,
+        /// Select a named `simulator.profiles.<name>` caller profile.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Emit raw JSON instead of a human-readable table.
+        #[arg(long)]
+        json: bool,
     },
     /// Status of a run from SQLite: running / done / failed.
     Status { run_id: String },
@@ -264,11 +282,28 @@ fn main() -> anyhow::Result<()> {
             &scenario_id,
             force,
         )?),
-        Some(Command::Execute { scenario_id, name }) => {
+        Some(Command::Execute {
+            scenario_id,
+            name,
+            repeat,
+            pass_at_k,
+            agent_name,
+            optimized,
+            profile,
+            json: _,
+        }) => {
+            let opts = lks_livekit::run::ExecuteOptions {
+                run_name: name,
+                repeat,
+                pass_at_k,
+                agent_name,
+                optimized,
+                profile,
+            };
             let result = rt.block_on(lks_livekit::run::execute_scenario(
                 std::path::Path::new(&root),
                 &scenario_id,
-                name.as_deref(),
+                &opts,
             ))?;
             println!(
                 "run_id: {}\nstatus: {}\nreport_dir: {}",
