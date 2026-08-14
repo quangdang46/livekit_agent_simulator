@@ -122,3 +122,59 @@ fn user_word_origin_split() {
     assert_eq!(m["user_words_natural_count"], json!(1));
     assert_eq!(m["user_words_script_count"], json!(1));
 }
+
+#[test]
+fn empty_run_metrics_full_pct_blocks() {
+    // Python _pct_block keeps the 7-key shape with nulls on empty samples —
+    // parity for zero-activity runs (was emitting {} before the fix).
+    use lks_core::metrics::compute_voice_metrics;
+    let m = compute_voice_metrics(&[]);
+    for key in ["turn_taking_ms", "recovery_ms", "turn_taking_audio_ms"] {
+        let block = m.get(key).and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            block.get("count").and_then(|v| v.as_i64()),
+            Some(0),
+            "{key}"
+        );
+        assert!(
+            block.get("p50").map(|v| v.is_null()).unwrap_or(false),
+            "{key} p50 null"
+        );
+        assert!(
+            block.get("p95").map(|v| v.is_null()).unwrap_or(false),
+            "{key} p95 null"
+        );
+        assert!(
+            block.get("max").map(|v| v.is_null()).unwrap_or(false),
+            "{key} max null"
+        );
+        assert!(
+            block.get("min").map(|v| v.is_null()).unwrap_or(false),
+            "{key} min null"
+        );
+        assert!(
+            block.get("mean").map(|v| v.is_null()).unwrap_or(false),
+            "{key} mean null"
+        );
+    }
+}
+
+#[test]
+fn pct_block_nonempty_values() {
+    use lks_core::metrics::compute_voice_metrics;
+    use serde_json::{json, Map};
+    let mut e = Map::new();
+    e.insert("kind".into(), json!("transcript.agent.final"));
+    e.insert("ts_mono_ms".into(), json!(1000));
+    let mut spec = Map::new();
+    spec.insert("text".into(), json!("hello world"));
+    spec.insert("turn_taking_ms".into(), json!(500.0));
+    e.insert("spec".into(), json!(spec));
+    let m = compute_voice_metrics(&[e]);
+    let tt = m.get("turn_taking_ms").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(tt.get("count").and_then(|v| v.as_i64()), Some(1));
+    assert_eq!(tt.get("p50").and_then(|v| v.as_f64()), Some(500.0));
+    assert_eq!(tt.get("max").and_then(|v| v.as_f64()), Some(500.0));
+    assert_eq!(tt.get("min").and_then(|v| v.as_f64()), Some(500.0));
+    assert_eq!(tt.get("mean").and_then(|v| v.as_f64()), Some(500.0));
+}

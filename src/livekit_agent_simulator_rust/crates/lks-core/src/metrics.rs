@@ -40,21 +40,58 @@ fn percentile(values: &[f64], pct: f64) -> Option<f64> {
     sorted[idx - 1].into()
 }
 
-/// p50/p95/p99/max block (Python `_pct_block`).
+/// p50/p95/p99/max/min/mean block (Python `_pct_block`). Empty samples keep
+/// the full 7-key shape with nulls — parity for zero-activity runs.
 fn pct_block(values: &[f64]) -> Json {
-    if values.is_empty() {
-        return Json::Object(Map::new());
-    }
-    let p50 = percentile(values, 50.0).unwrap_or(0.0);
-    let p95 = percentile(values, 95.0).unwrap_or(0.0);
-    let p99 = percentile(values, 99.0).unwrap_or(0.0);
+    let count = values.len();
+    let p50 = if values.is_empty() {
+        None
+    } else {
+        percentile(values, 50.0)
+    };
+    let p95 = if values.is_empty() {
+        None
+    } else {
+        percentile(values, 95.0)
+    };
+    let p99 = if values.is_empty() {
+        None
+    } else {
+        percentile(values, 99.0)
+    };
     let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    json!({
-        "p50": p50,
-        "p95": p95,
-        "p99": p99,
-        "max": max,
-    })
+    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let sum: f64 = values.iter().sum();
+    let mut m = Map::new();
+    m.insert("count".into(), json!(count));
+    m.insert("p50".into(), p50.map(Json::from).unwrap_or(Json::Null));
+    m.insert("p95".into(), p95.map(Json::from).unwrap_or(Json::Null));
+    m.insert("p99".into(), p99.map(Json::from).unwrap_or(Json::Null));
+    m.insert(
+        "max".into(),
+        if values.is_empty() {
+            Json::Null
+        } else {
+            Json::from(max)
+        },
+    );
+    m.insert(
+        "min".into(),
+        if values.is_empty() {
+            Json::Null
+        } else {
+            Json::from(min)
+        },
+    );
+    m.insert(
+        "mean".into(),
+        if values.is_empty() {
+            Json::Null
+        } else {
+            Json::from(sum / count as f64)
+        },
+    );
+    Json::Object(m)
 }
 
 /// Derive voice QA metrics from event envelopes. Returns the full 36-key dict.
@@ -180,8 +217,24 @@ pub fn compute_voice_metrics(events: &[Map<String, Json>]) -> Map<String, Json> 
         ttfa_run_ms.map(|v| json!(v)).unwrap_or(Json::Null),
     );
     m.insert("ttfa_source".into(), json!("agent.audio_onset"));
-    let tta = pct_block(&recovery_samples);
-    m.insert("turn_taking_audio_ms".into(), tta);
+    // turn_taking_audio_ms = _pair_audio_onsets(user_audio_source_ms,
+    // agent_audio_onset_ms) — temporal pairing, each agent onset consumed once.
+    let mut tta_samples: Vec<f64> = Vec::new();
+    let mut used_onsets = vec![false; agent_audio_onset_ms.len()];
+    let mut user_sorted = user_audio_source_ms.clone();
+    user_sorted.sort();
+    for u in &user_sorted {
+        let best = agent_audio_onset_ms
+            .iter()
+            .enumerate()
+            .find(|(i, a)| !used_onsets[*i] && **a > *u)
+            .map(|(i, _)| i);
+        if let Some(i) = best {
+            used_onsets[i] = true;
+            tta_samples.push((agent_audio_onset_ms[i] - u) as f64);
+        }
+    }
+    m.insert("turn_taking_audio_ms".into(), pct_block(&tta_samples));
     m.insert(
         "user_audio_source_count".into(),
         json!(user_audio_source_ms.len()),
