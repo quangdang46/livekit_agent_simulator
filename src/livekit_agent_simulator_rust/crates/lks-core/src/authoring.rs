@@ -97,6 +97,7 @@ pub fn init_project(project_root: &Path) -> Result<Map<String, Json>, ConfigErro
     } else {
         String::new()
     };
+    let gitignore_existed = gitignore.exists();
     let already = content.split('\n').any(|l| l.trim_end() == line);
     if !already {
         if !content.trim().is_empty() {
@@ -104,11 +105,23 @@ pub fn init_project(project_root: &Path) -> Result<Map<String, Json>, ConfigErro
         }
         content.push_str(&format!("\n# livekit-agent-simulator\n{line}\n"));
         std::fs::write(&gitignore, content).map_err(io_err)?;
-        created.push(format!("{} (+{})", gitignore.to_string_lossy(), DOT_FOLDER));
+        if gitignore_existed {
+            created.push(format!(
+                "{} (+{})",
+                gitignore.to_string_lossy(),
+                line.trim_end()
+            ));
+        } else {
+            created.push(gitignore.to_string_lossy().into_owned());
+        }
     }
 
+    let config_dst = dot.join("config.yaml");
     let next = vec![
-        json!("Fill in LiveKit + provider credentials in .agent-sim/config.yaml"),
+        json!(format!(
+            "Fill in LiveKit + Google credentials in {}",
+            config_dst.display()
+        )),
         json!("Make sure your worker is running with the configured agent_name"),
         json!("Run the smoke scenario: lks execute smoke-hello"),
     ];
