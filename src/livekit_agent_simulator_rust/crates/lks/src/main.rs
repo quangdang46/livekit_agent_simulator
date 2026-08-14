@@ -321,11 +321,11 @@ fn main() -> anyhow::Result<()> {
             profile,
             json,
         }) => {
-            let result = ops::op_preflight(
+            let result = rt.block_on(lks_livekit::preflight::op_preflight(
                 std::path::Path::new(&root),
                 !no_connectivity,
                 profile.as_deref(),
-            )?;
+            ))?;
             if json {
                 print_json(&serde_json::to_value(&result)?)?;
             } else {

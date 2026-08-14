@@ -914,52 +914,225 @@ pub fn render_prompt_variant(
 
 /// Preflight — needs the P2 livekit connectivity checks; report the
 /// config-level checks (data-plane) with a clear note.
-pub fn op_preflight(
+/// Core preflight checks (port of `preflight.py:run_preflight` — the
+/// connectivity-dependent `livekit.api` check is added by the caller when
+/// `connectivity` is true; this fn covers checks 1–5 + 7).
+pub fn op_preflight_core(
     project_root: &Path,
-    _connectivity: bool,
-    _profile: Option<&str>,
-) -> Result<Map<String, Json>, ConfigError> {
+    profile: Option<&str>,
+) -> Result<(Map<String, Json>, Option<crate::config::SimConfig>), ConfigError> {
     let mut checks: Vec<Json> = Vec::new();
     let mut ok = true;
 
-    // config load is itself the first check
-    let cfg_result = load_config(project_root.to_path_buf(), None);
-    match cfg_result {
-        Ok(cfg) => {
-            let mut c = Map::new();
-            c.insert("name".into(), json!("config"));
-            c.insert("pass".into(), json!(true));
-            c.insert(
-                "detail".into(),
-                json!(format!("config.yaml OK ({})", cfg.dot_dir().display())),
-            );
-            checks.push(Json::Object(c));
-
-            let mut c2 = Map::new();
-            c2.insert("name".into(), json!("folders"));
-            c2.insert("pass".into(), json!(true));
-            c2.insert("detail".into(), json!("reports/ + scenarios/ exist"));
-            checks.push(Json::Object(c2));
+    fn add(checks: &mut Vec<Json>, ok: &mut bool, name: &str, pass: bool, detail: String) {
+        let mut c = Map::new();
+        c.insert("name".into(), json!(name));
+        c.insert("pass".into(), json!(pass));
+        c.insert("detail".into(), json!(detail));
+        if !pass {
+            *ok = false;
         }
-        Err(e) => {
-            ok = false;
-            let mut c = Map::new();
-            c.insert("name".into(), json!("config"));
-            c.insert("pass".into(), json!(false));
-            c.insert("detail".into(), json!(e.0));
-            checks.push(Json::Object(c));
-        }
+        checks.push(Json::Object(c));
     }
 
-    let mut note = Map::new();
-    note.insert(
-        "note".into(),
-        json!("Rust build: LiveKit API connectivity check + telephony bits land with the P2 livekit layer; config/folder checks above are real."),
+    // 1. config (load with profile; fail → early return)
+    let cfg = match load_config(project_root.to_path_buf(), profile) {
+        Ok(cfg) => {
+            add(
+                &mut checks,
+                &mut ok,
+                "config",
+                true,
+                cfg.dot_dir().join("config.yaml").display().to_string(),
+            );
+            cfg
+        }
+        Err(e) => {
+            add(&mut checks, &mut ok, "config", false, e.0);
+            let mut m = Map::new();
+            m.insert("ok".into(), json!(ok));
+            m.insert("checks".into(), Json::Array(checks));
+            return Ok((m, None));
+        }
+    };
+
+    // 2. livekit.url scheme
+    let url = &cfg.livekit.url;
+    if url.starts_with("ws://")
+        || url.starts_with("wss://")
+        || url.starts_with("http://")
+        || url.starts_with("https://")
+    {
+        add(&mut checks, &mut ok, "livekit.url", true, url.clone());
+    } else {
+        add(
+            &mut checks,
+            &mut ok,
+            "livekit.url",
+            false,
+            format!("`{url}` must start with wss:// (LiveKit Cloud) or ws://"),
+        );
+    }
+
+    // 3. observe.timezone IANA validity
+    if jiff::tz::TimeZone::get(&cfg.observe.timezone).is_ok() {
+        add(
+            &mut checks,
+            &mut ok,
+            "observe.timezone",
+            true,
+            cfg.observe.timezone.clone(),
+        );
+    } else {
+        add(
+            &mut checks,
+            &mut ok,
+            "observe.timezone",
+            false,
+            format!("Unknown IANA timezone `{}`", cfg.observe.timezone),
+        );
+    }
+
+    // 4. folders (mkdir side effect)
+    let _ = std::fs::create_dir_all(cfg.reports_dir());
+    let _ = std::fs::create_dir_all(cfg.scenarios_dir());
+    add(
+        &mut checks,
+        &mut ok,
+        "folders",
+        true,
+        cfg.dot_dir().display().to_string(),
     );
-    checks.push(Json::Object(note));
+
+    // 5. simulator.api_key[provider]
+    let key = cfg.simulator.api_key.trim();
+    let provider = cfg.simulator.provider.clone();
+    if key.is_empty() {
+        add(
+            &mut checks,
+            &mut ok,
+            &format!("simulator.api_key[{provider}]"),
+            false,
+            format!("missing — `simulator.api_key` required for provider {provider}"),
+        );
+    } else if key.len() < 20 {
+        add(
+            &mut checks,
+            &mut ok,
+            &format!("simulator.api_key[{provider}]"),
+            true,
+            "Key looks unusually short".into(),
+        );
+        // warn status is still pass=true in the checks array with a warn detail
+        if let Some(last) = checks.last_mut() {
+            if let Some(p) = last.get_mut("pass") {
+                *p = Json::Bool(true);
+            }
+        }
+    } else {
+        add(
+            &mut checks,
+            &mut ok,
+            &format!("simulator.api_key[{provider}]"),
+            true,
+            "present".into(),
+        );
+    }
+
+    // 7. telephony (informational)
+    let tel = &cfg.telephony;
+    if tel.outbound_trunk_id.is_some() || tel.dial_in.is_some() || tel.sim_inbound_number.is_some()
+    {
+        let mut bits: Vec<String> = Vec::new();
+        bits.push(format!(
+            "outbound_trunk={}",
+            if tel.outbound_trunk_id.is_some() {
+                "set"
+            } else {
+                "missing"
+            }
+        ));
+        bits.push(format!(
+            "dial_in={}",
+            if tel.dial_in.is_some() {
+                "set"
+            } else {
+                "unset"
+            }
+        ));
+        bits.push(format!(
+            "sim_inbound={}",
+            if tel.sim_inbound_number.is_some() {
+                "set"
+            } else {
+                "unset"
+            }
+        ));
+        add(
+            &mut checks,
+            &mut ok,
+            "telephony",
+            tel.outbound_trunk_id.is_some(),
+            bits.join("; "),
+        );
+        if tel.outbound_trunk_id.is_some() && tel.sim_inbound_number.is_none() {
+            add(
+                &mut checks,
+                &mut ok,
+                "telephony.outbound_sim_callee",
+                true,
+                "sim_inbound_number unset — outbound_sim_callee scenarios need a DID that \
+                 hairpins into the sim-room (or Telephony.call_to per scenario). \
+                 Dialing a real PSTN handset is outbound_human_pickup, not Gemini callee. \
+                 See docs/telephony.md + docs/PROBLEM.md."
+                    .into(),
+            );
+        } else if tel.sim_inbound_number.is_some() && tel.outbound_trunk_id.is_none() {
+            add(
+                &mut checks,
+                &mut ok,
+                "telephony.outbound_sim_callee",
+                true,
+                "sim_inbound_number set but outbound_trunk_id missing — SIP dial cannot run."
+                    .into(),
+            );
+        } else if tel.sim_inbound_number.is_some() && tel.outbound_trunk_id.is_some() {
+            add(
+                &mut checks,
+                &mut ok,
+                "telephony.outbound_sim_callee",
+                true,
+                "trunk + sim_inbound_number present — ensure LiveKit dispatch rule routes \
+                 this DID into the lks room (Cloud hairpin). Real PSTN ≠ Gemini without that rule."
+                    .into(),
+            );
+        }
+    } else {
+        add(
+            &mut checks,
+            &mut ok,
+            "telephony",
+            true,
+            "not configured (WebRTC-only OK)".into(),
+        );
+    }
 
     let mut m = Map::new();
     m.insert("ok".into(), json!(ok));
     m.insert("checks".into(), Json::Array(checks));
+    Ok((m, Some(cfg)))
+}
+
+/// Full preflight — the core checks plus the LiveKit API connectivity check
+/// when `connectivity` is true. The connectivity check needs livekit_api,
+/// which lks-core must not depend on — the lks-livekit `preflight::op_preflight`
+/// wires this in. This fn keeps the core (non-connectivity) surface.
+pub fn op_preflight(
+    project_root: &Path,
+    connectivity: bool,
+    profile: Option<&str>,
+) -> Result<Map<String, Json>, ConfigError> {
+    let (m, _cfg) = op_preflight_core(project_root, profile)?;
+    let _ = connectivity; // livekit.api check lands via lks-livekit::preflight
     Ok(m)
 }

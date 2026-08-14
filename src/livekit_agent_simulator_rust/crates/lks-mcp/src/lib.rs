@@ -285,12 +285,17 @@ impl SimServer {
     #[tool(
         description = "Check config + folders + optional LiveKit API connectivity without running a scenario."
     )]
-    fn preflight(
+    async fn preflight(
         &self,
         Parameters(p): Parameters<PreflightParams>,
     ) -> Result<String, rmcp::ErrorData> {
-        let r = ops::op_preflight(root(&p.project_root), p.connectivity, p.profile.as_deref())
-            .map_err(|e| internal_error(e.0))?;
+        let r = lks_livekit::preflight::op_preflight(
+            root(&p.project_root),
+            p.connectivity,
+            p.profile.as_deref(),
+        )
+        .await
+        .map_err(|e| internal_error(e.0))?;
         ok_json(r)
     }
 
