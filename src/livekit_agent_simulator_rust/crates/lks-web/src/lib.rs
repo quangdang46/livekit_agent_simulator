@@ -574,6 +574,74 @@ pub async fn serve(
     Ok(addr)
 }
 
+/// Start the report server non-blocking and return the Python-identical info
+/// dict (port of `web/server.py:start_web_server` with blocking=False — the
+/// MCP `web` tool surface). Browser-open via `open` on macOS / xdg-open else.
+pub async fn start_web(
+    project_root: &Path,
+    host: &str,
+    port: u16,
+    run_id: Option<&str>,
+    open_browser: bool,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let server = Arc::new(WebServer::new(project_root));
+    if !server.player_dir.join("index.html").exists() {
+        return Err(format!(
+            "Web UI assets missing: {}/index.html — maintainers: pnpm --dir web install && pnpm --dir web build",
+            server.player_dir.display()
+        ));
+    }
+    // Pre-warm cues.json for an explicit run (Python start_web_server).
+    if let Some(rid) = run_id {
+        if let Some(payload) = server.cues_for_run(rid) {
+            let rd = server.reports_dir.join(rid);
+            let _ = std::fs::write(
+                rd.join("cues.json"),
+                serde_json::to_string_pretty(&payload).unwrap_or_default(),
+            );
+        }
+    }
+    let runs: Vec<serde_json::Value> = server.list_runs();
+    let app = router(server.clone());
+    let listener = tokio::net::TcpListener::bind((host, port))
+        .await
+        .map_err(|e| format!("bind {host}:{port}: {e}"))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("local addr: {e}"))?;
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let base = format!("http://{addr}");
+    let url = match run_id {
+        Some(rid) => format!("{base}/?run={rid}"),
+        None => format!("{base}/"),
+    };
+    if open_browser {
+        let _ = std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|_| ())
+            .and_then(|mut c| c.wait().map_err(|_| ()));
+    }
+    let mut m = serde_json::Map::new();
+    m.insert("url".into(), serde_json::json!(url));
+    m.insert("base_url".into(), serde_json::json!(base));
+    m.insert("host".into(), serde_json::json!(host));
+    m.insert("port".into(), serde_json::json!(port));
+    m.insert("run_id".into(), serde_json::json!(run_id));
+    m.insert("runs".into(), serde_json::Value::Array(runs));
+    m.insert(
+        "reports_dir".into(),
+        serde_json::json!(server.reports_dir.to_string_lossy().into_owned()),
+    );
+    m.insert(
+        "player_dir".into(),
+        serde_json::json!(server.player_dir.to_string_lossy().into_owned()),
+    );
+    Ok(m)
+}
+
 // ---------------------------------------------------------------------------
 // Report-time helpers (port of web/report_time.py + web/cue_helpers/windows.py).
 // ---------------------------------------------------------------------------

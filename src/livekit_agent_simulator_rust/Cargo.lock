@@ -2057,6 +2057,7 @@ dependencies = [
  "lks",
  "lks-core",
  "lks-livekit",
+ "lks-web",
  "rmcp",
  "schemars 1.2.2",
  "serde",
@@ -2080,9 +2081,13 @@ version = "0.1.0-rust"
 dependencies = [
  "anyhow",
  "axum",
+ "http-body-util",
  "lks-core",
+ "lks-livekit",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tower",
  "tower-http",
 ]
 

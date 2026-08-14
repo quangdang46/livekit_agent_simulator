@@ -261,9 +261,17 @@ impl SimServer {
     #[tool(
         description = "Start local report player (audio + transcript sync). Returns URL; server runs in background until process exits."
     )]
-    fn web(&self, Parameters(p): Parameters<WebParams>) -> Result<String, rmcp::ErrorData> {
-        let _ = (p.project_root, p.run_id, p.host, p.port, p.open_browser);
-        ok_json(err_json(&ops::not_implemented("web")["error"].to_string()))
+    async fn web(&self, Parameters(p): Parameters<WebParams>) -> Result<String, rmcp::ErrorData> {
+        let result = lks_web::start_web(
+            root(&p.project_root),
+            &p.host,
+            p.port,
+            p.run_id.as_deref(),
+            p.open_browser,
+        )
+        .await
+        .map_err(internal_error)?;
+        ok_json(result)
     }
 
     /// Scaffold `.agent-sim/` (config.yaml + smoke scenario) in the target repo and gitignore it.

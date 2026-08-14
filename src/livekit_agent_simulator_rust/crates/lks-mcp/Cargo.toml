@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 lks-core = { path = "../lks-core" }
 lks-livekit = { path = "../lks-livekit" }
+lks-web = { path = "../lks-web" }
 
 rmcp = { version = "3.1.2", features = ["server", "client", "macros", "schemars", "transport-io", "transport-async-rw", "transport-child-process"] }
 serde = { workspace = true }

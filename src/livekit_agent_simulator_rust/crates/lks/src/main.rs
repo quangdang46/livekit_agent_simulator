@@ -266,6 +266,15 @@ enum Command {
         #[arg(long, short = 'w')]
         write: bool,
     },
+    /// Start the lks REST API (JSON over HTTP; same ops as CLI/MCP). Ctrl+C to stop.
+    Serve {
+        /// Port to serve on.
+        #[arg(long, short = 'p', default_value_t = 8787)]
+        port: u16,
+        /// Host to bind.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+    },
     /// Start the MCP server over stdio (same 21 tools as the Python server).
     Mcp,
     /// Check config + folders + optional LiveKit API connectivity.
@@ -315,6 +324,18 @@ fn main() -> anyhow::Result<()> {
                 .enable_all()
                 .build()?;
             rt.block_on(lks_mcp::serve_stdio())
+        }
+        Some(Command::Serve { port, host }) => {
+            let server = Arc::new(lks_web::api_server::ApiServer::new(std::path::Path::new(
+                &root,
+            )));
+            let addr = rt.block_on(lks_web::api_server::serve_api(server, &host, port))?;
+            eprintln!(
+                "[lksr] REST API: http://{addr}{} (root: {root}) — Ctrl+C to stop",
+                lks_web::api_server::PREFIX
+            );
+            std::thread::park();
+            Ok(())
         }
         Some(Command::Preflight {
             no_connectivity,
