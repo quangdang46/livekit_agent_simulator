@@ -186,6 +186,9 @@ enum Command {
         /// Select a named `simulator.profiles.<name>` caller profile.
         #[arg(long)]
         profile: Option<String>,
+        /// Also fail CI exit if the LLM PassCriteria judge verdict is fail.
+        #[arg(long)]
+        strict_judge: bool,
         /// Emit raw JSON instead of a human-readable table.
         #[arg(long)]
         json: bool,
@@ -528,7 +531,8 @@ fn main() -> anyhow::Result<()> {
             agent_name,
             optimized,
             profile,
-            json: _,
+            strict_judge,
+            json,
         }) => {
             let opts = lks_livekit::run::ExecuteOptions {
                 run_name: name,
@@ -538,21 +542,35 @@ fn main() -> anyhow::Result<()> {
                 optimized,
                 profile,
             };
-            let result = rt.block_on(lks_livekit::run::execute_scenario(
+            let mut result = rt.block_on(lks_livekit::run::execute_scenario(
                 std::path::Path::new(&root),
                 &scenario_id,
                 &opts,
             ))?;
-            println!(
-                "run_id: {}\nstatus: {}\nreport_dir: {}",
-                result.get("run_id").and_then(|v| v.as_str()).unwrap_or("?"),
-                result.get("status").and_then(|v| v.as_str()).unwrap_or("?"),
-                result
-                    .get("report_dir")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?"),
-            );
-            if result.get("status").and_then(|v| v.as_str()) != Some("done") {
+            // CLI adds the CI gate (Python cli.py execute: evaluate_run_result
+            // with strict_judge) + exits 1 on hard fail.
+            let gate = lks_core::suite::evaluate_run_result(&result, strict_judge);
+            result.insert("gate".into(), serde_json::Value::Object(gate));
+            if json {
+                print_json(&serde_json::to_value(&result)?)?;
+            } else {
+                println!(
+                    "run_id: {}\nstatus: {}\nreport_dir: {}",
+                    result.get("run_id").and_then(|v| v.as_str()).unwrap_or("?"),
+                    result.get("status").and_then(|v| v.as_str()).unwrap_or("?"),
+                    result
+                        .get("report_dir")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?"),
+                );
+            }
+            let gate_ok = result
+                .get("gate")
+                .and_then(|v| v.as_object())
+                .and_then(|g| g.get("ok"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !gate_ok {
                 std::process::exit(1);
             }
             Ok(())
@@ -653,13 +671,17 @@ fn main() -> anyhow::Result<()> {
                 .as_object()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Scenario JSON must be an object"))?;
-            let result = rt.block_on(lks_livekit::ops_execute::op_execute_scenario_dict(
+            let mut result = rt.block_on(lks_livekit::ops_execute::op_execute_scenario_dict(
                 std::path::Path::new(&root),
                 &scenario,
                 name.as_deref(),
                 agent_name.as_deref(),
                 profile.as_deref(),
             ))?;
+            // CLI adds the CI gate (Python cli.py execute-dict: evaluate_run_result
+            // → result["gate"]) and exits 1 on hard fail.
+            let gate = lks_core::suite::evaluate_run_result(&result, false);
+            result.insert("gate".into(), serde_json::Value::Object(gate));
             print_json(&serde_json::to_value(&result)?)?;
             let ok = result
                 .get("executed")

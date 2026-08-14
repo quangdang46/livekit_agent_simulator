@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use lks_core::config::load_config;
 use lks_core::errors::RunError;
 use lks_core::optimize::{variant_from_dict, PromptVariant};
-use lks_core::scenario_ops::{find_scenario, list_scenarios};
+use lks_core::scenario_ops::list_scenarios;
 
 use crate::run::{execute_scenario, execute_scenario_parsed, ExecuteOptions};
 
@@ -698,7 +698,18 @@ async fn find_scenario_parsed(
     sid: &str,
 ) -> Result<lks_core::scenario::Scenario, RunError> {
     let cfg = load_config(project_root.to_path_buf(), None).map_err(|e| RunError(e.0))?;
-    find_scenario(&cfg.scenarios_dir(), sid).map_err(|e| RunError(e.to_string()))
+    // Python optimize._compose_instruction parses `<scenarios_dir>/<id>.yaml`
+    // DIRECTLY — the error is `Scenario file not found: <path>` (no fallback
+    // scan). Match that for the optimizer compose path.
+    let direct = cfg.scenarios_dir().join(format!("{sid}.yaml"));
+    if direct.is_file() {
+        lks_core::scenario_yaml::load_scenario_yaml(&direct).map_err(|e| RunError(e.0))
+    } else {
+        Err(RunError(format!(
+            "Scenario file not found: {}",
+            direct.display()
+        )))
+    }
 }
 
 fn build_persona_si(scenario: &lks_core::scenario::Scenario) -> String {

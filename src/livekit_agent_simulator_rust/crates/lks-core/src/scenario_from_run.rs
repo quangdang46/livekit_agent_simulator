@@ -171,6 +171,62 @@ pub fn write_yaml_atomic(dest: &Path, text: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// Python float repr: 15563.0 stays "15563.0" (Rust Display drops the .0).
+fn py_float_repr(f: f64) -> String {
+    if f.fract() == 0.0 && f.abs() < 1e16 {
+        format!("{f:.1}")
+    } else {
+        format!("{f}")
+    }
+}
+
+/// Python `json.dumps(..., ensure_ascii=False)` — `, ` and `: ` separators
+/// (serde_json::to_string is compact; the note text is a user-visible diff).
+fn json_dumps_spaced(v: &Json) -> String {
+    fn walk(v: &Json, out: &mut String) {
+        match v {
+            Json::Object(m) => {
+                out.push('{');
+                let mut first = true;
+                for (k, val) in m {
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    out.push('"');
+                    out.push_str(k);
+                    out.push_str("\": ");
+                    walk(val, out);
+                }
+                out.push('}');
+            }
+            Json::Array(a) => {
+                out.push('[');
+                let mut first = true;
+                for item in a {
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    walk(item, out);
+                }
+                out.push(']');
+            }
+            Json::String(s) => {
+                out.push('"');
+                out.push_str(s);
+                out.push('"');
+            }
+            Json::Number(n) => out.push_str(&n.to_string()),
+            Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Json::Null => out.push_str("null"),
+        }
+    }
+    let mut s = String::new();
+    walk(v, &mut s);
+    s
+}
+
 /// First explicit Script speak open from the source scenario, if any.
 fn script_open_say_from_source(path: &Path) -> Option<String> {
     let scenario = parse_source_scenario(path)?;
@@ -669,27 +725,31 @@ pub fn build_scenario_draft_from_run(
         .and_then(|v| v.as_object())
         .cloned()
         .unwrap_or_default();
-    let ttfw = metrics.get("ttfw_ms").and_then(|v| v.as_f64());
+    // Preserve the ORIGINAL JSON value type (int stays int, float stays float —
+    // Python reads the summary dict raw).
+    let ttfw = metrics.get("ttfw_ms").cloned();
     let latency_hint: Option<Map<String, Json>> = {
-        let p95 = tt.get("p95").and_then(|v| v.as_f64());
+        let p95 = tt.get("p95").cloned();
         if p95.is_some() || ttfw.is_some() {
             let mut hint = Map::new();
-            if let Some(p) = p95 {
-                hint.insert("observed_turn_p95_ms".into(), json!(p));
+            if let Some(p) = &p95 {
+                hint.insert("observed_turn_p95_ms".into(), p.clone());
             }
-            if let Some(t) = ttfw {
-                hint.insert("observed_ttfw_ms".into(), json!(t));
+            if let Some(t) = &ttfw {
+                hint.insert("observed_ttfw_ms".into(), t.clone());
             }
             let mut ex = Map::new();
             ex.insert("id".into(), json!("speed"));
             ex.insert("type".into(), json!("latency"));
+            let p95f = p95.as_ref().and_then(|v| v.as_f64());
+            let ttfwf = ttfw.as_ref().and_then(|v| v.as_f64());
             ex.insert(
                 "max_turn_p95_ms".into(),
-                json!(p95.map(|v| (v * 1.5) as i64).unwrap_or(8000)),
+                json!(p95f.map(|v| (v * 1.5) as i64).unwrap_or(8000)),
             );
             ex.insert(
                 "max_ttfw_ms".into(),
-                json!(ttfw.map(|v| (v * 1.5) as i64).unwrap_or(15000)),
+                json!(ttfwf.map(|v| (v * 1.5) as i64).unwrap_or(15000)),
             );
             ex.insert("require_turn_samples".into(), json!(1));
             hint.insert("suggested_assert_example".into(), json!(ex));
@@ -746,12 +806,29 @@ pub fn build_scenario_draft_from_run(
             .get("verdict")
             .unwrap_or(&Json::String("n/a".into())),
     );
-    let turn_p95 = tt.get("p95").and_then(|v| v.as_f64());
+    // Python f-string repr: f"{15563.0}" → "15563.0" (JSON float keeps .0);
+    // f"{23268}" → "23268" (JSON int plain).
+    fn py_fmt(v: &Json) -> String {
+        match v {
+            Json::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    i.to_string()
+                } else if let Some(f) = n.as_f64() {
+                    py_float_repr(f)
+                } else {
+                    n.to_string()
+                }
+            }
+            other => other.to_string(),
+        }
+    }
     let ttfw_str = ttfw
-        .map(|v| format!("{v}"))
+        .as_ref()
+        .map(py_fmt)
         .unwrap_or_else(|| "None".to_string());
-    let turn_p95_str = turn_p95
-        .map(|v| format!("{v}"))
+    let turn_p95_str = tt
+        .get("p95")
+        .map(py_fmt)
         .unwrap_or_else(|| "None".to_string());
     let mut notes = format!(
         "Promoted {now_date} from run `{source_run_id}` (status={status}, turns={turn_count}, judge={judge_v}). \
@@ -773,7 +850,7 @@ pub fn build_scenario_draft_from_run(
         if let Some(ex) = hint.get("suggested_assert_example") {
             notes.push_str(&format!(
                 " Optional latency Assert (not auto-added): {}",
-                serde_json::to_string(ex).unwrap_or_default()
+                json_dumps_spaced(ex)
             ));
         }
     }
