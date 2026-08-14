@@ -319,3 +319,35 @@ def test_parse_script_loop_rejects_voice_asset():
             },
             "test",
         )
+
+
+def test_evaluate_script_log_dtmf_step_counts_as_fired():
+    """A dtmf step emits sim.script.dtmf; verify must count it as fired (not 'not fired')."""
+    steps = [
+        ScriptStep(
+            "press-4", "time", 100, say="[DTMF: 4]", action="dtmf", digits="4"
+        )
+    ]
+    events = [
+        {
+            "kind": "sim.script.dtmf",
+            "ts_mono_ms": 5000,
+            "spec": {"step_id": "press-4", "action": "dtmf", "digits": "4"},
+        },
+        {"kind": "transcript.agent.final", "ts_mono_ms": 8000, "spec": {"text": "You pressed 4"}},
+    ]
+    result = evaluate_script_log(events, steps, ScriptVerifySpec())
+    assert result["pass"] is True
+    assert result["dtmf_fired"] == 1
+    assert result["cues_fired"] == 0  # speak/line cues only
+
+
+def test_summary_script_cues_fired_counts_dtmf():
+    """script_cues_fired counts DTMF tones (a pure-DTMF run is not '0 cues')."""
+    events = [
+        {"kind": "sim.script.dtmf", "ts_mono_ms": 1000, "spec": {"step_id": "press-4", "action": "dtmf"}},
+        {"kind": "sim.script.cue", "ts_mono_ms": 2000, "spec": {"step_id": "open", "action": "speak"}},
+        {"kind": "sim.script.wait", "ts_mono_ms": 3000, "spec": {"step_id": "hold", "action": "wait"}},
+    ]
+    summary = build_caller_behavior_summary(events)
+    assert summary["script_cues_fired"] == 3

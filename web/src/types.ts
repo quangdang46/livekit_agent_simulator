@@ -101,6 +101,7 @@ export type ScriptVerify = {
   pass?: boolean;
   script_steps?: number;
   cues_fired?: number;
+  dtmf_fired?: number;
   waits_fired?: number;
   agent_finals_after_barge_in?: number;
   agent_finals_after_silence?: number;
