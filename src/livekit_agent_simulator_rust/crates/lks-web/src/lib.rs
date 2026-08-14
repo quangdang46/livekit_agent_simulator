@@ -10,6 +10,8 @@
 //! - GET `/api/runs/<id>/cues` → minimal cues payload (transcripts + markers)
 //! - GET `/runs/<id>/<name>` → file bytes (audio etc.)
 
+pub mod api_server;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
