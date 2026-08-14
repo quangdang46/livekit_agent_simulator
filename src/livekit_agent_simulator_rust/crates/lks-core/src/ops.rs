@@ -209,42 +209,622 @@ pub fn op_list_plugins(project_root: &Path) -> Result<Map<String, Json>, ConfigE
     }
     local_files.sort();
 
+    // Static scan of local .py modules for @verify_plugin("name") registrations
+    // so `verify_plugins` mirrors what Python's import-time decorator registers
+    // (the Rust build does not embed CPython — P8 decision — but the list shape
+    // must match). Sorted, deduped.
+    let mut verify_plugins: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&local_dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("py") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            for line in text.lines() {
+                let t = line.trim();
+                if t.starts_with("@verify_plugin") {
+                    if let Some(open) = t.find('(') {
+                        let rest = &t[open + 1..];
+                        let name = rest
+                            .trim()
+                            .trim_start_matches('"')
+                            .trim_start_matches('\'')
+                            .split(['"', '\'', ','])
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if !name.is_empty() {
+                            verify_plugins.push(name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    verify_plugins.sort();
+    verify_plugins.dedup();
+
+    // Python load_info: entrypoints loaded first, then local modules (the
+    // module stems, not the registered names). The Rust build does not embed
+    // CPython (P8), so entry-point plugins are always absent and local modules
+    // are statically scanned — but the shape mirrors Python exactly.
+    let mut loaded: Vec<String> = Vec::new();
+    loaded.push("entrypoints:lks.plugins".to_string());
+    loaded.extend(local_files.iter().map(|f| format!("local:{f}")));
+
     let mut load = Map::new();
-    load.insert("verify_plugins".into(), json!([]));
-    load.insert("local_modules".into(), json!(local_files));
+    load.insert("loaded".into(), json!(loaded));
     load.insert("errors".into(), json!([]));
-    load.insert(
-        "note".into(),
-        json!("Rust build: verify plugins run under embedded CPython (P8); entry-point plugins are a Python-package feature."),
-    );
+    load.insert("verify_plugins".into(), json!(verify_plugins));
 
     let mut out = Map::new();
-    out.insert("verify_plugins".into(), json!([]));
+    out.insert("verify_plugins".into(), json!(verify_plugins));
     out.insert("local_modules".into(), json!(local_files));
     out.insert("load".into(), Json::Object(load));
     out.insert("entry_point_group".into(), json!("lks.plugins"));
     Ok(out)
 }
 
-/// ops.list_cues — built-in catalog is a P2/P3.5 audio surface; report the
-/// config alias/override paths (data-plane) and a clear note.
+/// One builtin cue entry: (id, file, description, kind, interrupt_class, locale, text).
+type BuiltinCueEntry = (
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    Option<&'static str>,
+    Option<&'static str>,
+    Option<&'static str>,
+);
+
+/// Builtin cue metadata (port of `audio/cue_catalog.py` BUILTIN_CUES).
+const BUILTIN_CUES: [BuiltinCueEntry; 35] = [
+    (
+        "ambiguous",
+        "ambiguous_ja.wav",
+        "Legacy JA ambiguous / edge false-interrupt sample.",
+        Some("legacy"),
+        Some("noise"),
+        Some("ja-JP"),
+        None,
+    ),
+    (
+        "ambiguous_ja",
+        "ambiguous_ja.wav",
+        "Legacy JA ambiguous / edge false-interrupt sample.",
+        Some("legacy"),
+        Some("noise"),
+        Some("ja-JP"),
+        None,
+    ),
+    (
+        "backchannel",
+        "backchannel_ja.wav",
+        "Legacy JA backchannel sample.",
+        Some("legacy"),
+        Some("backchannel"),
+        Some("ja-JP"),
+        None,
+    ),
+    (
+        "backchannel_ja",
+        "backchannel_ja.wav",
+        "Legacy JA backchannel sample.",
+        Some("legacy"),
+        Some("backchannel"),
+        Some("ja-JP"),
+        None,
+    ),
+    (
+        "interrupt",
+        "real_interrupt_ja.wav",
+        "Legacy JA real-interrupt speech sample.",
+        Some("legacy"),
+        Some("correction"),
+        Some("ja-JP"),
+        None,
+    ),
+    (
+        "noise.ambient",
+        "ambient_noise_bed.wav",
+        "Soft ambient noise bed (false interrupt / background).",
+        Some("noise"),
+        Some("noise"),
+        None,
+        None,
+    ),
+    (
+        "noise.blip",
+        "loud_interrupt_blip.wav",
+        "Very short cut-in blip before/with a barge.",
+        Some("noise"),
+        Some("noise"),
+        None,
+        None,
+    ),
+    (
+        "noise.interrupt",
+        "loud_interrupt_blip.wav",
+        "Alias of noise.blip — short cut-in blip.",
+        Some("noise"),
+        Some("noise"),
+        None,
+        None,
+    ),
+    (
+        "noise.loud",
+        "loud_noise_burst.wav",
+        "Short loud noise burst (false interrupt).",
+        Some("noise"),
+        Some("noise"),
+        None,
+        None,
+    ),
+    (
+        "real_interrupt_ja",
+        "real_interrupt_ja.wav",
+        "Legacy JA real-interrupt speech sample.",
+        Some("legacy"),
+        Some("correction"),
+        Some("ja-JP"),
+        None,
+    ),
+    (
+        "voice.backchannel",
+        "backchannel_uhhuh_en.wav",
+        "EN backchannel sustain (uh-huh ×5, ~4s).",
+        Some("voice"),
+        Some("backchannel"),
+        Some("en-US"),
+        Some("uh-huh"),
+    ),
+    (
+        "voice.backchannel_en",
+        "backchannel_uhhuh_en.wav",
+        "Alias of voice.backchannel — EN uh-huh sustain.",
+        Some("voice"),
+        Some("backchannel"),
+        Some("en-US"),
+        Some("uh-huh"),
+    ),
+    (
+        "voice.backchannel_ja",
+        "backchannel_ja.wav",
+        "JA backchannel (same file as legacy backchannel_ja).",
+        Some("legacy"),
+        Some("backchannel"),
+        Some("ja-JP"),
+        None,
+    ),
+    (
+        "voice.backchannel_vi",
+        "backchannel_vi.wav",
+        "VI backchannel sustain.",
+        Some("voice"),
+        Some("backchannel"),
+        Some("vi-VN"),
+        None,
+    ),
+    (
+        "voice.backchannel_yeah",
+        "backchannel_yeah_en.wav",
+        "EN backchannel: Yeah / Okay / Mhm.",
+        Some("voice"),
+        Some("backchannel"),
+        Some("en-US"),
+        Some("Yeah. Okay. Mhm."),
+    ),
+    (
+        "voice.barge_correction",
+        "barge_correction_en.wav",
+        "Alias of voice.correction.",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("No wait - I meant next Friday."),
+    ),
+    (
+        "voice.barge_escalate",
+        "barge_escalate_en.wav",
+        "Alias of voice.escalate.",
+        Some("voice"),
+        Some("escalate"),
+        Some("en-US"),
+        Some("Stop. I need to speak with a human."),
+    ),
+    (
+        "voice.barge_long_vi",
+        "barge_long_vi.wav",
+        "VI longer stacked barge (stresses VAD / recovery).",
+        Some("voice"),
+        Some("correction"),
+        Some("vi-VN"),
+        None,
+    ),
+    (
+        "voice.barge_short",
+        "barge_wait_en.wav",
+        "EN short barge: “Wait a second…”.",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("Wait a second…"),
+    ),
+    (
+        "voice.barge_soft",
+        "barge_soft_en.wav",
+        "Alias of voice.soft.",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("Um, hang on…"),
+    ),
+    (
+        "voice.barge_sorry",
+        "barge_sorry_en.wav",
+        "EN barge: “Sorry — one second…”.",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("Sorry — one second…"),
+    ),
+    (
+        "voice.barge_sorry_en",
+        "barge_sorry_en.wav",
+        "Alias of voice.barge_sorry.",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("Sorry — one second…"),
+    ),
+    (
+        "voice.barge_vi",
+        "barge_wait_vi.wav",
+        "VI short barge (wait / cut-in).",
+        Some("voice"),
+        Some("correction"),
+        Some("vi-VN"),
+        None,
+    ),
+    (
+        "voice.barge_wait",
+        "barge_wait_en.wav",
+        "Alias of voice.barge_short — “Wait a second…”.",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("Wait a second…"),
+    ),
+    (
+        "voice.barge_wait_en",
+        "barge_wait_en.wav",
+        "Alias of voice.barge_short — “Wait a second…”.",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("Wait a second…"),
+    ),
+    (
+        "voice.barge_wait_vi",
+        "barge_wait_vi.wav",
+        "Alias of voice.barge_vi.",
+        Some("voice"),
+        Some("correction"),
+        Some("vi-VN"),
+        None,
+    ),
+    (
+        "voice.correction",
+        "barge_correction_en.wav",
+        "EN correction barge: “No wait - I meant next Friday.”",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("No wait - I meant next Friday."),
+    ),
+    (
+        "voice.escalate",
+        "barge_escalate_en.wav",
+        "EN escalate barge: ask for a human agent.",
+        Some("voice"),
+        Some("escalate"),
+        Some("en-US"),
+        Some("Stop. I need to speak with a human."),
+    ),
+    (
+        "voice.human",
+        "barge_escalate_en.wav",
+        "Alias of voice.escalate — human handoff ask.",
+        Some("voice"),
+        Some("escalate"),
+        Some("en-US"),
+        Some("Stop. I need to speak with a human."),
+    ),
+    (
+        "voice.interrupt",
+        "barge_wait_en.wav",
+        "Alias of voice.barge_short — “Wait a second…”.",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("Wait a second…"),
+    ),
+    (
+        "voice.interrupt_ja",
+        "real_interrupt_ja.wav",
+        "JA interrupt speech (same file as legacy real_interrupt_ja).",
+        Some("legacy"),
+        Some("correction"),
+        Some("ja-JP"),
+        None,
+    ),
+    (
+        "voice.soft",
+        "barge_soft_en.wav",
+        "EN soft barge: “Um, hang on…”.",
+        Some("voice"),
+        Some("correction"),
+        Some("en-US"),
+        Some("Um, hang on…"),
+    ),
+    (
+        "voice.uhhuh",
+        "backchannel_uhhuh_en.wav",
+        "Alias of voice.backchannel — EN uh-huh sustain.",
+        Some("voice"),
+        Some("backchannel"),
+        Some("en-US"),
+        Some("uh-huh"),
+    ),
+    (
+        "voice.uhhuh_vi",
+        "backchannel_vi.wav",
+        "Alias of voice.backchannel_vi.",
+        Some("voice"),
+        Some("backchannel"),
+        Some("vi-VN"),
+        None,
+    ),
+    (
+        "voice.yeah",
+        "backchannel_yeah_en.wav",
+        "Alias of voice.backchannel_yeah.",
+        Some("voice"),
+        Some("backchannel"),
+        Some("en-US"),
+        Some("Yeah. Okay. Mhm."),
+    ),
+];
+
+/// ops.list_cues — full catalog (port of `audio/cue_catalog.list_all_cues`):
+/// builtin entries (aliases first, then leftover files), target overrides,
+/// config aliases + extra dirs, usage.
 pub fn op_list_cues(project_root: &Path) -> Result<Map<String, Json>, ConfigError> {
     let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cues_dir = crate::authoring::package_templates_dir().join("cues");
+
+    // Builtin: aliases first (sorted), then leftover *.wav files (sorted).
+    let mut builtin: Vec<Json> = Vec::new();
+    let mut seen_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut files: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&cues_dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("wav") {
+                if let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) {
+                    files.push(name);
+                }
+            }
+        }
+    }
+    files.sort();
+    for (id, file, desc, kind, icls, locale, text) in BUILTIN_CUES.iter() {
+        if !files.iter().any(|f| f == file) {
+            continue;
+        }
+        seen_files.insert(file.to_string());
+        let mut m = Map::new();
+        m.insert("id".into(), json!(id));
+        m.insert("file".into(), json!(file));
+        m.insert("source".into(), json!("builtin"));
+        m.insert(
+            "path".into(),
+            json!(cues_dir.join(file).to_string_lossy().into_owned()),
+        );
+        m.insert("ref".into(), json!(format!("builtin:{id}")));
+        m.insert("description".into(), json!(desc));
+        m.insert("kind".into(), json!(kind));
+        m.insert("interrupt_class".into(), json!(icls));
+        m.insert("locale".into(), json!(locale));
+        m.insert("text".into(), json!(text));
+        builtin.push(Json::Object(m));
+    }
+    for fname in &files {
+        if seen_files.contains(fname) {
+            continue;
+        }
+        let mut m = Map::new();
+        m.insert("id".into(), json!(fname));
+        m.insert("file".into(), json!(fname));
+        m.insert("source".into(), json!("builtin"));
+        m.insert(
+            "path".into(),
+            json!(cues_dir.join(fname).to_string_lossy().into_owned()),
+        );
+        m.insert("ref".into(), json!(format!("builtin:{fname}")));
+        m.insert("description".into(), Json::Null);
+        m.insert("kind".into(), Json::Null);
+        m.insert("interrupt_class".into(), Json::Null);
+        m.insert("locale".into(), Json::Null);
+        m.insert("text".into(), Json::Null);
+        builtin.push(Json::Object(m));
+    }
+
+    // Target overrides from .agent-sim/cues/.
+    let target_dir = cfg.cues_dir();
+    let mut target: Vec<Json> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&target_dir) {
+        let mut names: Vec<String> = rd
+            .flatten()
+            .filter_map(|entry| {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("wav") {
+                    p.file_name().map(|n| n.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        names.sort();
+        for name in names {
+            let mut m = Map::new();
+            m.insert("id".into(), json!(name));
+            m.insert("file".into(), json!(name));
+            m.insert("source".into(), json!("target"));
+            m.insert(
+                "path".into(),
+                json!(target_dir.join(&name).to_string_lossy().into_owned()),
+            );
+            m.insert("ref".into(), json!(name));
+            m.insert(
+                "overrides_builtin".into(),
+                json!(cues_dir.join(&name).is_file()),
+            );
+            target.push(Json::Object(m));
+        }
+    }
+
+    // Config aliases + extra dirs.
     let mut aliases = Map::new();
     for (k, v) in &cfg.cues.aliases {
         aliases.insert(k.clone(), json!(v));
     }
+    let mut extra: Vec<Json> = Vec::new();
+    let root = project_root;
+    for d in &cfg.cues.dirs {
+        let p = std::path::Path::new(d);
+        let full = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            root.join(p)
+        };
+        extra.push(json!(full.to_string_lossy().into_owned()));
+    }
+
+    // resolve_examples — port of `describe_resolution` for the three example
+    // refs (`builtin:noise.loud`, `builtin:noise.ambient`, `@backchannel`).
+    let resolve_examples: Vec<(String, Map<String, Json>)> = [
+        "builtin:noise.loud",
+        "builtin:noise.ambient",
+        "@backchannel",
+    ]
+    .iter()
+    .map(|asset| {
+        let mut m = Map::new();
+        m.insert("asset".into(), json!(asset));
+        let meta = builtin_cue_meta(asset);
+        let name = asset
+            .strip_prefix("builtin:")
+            .or_else(|| asset.strip_prefix('@'))
+            .unwrap_or(asset)
+            .trim();
+        let file = meta.map(|m| m.1.to_string());
+        let pkg_cand = cues_dir.join(file.clone().unwrap_or_else(|| name.to_string()));
+        let resolved = if pkg_cand.is_file() {
+            Some(pkg_cand)
+        } else {
+            let tdir_cand = target_dir.join(file.clone().unwrap_or_else(|| name.to_string()));
+            if tdir_cand.is_file() {
+                Some(tdir_cand)
+            } else {
+                None
+            }
+        };
+        match resolved {
+            Some(p) => {
+                m.insert("ok".into(), json!(true));
+                m.insert("path".into(), json!(p.to_string_lossy().into_owned()));
+                if let Some((_, fname, desc, kind, icls, locale, text)) = meta {
+                    m.insert("description".into(), json!(desc));
+                    m.insert("kind".into(), json!(kind));
+                    m.insert("interrupt_class".into(), json!(icls));
+                    m.insert("locale".into(), json!(locale));
+                    m.insert("text".into(), json!(text));
+                    m.insert("file".into(), json!(fname));
+                }
+            }
+            None => {
+                m.insert("ok".into(), json!(false));
+                m.insert(
+                    "error".into(),
+                    json!(format!("Cue asset not found: {asset}")),
+                );
+            }
+        }
+        (asset.to_string(), m)
+    })
+    .collect();
+    let mut rex = Map::new();
+    for (k, v) in resolve_examples {
+        rex.insert(k, Json::Object(v));
+    }
+
     let mut out = Map::new();
     out.insert(
-        "cues_dir".into(),
-        json!(cfg.cues_dir().to_string_lossy().into_owned()),
+        "resolve_order".into(),
+        json!([
+            "absolute path",
+            "cues.aliases (config.yaml)",
+            "builtin:id / @id",
+            "scenario directory",
+            ".agent-sim/cues/ (target override)",
+            "cues.dirs (config.yaml)",
+            "package templates/cues/"
+        ]),
     );
+    out.insert("builtin".into(), Json::Array(builtin));
+    out.insert("target".into(), Json::Array(target));
     out.insert("aliases".into(), Json::Object(aliases));
+    out.insert("extra_dirs".into(), Json::Array(extra));
     out.insert(
-        "note".into(),
-        json!("Full built-in cue catalog (noise.* / voice.*) is served by the audio pipeline (P2/P3.5); see templates/cues/."),
+        "usage".into(),
+        json!({
+            "scenario_asset_examples": [
+                "builtin:voice.barge_short",
+                "builtin:voice.backchannel",
+                "builtin:noise.loud",
+                "@noise.ambient",
+                "loud_noise_burst.wav",
+                "my_cafe.wav  # place in .agent-sim/cues/",
+                "office  # if cues.aliases.office is set"
+            ],
+            "wav_format": "PCM16 mono @ 24000 Hz",
+            "vocal_aliases": [
+                "voice.barge_short",
+                "voice.barge_sorry",
+                "voice.backchannel",
+                "voice.barge_vi"
+            ]
+        }),
     );
+    out.insert("resolve_examples".into(), Json::Object(rex));
     Ok(out)
+}
+
+/// Look up builtin cue metadata by alias (port of `builtin_cue_meta`).
+fn builtin_cue_meta(alias: &str) -> Option<BuiltinCueEntry> {
+    let key = alias
+        .strip_prefix("builtin:")
+        .or_else(|| alias.strip_prefix('@'))
+        .unwrap_or(alias)
+        .trim();
+    BUILTIN_CUES
+        .iter()
+        .find(|(id, ..)| *id == key || *id == key.replace('-', "_"))
+        .copied()
 }
 
 /// ops.get_run_status — SQLite read.
@@ -1062,7 +1642,27 @@ pub fn op_preflight_core(
         );
     }
 
-    // 7. telephony (informational)
+    let mut m = Map::new();
+    m.insert("ok".into(), json!(ok));
+    m.insert("checks".into(), Json::Array(checks));
+    Ok((m, Some(cfg)))
+}
+
+/// Append the telephony checks (position 7 — Python order: livekit.api at 6
+/// comes from the connectivity caller, then telephony last).
+pub fn append_telephony_checks(m: &mut Map<String, Json>, cfg: &crate::config::SimConfig) {
+    fn add(checks: &mut Vec<Json>, ok: &mut bool, name: &str, status: &str, detail: String) {
+        let mut c = Map::new();
+        c.insert("name".into(), json!(name));
+        c.insert("status".into(), json!(status));
+        c.insert("detail".into(), json!(detail));
+        if status == "fail" {
+            *ok = false;
+        }
+        checks.push(Json::Object(c));
+    }
+    let mut ok = m.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    let checks = m.get_mut("checks").and_then(|v| v.as_array_mut()).unwrap();
     let tel = &cfg.telephony;
     if tel.outbound_trunk_id.is_some() || tel.dial_in.is_some() || tel.sim_inbound_number.is_some()
     {
@@ -1092,7 +1692,7 @@ pub fn op_preflight_core(
             }
         ));
         add(
-            &mut checks,
+            checks,
             &mut ok,
             "telephony",
             if tel.outbound_trunk_id.is_some() {
@@ -1104,7 +1704,7 @@ pub fn op_preflight_core(
         );
         if tel.outbound_trunk_id.is_some() && tel.sim_inbound_number.is_none() {
             add(
-                &mut checks,
+                checks,
                 &mut ok,
                 "telephony.outbound_sim_callee",
                 "warn",
@@ -1116,7 +1716,7 @@ pub fn op_preflight_core(
             );
         } else if tel.sim_inbound_number.is_some() && tel.outbound_trunk_id.is_none() {
             add(
-                &mut checks,
+                checks,
                 &mut ok,
                 "telephony.outbound_sim_callee",
                 "warn",
@@ -1125,7 +1725,7 @@ pub fn op_preflight_core(
             );
         } else if tel.sim_inbound_number.is_some() && tel.outbound_trunk_id.is_some() {
             add(
-                &mut checks,
+                checks,
                 &mut ok,
                 "telephony.outbound_sim_callee",
                 "warn",
@@ -1136,30 +1736,30 @@ pub fn op_preflight_core(
         }
     } else {
         add(
-            &mut checks,
+            checks,
             &mut ok,
             "telephony",
             "pass",
             "not configured (WebRTC-only OK)".into(),
         );
     }
-
-    let mut m = Map::new();
     m.insert("ok".into(), json!(ok));
-    m.insert("checks".into(), Json::Array(checks));
-    Ok((m, Some(cfg)))
 }
 
 /// Full preflight — the core checks plus the LiveKit API connectivity check
 /// when `connectivity` is true. The connectivity check needs livekit_api,
 /// which lks-core must not depend on — the lks-livekit `preflight::op_preflight`
-/// wires this in. This fn keeps the core (non-connectivity) surface.
+/// wires this in. This fn keeps the core (non-connectivity) surface and
+/// appends telephony (position 7) after the caller's livekit.api (position 6).
 pub fn op_preflight(
     project_root: &Path,
     connectivity: bool,
     profile: Option<&str>,
 ) -> Result<Map<String, Json>, ConfigError> {
-    let (m, _cfg) = op_preflight_core(project_root, profile)?;
+    let (mut m, cfg) = op_preflight_core(project_root, profile)?;
     let _ = connectivity; // livekit.api check lands via lks-livekit::preflight
+    if let Some(cfg) = cfg {
+        append_telephony_checks(&mut m, &cfg);
+    }
     Ok(m)
 }

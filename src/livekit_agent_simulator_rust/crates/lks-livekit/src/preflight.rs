@@ -47,10 +47,10 @@ pub async fn op_preflight(
 ) -> Result<Map<String, Json>, lks_core::errors::ConfigError> {
     let (mut m, cfg) = lks_core::ops::op_preflight_core(project_root, profile)?;
     if connectivity {
-        if let Some(cfg) = cfg {
+        if let Some(cfg) = &cfg {
             let still_ok = m.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
             if still_ok {
-                match check_livekit_api(&cfg).await {
+                match check_livekit_api(cfg).await {
                     Ok(()) => {
                         let mut c = Map::new();
                         c.insert("name".into(), json!("livekit.api"));
@@ -78,6 +78,10 @@ pub async fn op_preflight(
                 }
             }
         }
+    }
+    // Telephony always lands LAST (position 7) — Python order.
+    if let Some(cfg) = &cfg {
+        lks_core::ops::append_telephony_checks(&mut m, cfg);
     }
     Ok(m)
 }

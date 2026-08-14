@@ -466,6 +466,10 @@ pub fn scenario_from_dict(
         behavior_spec,
     };
 
+    // Hamming-style: compile speech_conditions + Behavior into Script (explicit
+    // Script wins by id) — mirrors scenario.py/scenario_from_dict.py parse end.
+    let scenario = apply_behavior_compile(scenario, path_label)?;
+
     // Validation (order matters — mirrors scenario_from_dict.py).
     if scenario.simulator.first_speaker != "agent" && scenario.simulator.first_speaker != "user" {
         return Err(ScenarioError(format!(
@@ -479,6 +483,50 @@ pub fn scenario_from_dict(
         )));
     }
 
+    Ok(scenario)
+}
+
+/// Run `behavior_compile.apply_caller_behavior` over the parsed scenario —
+/// speech_conditions auto-steps (auto-ambient/auto-barge/auto-silence) and
+/// Behavior.spec compile into script_steps, with explicit steps merged by id.
+/// Mirrors the Python parse-end call in scenario.py:543.
+pub fn apply_behavior_compile(
+    mut scenario: Scenario,
+    path_label: &str,
+) -> Result<Scenario, ScenarioError> {
+    use crate::behavior_compile::apply_caller_behavior;
+    use crate::script::parse::{parse_script_steps, parse_script_verify};
+
+    // Typed parse of the raw script section (steps + verify) so
+    // apply_caller_behavior can merge/compile; the raw section is reconstructed
+    // from the typed steps for the compile call.
+    let mut typed_steps: Vec<crate::script::ScriptStep> = Vec::new();
+    let mut typed_verify: Option<crate::script::ScriptVerifySpec> = None;
+    let script_raw = scenario.script_steps.clone();
+    if !script_raw.is_empty() {
+        // Wrap the raw steps in a {steps: [...]} spec the parser expects.
+        let mut spec = Map::new();
+        spec.insert("steps".into(), Json::Array(script_raw));
+        typed_steps = parse_script_steps(&spec, path_label).map_err(ScenarioError)?;
+    }
+    if let Some(sv) = &scenario.script_verify {
+        typed_verify = parse_script_verify(sv).map_err(ScenarioError)?;
+    }
+
+    let (compiled_steps, compiled_verify) = apply_caller_behavior(
+        &scenario.persona,
+        scenario.behavior_spec.as_ref(),
+        &typed_steps,
+        typed_verify.as_ref(),
+        path_label,
+    )
+    .map_err(ScenarioError)?;
+
+    scenario.script_steps = compiled_steps
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
+        .collect();
+    scenario.script_verify = compiled_verify.map(|v| serde_json::to_value(v).unwrap_or(Json::Null));
     Ok(scenario)
 }
 
