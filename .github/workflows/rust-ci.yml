@@ -40,6 +40,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # lks-web rust-embeds web/dist at compile time — build it first
+      # (web/dist is gitignored; the Python CI builds it for the wheel).
+      - name: Setup pnpm
+        if: matrix.os != 'windows-latest'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        if: matrix.os != 'windows-latest'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Build web UI (report player embed)
+        if: matrix.os != 'windows-latest'
+        run: pnpm install --frozen-lockfile && pnpm build
+        working-directory: web
+
       - name: Install libwebrtc system deps (ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libssl-dev pkg-config

@@ -445,6 +445,8 @@ async fn player_redirect(
 type S = Arc<WebServer>;
 
 /// Embedded report player (web/dist) — installed binaries have no repo walk.
+/// rust-embed resolves relative to CARGO_MANIFEST_DIR (crates/lks-web) → 4 up
+/// = repo root → web/dist.
 #[derive(rust_embed::Embed)]
 #[folder = "../../../../web/dist"]
 struct EmbeddedPlayer;
