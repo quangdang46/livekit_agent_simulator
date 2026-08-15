@@ -237,10 +237,23 @@ impl OpenAiCallerBridge {
             );
         }
 
-        // 3. OpenAI Realtime WebSocket.
+        // 3. OpenAI Realtime WebSocket. The single sender is shared via an
+        // mpsc forwarding task (pump_agent_audio + pump_openai_events both need
+        // to send; a SplitSink is not Clone).
         let url = format!("{OPENAI_WS_URL}?model={}", sim_cfg.voice.model);
         let ws = connect_ws(&url, &sim_cfg.api_key).await?;
-        let (mut ws_tx, ws_rx) = ws.split();
+        let (ws_tx_owned, ws_rx) = ws.split();
+        let (ws_msg_tx, mut ws_msg_rx) = mpsc::channel::<Message>(128);
+        let ws_forward = tokio::spawn(async move {
+            let mut ws_tx = ws_tx_owned;
+            while let Some(msg) = ws_msg_rx.recv().await {
+                if ws_tx.send(msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let ws_forward_task = ws_forward; // keep the forwarder task alive for the run
+        let ws_tx = ws_msg_tx.clone();
 
         // session.update — GA payload, VAD off.
         let session_update = serde_json::json!({
@@ -316,6 +329,22 @@ impl OpenAiCallerBridge {
                 None,
             );
             drop(w);
+            // GA user-turn text item FIRST, then response.create — the model
+            // needs input to respond to (port of openai.py _user_text_item +
+            // _send_midcall_cues). Without the item, response.create produces
+            // nothing and the caller never speaks.
+            let item = serde_json::json!({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": bootstrap_text}],
+                },
+            });
+            ws_tx
+                .send(Message::Text(serde_json::to_string(&item).unwrap().into()))
+                .await
+                .map_err(|e| RunError(format!("item.create failed: {e}")))?;
             ws_tx
                 .send(Message::Text(
                     serde_json::to_string(&serde_json::json!({"type": "response.create"}))
@@ -331,7 +360,7 @@ impl OpenAiCallerBridge {
         let (out_tx, out_rx) = mpsc::channel::<Vec<i16>>(128);
 
         // Pump 1: agent room audio → OpenAI input buffer.
-        let ws_tx_pump = ws_tx;
+        let ws_tx_pump = ws_msg_tx.clone();
         let rec_agent = self.recorder.clone();
         let writer_pump = self.writer.clone();
         let audio_task = tokio::spawn(pump_agent_audio(
@@ -347,6 +376,7 @@ impl OpenAiCallerBridge {
         let openai_task = tokio::spawn(pump_openai_events(
             ws_rx,
             out_tx.clone(),
+            ws_msg_tx.clone(),
             self.writer.clone(),
             end_rx.resubscribe(),
         ));
@@ -410,6 +440,7 @@ impl OpenAiCallerBridge {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), openai_task).await;
         audio_task.abort();
         mic_task.abort();
+        ws_forward_task.abort();
         let _ = (audio_tx, out_tx, dispatch_id);
         Ok(())
     }
@@ -451,18 +482,40 @@ pub fn publish_mic_shared(
 async fn pump_agent_audio(
     room: Arc<livekit::Room>,
     mut room_events: broadcast::Receiver<SimRoomEvent>,
-    mut ws_tx: futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        Message,
-    >,
+    ws_tx: mpsc::Sender<Message>,
     mut end_call: broadcast::Receiver<()>,
     recorder: Option<crate::script::SharedRecorder>,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
 ) {
     // Wait for the agent's audio track, then stream 24k PCM into OpenAI.
     let mut agent_track: Option<livekit::webrtc::audio_stream::native::NativeAudioStream> = None;
+    // The agent may have already published its track before we started — check
+    // once up front so we don't miss a TrackSubscribed that fired earlier.
+    if let Some((track, sid)) = find_subscribed_audio(&room) {
+        let stream = livekit::webrtc::audio_stream::native::NativeAudioStream::new(
+            track,
+            OPENAI_IN_RATE as i32,
+            1,
+        );
+        let mut w = writer.lock().await;
+        let mut spec_m = serde_json::Map::new();
+        spec_m.insert("track_sid".into(), serde_json::Value::String(sid));
+        spec_m.insert(
+            "provider".into(),
+            serde_json::Value::String("openai".into()),
+        );
+        w.emit(
+            "sim.agent_audio_bridged",
+            Some(&spec_m),
+            "sim",
+            None,
+            None,
+            false,
+            None,
+        );
+        drop(w);
+        agent_track = Some(stream);
+    }
     loop {
         tokio::select! {
             _ = end_call.recv() => return,
@@ -574,6 +627,7 @@ async fn pump_openai_events(
         >,
     >,
     out_tx: mpsc::Sender<Vec<i16>>,
+    ws_tx: mpsc::Sender<Message>,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
     _end_call: broadcast::Receiver<()>,
 ) {
@@ -616,34 +670,15 @@ async fn pump_openai_events(
                         }
                     }
                     "response.output_audio_transcript.delta" => {
-                        if let Some(chunk) = event.get("delta").and_then(|v| v.as_str()) {
-                            agent_text.push_str(chunk);
-                        }
-                    }
-                    "response.output_audio_transcript.done" => {
-                                let t = agent_text.trim().to_string();
-                        if !t.is_empty() {
-                            let mut w = writer.lock().await;
-                            w.update_dialogue("agent", &t, true, None);
-                            w.emit(
-                                "transcript.agent.final",
-                                spec(serde_json::json!({"text": t})).as_ref(),
-                                "sim.openai",
-                                None,
-                                None,
-                                false,
-                                None,
-                            );
-                        }
-                        agent_text.clear();
-                    }
-                    "conversation.item.input_audio_transcription.delta" => {
+                        // Caller speech (the model speaks AS the caller).
                         if let Some(chunk) = event.get("delta").and_then(|v| v.as_str()) {
                             caller_text.push_str(chunk);
                         }
                     }
-                    "conversation.item.input_audio_transcription.completed" => {
-                        let t = (event.get("transcript").and_then(|v| v.as_str()).unwrap_or("")).trim().to_string();
+                    "response.output_audio_transcript.done" => {
+                        // transcript.user.final — the model's output is the CALLER
+                        // (port of openai.py _on_output_transcript_done).
+                        let t = caller_text.trim().to_string();
                         if !t.is_empty() {
                             let mut w = writer.lock().await;
                             w.update_dialogue("user", &t, true, None);
@@ -656,8 +691,68 @@ async fn pump_openai_events(
                                 false,
                                 None,
                             );
+                            // sim.caller.audio_source_start once per utterance.
+                            let mut src = serde_json::Map::new();
+                            src.insert("provider".into(), json!("openai"));
+                            src.insert("voice_gain".into(), json!(1.0));
+                            src.insert("gain".into(), json!(1.0));
+                            src.insert("via".into(), json!("model_output"));
+                            w.emit(
+                                "sim.caller.audio_source_start",
+                                Some(&src),
+                                "sim.openai",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
                         }
                         caller_text.clear();
+                        // Caller finished — commit the agent audio and request the
+                        // next caller response (port of _commit_and_respond).
+                        let commit = serde_json::json!({"type": "input_audio_buffer.commit"});
+                        let _ = ws_tx
+                            .send(Message::Text(serde_json::to_string(&commit).unwrap().into()))
+                            .await;
+                        let rc = serde_json::json!({"type": "response.create"});
+                        let _ = ws_tx
+                            .send(Message::Text(serde_json::to_string(&rc).unwrap().into()))
+                            .await;
+                    }
+                    "conversation.item.input_audio_transcription.delta" => {
+                        // Agent speech (the agent's room audio fed into the model).
+                        if let Some(chunk) = event.get("delta").and_then(|v| v.as_str()) {
+                            agent_text.push_str(chunk);
+                        }
+                    }
+                    "conversation.item.input_audio_transcription.completed" => {
+                        // transcript.agent.final — the AGENT's audio transcribed
+                        // (port of openai.py _on_agent_transcript_done).
+                        let t = (event.get("transcript").and_then(|v| v.as_str()).unwrap_or("")).trim().to_string();
+                        if !t.is_empty() {
+                            let mut w = writer.lock().await;
+                            w.update_dialogue("agent", &t, true, None);
+                            w.emit(
+                                "transcript.agent.final",
+                                spec(serde_json::json!({"text": t})).as_ref(),
+                                "sim.openai",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            // sim.heard_agent (port of openai.py:1202).
+                            w.emit(
+                                "sim.heard_agent",
+                                spec(serde_json::json!({"text": t})).as_ref(),
+                                "sim.openai",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                        }
+                        agent_text.clear();
                     }
                     "response.done" => {
                         // Emit the caller's accumulated speech as a final transcript.
