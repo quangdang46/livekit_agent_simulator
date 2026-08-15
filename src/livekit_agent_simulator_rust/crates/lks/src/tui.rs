@@ -242,8 +242,15 @@ fn render_detail(frame: &mut Frame, app: &mut TuiApp) {
     frame.render_widget(para, area);
 }
 
-/// Run the TUI loop (blocking; ctrl+c / q quits).
+/// Run the TUI loop (blocking; ctrl+c / q quits). Fails cleanly (no panic)
+/// when stdout isn't a TTY (pipes, CI, hooks).
 pub fn run(project_root: &std::path::Path) -> anyhow::Result<()> {
+    if !crossterm::tty::IsTty::is_tty(&std::io::stdout()) {
+        anyhow::bail!(
+            "lksr tui needs an interactive terminal (stdout is not a TTY). \
+             Try a real terminal or use `lksr runs` / `lksr report` for scripted output."
+        );
+    }
     let mut terminal = ratatui::init();
     let mut app = TuiApp::new(project_root);
     let result = loop {
