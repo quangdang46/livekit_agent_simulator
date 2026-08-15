@@ -652,6 +652,44 @@ pub async fn execute_scenario_parsed(
         );
         w.emit("run.error", Some(&err_spec), "mcp", None, None, false, None);
     }
+    // run.end_condition (port of run_orchestrator.py:448) — emitted before
+    // finalize with the end reason. The Rust bridge ends on the 45s slice cap
+    // when the agent doesn't disconnect (Python's end_reason is "timeout" for
+    // the scenario timeout; the 45s cap is the port's hard bound).
+    let end_reason = match &run_result {
+        Ok(()) => {
+            // The bridge returned after the cap or agent disconnect — use the
+            // run duration vs the scenario timeout to classify.
+            if status == "done" {
+                "agent_disconnected"
+            } else {
+                "error"
+            }
+        }
+        Err(e) => {
+            if e.to_string().contains("Agent `") && e.to_string().contains("did not join") {
+                "agent_join_timeout"
+            } else {
+                "error"
+            }
+        }
+    };
+    {
+        let mut ec = serde_json::Map::new();
+        ec.insert(
+            "reason".into(),
+            serde_json::Value::String(end_reason.into()),
+        );
+        w.emit(
+            "run.end_condition",
+            Some(&ec),
+            "mcp",
+            None,
+            None,
+            false,
+            None,
+        );
+    }
     // finalize() emits run.ended (source mcp) + writes summary.json (full 36-key
     // metrics) / meta.json / timeline.md, and returns the summary map.
     let mut meta = serde_json::Map::new();

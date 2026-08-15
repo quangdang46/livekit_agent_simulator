@@ -30,6 +30,9 @@ pub enum SimRoomEvent {
         identity: String,
     },
     Disconnected,
+    ActiveSpeakersChanged {
+        identities: Vec<String>,
+    },
     DataReceived {
         topic: String,
         data: Vec<u8>,
@@ -80,6 +83,11 @@ pub async fn connect_room(
                     })
                 }
                 RoomEvent::Disconnected { .. } => Some(SimRoomEvent::Disconnected),
+                RoomEvent::ActiveSpeakersChanged { speakers } => {
+                    Some(SimRoomEvent::ActiveSpeakersChanged {
+                        identities: speakers.iter().map(|p| p.identity().to_string()).collect(),
+                    })
+                }
                 RoomEvent::DataReceived { payload, topic, .. } => {
                     Some(SimRoomEvent::DataReceived {
                         topic: topic.unwrap_or_default(),

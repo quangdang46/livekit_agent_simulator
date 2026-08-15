@@ -235,7 +235,7 @@ async fn pump_agent_audio_gemini(
             ev = room_events.recv() => {
                 match ev {
                     Ok(SimRoomEvent::TrackSubscribed { .. }) => {
-                        if let Some(t) = super::openai::find_subscribed_audio(&room) {
+                        if let Some((t, _)) = super::openai::find_subscribed_audio(&room) {
                             break Some(t);
                         }
                     }

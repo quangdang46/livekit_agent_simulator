@@ -92,7 +92,7 @@ impl OpenAiCallerBridge {
     /// pump audio both ways until `end_call`.
     pub async fn run(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
         // Internal end signal so the cap can shut the pumps down gracefully.
-        let (end_tx, mut end_rx) = broadcast::channel::<()>(1);
+        let (end_tx, end_rx) = broadcast::channel::<()>(1);
         let livekit_cfg = &self.livekit;
         let sim_cfg = &self.sim;
         let voice_name = openai_voice_name(&sim_cfg.voice.voice);
@@ -139,6 +139,29 @@ impl OpenAiCallerBridge {
         if let Some(shared) = &self.shared_mic {
             let mut guard = shared.lock().await;
             *guard = Some(source.clone());
+        }
+        // sim.mic_published (port of callers/openai.py _publish_mic).
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "sample_rate".into(),
+                serde_json::Value::Number(OPENAI_OUT_RATE.into()),
+            );
+            spec_m.insert("mixer".into(), serde_json::Value::String("parallel".into()));
+            spec_m.insert(
+                "provider".into(),
+                serde_json::Value::String("openai".into()),
+            );
+            w.emit(
+                "sim.mic_published",
+                Some(&spec_m),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
         }
         let _ = source;
 
@@ -246,26 +269,53 @@ impl OpenAiCallerBridge {
             .await
             .map_err(|e| RunError(format!("session.update send failed: {e}")))?;
 
-        let mut w = self.writer.lock().await;
-        w.emit(
-            "sim.openai_connected",
-            spec(serde_json::json!({
-                "model": sim_cfg.voice.model,
-                "voice": voice_name,
-                "language": sim_cfg.voice.language,
-                "voice_gain": 1.0,
-                "silent_mode": false,
-            }))
-            .as_ref(),
-            "sim",
-            None,
-            None,
-            false,
-            None,
-        );
+        {
+            let mut w = self.writer.lock().await;
+            w.emit(
+                "sim.openai_connected",
+                spec(serde_json::json!({
+                    "model": sim_cfg.voice.model,
+                    "voice": voice_name,
+                    "language": sim_cfg.voice.language,
+                    "voice_gain": 1.0,
+                    "silent_mode": false,
+                }))
+                .as_ref(),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
+            // drop(w) — tokio Mutex is not reentrant; the midcall emit below
+            // locks again in the same task.
+        }
 
-        // Initial kick: with VAD off the model never starts on its own.
+        // Initial kick: with VAD off the model never starts on its own. Emits
+        // sim.caller_midcall bootstrap when the caller speaks first (parity
+        // with openai.py _send_midcall_cues — the OpenAI path sends a text
+        // item + response.create).
         if self.first_speaker == "user" {
+            // Bootstrap midcall cue (port of caller_policy midcall_cues).
+            let bootstrap_text = "(The call just connected. You speak first per PERSONA: greet briefly and state why you are calling in one natural turn.)";
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert("kind".into(), serde_json::Value::String("bootstrap".into()));
+            spec_m.insert("label".into(), serde_json::Value::Null);
+            spec_m.insert(
+                "text".into(),
+                serde_json::Value::String(bootstrap_text.chars().take(240).collect()),
+            );
+            w.emit(
+                "sim.caller_midcall",
+                Some(&spec_m),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
+            drop(w);
             ws_tx
                 .send(Message::Text(
                     serde_json::to_string(&serde_json::json!({"type": "response.create"}))
@@ -283,12 +333,14 @@ impl OpenAiCallerBridge {
         // Pump 1: agent room audio → OpenAI input buffer.
         let ws_tx_pump = ws_tx;
         let rec_agent = self.recorder.clone();
+        let writer_pump = self.writer.clone();
         let audio_task = tokio::spawn(pump_agent_audio(
             room.clone(),
             room_events.resubscribe(),
             ws_tx_pump,
             end_rx.resubscribe(),
             rec_agent,
+            writer_pump,
         ));
 
         // Pump 2: OpenAI events → audio out / transcripts.
@@ -303,18 +355,53 @@ impl OpenAiCallerBridge {
         let rec_sim = self.recorder.clone();
         let mic_task = tokio::spawn(pump_mic_shared(out_rx, source.clone(), rec_sim));
 
-        // Wait for end_call, or a hard slice cap (P2: 45 s) so runs always terminate.
+        // Wait for end_call, the agent leaving, or a hard slice cap. Emits
+        // room.active_speakers / room.disconnected as they happen (parity with
+        // observer.py handlers).
         let mut room_events_watch = room_events;
-        tokio::select! {
-            _ = end_rx.recv() => {}
-            ev = room_events_watch.recv() => {
-                // Natural end: agent left the room, or dead-call silence elapsed.
-                if let Ok(SimRoomEvent::ParticipantDisconnected { identity }) = ev {
-                    eprintln!("[lksr] agent disconnected ({identity}) — ending run");
+        let writer_obs = self.writer.clone();
+        let mut disconnect_rx = end_rx.resubscribe();
+        loop {
+            tokio::select! {
+                _ = disconnect_rx.recv() => break,
+                ev = room_events_watch.recv() => {
+                    match ev {
+                        Ok(SimRoomEvent::ParticipantDisconnected { identity }) => {
+                            eprintln!("[lksr] agent disconnected ({identity}) — ending run");
+                            break;
+                        }
+                        Ok(SimRoomEvent::Disconnected) => {
+                            // room.disconnected (port of observer.py _on_disconnected).
+                            let mut w = writer_obs.lock().await;
+                            w.emit("room.disconnected", None, "room", None, None, false, None);
+                            drop(w);
+                            break;
+                        }
+                        Ok(SimRoomEvent::ActiveSpeakersChanged { identities }) => {
+                            // room.active_speakers (port of observer.py active_speakers_changed).
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("identities".into(), serde_json::Value::Array(
+                                identities.iter().map(|i| serde_json::Value::String(i.clone())).collect(),
+                            ));
+                            w.emit(
+                                "room.active_speakers",
+                                Some(&spec_m),
+                                "room",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            drop(w);
+                        }
+                        _ => {}
+                    }
                 }
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(45)) => {
-                eprintln!("[lksr] slice cap reached (45s) — ending run");
+                _ = tokio::time::sleep(std::time::Duration::from_secs(45)) => {
+                    eprintln!("[lksr] slice cap reached (45s) — ending run");
+                    break;
+                }
             }
         }
         // Signal end to the pumps and let them drain the pending ws messages
@@ -372,6 +459,7 @@ async fn pump_agent_audio(
     >,
     mut end_call: broadcast::Receiver<()>,
     recorder: Option<crate::script::SharedRecorder>,
+    writer: Arc<tokio::sync::Mutex<EventWriter>>,
 ) {
     // Wait for the agent's audio track, then stream 24k PCM into OpenAI.
     let mut agent_track: Option<livekit::webrtc::audio_stream::native::NativeAudioStream> = None;
@@ -382,8 +470,23 @@ async fn pump_agent_audio(
                 match ev {
                     Ok(SimRoomEvent::TrackSubscribed { .. }) => {
                         // Find the subscribed audio track on the room and open a 24k stream.
-                        if let Some(track) = find_subscribed_audio(&room) {
+                        if let Some((track, sid)) = find_subscribed_audio(&room) {
                             let stream = livekit::webrtc::audio_stream::native::NativeAudioStream::new(track, OPENAI_IN_RATE as i32, 1);
+                            // sim.agent_audio_bridged (port of openai.py _agent_audio_pump).
+                            let mut w = writer.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("track_sid".into(), serde_json::Value::String(sid));
+                            spec_m.insert("provider".into(), serde_json::Value::String("openai".into()));
+                            w.emit(
+                                "sim.agent_audio_bridged",
+                                Some(&spec_m),
+                                "sim",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            drop(w);
                             agent_track = Some(stream);
                         }
                     }
@@ -450,12 +553,13 @@ async fn pump_agent_audio(
 
 pub fn find_subscribed_audio(
     room: &Arc<livekit::Room>,
-) -> Option<livekit::webrtc::audio_track::RtcAudioTrack> {
+) -> Option<(livekit::webrtc::audio_track::RtcAudioTrack, String)> {
     for (_, participant) in room.remote_participants() {
         for (_, publication) in participant.track_publications() {
             if publication.kind() == livekit::prelude::TrackKind::Audio {
                 if let Some(livekit::prelude::RemoteTrack::Audio(audio)) = publication.track() {
-                    return Some(audio.rtc_track());
+                    let sid = publication.sid().to_string();
+                    return Some((audio.rtc_track(), sid));
                 }
             }
         }
