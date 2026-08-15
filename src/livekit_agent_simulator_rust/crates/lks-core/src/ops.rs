@@ -38,13 +38,26 @@ fn as_str(v: &Json) -> String {
     }
 }
 
-/// ops.guide — package GUIDE.md text (no project_root required).
+/// ops.guide — package GUIDE.md text (no project_root required). Works from
+/// any cwd: repo walk when available (dev), else the embedded copy.
 pub fn guide() -> Result<Map<String, Json>, ConfigError> {
-    let path = crate::authoring::package_templates_dir().join("GUIDE.md");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|_| ConfigError(format!("Package guide missing: {}", path.display())))?;
+    let repo_path = crate::authoring::package_templates_dir().map(|t| t.join("GUIDE.md"));
+    let (path, text) = match &repo_path {
+        Some(p) if p.is_file() => (
+            p.to_string_lossy().into_owned(),
+            std::fs::read_to_string(p).map_err(|e| {
+                ConfigError(format!("Package guide missing: {} ({e})", p.display()))
+            })?,
+        ),
+        _ => (
+            "embedded:templates/GUIDE.md".to_string(),
+            crate::authoring::embedded_template("GUIDE.md")
+                .ok_or_else(|| ConfigError("Package guide missing (not embedded)".into()))?
+                .to_string(),
+        ),
+    };
     let mut m = Map::new();
-    m.insert("path".into(), json!(path.to_string_lossy().into_owned()));
+    m.insert("path".into(), json!(path));
     m.insert("text".into(), json!(text));
     Ok(m)
 }
@@ -604,7 +617,9 @@ const BUILTIN_CUES: [BuiltinCueEntry; 35] = [
 /// config aliases + extra dirs, usage.
 pub fn op_list_cues(project_root: &Path) -> Result<Map<String, Json>, ConfigError> {
     let cfg = load_config(project_root.to_path_buf(), None)?;
-    let cues_dir = crate::authoring::package_templates_dir().join("cues");
+    let cues_dir = crate::authoring::package_templates_dir()
+        .map(|t| t.join("cues"))
+        .unwrap_or_else(|| std::path::PathBuf::from("templates/cues"));
 
     // Builtin: aliases first (sorted), then leftover *.wav files (sorted).
     let mut builtin: Vec<Json> = Vec::new();
@@ -783,7 +798,9 @@ pub fn describe_cue_resolution(project_root: &Path, asset: &str) -> Map<String, 
     let mut m = Map::new();
     m.insert("asset".into(), json!(asset));
     let cfg = load_config(project_root.to_path_buf(), None).ok();
-    let cues_dir = crate::authoring::package_templates_dir().join("cues");
+    let cues_dir = crate::authoring::package_templates_dir()
+        .map(|t| t.join("cues"))
+        .unwrap_or_else(|| std::path::PathBuf::from("templates/cues"));
     let target_dir = cfg.map(|c| c.cues_dir());
     let meta = builtin_cue_meta(asset);
     let name = asset

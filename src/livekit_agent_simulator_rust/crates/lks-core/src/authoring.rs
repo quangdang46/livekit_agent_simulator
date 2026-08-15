@@ -15,23 +15,56 @@ use crate::scenario_yaml::load_scenario_yaml;
 
 pub const DOT_FOLDER: &str = ".agent-sim";
 
-/// Find the package templates dir — repo-root `templates/` (walk up ≤ 6 parents).
-pub fn package_templates_dir() -> PathBuf {
-    // In the Rust port, templates live at the repo root `templates/`. Walk up
-    // from the crate dir (crate is at <root>/src/livekit_agent_simulator_rust/
-    // crates/lks-core) to find <root>/templates.
+/// Embedded template texts — shipped inside the binary so `guide`/`init`/
+/// `scenario-init` work from ANY cwd (installed binary has no repo walk).
+const EMBEDDED: &[(&str, &str)] = &[
+    (
+        "GUIDE.md",
+        include_str!("../../../../../templates/GUIDE.md"),
+    ),
+    (
+        "config.yaml",
+        include_str!("../../../../../templates/config.yaml"),
+    ),
+    (
+        "smoke-hello.yaml",
+        include_str!("../../../../../templates/smoke-hello.yaml"),
+    ),
+    (
+        "scenario-scaffold.yaml",
+        include_str!("../../../../../templates/scenario-scaffold.yaml"),
+    ),
+    (
+        "plugins/example_verify.py",
+        include_str!("../../../../../templates/plugins/example_verify.py"),
+    ),
+    (
+        "cues/README.md",
+        include_str!("../../../../../templates/cues/README.md"),
+    ),
+];
+
+/// Find the package templates dir — repo-root `templates/` (walk up ≤ 6
+/// parents, dev checkout) with an embedded fallback for installed binaries.
+/// Returns a path only when the CWD walk finds the repo (needed for the cues
+/// WAV catalog); callers use the embedded texts when this returns None.
+pub fn package_templates_dir() -> Option<PathBuf> {
     let mut p = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     for _ in 0..8 {
         let cand = p.join("templates");
         if cand.join("config.yaml").exists() {
-            return cand;
+            return Some(cand);
         }
         if !p.pop() {
             break;
         }
     }
-    // Fallback: look relative to the crate source.
-    PathBuf::from("templates")
+    None
+}
+
+/// Read an embedded template text (installed-binary fallback).
+pub fn embedded_template(name: &str) -> Option<&'static str> {
+    EMBEDDED.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
 }
 
 fn copy_if_missing(src: &Path, dst: &Path, created: &mut Vec<String>) -> std::io::Result<()> {
@@ -39,6 +72,28 @@ fn copy_if_missing(src: &Path, dst: &Path, created: &mut Vec<String>) -> std::io
         return Ok(());
     }
     std::fs::copy(src, dst)?;
+    created.push(dst.to_string_lossy().into_owned());
+    Ok(())
+}
+
+/// Copy a template to dst — from the repo file when available (dev), else the
+/// embedded text (installed binary).
+fn copy_text_if_missing(
+    name: &str,
+    src: Option<PathBuf>,
+    dst: &Path,
+    created: &mut Vec<String>,
+) -> std::io::Result<()> {
+    if dst.exists() {
+        return Ok(());
+    }
+    if let Some(src) = src {
+        return copy_if_missing(&src, dst, created);
+    }
+    let text = embedded_template(name).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, format!("{name} not embedded"))
+    })?;
+    std::fs::write(dst, text)?;
     created.push(dst.to_string_lossy().into_owned());
     Ok(())
 }
@@ -63,27 +118,35 @@ pub fn init_project(project_root: &Path) -> Result<Map<String, Json>, ConfigErro
     if !cues_readme.exists() {
         std::fs::write(
             &cues_readme,
-            "# Target audio cues (room_pcm)\n\nDrop **PCM16 mono @ 24 kHz** WAVs here to override package built-ins or add project-specific noise.\n\nScenario: `\"delivery\":\"room_pcm\",\"asset\":\"my_noise.wav\"` or `\"asset\":\"builtin:noise.loud\"`.\n\nList: `lks cues --root .`\n",
+            embedded_template("cues/README.md").unwrap_or(
+                "# Target audio cues (room_pcm)\n\nDrop **PCM16 mono @ 24 kHz** WAVs here to override package built-ins or add project-specific noise.\n\nScenario: `\"delivery\":\"room_pcm\",\"asset\":\"my_noise.wav\"` or `\"asset\":\"builtin:noise.loud\"`.\n\nList: `lks cues --root .`\n",
+            ),
         )
         .map_err(io_err)?;
         created.push(cues_readme.to_string_lossy().into_owned());
     }
 
-    // config.yaml, smoke scenario, example plugin (copy from templates)
-    copy_if_missing(
-        &templates.join("config.yaml"),
+    // config.yaml, smoke scenario, example plugin (copy from templates;
+    // embedded texts when the repo walk fails — installed binary).
+    copy_text_if_missing(
+        "config.yaml",
+        templates.as_ref().map(|t| t.join("config.yaml")),
         &dot.join("config.yaml"),
         &mut created,
     )
     .map_err(io_err)?;
-    copy_if_missing(
-        &templates.join("smoke-hello.yaml"),
+    copy_text_if_missing(
+        "smoke-hello.yaml",
+        templates.as_ref().map(|t| t.join("smoke-hello.yaml")),
         &dot.join("scenarios").join("smoke-hello.yaml"),
         &mut created,
     )
     .map_err(io_err)?;
-    copy_if_missing(
-        &templates.join("plugins").join("example_verify.py"),
+    copy_text_if_missing(
+        "plugins/example_verify.py",
+        templates
+            .as_ref()
+            .map(|t| t.join("plugins").join("example_verify.py")),
         &dot.join("plugins").join("example_verify.py"),
         &mut created,
     )
@@ -167,16 +230,23 @@ pub fn init_scenario(
     }
 
     let templates = package_templates_dir();
-    let scaffold = templates.join("scenario-scaffold.yaml");
-    if !scaffold.exists() {
-        return Err(ConfigError(format!(
-            "Package scaffold missing: {}",
-            scaffold.display()
-        )));
+    let text = match templates {
+        Some(t) => {
+            let scaffold = t.join("scenario-scaffold.yaml");
+            if !scaffold.exists() {
+                return Err(ConfigError(format!(
+                    "Package scaffold missing: {}",
+                    scaffold.display()
+                )));
+            }
+            std::fs::read_to_string(&scaffold)
+                .map_err(|e| ConfigError(format!("{}: read error — {e}", scaffold.display())))?
+        }
+        None => embedded_template("scenario-scaffold.yaml")
+            .ok_or_else(|| ConfigError("scenario-scaffold.yaml not embedded".into()))?
+            .to_string(),
     }
-    let text = std::fs::read_to_string(&scaffold)
-        .map_err(|e| ConfigError(format!("{}: read error — {e}", scaffold.display())))?
-        .replace("{{SCENARIO_ID}}", scenario_id);
+    .replace("{{SCENARIO_ID}}", scenario_id);
     std::fs::write(&dest, &text)
         .map_err(|e| ConfigError(format!("{}: write error — {e}", dest.display())))?;
 
