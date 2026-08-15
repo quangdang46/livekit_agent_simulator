@@ -3,6 +3,8 @@
 //! Same public ops as the MCP server (22 data commands + `mcp`), mirroring the
 //! Python `lks` CLI. `--version`/`--help` from clap (typer-equivalent).
 
+mod tui;
+
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
@@ -278,6 +280,8 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
     },
+    /// Interactive run browser (ratatui TUI). ↑↓ select · enter detail · q quit.
+    Tui,
     /// Start the MCP server over stdio (same 21 tools as the Python server).
     Mcp,
     /// Check config + folders + optional LiveKit API connectivity.
@@ -322,6 +326,7 @@ fn main() -> anyhow::Result<()> {
             println!("lksr {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        Some(Command::Tui) => tui::run(std::path::Path::new(&root)),
         Some(Command::Mcp) => {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
