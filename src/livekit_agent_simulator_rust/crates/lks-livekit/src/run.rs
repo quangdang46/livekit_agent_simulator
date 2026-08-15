@@ -699,6 +699,13 @@ pub async fn execute_scenario_parsed(
         serde_json::Value::String(scenario.id.clone()),
     );
     let mut summary = w.finalize(status, Some(&meta), None);
+    // end_reason into summary (port of run_orchestrator.py:692-693).
+    if !end_reason.is_empty() {
+        summary.insert(
+            "end_reason".into(),
+            serde_json::Value::String(end_reason.to_string()),
+        );
+    }
 
     // LLM judge over pass_criteria (P7) — HTTP backend (judge.base_url + key).
     if !scenario.pass_criteria.is_empty() {
