@@ -422,6 +422,7 @@ pub fn router(server: Arc<WebServer>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
+        .route("/player.html", get(player_redirect))
         .route("/api/runs", get(api_runs))
         .route("/api/runs/{run_id}/cues", get(api_cues))
         .route("/assets/{name}", get(static_asset))
@@ -429,12 +430,39 @@ pub fn router(server: Arc<WebServer>) -> Router {
         .with_state(server)
 }
 
+/// GET /player.html?run=<id> → 302 Location: /?run=<id> (or / when empty) —
+/// header only, no body (port of web/server.py ReportUIHandler /player.html).
+async fn player_redirect(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let loc = match params.get("run").filter(|r| !r.is_empty()) {
+        Some(run) => format!("/?run={run}"),
+        None => "/".to_string(),
+    };
+    (StatusCode::FOUND, [(header::LOCATION, loc.as_str())], "").into_response()
+}
+
 type S = Arc<WebServer>;
 
+/// Embedded report player (web/dist) — installed binaries have no repo walk.
+#[derive(rust_embed::Embed)]
+#[folder = "../../../../web/dist"]
+struct EmbeddedPlayer;
+
+/// Read a player file: repo dist first (dev), else the embedded copy.
+fn player_bytes(s: &WebServer, name: &str) -> Option<Vec<u8>> {
+    let path = s.player_dir.join(name);
+    if path.starts_with(&s.player_dir) && path.is_file() {
+        if let Ok(b) = std::fs::read(&path) {
+            return Some(b);
+        }
+    }
+    EmbeddedPlayer::get(name).map(|f| f.data.into_owned())
+}
+
 async fn index(axum::extract::State(s): axum::extract::State<S>) -> Response {
-    let path = s.player_dir.join("index.html");
-    match std::fs::read(&path) {
-        Ok(bytes) => (
+    match player_bytes(&s, "index.html") {
+        Some(bytes) => (
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -443,7 +471,7 @@ async fn index(axum::extract::State(s): axum::extract::State<S>) -> Response {
             bytes,
         )
             .into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "missing index.html").into_response(),
+        None => (StatusCode::NOT_FOUND, "missing index.html").into_response(),
     }
 }
 
@@ -483,13 +511,9 @@ async fn static_asset(
     axum::extract::State(s): axum::extract::State<S>,
     AxumPath(name): AxumPath<String>,
 ) -> Response {
-    let path = s.player_dir.join(&name);
-    if !path.starts_with(&s.player_dir) || !path.is_file() {
-        return (StatusCode::NOT_FOUND, "asset not found").into_response();
-    }
     let ctype = guess_type(&name);
-    match std::fs::read(&path) {
-        Ok(bytes) => (
+    match player_bytes(&s, &name) {
+        Some(bytes) => (
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, ctype),
@@ -498,7 +522,7 @@ async fn static_asset(
             bytes,
         )
             .into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "asset not found").into_response(),
+        None => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
 }
 
