@@ -120,8 +120,10 @@ impl GeminiCallerBridge {
         // Transport needs the caller's API key (the gemini_live crate does NOT
         // read it from env — Auth::None is the default, which would connect
         // unauthenticated). Port of callers/gemini.py:479 (api_key from config).
-        let mut transport = TransportConfig::default();
-        transport.auth = Auth::ApiKey(sim_cfg.api_key.clone());
+        let transport = TransportConfig {
+            auth: Auth::ApiKey(sim_cfg.api_key.clone()),
+            ..Default::default()
+        };
         let session = Session::connect(SessionConfig {
             transport,
             setup: std::mem::take(&mut setup),

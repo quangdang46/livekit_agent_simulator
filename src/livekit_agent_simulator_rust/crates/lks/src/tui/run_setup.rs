@@ -1,6 +1,6 @@
 //! Run setup: pick repeat/pass@k/profile/agent → launch a live run.
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -74,21 +74,6 @@ impl RunSetupScreen {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, _ctx: &ScreenCtx) {
-        let chunk = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(5),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ])
-            .split(area);
-
         let mut lines = vec![Line::from(format!("Run: {}", self.scenario_id))];
         lines.push(Line::from(""));
         for (i, (label, val)) in self.fields().iter().enumerate() {
@@ -135,12 +120,15 @@ impl RunSetupScreen {
                 Style::default().fg(ratatui::style::Color::Cyan)
             },
         )));
+        lines.push(Line::from(Span::styled(
+            "j/k move · type to edit · Enter on ▶ Run to launch · Esc back",
+            Style::default().fg(ratatui::style::Color::DarkGray),
+        )));
 
         f.render_widget(
             Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Run setup")),
-            chunk[0].union(area),
+            area,
         );
-        let _ = chunk;
     }
 
     pub fn on_key(
@@ -186,10 +174,8 @@ impl RunSetupScreen {
                     2 => self.pass_at_k.push(c),
                     3 => self.profile.push(c),
                     4 => self.agent_name.push(c),
-                    5 => {
-                        if c == ' ' || c == 't' {
-                            self.strict_judge = !self.strict_judge;
-                        }
+                    5 if c == ' ' || c == 't' => {
+                        self.strict_judge = !self.strict_judge;
                     }
                     _ => {}
                 }

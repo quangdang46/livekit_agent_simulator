@@ -395,6 +395,9 @@ pub struct LiveRunScreen {
     confirm_abort: bool,
     transcript: Vec<(String, String, String)>, // (role, turn, text)
     scroll: usize,
+    /// True = auto-follow the newest transcript line; off when the user scrolls
+    /// up so they can read earlier turns while the run continues.
+    follow: bool,
     activity: Vec<String>,
     gate: Option<Map<String, Value>>,
 }
@@ -409,6 +412,7 @@ impl LiveRunScreen {
             confirm_abort: false,
             transcript: Vec::new(),
             scroll: 0,
+            follow: true,
             activity: Vec::new(),
             gate: None,
         }
@@ -446,8 +450,11 @@ impl LiveRunScreen {
                         }
                         self.activity.push(describe_event(&ev));
                     }
-                    // clamp scroll to bottom-ish so new lines are visible
-                    self.scroll = self.transcript.len().saturating_sub(1);
+                    // Follow mode: keep the newest line visible unless the
+                    // user scrolled up to read earlier turns.
+                    if self.follow {
+                        self.scroll = self.transcript.len().saturating_sub(1);
+                    }
                 }
                 RunPoll::Finished(out) => {
                     match out {
@@ -501,7 +508,7 @@ impl LiveRunScreen {
             Phase::Failed => Style::default().fg(Color::Red),
         };
         let mut hl = vec![
-            Span::styled(format!("{phase_txt}"), phase_style),
+            Span::styled(phase_txt, phase_style),
             Span::raw(format!("  {}  ", self.scenario_id)),
             Span::raw(format!("turn {}", self.session.current_turn())),
             Span::raw(format!("  events {}", self.session.events.len())),
@@ -642,11 +649,18 @@ impl LiveRunScreen {
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
+                self.follow = false;
                 self.scroll = (self.scroll + 1).min(self.transcript.len().saturating_sub(1));
                 NavAction::None
             }
             KeyCode::Char('k') | KeyCode::Up => {
+                self.follow = false;
                 self.scroll = self.scroll.saturating_sub(1);
+                NavAction::None
+            }
+            KeyCode::Char('G') => {
+                self.follow = true;
+                self.scroll = self.transcript.len().saturating_sub(1);
                 NavAction::None
             }
             _ => NavAction::None,

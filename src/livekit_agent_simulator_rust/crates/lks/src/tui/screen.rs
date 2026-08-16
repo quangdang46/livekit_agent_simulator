@@ -29,6 +29,9 @@ pub enum NavAction {
 
 /// Every screen. Tab screens are top-level; the rest live on the stack.
 #[derive(Debug)]
+// LiveRun carries a RunSession (thread + channels); the size gap is expected
+// for a screen enum — the boxed-Screen stack keeps allocation trivial.
+#[allow(clippy::large_enum_variant)]
 pub enum Screen {
     Home(HomeScreen),
     Scenarios(ScenariosScreen),

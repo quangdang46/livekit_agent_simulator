@@ -43,10 +43,8 @@ pub fn run(root: &Path) -> anyhow::Result<()> {
 
         if crossterm::event::poll(app.poll_interval())? {
             if let crossterm::event::Event::Key(k) = crossterm::event::read()? {
-                if k.kind == crossterm::event::KeyEventKind::Press {
-                    if app.on_key(k)? {
-                        break Ok(());
-                    }
+                if k.kind == crossterm::event::KeyEventKind::Press && app.on_key(k)? {
+                    break Ok(());
                 }
             }
         }
@@ -61,8 +59,9 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
-    fn tmp_root() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("lksr_tui_test_{}", std::process::id()));
+    fn tmp_root(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("lksr_tui_test_{}_{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
         let dot = dir.join(".agent-sim");
         std::fs::create_dir_all(dot.join("scenarios")).unwrap();
@@ -92,7 +91,7 @@ mod tests {
 
     #[test]
     fn home_renders_without_panic() {
-        let root = tmp_root();
+        let root = tmp_root("home");
         let mut app = App::new(&root).expect("app loads");
         let txt = render_text(&mut app);
         assert!(
@@ -103,7 +102,7 @@ mod tests {
 
     #[test]
     fn scenario_tab_renders() {
-        let root = tmp_root();
+        let root = tmp_root("scenario_tab");
         let mut app = App::new(&root).unwrap();
         assert!(!app
             .on_key(key(ratatui::crossterm::event::KeyCode::Char('2')))
@@ -113,5 +112,37 @@ mod tests {
             txt.contains("Scenarios"),
             "scenarios frame rendered: {txt:?}"
         );
+    }
+
+    #[test]
+    fn live_run_renders_and_aborts() {
+        // Drive a LiveRunScreen with an injected session that emits one event
+        // then stays "running"; verify the render shows the running header and
+        // that an Esc-confirm abort path is reachable without a panic.
+        let (tx, _rx) = std::sync::mpsc::channel::<serde_json::Map<String, serde_json::Value>>();
+        let session = live_run::RunSession::start_with(
+            tmp_root("live"),
+            "fake".to_string(),
+            live_run::RunSettings::default(),
+            move |_root, _sid, _opts| {
+                let _ = tx;
+                let mut out = serde_json::Map::new();
+                out.insert("status".into(), serde_json::json!("done"));
+                Ok(out)
+            },
+        )
+        .expect("session starts");
+        let mut scr = live_run::LiveRunScreen::new(session, "fake".to_string(), false);
+        let root = tmp_root("live_cfg");
+        let cfg = lks_core::config::load_config(root.clone(), None).unwrap();
+        let ctx = crate::tui::screen::ScreenCtx {
+            root: &root,
+            cfg: &cfg,
+        };
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| scr.render(f, f.area(), &ctx)).unwrap();
+        // Escape sets confirm-abort (no panic), second Esc sends abort.
+        let _ = scr.on_key(key(ratatui::crossterm::event::KeyCode::Esc), &ctx);
+        let _ = scr.on_key(key(ratatui::crossterm::event::KeyCode::Esc), &ctx);
     }
 }

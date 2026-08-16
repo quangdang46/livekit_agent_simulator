@@ -280,7 +280,8 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
     },
-    /// Interactive run browser (ratatui TUI). ↑↓ select · enter detail · q quit.
+    /// Full-feature interactive TUI: scenarios → run (live) · runs → reports ·
+    /// preflight · cues · plugins. 1-6 tabs, ↑↓/Enter navigate, Esc back, q quit.
     Tui,
     /// Start the MCP server over stdio (same 21 tools as the Python server).
     Mcp,

@@ -68,7 +68,7 @@ impl RunsScreen {
                     Style::default().add_modifier(Modifier::BOLD),
                 ));
                 line.spans.push(Span::styled(
-                    format!("{}", r.scenario_id),
+                    r.scenario_id.clone(),
                     Style::default().fg(ratatui::style::Color::DarkGray),
                 ));
                 ListItem::new(line)
