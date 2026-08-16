@@ -377,7 +377,11 @@ pub async fn execute_scenario_parsed(
 
     // --- caller bridge (webrtc_sim + openai provider) ---
     let room_name = format!("lks-{run_id}");
-    let identity = format!("lks-caller-{}", &run_id[..8]);
+    // Sim caller identity — Python adapter.py SIM_IDENTITY. The target agent
+    // (e.g. voice-ai-agent's session-event-handlers) matches the caller by
+    // identity, so the sim must use the stable Python name ("lks-caller"),
+    // not a per-run identity (that would break caller detection/hangup).
+    let identity = "lks-caller".to_string();
     let writer_arc = Arc::new(Mutex::new(writer));
 
     // Shared mic source so room_pcm cues play into the room (set by the bridge).

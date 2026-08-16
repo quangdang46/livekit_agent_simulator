@@ -4,6 +4,7 @@
 //! off — push-to-talk semantics), model audio is played back into the room,
 //! and transcripts/interruptions become run events.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -71,7 +72,66 @@ impl OpenAiCallerBridge {
         }
     }
 
-    /// Share the published mic source so script room_pcm cues can play.
+    /// Sim caller identity/name — Python adapter.py SIM_IDENTITY/SIM_NAME. The
+    /// target agent (e.g. voice-ai-agent's session-event-handlers) matches the
+    /// caller by identity, so the sim must use the stable Python name
+    /// ("lks-caller"), not a per-run identity (that would break caller
+    /// detection/hangup).
+    pub const SIM_IDENTITY: &str = "lks-caller";
+    pub const SIM_NAME: &str = "Agent Simulator Caller";
+
+    /// Port of Python observer on_transcript turn framing: an agent final that
+    /// follows a caller final carries `turn_taking_ms` (monotonic gap), and
+    /// `begin_turn` advances the turn counter. Without it the report shows
+    /// turn_taking_ms nulls/0 and turns never advance.
+    async fn emit_agent_final(
+        writer: &Arc<tokio::sync::Mutex<EventWriter>>,
+        text: &str,
+        last_user_final_mono: &mut Option<std::time::Instant>,
+        agent_replied_this_turn: &mut bool,
+    ) {
+        let t = text.trim().to_string();
+        if t.is_empty() {
+            return;
+        }
+        let mut w = writer.lock().await;
+        let mut spec_m = serde_json::Map::new();
+        spec_m.insert("text".into(), json!(t));
+        if let Some(lu) = *last_user_final_mono {
+            if !*agent_replied_this_turn {
+                let ttm = lu.elapsed().as_millis() as i64;
+                spec_m.insert("turn_taking_ms".into(), json!(ttm));
+            }
+        }
+        w.update_dialogue("agent", &t, true, None);
+        w.emit(
+            "transcript.agent.final",
+            Some(&spec_m),
+            "sim.openai",
+            None,
+            None,
+            false,
+            None,
+        );
+        drop(w);
+        // sim.heard_agent (port of openai.py:1202).
+        let mut w = writer.lock().await;
+        w.emit(
+            "sim.heard_agent",
+            Some(
+                &serde_json::json!({"text": t})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            "sim.openai",
+            None,
+            None,
+            false,
+            None,
+        );
+        *agent_replied_this_turn = true;
+    }
     pub fn with_shared_mic(mut self, shared: crate::script::SharedMicSource) -> Self {
         self.shared_mic = Some(shared);
         self
@@ -88,11 +148,42 @@ impl OpenAiCallerBridge {
         Ok(())
     }
 
+    /// Port of openai.py `_commit_and_respond`: commit the input buffer
+    /// (agent audio), request the next model response, and clear the buffer
+    /// (VAD off — the buffer is not auto-cleared; without `clear` the next
+    /// agent turn's audio mixes with the committed turn's residual PCM). The
+    /// central guard skips when a response is already in flight (OpenAI
+    /// rejects response.create then).
+    async fn commit_and_respond(ws_tx: &mpsc::Sender<Message>, response_in_flight: &AtomicBool) {
+        if response_in_flight.load(Ordering::SeqCst) {
+            return;
+        }
+        let commit = serde_json::json!({"type": "input_audio_buffer.commit"});
+        let _ = ws_tx
+            .send(Message::Text(
+                serde_json::to_string(&commit).unwrap().into(),
+            ))
+            .await;
+        let rc = serde_json::json!({"type": "response.create"});
+        let _ = ws_tx
+            .send(Message::Text(serde_json::to_string(&rc).unwrap().into()))
+            .await;
+        let clear = serde_json::json!({"type": "input_audio_buffer.clear"});
+        let _ = ws_tx
+            .send(Message::Text(serde_json::to_string(&clear).unwrap().into()))
+            .await;
+        response_in_flight.store(true, Ordering::SeqCst);
+    }
+
     /// Run the caller: connect room → dispatch agent → open OpenAI WS →
     /// pump audio both ways until `end_call`.
     pub async fn run(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
         // Internal end signal so the cap can shut the pumps down gracefully.
         let (end_tx, end_rx) = broadcast::channel::<()>(1);
+        // True while the OpenAI server has an in-flight response (Python's
+        // _response_in_flight). response.create is rejected while one is
+        // active — the central guard skips the hand-off request then.
+        let response_in_flight = Arc::new(AtomicBool::new(false));
         let livekit_cfg = &self.livekit;
         let sim_cfg = &self.sim;
         let voice_name = openai_voice_name(&sim_cfg.voice.voice);
@@ -353,6 +444,7 @@ impl OpenAiCallerBridge {
                 ))
                 .await
                 .map_err(|e| RunError(format!("response.create failed: {e}")))?;
+            response_in_flight.store(true, Ordering::SeqCst);
         }
 
         // 4. Two pumps: room agent audio → OpenAI; OpenAI audio → room mic.
@@ -370,6 +462,7 @@ impl OpenAiCallerBridge {
             end_rx.resubscribe(),
             rec_agent,
             writer_pump,
+            response_in_flight.clone(),
         ));
 
         // Pump 2: OpenAI events → audio out / transcripts.
@@ -379,6 +472,7 @@ impl OpenAiCallerBridge {
             ws_msg_tx.clone(),
             self.writer.clone(),
             end_rx.resubscribe(),
+            response_in_flight.clone(),
         ));
 
         // Pump 3: audio out → mic source.
@@ -391,6 +485,10 @@ impl OpenAiCallerBridge {
         let mut room_events_watch = room_events;
         let writer_obs = self.writer.clone();
         let mut disconnect_rx = end_rx.resubscribe();
+        // Hard cap: single immutable timer so it actually fires after 45s (a
+        // sleep recreated per iteration resets it and the cap never triggers).
+        let cap = tokio::time::sleep(std::time::Duration::from_secs(45));
+        tokio::pin!(cap);
         loop {
             tokio::select! {
                 _ = disconnect_rx.recv() => break,
@@ -428,7 +526,7 @@ impl OpenAiCallerBridge {
                         _ => {}
                     }
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(45)) => {
+                _ = &mut cap => {
                     eprintln!("[lksr] slice cap reached (45s) — ending run");
                     break;
                 }
@@ -486,6 +584,7 @@ async fn pump_agent_audio(
     mut end_call: broadcast::Receiver<()>,
     recorder: Option<crate::script::SharedRecorder>,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
+    response_in_flight: Arc<AtomicBool>,
 ) {
     // Wait for the agent's audio track, then stream 24k PCM into OpenAI.
     let mut agent_track: Option<livekit::webrtc::audio_stream::native::NativeAudioStream> = None;
@@ -553,36 +652,39 @@ async fn pump_agent_audio(
             break;
         }
     }
-    // Stream frames → input_audio_buffer.append (base64 PCM16 24k).
+    // Stream frames → input_audio_buffer.append (base64 PCM16 24k). Port of
+    // openai.py _pump_agent_audio: track the agent's speech end via a
+    // trailing-silence window (RMS-gated), and commit + request the caller's
+    // response on that boundary (VAD off — this is the manual turn hand-off).
     let mut stream = agent_track.unwrap();
     let mut agent_audio_ms = 0u64;
-    let mut committed = false;
+    let mut last_speech: Option<std::time::Instant> = None;
+    let mut commit_pending = false;
     while let Some(frame) = stream.next().await {
         agent_audio_ms += (frame.samples_per_channel as u64) * 1000 / OPENAI_IN_RATE as u64;
-        if !committed && agent_audio_ms > 3000 {
-            // Commit the agent's audio as a user turn, then trigger the caller's response.
-            let _ = ws_tx
-                .send(Message::Text(
-                    serde_json::to_string(&serde_json::json!({
-                        "type": "input_audio_buffer.commit"
-                    }))
-                    .unwrap()
-                    .into(),
-                ))
-                .await;
-            let _ = ws_tx
-                .send(Message::Text(
-                    serde_json::to_string(&serde_json::json!({
-                        "type": "response.create"
-                    }))
-                    .unwrap()
-                    .into(),
-                ))
-                .await;
-            committed = true;
-            eprintln!("[lksr] committed agent audio + response.create");
-        }
         let pcm: &[i16] = frame.data.as_ref();
+        let rms = pcm_iter_rms(pcm.iter().map(|&s| s as f32));
+        let speaking = rms >= AGENT_SPEECH_RMS;
+        let now = std::time::Instant::now();
+        if speaking {
+            last_speech = Some(now);
+            commit_pending = false;
+        } else if let Some(ls) = last_speech {
+            if now.duration_since(ls).as_millis() >= AGENT_STREAM_END_SILENCE_MS {
+                commit_pending = true;
+                last_speech = None;
+                // Agent stopped speaking — commit the buffered audio + request
+                // the caller response (port of _commit_and_respond).
+                OpenAiCallerBridge::commit_and_respond(&ws_tx, &response_in_flight).await;
+            }
+        }
+        if !speaking
+            && ((frame.samples_per_channel as u64) * 1000 / OPENAI_IN_RATE as u64)
+                >= AGENT_STREAM_END_SILENCE_MS as u64
+        {
+            // Long silence — skip to avoid flooding the buffer.
+            continue;
+        }
         let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
         if let Some(rec) = &recorder {
             if let Ok(mut r) = rec.lock() {
@@ -602,7 +704,28 @@ async fn pump_agent_audio(
             return;
         }
     }
+    let _ = &mut commit_pending;
+    let _ = &mut agent_audio_ms;
 }
+
+/// RMS of a float PCM frame (port of Python `pcm16_mono_rms`).
+fn pcm_iter_rms(mut it: impl Iterator<Item = f32>) -> f32 {
+    let mut sum = 0.0f64;
+    let mut n = 0u64;
+    for s in it.by_ref() {
+        let f = s / 32768.0;
+        sum += (f * f) as f64;
+        n += 1;
+    }
+    if n == 0 {
+        return 0.0;
+    }
+    (sum / n as f64).sqrt() as f32
+}
+
+// Port of openai.py _AGENT_SPEECH_RMS_THRESHOLD / _AGENT_STREAM_END_SILENCE_MS.
+const AGENT_SPEECH_RMS: f32 = 100.0;
+const AGENT_STREAM_END_SILENCE_MS: u128 = 650;
 
 pub fn find_subscribed_audio(
     room: &Arc<livekit::Room>,
@@ -630,8 +753,12 @@ async fn pump_openai_events(
     ws_tx: mpsc::Sender<Message>,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
     _end_call: broadcast::Receiver<()>,
+    response_in_flight: Arc<AtomicBool>,
 ) {
     let mut agent_text = String::new();
+    // Observer turn framing state (port of observer.py on_transcript).
+    let mut last_user_final_mono: Option<std::time::Instant> = None;
+    let mut agent_replied_this_turn = false;
     let mut caller_text = String::new();
     loop {
         tokio::select! {
@@ -675,11 +802,26 @@ async fn pump_openai_events(
                             caller_text.push_str(chunk);
                         }
                     }
+                    "response.audio_transcript.done" => {
+                        // Same as output_audio_transcript.done (older/newer
+                        // event-name variants; Python openai.py listens on
+                        // response.audio_transcript.done).
+                        response_in_flight.store(false, Ordering::SeqCst);
+                        caller_text.clear();
+                        // Caller finished — commit + request the next caller
+                        // response (port of _commit_and_respond).
+                        OpenAiCallerBridge::commit_and_respond(&ws_tx, &response_in_flight).await;
+                    }
                     "response.output_audio_transcript.done" => {
+                        response_in_flight.store(false, Ordering::SeqCst);
                         // transcript.user.final — the model's output is the CALLER
                         // (port of openai.py _on_output_transcript_done).
                         let t = caller_text.trim().to_string();
                         if !t.is_empty() {
+                            // Observer turn framing: a caller final opens a new
+                            // turn (port of observer.py on_transcript user arm).
+                            last_user_final_mono = Some(std::time::Instant::now());
+                            agent_replied_this_turn = false;
                             let mut w = writer.lock().await;
                             w.update_dialogue("user", &t, true, None);
                             w.emit(
@@ -710,14 +852,7 @@ async fn pump_openai_events(
                         caller_text.clear();
                         // Caller finished — commit the agent audio and request the
                         // next caller response (port of _commit_and_respond).
-                        let commit = serde_json::json!({"type": "input_audio_buffer.commit"});
-                        let _ = ws_tx
-                            .send(Message::Text(serde_json::to_string(&commit).unwrap().into()))
-                            .await;
-                        let rc = serde_json::json!({"type": "response.create"});
-                        let _ = ws_tx
-                            .send(Message::Text(serde_json::to_string(&rc).unwrap().into()))
-                            .await;
+                        OpenAiCallerBridge::commit_and_respond(&ws_tx, &response_in_flight).await;
                     }
                     "conversation.item.input_audio_transcription.delta" => {
                         // Agent speech (the agent's room audio fed into the model).
@@ -730,46 +865,47 @@ async fn pump_openai_events(
                         // (port of openai.py _on_agent_transcript_done).
                         let t = (event.get("transcript").and_then(|v| v.as_str()).unwrap_or("")).trim().to_string();
                         if !t.is_empty() {
-                            let mut w = writer.lock().await;
-                            w.update_dialogue("agent", &t, true, None);
-                            w.emit(
-                                "transcript.agent.final",
-                                spec(serde_json::json!({"text": t})).as_ref(),
-                                "sim.openai",
-                                None,
-                                None,
-                                false,
-                                None,
-                            );
-                            // sim.heard_agent (port of openai.py:1202).
-                            w.emit(
-                                "sim.heard_agent",
-                                spec(serde_json::json!({"text": t})).as_ref(),
-                                "sim.openai",
-                                None,
-                                None,
-                                false,
-                                None,
-                            );
+                            OpenAiCallerBridge::emit_agent_final(
+                                &writer,
+                                &t,
+                                &mut last_user_final_mono,
+                                &mut agent_replied_this_turn,
+                            )
+                            .await;
                         }
                         agent_text.clear();
+                        // Agent finished speaking — request the next caller
+                        // response (port of openai.py _on_agent_transcript_done
+                        // commit+respond). Without this the model never hears
+                        // the agent's turn (VAD off) and dead air follows.
+                        OpenAiCallerBridge::commit_and_respond(&ws_tx, &response_in_flight).await;
+                    }
+                    "response.created" => {
+                        // A model response started (Python openai.py sets
+                        // _response_in_flight on response.created).
+                        response_in_flight.store(true, Ordering::SeqCst);
+                    }
+                    "response.cancelled" | "response.failed" => {
+                        // Response aborted — clear the in-flight guard (Python
+                        // openai.py clears on response.cancelled/failed).
+                        response_in_flight.store(false, Ordering::SeqCst);
                     }
                     "response.done" => {
-                        // Emit the caller's accumulated speech as a final transcript.
-                        let t = agent_text.trim().to_string();
-                        if !t.is_empty() {
-                            let mut w = writer.lock().await;
-                            w.update_dialogue("agent", &t, true, None);
-                            w.emit(
-                                "transcript.agent.final",
-                                spec(serde_json::json!({"text": t})).as_ref(),
-                                "sim.openai",
-                                None,
-                                None,
-                                false,
-                                None,
-                            );
-                        }
+                        // The model response finished (port of openai.py
+                        // _on_response_done — the in-flight flag drives the
+                        // commit+respond guard).
+                        response_in_flight.store(false, Ordering::SeqCst);
+                        // Emit the agent's accumulated input-transcript as a
+                        // final transcript (port of openai.py _on_response_done
+                        // flush — without this a caller-final utterance whose
+                        // `.done` never arrived would strand un-finalized).
+                        OpenAiCallerBridge::emit_agent_final(
+                            &writer,
+                            &agent_text,
+                            &mut last_user_final_mono,
+                            &mut agent_replied_this_turn,
+                        )
+                        .await;
                         agent_text.clear();
                     }
                     _ => {}

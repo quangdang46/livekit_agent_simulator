@@ -211,18 +211,75 @@ impl GeminiCallerBridge {
             }
         });
 
-        // Agent room audio → Gemini session (24k PCM).
+        // Agent room audio → Gemini session (24k PCM). The room-events
+        // broadcast is shared with the end loop below (resubscribe).
         let session_tx = session.clone();
         let agent_audio_task = tokio::spawn(pump_agent_audio_gemini(
             room.clone(),
-            room_events,
+            room_events.resubscribe(),
             session_tx,
         ));
 
-        // Slice cap (45s) so runs always terminate.
-        tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+        // Wait for end_call, the agent leaving, or a hard slice cap. Emits
+        // room.active_speakers / room.disconnected (parity with observer.py
+        // handlers + openai.rs). The cap is a single immutable timer so it
+        // actually fires after 45s (a sleep recreated per iteration resets it).
+        let (end_tx, end_rx) = broadcast::channel::<()>(16);
+        let mut disconnect_rx = end_rx.resubscribe();
+        let cap = tokio::time::sleep(std::time::Duration::from_secs(45));
+        tokio::pin!(cap);
+        let mut room_events_watch = room_events;
+        let writer_obs = self.writer.clone();
+        loop {
+            tokio::select! {
+                _ = disconnect_rx.recv() => break,
+                ev = room_events_watch.recv() => {
+                    match ev {
+                        Ok(SimRoomEvent::ParticipantDisconnected { identity }) => {
+                            eprintln!("[lksr] agent disconnected ({identity}) — ending run");
+                            break;
+                        }
+                        Ok(SimRoomEvent::Disconnected) => {
+                            // room.disconnected (port of observer.py _on_disconnected).
+                            let mut w = writer_obs.lock().await;
+                            w.emit("room.disconnected", None, "room", None, None, false, None);
+                            drop(w);
+                            break;
+                        }
+                        Ok(SimRoomEvent::ActiveSpeakersChanged { identities }) => {
+                            // room.active_speakers (port of observer.py active_speakers_changed).
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            let ids: Vec<serde_json::Value> = identities
+                                .iter()
+                                .map(|i| serde_json::Value::String(i.clone()))
+                                .collect();
+                            spec_m.insert("identities".into(), serde_json::Value::Array(ids));
+                            w.emit(
+                                "room.active_speakers",
+                                Some(&spec_m),
+                                "room",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            drop(w);
+                        }
+                        _ => {}
+                    }
+                }
+                _ = &mut cap => {
+                    eprintln!("[lksr] slice cap reached (45s) — ending run");
+                    break;
+                }
+            }
+        }
+        // Signal end to the pumps and let the gemini task drain the pending
+        // events (the transcript .done lands here), then abort stragglers.
+        let _ = end_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), gemini_task).await;
         mic_task.abort();
-        gemini_task.abort();
         agent_audio_task.abort();
         let _ = dispatch_id;
         Ok(())
