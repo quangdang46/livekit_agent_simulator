@@ -398,44 +398,121 @@ fn apply_profile(
     profile: Option<&str>,
     config_path: &std::path::Path,
 ) -> Result<(Map<String, Json>, Option<String>), ConfigError> {
-    let Some(profile) = profile else {
-        return Ok((sim_raw, None));
+    // Port of config.py profile selection (lines ~312-370):
+    //   * `--profile <name>` given   → that profile (explicit; must exist).
+    //   * `--profile` absent + exactly one profile has `default: true`
+    //                               → that profile.
+    //   * `--profile` absent + no defaults → the legacy flat `simulator:` block.
+    //   * 2+ profiles marked `default: true` → error (no "first wins").
+    let raw_profiles: Option<Map<String, Json>> = match sim_raw.get("profiles") {
+        Some(Json::Object(m)) if !m.is_empty() => Some(m.clone()),
+        _ => None,
     };
-    let raw_profiles = match sim_raw.get("profiles") {
-        Some(Json::Object(m)) if !m.is_empty() => m.clone(),
-        _ => {
-            return Err(ConfigError(format!(
-                "`--profile {profile}` requested but `simulator.profiles:` is \
-                 not a non-empty map in {}.",
-                config_path.display()
-            )))
-        }
-    };
-    let prof_raw = match raw_profiles.get(profile) {
-        Some(Json::Object(m)) => m.clone(),
-        Some(_) => {
-            return Err(ConfigError(format!(
-                "`simulator.profiles.{profile}` must be a mapping."
-            )))
+
+    // Resolve the selected profile name (None = use the flat block).
+    let selected: Option<String> = match profile {
+        Some(p) => {
+            let map = match &raw_profiles {
+                Some(m) => m,
+                None => {
+                    return Err(ConfigError(format!(
+                        "`--profile {p}` requested but `simulator.profiles:` is \
+                         not a non-empty map in {}.",
+                        config_path.display()
+                    )))
+                }
+            };
+            match map.get(p) {
+                Some(Json::Object(_)) => Some(p.to_string()),
+                Some(_) => {
+                    return Err(ConfigError(format!(
+                        "`simulator.profiles.{p}` must be a mapping."
+                    )))
+                }
+                None => {
+                    let mut names: Vec<&String> = map.keys().collect();
+                    names.sort();
+                    let list = names
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(ConfigError(format!(
+                        "Profile '{p}' not found. Available profiles: {}",
+                        if list.is_empty() {
+                            "none".to_string()
+                        } else {
+                            list
+                        }
+                    )));
+                }
+            }
         }
         None => {
-            let mut names: Vec<&String> = raw_profiles.keys().collect();
-            names.sort();
-            let list = names
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(ConfigError(format!(
-                "Unknown profile {profile:?}. Available profiles: {}",
-                if list.is_empty() {
-                    "none".to_string()
-                } else {
-                    list
+            if let Some(map) = &raw_profiles {
+                let mut defaults: Vec<&String> = map
+                    .iter()
+                    .filter(|(_, p)| {
+                        p.as_object()
+                            .and_then(|m| m.get("default"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                    })
+                    .map(|(name, _)| name)
+                    .collect();
+                defaults.sort();
+                if defaults.len() > 1 {
+                    return Err(ConfigError(format!(
+                        "Multiple profiles marked `default: true` in {}: {}. \
+                         Mark at most one profile as default (or use `--profile <name>`).",
+                        config_path.display(),
+                        defaults
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
                 }
-            )));
+                if defaults.len() == 1 {
+                    Some(defaults[0].to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         }
     };
+
+    // Profiles exist but nothing selects one: if the flat block has no
+    // api_key either, there is no caller config at all.
+    if selected.is_none() && raw_profiles.is_some() {
+        let flat_key = sim_raw
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if flat_key.is_empty() {
+            return Err(ConfigError(format!(
+                "No default profile configured and no legacy `simulator:` \
+                 credentials found in {}. Mark one profile with `default: true`, \
+                 pass `--profile <name>`, or fill `simulator.api_key`.",
+                config_path.display()
+            )));
+        }
+    }
+
+    let Some(selected) = selected else {
+        return Ok((sim_raw, None));
+    };
+
+    let prof_raw = raw_profiles
+        .as_ref()
+        .and_then(|m| m.get(&selected))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
     // Profile inherits unspecified keys from the flat block; drop `profiles:` key.
     let mut merged: Map<String, Json> = sim_raw
         .iter()
@@ -445,7 +522,7 @@ fn apply_profile(
     for (k, v) in prof_raw {
         merged.insert(k, v);
     }
-    Ok((merged, Some(profile.to_string())))
+    Ok((merged, Some(selected)))
 }
 
 fn build_simulator_config(
