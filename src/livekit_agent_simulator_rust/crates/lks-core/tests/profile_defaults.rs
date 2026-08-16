@@ -92,3 +92,26 @@ fn unknown_profile_lists_available() {
     assert!(msg.contains("google"), "got: {msg}");
     assert!(msg.contains("openai"), "got: {msg}");
 }
+
+#[test]
+fn yaml11_bool_scalars_resolve_like_pyyaml() {
+    // PyYAML 1.1 resolves off/no/yes/on to booleans; the Rust 1.2 parser keeps
+    // them as strings, so py_bool must resolve them (config.py parity).
+    let root = tmp_root("yaml11", "  api_key: flat-key\n  provider: openai\n");
+    // Rewrite config with observe scalars in 1.1 style.
+    let cfg_path = root.join(".agent-sim/config.yaml");
+    let txt = std::fs::read_to_string(&cfg_path).unwrap();
+    let txt =
+        txt + "observe:\n  record_audio: off\n  lk_agent_session: yes\n  lk_transcription: on\n";
+    std::fs::write(&cfg_path, txt).unwrap();
+    let cfg = load_config(root, None).unwrap();
+    assert!(!cfg.observe.record_audio, "record_audio: off must be false");
+    assert!(
+        cfg.observe.lk_agent_session,
+        "lk_agent_session: yes must be true"
+    );
+    assert!(
+        cfg.observe.lk_transcription,
+        "lk_transcription: on must be true"
+    );
+}

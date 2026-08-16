@@ -254,7 +254,17 @@ fn py_bool(v: &Json) -> bool {
                 true
             }
         }
-        Json::String(s) => !s.is_empty(),
+        // PyYAML 1.1 resolves off/no/yes/on/n/y to booleans at parse time; the
+        // Rust YAML 1.2 parser keeps them as strings, so resolve them here to
+        // match (off/no/n → false, on/yes/y → true). `false`/`true`/`0`/`1`
+        // arrive as real bool/number already; a QUOTED "false" stays a string
+        // and is truthy (Python bool("false") == True — golden_config
+        // config_bool_string_trap).
+        Json::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "no" | "n" => false,
+            "on" | "yes" | "y" => true,
+            _ => !s.is_empty(),
+        },
         _ => true,
     }
 }
