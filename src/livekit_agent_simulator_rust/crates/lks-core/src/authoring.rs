@@ -59,7 +59,51 @@ pub fn package_templates_dir() -> Option<PathBuf> {
             break;
         }
     }
-    None
+    // Installed binary: materialize the embedded cue WAVs so the catalog and
+    // room_pcm playback resolve builtin: assets (parity with the Python
+    // package, which ships web_static/cues in the wheel).
+    materialize_embedded_cues()
+}
+
+/// Builtin cue WAVs embedded into the binary (port of the Python package's
+/// web_static/cues). rust-embed resolves relative to CARGO_MANIFEST_DIR
+/// (crates/lks-core) → 4 up = repo root → templates/cues.
+#[derive(rust_embed::Embed)]
+#[folder = "../../../../templates/cues"]
+struct EmbeddedCues;
+
+/// Write the embedded cue WAVs to a cache dir once, returning the dir.
+/// Falls back to a unique temp dir (no home/cache) — callers must not cache
+/// the returned path across runs.
+fn materialize_embedded_cues() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    // Return the TEMPLATES parent (like package_templates_dir does): callers
+    // join "cues" on top. So materialize to <base>/lksr/embedded/templates/cues.
+    let templates = base.join("lksr").join("embedded").join("templates");
+    let dir = templates.join("cues");
+    let meta = templates.join("EMBEDDED_MARKER");
+    // Re-materialize if the marker is missing/stale (cheap; done once per run).
+    let need = !meta.is_file();
+    if need {
+        let _ = std::fs::create_dir_all(&dir);
+        for file in EmbeddedCues::iter() {
+            let name = file.as_ref();
+            let rel = name.strip_prefix("templates/cues/").unwrap_or(name);
+            let dst = dir.join(rel);
+            if let Some(f) = EmbeddedCues::get(name) {
+                let _ = std::fs::write(&dst, f.data.as_ref());
+            }
+        }
+        let _ = std::fs::write(&meta, "v1");
+    }
+    if dir.is_dir() {
+        Some(templates)
+    } else {
+        None
+    }
 }
 
 /// Read an embedded template text (installed-binary fallback).
