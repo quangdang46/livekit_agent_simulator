@@ -425,7 +425,7 @@ pub fn router(server: Arc<WebServer>) -> Router {
         .route("/player.html", get(player_redirect))
         .route("/api/runs", get(api_runs))
         .route("/api/runs/{run_id}/cues", get(api_cues))
-        .route("/assets/{name}", get(static_asset))
+        .route("/assets/{*name}", get(static_asset))
         .route("/runs/{run_id}/{name}", get(run_file))
         .with_state(server)
 }
@@ -459,7 +459,12 @@ fn player_bytes(s: &WebServer, name: &str) -> Option<Vec<u8>> {
             return Some(b);
         }
     }
-    EmbeddedPlayer::get(name).map(|f| f.data.into_owned())
+    // The embedded tree is web/dist; Vite chunks live under assets/.
+    // (static_asset hands us the chunk name without the assets/ prefix.)
+    if let Some(f) = EmbeddedPlayer::get(name) {
+        return Some(f.data.into_owned());
+    }
+    EmbeddedPlayer::get(&format!("assets/{name}")).map(|f| f.data.into_owned())
 }
 
 async fn index(axum::extract::State(s): axum::extract::State<S>) -> Response {
@@ -513,7 +518,24 @@ async fn static_asset(
     axum::extract::State(s): axum::extract::State<S>,
     AxumPath(name): AxumPath<String>,
 ) -> Response {
+    // axum {*name} captures the path AFTER the static prefix — for
+    // /assets/<chunk> the name is the chunk (no assets/ prefix). Vite
+    // chunks live under dist/assets/, so resolve name under dist/assets.
     let ctype = guess_type(&name);
+    let path = s.player_dir.join("assets").join(&name);
+    if path.starts_with(&s.player_dir) && path.is_file() {
+        if let Ok(bytes) = std::fs::read(&path) {
+            return (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, ctype),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                bytes,
+            )
+                .into_response();
+        }
+    }
     match player_bytes(&s, &name) {
         Some(bytes) => (
             StatusCode::OK,
