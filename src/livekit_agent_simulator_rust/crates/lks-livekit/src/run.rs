@@ -617,6 +617,7 @@ pub async fn execute_scenario_parsed(
             cfg.simulator.clone(),
             persona_prompt.clone(),
             run_spec.first_speaker.clone(),
+            run_spec.max_turns,
             room_name,
             identity,
             writer_arc.clone(),
@@ -682,20 +683,41 @@ pub async fn execute_scenario_parsed(
     // finalize with the end reason. The Rust bridge ends on the 45s slice cap
     // when the agent doesn't disconnect (Python's end_reason is "timeout" for
     // the scenario timeout; the 45s cap is the port's hard bound).
+    // Classify the end reason. Distinguish the caller's own hang-up (the
+    // bridge emitted sim.end_call_token / max_turns reached) from a timeout
+    // or an agent disconnect — parity with run_orchestrator.py end reasons
+    // (sim_end_call / max_turns / timeout / agent_disconnected).
+    let ended_by_caller = w
+        .events()
+        .iter()
+        .any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("sim.end_call_token"));
+    let max_turns = run_spec.max_turns;
+    let turn_count = w
+        .events()
+        .iter()
+        .filter_map(|e| e.get("turn").and_then(|v| v.as_i64()))
+        .max()
+        .unwrap_or(0);
+    let reached_max_turns = max_turns > 0 && turn_count >= max_turns;
     let end_reason = match &run_result {
         Ok(()) => {
-            // The bridge returned after the cap or agent disconnect — use the
-            // run duration vs the scenario timeout to classify. The 45s slice
-            // cap is the port's hard bound; when the run lasted ≥45s and the
-            // agent never left, the scenario timeout is the honest cause
-            // (parity with Python's end_reason "timeout").
-            let dur = duration_ms;
-            if status == "done" && dur >= 45_000 {
-                "timeout"
-            } else if status == "done" {
-                "agent_disconnected"
+            if ended_by_caller {
+                "sim_end_call"
+            } else if reached_max_turns {
+                "max_turns"
             } else {
-                "error"
+                // The bridge returned after the cap or agent disconnect — use
+                // the run duration vs the scenario timeout to classify. The
+                // 45s slice cap is the port's hard bound; when the run lasted
+                // ≥45s and the agent never left, the scenario timeout is the
+                // honest cause (parity with Python's end_reason "timeout").
+                if status == "done" && duration_ms >= 45_000 {
+                    "timeout"
+                } else if status == "done" {
+                    "agent_disconnected"
+                } else {
+                    "error"
+                }
             }
         }
         Err(e) => {

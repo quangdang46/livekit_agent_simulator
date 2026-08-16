@@ -17,6 +17,7 @@ use lks_core::errors::RunError;
 use lks_core::logging::event::EventWriter;
 use serde_json::json;
 
+use crate::callers::end_call;
 use crate::room::{connect_room, make_token, SimRoomEvent};
 
 /// Build an emit spec map from a json! literal (None when empty).
@@ -42,6 +43,7 @@ pub struct OpenAiCallerBridge {
     sim: SimulatorConfig,
     persona_prompt: String,
     first_speaker: String,
+    max_turns: i64,
     room_name: String,
     identity: String,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
@@ -50,11 +52,13 @@ pub struct OpenAiCallerBridge {
 }
 
 impl OpenAiCallerBridge {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         livekit: LiveKitConfig,
         sim: SimulatorConfig,
         persona_prompt: String,
         first_speaker: String,
+        max_turns: i64,
         room_name: String,
         identity: String,
         writer: Arc<tokio::sync::Mutex<EventWriter>>,
@@ -64,6 +68,7 @@ impl OpenAiCallerBridge {
             sim,
             persona_prompt,
             first_speaker,
+            max_turns,
             room_name,
             identity,
             writer,
@@ -79,6 +84,17 @@ impl OpenAiCallerBridge {
     /// detection/hangup).
     pub const SIM_IDENTITY: &str = "lks-caller";
     pub const SIM_NAME: &str = "Agent Simulator Caller";
+
+    /// Port of Python observer on_transcript user arm: each caller final
+    /// advances the turn counter BEFORE it is emitted (observer.py:521
+    /// `self.turn += 1; self.writer.begin_turn(self.turn)`). This is what
+    /// drives the max_turns end condition — the turn count is the number of
+    /// caller turns, not agent replies.
+    async fn begin_user_turn(writer: &Arc<tokio::sync::Mutex<EventWriter>>) {
+        let mut w = writer.lock().await;
+        let next = w.current_turn() + 1;
+        w.begin_turn(next);
+    }
 
     /// Port of Python observer on_transcript turn framing: an agent final that
     /// follows a caller final carries `turn_taking_ms` (monotonic gap), and
@@ -482,6 +498,8 @@ impl OpenAiCallerBridge {
             self.writer.clone(),
             end_rx.resubscribe(),
             response_in_flight.clone(),
+            end_tx.clone(),
+            self.max_turns,
         ));
 
         // Pump 3: audio out → mic source.
@@ -531,6 +549,14 @@ impl OpenAiCallerBridge {
                                 None,
                             );
                             drop(w);
+                            // Set the agent-active-speaker latch (parity with
+                            // observer.py agent_is_active_speaker). The caller
+                            // identity is the sim; any OTHER active speaker is
+                            // the agent under test.
+                            let is_agent = identities
+                                .iter()
+                                .any(|i| i != Self::SIM_IDENTITY && i != &self.identity);
+                            AGENT_ACTIVE_SPEAKER.store(is_agent, Ordering::SeqCst);
                         }
                         _ => {}
                     }
@@ -669,11 +695,17 @@ async fn pump_agent_audio(
     let mut agent_audio_ms = 0u64;
     let mut last_speech: Option<std::time::Instant> = None;
     let mut commit_pending = false;
+    // LiveKit's active-speaker detection (parity with observer.py
+    // agent_is_active_speaker). The room marks the agent as an active speaker
+    // when it is actually producing audio — this catches speech the RMS gate
+    // would miss (lower-energy or ASR-gated audio). Port of openai.py
+    // `obs_speaking or energy_speaking`.
     while let Some(frame) = stream.next().await {
         agent_audio_ms += (frame.samples_per_channel as u64) * 1000 / OPENAI_IN_RATE as u64;
         let pcm: &[i16] = frame.data.as_ref();
         let rms = pcm_iter_rms(pcm.iter().map(|&s| s as f32));
-        let speaking = rms >= AGENT_SPEECH_RMS;
+        let obs_speaking = AGENT_ACTIVE_SPEAKER.load(Ordering::SeqCst);
+        let speaking = obs_speaking || rms >= AGENT_SPEECH_RMS;
         let now = std::time::Instant::now();
         if speaking {
             last_speech = Some(now);
@@ -736,6 +768,12 @@ fn pcm_iter_rms(mut it: impl Iterator<Item = f32>) -> f32 {
 const AGENT_SPEECH_RMS: f32 = 100.0;
 const AGENT_STREAM_END_SILENCE_MS: u128 = 650;
 
+/// Set by the room-active-speakers handler when the agent is an active speaker
+/// (parity with observer.py `agent_is_active_speaker`). The agent-audio pump
+/// treats the agent as speaking when this is true OR RMS is above threshold —
+/// the active-speaker signal catches audio the RMS gate would miss.
+pub static AGENT_ACTIVE_SPEAKER: AtomicBool = AtomicBool::new(false);
+
 pub fn find_subscribed_audio(
     room: &Arc<livekit::Room>,
 ) -> Option<(livekit::webrtc::audio_track::RtcAudioTrack, String)> {
@@ -752,6 +790,7 @@ pub fn find_subscribed_audio(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn pump_openai_events(
     mut ws_rx: futures_util::stream::SplitStream<
         tokio_tungstenite::WebSocketStream<
@@ -763,12 +802,15 @@ async fn pump_openai_events(
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
     _end_call: broadcast::Receiver<()>,
     response_in_flight: Arc<AtomicBool>,
+    end_tx: broadcast::Sender<()>,
+    max_turns: i64,
 ) {
     let mut agent_text = String::new();
     // Observer turn framing state (port of observer.py on_transcript).
     let mut last_user_final_mono: Option<std::time::Instant> = None;
     let mut agent_replied_this_turn = false;
     let mut caller_text = String::new();
+    let end_tx = end_tx.clone();
     loop {
         tokio::select! {
             biased;
@@ -814,9 +856,69 @@ async fn pump_openai_events(
                     "response.audio_transcript.done" => {
                         // Same as output_audio_transcript.done (older/newer
                         // event-name variants; Python openai.py listens on
-                        // response.audio_transcript.done).
+                        // response.audio_transcript.done). The caller's final
+                        // turn must land in the transcript too.
                         response_in_flight.store(false, Ordering::SeqCst);
+                        let t = caller_text.trim().to_string();
+                        let ended = end_call::contains_end_call_signal(&caller_text);
+                        let farewell = end_call::contains_farewell_signal(&caller_text);
+                        let clean = end_call::strip_end_call_signal(&t);
+                        if !clean.is_empty() {
+                            last_user_final_mono = Some(std::time::Instant::now());
+                            agent_replied_this_turn = false;
+                            OpenAiCallerBridge::begin_user_turn(&writer).await;
+                            let mut w = writer.lock().await;
+                            w.update_dialogue("user", &clean, true, None);
+                            w.emit(
+                                "transcript.user.final",
+                                spec(serde_json::json!({"text": clean})).as_ref(),
+                                "sim.openai",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            let mut src = serde_json::Map::new();
+                            src.insert("provider".into(), json!("openai"));
+                            src.insert("voice_gain".into(), json!(1.0));
+                            src.insert("gain".into(), json!(1.0));
+                            src.insert("via".into(), json!("model_output"));
+                            w.emit(
+                                "sim.caller.audio_source_start",
+                                Some(&src),
+                                "sim.openai",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            drop(w);
+                        }
                         caller_text.clear();
+                        if ended || farewell {
+                            let mut w = writer.lock().await;
+                            let mut ec = serde_json::Map::new();
+                            ec.insert(
+                                "text".into(),
+                                json!(end_call::strip_farewell_signal(&clean)),
+                            );
+                            ec.insert(
+                                "reason".into(),
+                                json!(if ended { "end_call_token" } else { "farewell" }),
+                            );
+                            w.emit(
+                                "sim.end_call_token",
+                                Some(&ec),
+                                "sim.openai",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            drop(w);
+                            let _ = end_tx.send(());
+                            break;
+                        }
                         // Caller finished — commit + request the next caller
                         // response (port of _commit_and_respond).
                         OpenAiCallerBridge::commit_and_respond(&ws_tx, &response_in_flight).await;
@@ -826,16 +928,25 @@ async fn pump_openai_events(
                         // transcript.user.final — the model's output is the CALLER
                         // (port of openai.py _on_output_transcript_done).
                         let t = caller_text.trim().to_string();
-                        if !t.is_empty() {
+                        // End-call / farewell detection (port of openai.py
+                        // _on_output_transcript_done → should_end_call_on_turn).
+                        let ended = end_call::contains_end_call_signal(&caller_text);
+                        let farewell = end_call::contains_farewell_signal(&caller_text);
+                        // Clean transcript: strip [END_CALL] / spoken hang-up
+                        // markers before logging (Python _on_output_transcript_done
+                        // uses strip_end_call_signal when not script-pending).
+                        let clean = end_call::strip_end_call_signal(&t);
+                        if !clean.is_empty() {
                             // Observer turn framing: a caller final opens a new
                             // turn (port of observer.py on_transcript user arm).
                             last_user_final_mono = Some(std::time::Instant::now());
                             agent_replied_this_turn = false;
+                            OpenAiCallerBridge::begin_user_turn(&writer).await;
                             let mut w = writer.lock().await;
-                            w.update_dialogue("user", &t, true, None);
+                            w.update_dialogue("user", &clean, true, None);
                             w.emit(
                                 "transcript.user.final",
-                                spec(serde_json::json!({"text": t})).as_ref(),
+                                spec(serde_json::json!({"text": clean})).as_ref(),
                                 "sim.openai",
                                 None,
                                 None,
@@ -857,8 +968,37 @@ async fn pump_openai_events(
                                 false,
                                 None,
                             );
+                            drop(w);
                         }
                         caller_text.clear();
+                        if ended || farewell {
+                            // Caller said goodbye / end-call — end the run
+                            // instead of committing + re-requesting (caller
+                            // self-loop). Port of openai.py: emits
+                            // sim.end_call_token, sets end_call, returns.
+                            let mut w = writer.lock().await;
+                            let mut ec = serde_json::Map::new();
+                            ec.insert(
+                                "text".into(),
+                                json!(end_call::strip_farewell_signal(&clean)),
+                            );
+                            ec.insert(
+                                "reason".into(),
+                                json!(if ended { "end_call_token" } else { "farewell" }),
+                            );
+                            w.emit(
+                                "sim.end_call_token",
+                                Some(&ec),
+                                "sim.openai",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            drop(w);
+                            let _ = end_tx.send(());
+                            break;
+                        }
                         // Caller finished — commit the agent audio and request the
                         // next caller response (port of _commit_and_respond).
                         OpenAiCallerBridge::commit_and_respond(&ws_tx, &response_in_flight).await;
@@ -881,6 +1021,15 @@ async fn pump_openai_events(
                                 &mut agent_replied_this_turn,
                             )
                             .await;
+                            // max_turns reached after the agent replied — end the
+                            // run (port of run_orchestrator.py:769 "max_turns").
+                            if max_turns > 0 {
+                                let turn = writer.lock().await.current_turn();
+                                if turn >= max_turns {
+                                    let _ = end_tx.send(());
+                                    break;
+                                }
+                            }
                         }
                         agent_text.clear();
                         // Agent finished speaking — request the next caller
@@ -915,6 +1064,15 @@ async fn pump_openai_events(
                             &mut agent_replied_this_turn,
                         )
                         .await;
+                        // max_turns reached after the agent replied — end the
+                        // run (port of run_orchestrator.py:769 "max_turns").
+                        if max_turns > 0 {
+                            let turn = writer.lock().await.current_turn();
+                            if turn >= max_turns {
+                                let _ = end_tx.send(());
+                                break;
+                            }
+                        }
                         agent_text.clear();
                     }
                     _ => {}
