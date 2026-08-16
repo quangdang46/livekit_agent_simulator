@@ -254,8 +254,9 @@ enum Command {
         /// Max runs to list.
         #[arg(long, default_value_t = 20)]
         limit: i64,
-        /// Filter by scenario_id.
-        #[arg(long)]
+        /// Filter by scenario_id. Python name is `--scenario`; `--scenario-id`
+        /// kept as a Rust alias for compatibility.
+        #[arg(long = "scenario", alias = "scenario-id")]
         scenario_id: Option<String>,
         /// Emit raw JSON instead of a human-readable table.
         #[arg(long)]
@@ -518,10 +519,10 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Validate { scenario_id, json }) => {
             let v = ops::op_validate_scenario(std::path::Path::new(&root), &scenario_id)?;
+            let valid = v.get("valid").and_then(|x| x.as_bool()).unwrap_or(false);
             if json {
-                print_json(&serde_json::to_value(v)?)?;
+                print_json(&serde_json::to_value(&v)?)?;
             } else {
-                let valid = v.get("valid").and_then(|x| x.as_bool()).unwrap_or(false);
                 println!("valid: {}", if valid { "✓" } else { "✗" });
                 if let Some(e) = v.get("error").and_then(|x| x.as_str()) {
                     println!("error: {e}");
@@ -531,6 +532,10 @@ fn main() -> anyhow::Result<()> {
                         println!("warn: {}", msg.as_str().unwrap_or(""));
                     }
                 }
+            }
+            // Port of cli.py validate: `if not result.get("valid"): raise typer.Exit(1)`.
+            if !valid {
+                std::process::exit(1);
             }
             Ok(())
         }
@@ -725,11 +730,14 @@ fn main() -> anyhow::Result<()> {
             let gate = lks_core::suite::evaluate_run_result(&result, false);
             result.insert("gate".into(), serde_json::Value::Object(gate));
             print_json(&serde_json::to_value(&result)?)?;
+            // Port of cli.py execute_dict `_run_failed(result)` — the FULL
+            // evaluate_run_result gate (status/assert/script), not just
+            // executed+done (an assert failure with status=done must exit 1).
             let ok = result
-                .get("executed")
+                .get("gate")
+                .and_then(|g| g.get("ok"))
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-                && result.get("status").and_then(|v| v.as_str()) == Some("done");
+                .unwrap_or(false);
             if !ok {
                 std::process::exit(1);
             }
@@ -874,7 +882,20 @@ fn main() -> anyhow::Result<()> {
             } else {
                 ops::op_compare_runs(std::path::Path::new(&root), &run_id_a, &run_id_b)?
             };
-            print_map(&r)
+            print_map(&r)?;
+            // Port of cli.py compare: baseline gate ok=false → exit 1
+            // ("hard regression gate (CI exit 1 if fail)").
+            if baseline {
+                let gate_ok = r
+                    .get("gate")
+                    .and_then(|g| g.get("ok"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                if !gate_ok {
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
         }
         Some(Command::Runs {
             limit,
