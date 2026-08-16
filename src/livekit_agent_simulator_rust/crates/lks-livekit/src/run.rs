@@ -645,6 +645,7 @@ pub async fn execute_scenario_parsed(
     };
 
     let mut w = writer_arc.lock().await;
+    let duration_ms = w.t0_mono().elapsed().as_millis() as i64;
     // Port of run_orchestrator.py:455-461 — a run failure emits run.error
     // (spec {error, mode}) BEFORE finalize so the report carries the cause.
     if let Err(e) = &run_result {
@@ -663,8 +664,14 @@ pub async fn execute_scenario_parsed(
     let end_reason = match &run_result {
         Ok(()) => {
             // The bridge returned after the cap or agent disconnect — use the
-            // run duration vs the scenario timeout to classify.
-            if status == "done" {
+            // run duration vs the scenario timeout to classify. The 45s slice
+            // cap is the port's hard bound; when the run lasted ≥45s and the
+            // agent never left, the scenario timeout is the honest cause
+            // (parity with Python's end_reason "timeout").
+            let dur = duration_ms;
+            if status == "done" && dur >= 45_000 {
+                "timeout"
+            } else if status == "done" {
                 "agent_disconnected"
             } else {
                 "error"

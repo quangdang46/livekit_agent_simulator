@@ -388,10 +388,37 @@ fn main() -> anyhow::Result<()> {
             host,
             no_open,
         }) => {
+            let open_browser = !no_open && std::env::var("CI").is_err();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
             let server = Arc::new(lks_web::WebServer::new(std::path::Path::new(&root)));
-            let _ = (run_id, no_open);
-            let addr = rt.block_on(lks_web::serve(server, &host, port))?;
-            eprintln!("[lksr] report UI: http://{addr} — Ctrl+C to stop");
+            let sp_server = server.clone();
+            let sp_host = host.clone();
+            let sp_run = run_id.clone();
+            let rt_web = rt;
+            rt_web.block_on(async move {
+                let url = lks_web::start_web(
+                    std::path::Path::new(&root),
+                    &sp_host,
+                    port,
+                    sp_run.as_deref(),
+                    open_browser,
+                )
+                .await
+                .map(|m| {
+                    m.get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .unwrap_or_else(|e| {
+                    eprintln!("[lksr] web error: {e}");
+                    std::process::exit(1);
+                });
+                eprintln!("[lksr] report UI: {url} — Ctrl+C to stop");
+            });
+            let _ = sp_server;
             std::thread::park();
             Ok(())
         }

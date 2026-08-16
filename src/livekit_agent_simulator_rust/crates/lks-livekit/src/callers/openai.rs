@@ -95,6 +95,15 @@ impl OpenAiCallerBridge {
             return;
         }
         let mut w = writer.lock().await;
+        // Observer turn framing: the first agent final after a caller turn
+        // opens turn 1 and advances the counter (port of observer.py
+        // on_transcript agent arm — begin_turn(turn)). All events must carry
+        // a real turn, or the web player groups transcripts under turn 0 and
+        // the agent lines never show.
+        let turn = w.current_turn();
+        if turn == 0 {
+            w.begin_turn(1);
+        }
         let mut spec_m = serde_json::Map::new();
         spec_m.insert("text".into(), json!(t));
         if let Some(lu) = *last_user_final_mono {

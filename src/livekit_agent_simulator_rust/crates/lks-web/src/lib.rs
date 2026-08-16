@@ -633,7 +633,13 @@ pub async fn start_web(
     open_browser: bool,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let server = Arc::new(WebServer::new(project_root));
-    if !server.player_dir.join("index.html").exists() {
+    // The guard accepts the on-disk dist OR the embedded copy (installed
+    // binaries have no web/dist walk — resolve_player_dir falls back to a
+    // relative "web/dist" that doesn't exist there; the player still works
+    // via EmbeddedPlayer).
+    let assets_ok = server.player_dir.join("index.html").exists()
+        || EmbeddedPlayer::get("index.html").is_some();
+    if !assets_ok {
         return Err(format!(
             "Web UI assets missing: {}/index.html — maintainers: pnpm --dir web install && pnpm --dir web build",
             server.player_dir.display()
