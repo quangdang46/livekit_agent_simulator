@@ -2,6 +2,11 @@
 //! with its own tokio runtime, streams events back over an mpsc channel, and
 //! supports a graceful abort. This is the testable core the LiveRun screen
 //! drives; terminal rendering stays a thin layer on top.
+//!
+//! Some accessors (root/report_dir/scenario_id/RunFn) are engine API covered
+//! by the unit tests below but not yet consumed by a screen — keep them for
+//! the public engine surface.
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -31,7 +36,11 @@ impl RunSettings {
 
 /// The actual runner — injectable for tests.
 pub type RunFn = Box<
-    dyn FnOnce(PathBuf, String, lks_livekit::run::ExecuteOptions) -> Result<Map<String, Value>, String>
+    dyn FnOnce(
+            PathBuf,
+            String,
+            lks_livekit::run::ExecuteOptions,
+        ) -> Result<Map<String, Value>, String>
         + Send,
 >;
 
@@ -44,6 +53,16 @@ pub enum RunPoll {
     Finished(Result<Map<String, Value>, String>),
     /// Still running.
     Running,
+}
+
+impl std::fmt::Debug for RunSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunSession")
+            .field("scenario_id", &self.scenario_id)
+            .field("events", &self.events.len())
+            .field("result", &self.result.as_ref().map(|r| r.is_ok()))
+            .finish()
+    }
 }
 
 /// A live scenario run: thread + channel + abort handle.
@@ -81,9 +100,18 @@ impl RunSession {
 
     /// Start with an injected runner (tests). The runner receives the root,
     /// scenario id, and fully-wired options (live channel + abort receiver).
-    pub fn start_with<F>(root: PathBuf, scenario_id: String, settings: RunSettings, run: F) -> Result<Self, String>
+    pub fn start_with<F>(
+        root: PathBuf,
+        scenario_id: String,
+        settings: RunSettings,
+        run: F,
+    ) -> Result<Self, String>
     where
-        F: FnOnce(PathBuf, String, lks_livekit::run::ExecuteOptions) -> Result<Map<String, Value>, String>
+        F: FnOnce(
+                PathBuf,
+                String,
+                lks_livekit::run::ExecuteOptions,
+            ) -> Result<Map<String, Value>, String>
             + Send
             + 'static,
     {
@@ -232,16 +260,32 @@ mod tests {
     /// An injected runner that emits two events then returns an Ok envelope.
     fn ok_runner(
         live: std::sync::mpsc::Sender<Map<String, Value>>,
-    ) -> impl FnOnce(PathBuf, String, lks_livekit::run::ExecuteOptions) -> Result<Map<String, Value>, String>
-    {
+    ) -> impl FnOnce(
+        PathBuf,
+        String,
+        lks_livekit::run::ExecuteOptions,
+    ) -> Result<Map<String, Value>, String> {
         move |_root, _sid, opts| {
             let tx = opts.live.expect("live channel wired");
             let _ = live;
-            tx.send(fake_envelope("run.started", "001-fake-20260101-000000-abcd", 0)).unwrap();
-            tx.send(fake_envelope("transcript.agent.final", "001-fake-20260101-000000-abcd", 1)).unwrap();
+            tx.send(fake_envelope(
+                "run.started",
+                "001-fake-20260101-000000-abcd",
+                0,
+            ))
+            .unwrap();
+            tx.send(fake_envelope(
+                "transcript.agent.final",
+                "001-fake-20260101-000000-abcd",
+                1,
+            ))
+            .unwrap();
             let mut out = Map::new();
             out.insert("status".into(), serde_json::json!("done"));
-            out.insert("run_id".into(), serde_json::json!("001-fake-20260101-000000-abcd"));
+            out.insert(
+                "run_id".into(),
+                serde_json::json!("001-fake-20260101-000000-abcd"),
+            );
             Ok(out)
         }
     }
@@ -318,5 +362,303 @@ mod tests {
         // true. Here we just assert no panic and that the session stays alive.
         s.abort();
         assert!(s.handle.is_some());
+    }
+}
+
+// ===========================================================================
+// LiveRunScreen — the ratatui view that drives a RunSession.
+// ===========================================================================
+
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::Frame;
+
+use crate::tui::screen::{NavAction, Screen, ScreenCtx};
+use crate::tui::widgets;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Phase {
+    Running,
+    Finished,
+    Failed,
+}
+
+/// The live run view: transcript + live metrics + activity stream.
+#[derive(Debug)]
+pub struct LiveRunScreen {
+    scenario_id: String,
+    session: RunSession,
+    strict_judge: bool,
+    phase: Phase,
+    confirm_abort: bool,
+    transcript: Vec<(String, String, String)>, // (role, turn, text)
+    scroll: usize,
+    activity: Vec<String>,
+    gate: Option<Map<String, Value>>,
+}
+
+impl LiveRunScreen {
+    pub fn new(session: RunSession, scenario_id: String, strict_judge: bool) -> Self {
+        LiveRunScreen {
+            scenario_id,
+            session,
+            strict_judge,
+            phase: Phase::Running,
+            confirm_abort: false,
+            transcript: Vec::new(),
+            scroll: 0,
+            activity: Vec::new(),
+            gate: None,
+        }
+    }
+
+    /// Drain the session — called each render tick.
+    fn pump(&mut self, ctx: &ScreenCtx) {
+        loop {
+            match self.session.poll() {
+                RunPoll::Events(evs) => {
+                    for ev in evs {
+                        let kind = ev.get("kind").and_then(Value::as_str).unwrap_or("");
+                        match kind {
+                            "transcript.user.final" | "transcript.agent.final" => {
+                                let role = if kind.starts_with("transcript.user") {
+                                    "user"
+                                } else {
+                                    "agent"
+                                };
+                                let turn = ev
+                                    .get("turn")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)
+                                    .to_string();
+                                let text = ev
+                                    .get("spec")
+                                    .and_then(Value::as_object)
+                                    .and_then(|s| s.get("text"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string();
+                                self.transcript.push((role.to_string(), turn, text));
+                            }
+                            _ => {}
+                        }
+                        self.activity.push(describe_event(&ev));
+                    }
+                    // clamp scroll to bottom-ish so new lines are visible
+                    self.scroll = self.transcript.len().saturating_sub(1);
+                }
+                RunPoll::Finished(out) => {
+                    match out {
+                        Ok(result) => {
+                            self.gate = Some(lks_core::suite::evaluate_run_result(
+                                &result,
+                                self.strict_judge,
+                            ));
+                            self.phase =
+                                if result.get("status").and_then(Value::as_str) == Some("done") {
+                                    Phase::Finished
+                                } else {
+                                    Phase::Failed
+                                };
+                        }
+                        Err(e) => {
+                            self.activity.push(format!("run error: {e}"));
+                            self.phase = Phase::Failed;
+                        }
+                    }
+                    let _ = ctx;
+                    return;
+                }
+                RunPoll::Running => break,
+            }
+        }
+    }
+
+    pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &ScreenCtx) {
+        self.pump(ctx);
+
+        let header_h = 4u16;
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(area);
+
+        // Header
+        let header_area = Rect {
+            height: header_h,
+            ..area
+        };
+        let phase_txt = match self.phase {
+            Phase::Running => "RUNNING",
+            Phase::Finished => "DONE",
+            Phase::Failed => "FAILED",
+        };
+        let phase_style = match self.phase {
+            Phase::Running => Style::default().fg(Color::Yellow),
+            Phase::Finished => Style::default().fg(Color::Green),
+            Phase::Failed => Style::default().fg(Color::Red),
+        };
+        let mut hl = vec![
+            Span::styled(format!("{phase_txt}"), phase_style),
+            Span::raw(format!("  {}  ", self.scenario_id)),
+            Span::raw(format!("turn {}", self.session.current_turn())),
+            Span::raw(format!("  events {}", self.session.events.len())),
+        ];
+        if let Some(rid) = self.session.run_id() {
+            hl.push(Span::styled(
+                format!("  {rid}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(hl))
+                .block(Block::default().borders(Borders::ALL).title("Live run")),
+            header_area,
+        );
+
+        // Left: transcript (below header)
+        let left = Rect {
+            y: header_h,
+            height: area.height.saturating_sub(header_h),
+            ..cols[0]
+        };
+        let items: Vec<ListItem> = self
+            .transcript
+            .iter()
+            .map(|(role, turn, text)| {
+                let color = if role == "user" {
+                    Color::Cyan
+                } else {
+                    Color::Magenta
+                };
+                let label = if role == "user" { "USER" } else { "AGENT" };
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("[{label} {turn}] "),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(text.clone()),
+                ]))
+            })
+            .collect();
+        let mut state = ListState::default();
+        state.select(Some(
+            self.scroll.min(self.transcript.len().saturating_sub(1)),
+        ));
+        f.render_stateful_widget(
+            List::new(items)
+                .block(widgets::title_block("Transcript", None))
+                .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+            left,
+            &mut state,
+        );
+
+        // Right: metrics digest + activity
+        let right = cols[1];
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .split(right);
+        let digest = self.session.digest();
+        let mut dlines = vec![
+            Line::from(format!("elapsed: {}", self.session.elapsed().as_secs())),
+            Line::from(format!("ttfw_ms:  {}", get_digest(&digest, "ttfw_ms"))),
+            Line::from(format!("turn_p50: {}", get_digest(&digest, "turn_p50_ms"))),
+            Line::from(format!("turn_p95: {}", get_digest(&digest, "turn_p95_ms"))),
+            Line::from(format!("barge:    {}", get_digest(&digest, "barge_count"))),
+            Line::from(format!("tools:    {}", get_digest(&digest, "tool_count"))),
+            Line::from(format!("errors:   {}", get_digest(&digest, "tool_errors"))),
+        ];
+        if let Some(g) = &self.gate {
+            dlines.push(Line::from(""));
+            dlines.push(Line::from(format!(
+                "gate: {}",
+                g.get("gate").and_then(Value::as_str).unwrap_or("")
+            )));
+        }
+        f.render_widget(
+            Paragraph::new(dlines).block(widgets::title_block("Live metrics", None)),
+            split[0],
+        );
+
+        let act_items: Vec<ListItem> = self
+            .activity
+            .iter()
+            .rev()
+            .take(40)
+            .map(|a| ListItem::new(Line::from(widgets::truncate(a, 60))))
+            .collect();
+        f.render_widget(
+            List::new(act_items).block(widgets::title_block("Activity", None)),
+            split[1],
+        );
+    }
+
+    pub fn on_key(
+        &mut self,
+        key: ratatui::crossterm::event::KeyEvent,
+        ctx: &ScreenCtx,
+    ) -> NavAction {
+        use ratatui::crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('x') => {
+                if self.phase == Phase::Running {
+                    if self.confirm_abort {
+                        self.session.abort();
+                        self.activity.push("abort requested".into());
+                        self.confirm_abort = false;
+                        NavAction::Toast("abort sent".into())
+                    } else {
+                        self.confirm_abort = true;
+                        NavAction::Toast("abort? Esc again to confirm".into())
+                    }
+                } else {
+                    NavAction::Pop
+                }
+            }
+            KeyCode::Char('s') | KeyCode::Enter => {
+                if self.phase != Phase::Running {
+                    if let Some(rid) = self.session.run_id().map(|s| s.to_string()) {
+                        NavAction::Push(Box::new(Screen::RunDetail(
+                            crate::tui::run_detail::RunDetailScreen::load(ctx, &rid),
+                        )))
+                    } else {
+                        NavAction::None
+                    }
+                } else {
+                    NavAction::None
+                }
+            }
+            KeyCode::Char('r') => {
+                if self.phase != Phase::Running {
+                    let id = self.scenario_id.clone();
+                    NavAction::Push(Box::new(Screen::RunSetup(
+                        crate::tui::run_setup::RunSetupScreen::new(ctx, &id),
+                    )))
+                } else {
+                    NavAction::None
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.scroll = (self.scroll + 1).min(self.transcript.len().saturating_sub(1));
+                NavAction::None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.scroll = self.scroll.saturating_sub(1);
+                NavAction::None
+            }
+            _ => NavAction::None,
+        }
+    }
+}
+
+fn get_digest(d: &Map<String, Value>, k: &str) -> String {
+    match d.get(k) {
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Null) | None => "–".to_string(),
+        _ => "–".to_string(),
     }
 }
