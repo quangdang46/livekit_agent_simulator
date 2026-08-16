@@ -24,6 +24,14 @@ pub struct ExecuteOptions {
     pub agent_name: Option<String>,
     pub optimized: Option<String>,
     pub profile: Option<String>,
+    /// Optional live event channel — every EventWriter emit() envelope is
+    /// cloned to it (the lksr TUI live-run view streams through this).
+    pub live: Option<std::sync::mpsc::Sender<serde_json::Map<String, serde_json::Value>>>,
+    /// Optional abort receiver — when the value becomes true, the run's
+    /// internal end signal is sent so the bridge/sim-leg ends gracefully
+    /// (lksr TUI abort). watch::Receiver is Clone (broadcast::Receiver is not
+    /// in tokio 1.48, and ExecuteOptions must stay Clone).
+    pub abort_rx: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl ExecuteOptions {
@@ -334,11 +342,12 @@ pub async fn execute_scenario_parsed(
     }
 
     // --- writer ---
-    let mut writer = EventWriter::new(
+    let mut writer = EventWriter::new_with_live(
         &run_id,
         report_dir.clone(),
         &cfg.observe.timezone,
         cfg.observe.turn_taking_warn_ms,
+        opts.live.clone(),
     )
     .map_err(|e| RunError(format!("event writer: {e}")))?;
 
@@ -369,6 +378,18 @@ pub async fn execute_scenario_parsed(
 
     // --- end_call channel ---
     let (end_tx, end_rx) = broadcast::channel::<()>(1);
+
+    // Optional TUI abort: when the TUI fires its abort signal, forward it to
+    // the run's end signal so the bridge/sim-leg ends gracefully.
+    if let Some(abort_rx) = opts.abort_rx.clone() {
+        let end_tx = end_tx.clone();
+        tokio::spawn(async move {
+            let mut rx = abort_rx;
+            if rx.wait_for(|v| *v).await.is_ok() {
+                let _ = end_tx.send(());
+            }
+        });
+    }
 
     // Local conversation recorder → conversation.wav (16k stereo).
     let recorder: crate::script::SharedRecorder = Arc::new(std::sync::Mutex::new(

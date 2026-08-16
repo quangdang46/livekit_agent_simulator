@@ -410,6 +410,7 @@ impl SimServer {
             agent_name: p.agent_name.clone(),
             optimized: p.optimized.clone(),
             profile: p.profile.clone(),
+            ..Default::default()
         };
         let result =
             lks_livekit::run::execute_scenario(root(&p.project_root), &p.scenario_id, &opts)

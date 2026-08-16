@@ -579,6 +579,7 @@ fn main() -> anyhow::Result<()> {
                 agent_name,
                 optimized,
                 profile,
+                ..Default::default()
             };
             let mut result = rt.block_on(lks_livekit::run::execute_scenario(
                 std::path::Path::new(&root),
