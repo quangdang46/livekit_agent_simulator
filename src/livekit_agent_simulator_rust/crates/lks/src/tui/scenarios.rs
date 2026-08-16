@@ -22,7 +22,6 @@ pub struct ScenariosScreen {
 struct ScenarioRow {
     id: String,
     tags: String,
-    valid: bool,
     error: Option<String>,
 }
 
@@ -47,7 +46,6 @@ impl ScenariosScreen {
                             .join(",")
                     })
                     .unwrap_or_default(),
-                valid: m.get("valid").and_then(Value::as_bool).unwrap_or(false),
                 error: m
                     .get("error")
                     .and_then(Value::as_str)
@@ -66,8 +64,8 @@ impl ScenariosScreen {
             .items
             .iter()
             .map(|r| {
-                let marker = if r.valid { "✓" } else { "✗" };
-                let color = if r.valid {
+                let marker = if r.error.is_none() { "✓" } else { "✗" };
+                let color = if r.error.is_none() {
                     Style::default().fg(ratatui::style::Color::Green)
                 } else {
                     Style::default().fg(ratatui::style::Color::Red)

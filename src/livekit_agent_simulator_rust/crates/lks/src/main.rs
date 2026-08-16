@@ -438,12 +438,14 @@ fn main() -> anyhow::Result<()> {
                 print_json(&serde_json::to_value(list)?)?;
             } else {
                 for item in &list {
-                    let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let valid = item.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
+                    // Port of cli_render.render_scenarios: ✗ only when the file
+                    // failed to parse (error present); valid files show the id
+                    // with no marker (Python has no `valid` field in list).
                     let err = item.get("error").and_then(|v| v.as_str()).unwrap_or("");
+                    let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                     println!(
                         "{} {id}{}",
-                        if valid { "✓" } else { "✗" },
+                        if err.is_empty() { "✓" } else { "✗" },
                         if err.is_empty() {
                             String::new()
                         } else {
