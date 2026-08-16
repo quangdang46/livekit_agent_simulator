@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use gemini_live::{
+    transport::{Auth, TransportConfig},
     AudioTranscriptionConfig, AutomaticActivityDetection, GenerationConfig, Modality, Part,
     PrebuiltVoiceConfig, RealtimeInputConfig, ServerEvent, Session, SessionConfig, SetupConfig,
     SpeechConfig, VoiceConfig,
@@ -116,8 +117,13 @@ impl GeminiCallerBridge {
             ..Default::default()
         };
 
+        // Transport needs the caller's API key (the gemini_live crate does NOT
+        // read it from env — Auth::None is the default, which would connect
+        // unauthenticated). Port of callers/gemini.py:479 (api_key from config).
+        let mut transport = TransportConfig::default();
+        transport.auth = Auth::ApiKey(sim_cfg.api_key.clone());
         let session = Session::connect(SessionConfig {
-            transport: Default::default(),
+            transport,
             setup: std::mem::take(&mut setup),
             reconnect: Default::default(),
         })
