@@ -195,9 +195,13 @@ uninstall_all() {
   exit 0
 }
 
+# Newest tag that is NOT a Rust release (tags are v0.1.x = Python, v*-rust =
+# lksr binary). The plain /releases/latest endpoint would return whichever
+# was released last across both tracks and break the other installer.
 latest_release_tag() {
-  curl -fsSL "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" 2>/dev/null \
-    | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+  curl -fsSL "https://api.github.com/repos/${OWNER}/${REPO}/releases?per_page=100" 2>/dev/null \
+    | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | grep -v -- '-rust$' | head -1
 }
 
 resolve_install_ref() {

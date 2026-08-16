@@ -3,7 +3,7 @@ name: Release (Rust binary)
 on:
   push:
     tags:
-      - "v*"
+      - "v*-rust*"
 
 jobs:
   build:

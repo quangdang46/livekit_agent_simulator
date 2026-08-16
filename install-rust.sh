@@ -56,8 +56,12 @@ release_tag_from_ref() {
     case "$ref" in v*) echo "$ref" ;; *) echo "v$ref" ;; esac
     return 0
   fi
-  curl -fsSL "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" 2>/dev/null \
-    | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+  # Newest tag that IS a Rust release (v*-rust). Tags are split: v0.1.x =
+  # Python, v*-rust = lksr binary. The plain /releases/latest would return
+  # whichever track was released last and break the other installer.
+  curl -fsSL "https://api.github.com/repos/${OWNER}/${REPO}/releases?per_page=100" 2>/dev/null \
+    | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | grep -- '-rust$' | head -1
 }
 
 asset_name() {

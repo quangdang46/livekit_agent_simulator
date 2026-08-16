@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.9"
 
 from . import ops
 from .config import ConfigError, SimConfig, load_config
