@@ -30,7 +30,10 @@ fn live_channel_delivers_each_envelope_and_run_ended() {
         None,
     );
     let first = rx.recv().unwrap();
-    assert_eq!(first.get("kind").and_then(|v| v.as_str()), Some("transcript.user.final"));
+    assert_eq!(
+        first.get("kind").and_then(|v| v.as_str()),
+        Some("transcript.user.final")
+    );
     assert_eq!(first.get("run_id").and_then(|v| v.as_str()), Some("r-1"));
     // emitted envelope matches what the writer returned
     assert_eq!(first.get("seq"), ev.get("seq"));
@@ -38,16 +41,30 @@ fn live_channel_delivers_each_envelope_and_run_ended() {
     // A second emit arrives in order.
     let mut spec2 = Map::new();
     spec2.insert("text".into(), json!("Bye"));
-    w.emit("transcript.agent.final", Some(&spec2), "sim", None, None, false, None);
+    w.emit(
+        "transcript.agent.final",
+        Some(&spec2),
+        "sim",
+        None,
+        None,
+        false,
+        None,
+    );
     let second = rx.recv().unwrap();
-    assert_eq!(second.get("kind").and_then(|v| v.as_str()), Some("transcript.agent.final"));
+    assert_eq!(
+        second.get("kind").and_then(|v| v.as_str()),
+        Some("transcript.agent.final")
+    );
 
     // finalize() emits run.ended — that must also flow to the channel.
     let mut meta = Map::new();
     meta.insert("scenario_id".into(), json!("smoke"));
     w.finalize("done", Some(&meta), None);
     let ended = rx.recv().unwrap();
-    assert_eq!(ended.get("kind").and_then(|v| v.as_str()), Some("run.ended"));
+    assert_eq!(
+        ended.get("kind").and_then(|v| v.as_str()),
+        Some("run.ended")
+    );
 
     // Channel is exhausted (3 events total).
     assert!(rx.try_recv().is_err());
@@ -59,7 +76,15 @@ fn new_without_live_has_no_stream() {
     let mut w = EventWriter::new("r-2", dir, "UTC", 2500).unwrap();
     let mut spec = Map::new();
     spec.insert("text".into(), json!("x"));
-    w.emit("transcript.user.final", Some(&spec), "sim", None, None, false, None);
+    w.emit(
+        "transcript.user.final",
+        Some(&spec),
+        "sim",
+        None,
+        None,
+        false,
+        None,
+    );
     let mut meta = Map::new();
     meta.insert("scenario_id".into(), json!("smoke"));
     w.finalize("done", Some(&meta), None);
