@@ -878,6 +878,15 @@ async fn pump_openai_events(
                         // Caller speech (the model speaks AS the caller).
                         if let Some(chunk) = event.get("delta").and_then(|v| v.as_str()) {
                             caller_text.push_str(chunk);
+                            // Emit transcript.user.interim for real-time TUI updates.
+                            let accumulated = caller_text.trim().to_string();
+                            if !accumulated.is_empty() {
+                                let mut w = writer.lock().await;
+                                let mut spec_m = serde_json::Map::new();
+                                spec_m.insert("text".into(), serde_json::Value::String(accumulated));
+                                spec_m.insert("final".into(), serde_json::Value::Bool(false));
+                                w.emit("transcript.user.interim", Some(&spec_m), "sim.openai", None, None, false, None);
+                            }
                         }
                     }
                     "response.audio_transcript.done" => {
@@ -1034,6 +1043,15 @@ async fn pump_openai_events(
                         // Agent speech (the agent's room audio fed into the model).
                         if let Some(chunk) = event.get("delta").and_then(|v| v.as_str()) {
                             agent_text.push_str(chunk);
+                            // Emit transcript.agent.interim for real-time TUI updates.
+                            let accumulated = agent_text.trim().to_string();
+                            if !accumulated.is_empty() {
+                                let mut w = writer.lock().await;
+                                let mut spec_m = serde_json::Map::new();
+                                spec_m.insert("text".into(), serde_json::Value::String(accumulated));
+                                spec_m.insert("final".into(), serde_json::Value::Bool(false));
+                                w.emit("transcript.agent.interim", Some(&spec_m), "sim.openai", None, None, false, None);
+                            }
                         }
                     }
                     "conversation.item.input_audio_transcription.completed" => {

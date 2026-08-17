@@ -179,6 +179,23 @@ impl GeminiCallerBridge {
                     }
                     ServerEvent::OutputTranscription(text) => {
                         agent_text.push_str(&text);
+                        // Emit transcript.agent.interim for real-time TUI updates.
+                        let accumulated = agent_text.trim().to_string();
+                        if !accumulated.is_empty() {
+                            let mut w = writer.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("text".into(), serde_json::Value::String(accumulated));
+                            spec_m.insert("final".into(), serde_json::Value::Bool(false));
+                            w.emit(
+                                "transcript.agent.interim",
+                                Some(&spec_m),
+                                "sim.gemini",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                        }
                     }
                     ServerEvent::TurnComplete => {
                         let t = agent_text.trim().to_string();
@@ -204,6 +221,23 @@ impl GeminiCallerBridge {
                     }
                     ServerEvent::InputTranscription(text) => {
                         caller_text.push_str(&text);
+                        // Emit transcript.user.interim for real-time TUI updates.
+                        let accumulated = caller_text.trim().to_string();
+                        if !accumulated.is_empty() {
+                            let mut w = writer.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("text".into(), serde_json::Value::String(accumulated));
+                            spec_m.insert("final".into(), serde_json::Value::Bool(false));
+                            w.emit(
+                                "transcript.user.interim",
+                                Some(&spec_m),
+                                "sim.gemini",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                        }
                     }
                     ServerEvent::Interrupted => {}
                     ServerEvent::Closed { .. } => break,
