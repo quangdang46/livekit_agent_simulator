@@ -521,7 +521,24 @@ impl OpenAiCallerBridge {
                 _ = disconnect_rx.recv() => break,
                 ev = room_events_watch.recv() => {
                     match ev {
+                        Ok(SimRoomEvent::ParticipantConnected { identity, name }) => {
+                            // room.participant_connected (port of observer.py _on_join).
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("identity".into(), serde_json::Value::String(identity.clone()));
+                            spec_m.insert("name".into(), serde_json::Value::String(name));
+                            spec_m.insert("kind".into(), serde_json::Value::String("Remote".into()));
+                            w.emit("room.participant_connected", Some(&spec_m), "room", None, None, false, None);
+                            drop(w);
+                        }
                         Ok(SimRoomEvent::ParticipantDisconnected { identity }) => {
+                            // room.participant_disconnected (port of observer.py _on_leave).
+                            {
+                                let mut w = writer_obs.lock().await;
+                                let mut spec_m = serde_json::Map::new();
+                                spec_m.insert("identity".into(), serde_json::Value::String(identity.clone()));
+                                w.emit("room.participant_disconnected", Some(&spec_m), "room", None, None, false, None);
+                            }
                             eprintln!("[lksr] agent disconnected ({identity}) — ending run");
                             break;
                         }
@@ -557,6 +574,16 @@ impl OpenAiCallerBridge {
                                 .iter()
                                 .any(|i| i != Self::SIM_IDENTITY && i != &self.identity);
                             AGENT_ACTIVE_SPEAKER.store(is_agent, Ordering::SeqCst);
+                        }
+                        Ok(SimRoomEvent::TrackSubscribed { track_sid, participant_identity }) => {
+                            // room.track_subscribed (port of observer.py _on_track).
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("identity".into(), serde_json::Value::String(participant_identity));
+                            spec_m.insert("kind".into(), serde_json::Value::String("audio".into()));
+                            spec_m.insert("sid".into(), serde_json::Value::String(track_sid));
+                            w.emit("room.track_subscribed", Some(&spec_m), "room", None, None, false, None);
+                            drop(w);
                         }
                         _ => {}
                     }
