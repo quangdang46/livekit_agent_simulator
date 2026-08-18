@@ -28,16 +28,16 @@ jobs:
       run:
         working-directory: src/livekit_agent_simulator_rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
       # lks-web rust-embeds web/dist at compile time — build it first.
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -55,7 +55,7 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/lksr dist/lksr
           tar -czf ${{ matrix.asset }} -C dist lksr
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: src/livekit_agent_simulator_rust/${{ matrix.asset }}
@@ -67,7 +67,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

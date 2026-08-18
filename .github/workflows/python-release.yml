@@ -14,13 +14,13 @@ jobs:
     name: Test + wheel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: pnpm
@@ -33,7 +33,7 @@ jobs:
           pnpm run build
           test -f dist/index.html
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
@@ -59,7 +59,7 @@ jobs:
           print("wheel ok", whl)
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel
           path: dist/*.whl
@@ -81,13 +81,13 @@ jobs:
           # macos-x64 (macos-13) often queues forever on free runners; add later if needed
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wheel
           path: dist
@@ -109,7 +109,7 @@ jobs:
           fi
           ls -la "$DEST"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: portable-${{ matrix.asset }}
           path: dist/portable/lks-${{ matrix.asset }}.zip
@@ -120,9 +120,9 @@ jobs:
     needs: [wheel, portable]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: false
