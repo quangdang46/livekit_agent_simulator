@@ -44,8 +44,9 @@ pub async fn op_preflight(
     project_root: &std::path::Path,
     connectivity: bool,
     profile: Option<&str>,
+    environment: Option<&str>,
 ) -> Result<Map<String, Json>, lks_core::errors::ConfigError> {
-    let (mut m, cfg) = lks_core::ops::op_preflight_core(project_root, profile)?;
+    let (mut m, cfg) = lks_core::ops::op_preflight_core(project_root, profile, environment)?;
     if connectivity {
         if let Some(cfg) = &cfg {
             let still_ok = m.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);

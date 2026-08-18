@@ -50,7 +50,7 @@ fn no_default_uses_flat_block() {
         "flat",
         "  api_key: flat-key\n  profiles:\n    google:\n      provider: google\n      api_key: gkey\n",
     );
-    let cfg = load_config(root, None).unwrap();
+    let cfg = load_config(root, None, None).unwrap();
     assert_eq!(cfg.active_profile, None);
     assert_eq!(cfg.simulator.api_key, "flat-key");
 }
@@ -61,7 +61,7 @@ fn multiple_defaults_is_error() {
         "multi_default",
         "  api_key: flat-key\n  profiles:\n    google:\n      default: true\n      api_key: gkey\n    openai:\n      default: true\n      api_key: okey\n",
     );
-    let err = load_config(root, None).unwrap_err();
+    let err = load_config(root, None, None).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("Multiple profiles marked `default: true`"),
@@ -75,7 +75,7 @@ fn no_profile_no_flat_creds_is_error() {
         "no_creds",
         "  profiles:\n    google:\n      provider: google\n      api_key: gkey\n",
     );
-    let err = load_config(root, None).unwrap_err();
+    let err = load_config(root, None, None).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("No default profile configured"), "got: {msg}");
 }
@@ -86,7 +86,7 @@ fn unknown_profile_lists_available() {
         "unknown",
         "  api_key: flat-key\n  profiles:\n    google:\n      api_key: gkey\n    openai:\n      api_key: okey\n",
     );
-    let err = load_config(root, Some("nope")).unwrap_err();
+    let err = load_config(root, Some("nope"), None).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("Profile 'nope' not found"), "got: {msg}");
     assert!(msg.contains("google"), "got: {msg}");
@@ -104,7 +104,7 @@ fn yaml11_bool_scalars_resolve_like_pyyaml() {
     let txt =
         txt + "observe:\n  record_audio: off\n  lk_agent_session: yes\n  lk_transcription: on\n";
     std::fs::write(&cfg_path, txt).unwrap();
-    let cfg = load_config(root, None).unwrap();
+    let cfg = load_config(root, None, None).unwrap();
     assert!(!cfg.observe.record_audio, "record_audio: off must be false");
     assert!(
         cfg.observe.lk_agent_session,
@@ -114,4 +114,88 @@ fn yaml11_bool_scalars_resolve_like_pyyaml() {
         cfg.observe.lk_transcription,
         "lk_transcription: on must be true"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Environment default-selection parity — mirrors the profile tests above but
+// for `livekit.environments` (port of config.py's environment resolution).
+// ---------------------------------------------------------------------------
+
+fn tmp_root_env(name: &str, lk_yaml: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lksr_env_{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let dot = dir.join(".agent-sim");
+    std::fs::create_dir_all(&dot).unwrap();
+    std::fs::write(
+        dot.join("config.yaml"),
+        format!("livekit:\n{lk_yaml}\nsimulator:\n  api_key: sim-key\n"),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn explicit_environment_selects_and_merges() {
+    let root = tmp_root_env(
+        "explicit",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    production:\n      url: wss://prod.livekit.cloud\n      agent_name: prod-agent\n",
+    );
+    let cfg = load_config(root, None, Some("production")).unwrap();
+    assert_eq!(cfg.livekit.url, "wss://prod.livekit.cloud");
+    assert_eq!(cfg.livekit.agent_name, "prod-agent");
+    // Inherited from the flat block (not overridden by the environment).
+    assert_eq!(cfg.livekit.api_key, "flat-key");
+    assert_eq!(cfg.livekit.api_secret, "flat-secret");
+    assert_eq!(cfg.livekit.active_environment.as_deref(), Some("production"));
+}
+
+#[test]
+fn single_default_environment_autoselects() {
+    let root = tmp_root_env(
+        "autoselect",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    local:\n      default: true\n      url: wss://local.livekit.cloud\n      agent_name: local-agent\n    production:\n      url: wss://prod.livekit.cloud\n      agent_name: prod-agent\n",
+    );
+    let cfg = load_config(root, None, None).unwrap();
+    assert_eq!(cfg.livekit.active_environment.as_deref(), Some("local"));
+    assert_eq!(cfg.livekit.url, "wss://local.livekit.cloud");
+    assert_eq!(cfg.livekit.agent_name, "local-agent");
+}
+
+#[test]
+fn no_default_environment_uses_flat_block() {
+    let root = tmp_root_env(
+        "flat",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    production:\n      url: wss://prod.livekit.cloud\n      agent_name: prod-agent\n",
+    );
+    let cfg = load_config(root, None, None).unwrap();
+    assert_eq!(cfg.livekit.active_environment, None);
+    assert_eq!(cfg.livekit.url, "wss://flat.livekit.cloud");
+    assert_eq!(cfg.livekit.agent_name, "flat-agent");
+}
+
+#[test]
+fn multiple_default_environments_is_error() {
+    let root = tmp_root_env(
+        "multi_default",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    local:\n      default: true\n      url: wss://local.livekit.cloud\n    production:\n      default: true\n      url: wss://prod.livekit.cloud\n",
+    );
+    let err = load_config(root, None, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Multiple environments marked `default: true`"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn unknown_environment_lists_available() {
+    let root = tmp_root_env(
+        "unknown",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    local:\n      url: wss://local.livekit.cloud\n    production:\n      url: wss://prod.livekit.cloud\n",
+    );
+    let err = load_config(root, None, Some("nope")).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("Environment 'nope' not found"), "got: {msg}");
+    assert!(msg.contains("local"), "got: {msg}");
+    assert!(msg.contains("production"), "got: {msg}");
 }

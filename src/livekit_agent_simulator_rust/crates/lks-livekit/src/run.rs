@@ -24,6 +24,7 @@ pub struct ExecuteOptions {
     pub agent_name: Option<String>,
     pub optimized: Option<String>,
     pub profile: Option<String>,
+    pub environment: Option<String>,
     /// Optional live event channel — every EventWriter emit() envelope is
     /// cloned to it (the lksr TUI live-run view streams through this).
     pub live: Option<std::sync::mpsc::Sender<serde_json::Map<String, serde_json::Value>>>,
@@ -64,8 +65,12 @@ pub async fn execute_scenario(
     }
 
     // Validation first (matches Python: invalid → executed=false + validation).
-    let cfg = load_config(project_root.to_path_buf(), opts.profile.as_deref())
-        .map_err(|e| RunError(e.0))?;
+    let cfg = load_config(
+        project_root.to_path_buf(),
+        opts.profile.as_deref(),
+        opts.environment.as_deref(),
+    )
+    .map_err(|e| RunError(e.0))?;
     let scenario = match find_scenario(&cfg.scenarios_dir(), scenario_id) {
         Ok(s) => s,
         Err(e) => {
@@ -272,8 +277,12 @@ pub async fn execute_scenario_parsed(
     scenario: &lks_core::scenario::Scenario,
     opts: &ExecuteOptions,
 ) -> Result<serde_json::Map<String, serde_json::Value>, RunError> {
-    let mut cfg = load_config(project_root.to_path_buf(), opts.profile.as_deref())
-        .map_err(|e| RunError(e.0))?;
+    let mut cfg = load_config(
+        project_root.to_path_buf(),
+        opts.profile.as_deref(),
+        opts.environment.as_deref(),
+    )
+    .map_err(|e| RunError(e.0))?;
     // agent_name overrides the target worker for this run only (Python
     // run_scenario_instance dataclasses.replace equivalent).
     if let Some(an) = opts.agent_name.as_deref() {
