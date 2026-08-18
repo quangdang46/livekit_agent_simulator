@@ -52,8 +52,278 @@ PROFILE_OPTION = typer.Option(
 )
 
 
-def _root(root: Optional[Path]) -> Path:
-    return (root or Path.cwd()).resolve()
+# Shared --environment flag: select a named `livekit.environments.<name>` block
+# (url, api_key, api_secret, agent_name) for this invocation.
+ENVIRONMENT_OPTION = typer.Option(
+    None,
+    "--environment",
+    "-e",
+    help="Named livekit.environments.<name> (url, api_key, agent_name). "
+    "Omit to use the legacy flat `livekit:` block.",
+)
+
+
+@app.command()
+async def preflight(
+    root: Optional[Path] = ROOT_OPTION,
+    no_connectivity: bool = typer.Option(False, "--no-connectivity", help="Skip LiveKit API check"),
+    profile: Optional[str] = PROFILE_OPTION,
+    environment: Optional[str] = ENVIRONMENT_OPTION,
+    as_json: bool = JSON_OPTION,
+) -> None:
+    """Check config + LiveKit connectivity without running a scenario. (MCP: preflight)"""
+    result = _run(
+        ops.preflight(_root(root), connectivity=not no_connectivity, profile=profile, environment=environment)
+    )
+    _emit(result, as_json, cli_render.render_preflight)
+    if not result.get("ok"):
+        raise typer.Exit(1)
+
+
+@app.command()
+async def execute(
+    scenario_id: str,
+    root: Optional[Path] = ROOT_OPTION,
+    strict_judge: bool = typer.Option(
+        False,
+        "--strict-judge",
+        help="Also fail CI exit if LLM PassCriteria judge verdict is fail",
+    ),
+    repeat: int = typer.Option(
+        1,
+        "--repeat",
+        "-n",
+        help="Run scenario N times for flake control (pass@k)",
+    ),
+    pass_at_k: Optional[int] = typer.Option(
+        None,
+        "--pass-at-k",
+        "-k",
+        help="Minimum hard-pass iterations (default = repeat). Example: --repeat 5 --pass-at-k 3",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        help="Override slug after seq prefix (e.g. demo → reports/001-demo/)",
+    ),
+    agent_name: Optional[str] = typer.Option(
+        None,
+        "--agent-name",
+        help="Override the target LiveKit worker name for this run (no config edit). "
+        "Enables parallel worktree workflows.",
+    ),
+    optimized: Optional[str] = typer.Option(
+        None,
+        "--optimized",
+        help="Apply a saved `lks optimize` artifact (.agent-sim/optimized/<name>/prompt.yaml) "
+        "as the persona-prompt override for this run.",
+    ),
+    profile: Optional[str] = PROFILE_OPTION,
+    environment: Optional[str] = ENVIRONMENT_OPTION,
+    as_json: bool = JSON_OPTION,
+) -> None:
+    """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)"""
+    result = _run(
+        ops.execute_scenario(
+            _root(root),
+            scenario_id,
+            repeat=repeat,
+            pass_at_k=pass_at_k,
+            run_name=name,
+            agent_name=agent_name,
+            optimized=optimized,
+            profile=profile,
+            environment=environment,
+        )
+    )
+    from .suite import evaluate_run_result
+
+    gate = evaluate_run_result(result, strict_judge=strict_judge)
+    result = {**result, "gate": gate}
+    _emit(result, as_json, cli_render.render_execute)
+    if _run_failed(result, strict_judge=strict_judge):
+        raise typer.Exit(1)
+
+
+@app.command("execute-all")
+async def execute_all_cmd(
+    scenario_ids: Optional[list[str]] = typer.Argument(
+        None,
+        help="Optional scenario ids; omit to run all valid scenarios",
+    ),
+    tag: Optional[str] = typer.Option(None, help="Only scenarios with this tag (when ids omitted)"),
+    strict_judge: bool = typer.Option(
+        False,
+        "--strict-judge",
+        help="Fail suite if any LLM judge verdict is fail (default: hard gates only)",
+    ),
+    no_report: bool = typer.Option(
+        False,
+        "--no-report",
+        help="Do not write suite-*.json/md under .agent-sim/reports/",
+    ),
+    repeat: int = typer.Option(
+        1,
+        "--repeat",
+        "-n",
+        help="Repeat each scenario N times for flake control (pass@k)",
+    ),
+    pass_at_k: Optional[int] = typer.Option(
+        None,
+        "--pass-at-k",
+        "-k",
+        help="Minimum hard-pass iterations per scenario (default = repeat)",
+    ),
+    parallel: int = typer.Option(
+        1,
+        "--parallel",
+        "-p",
+        help="Run up to N scenarios at once (default 1 = sequential). "
+        "Within each scenario, --repeat stays sequential.",
+    ),
+    wait: float = typer.Option(
+        0.0,
+        "--wait",
+        help="Cooldown seconds after a scenario finishes before the next starts "
+        "on that concurrency slot (sequential: between scenarios). "
+        "Default 0. Does not delay the first wave; does not replace agent-join wait.",
+    ),
+    agent_name: Optional[str] = typer.Option(
+        None,
+        "--agent-name",
+        help="Override the target LiveKit worker name for this run (no config edit). "
+        "Enables parallel worktree workflows: each worktree registers its own "
+        "agent under a distinct name via VOICE_AI_AGENT_NAME and you point lks "
+        "at it per invocation.",
+    ),
+    profile: Optional[str] = PROFILE_OPTION,
+    environment: Optional[str] = ENVIRONMENT_OPTION,
+    root: Optional[Path] = ROOT_OPTION,
+    as_json: bool = JSON_OPTION,
+) -> None:
+    """Execute multiple scenarios; print suite matrix + CI gate. (MCP: execute_scenarios)"""
+    result = _run(
+        ops.execute_scenarios(
+            _root(root),
+            scenario_ids=list(scenario_ids) if scenario_ids else None,
+            tag=tag,
+            strict_judge=strict_judge,
+            write_report=not no_report,
+            repeat=repeat,
+            pass_at_k=pass_at_k,
+            parallel=parallel,
+            wait_s=wait,
+            agent_name=agent_name,
+            profile=profile,
+            environment=environment,
+        )
+    )
+    _emit(result, as_json, cli_render.render_execute_all)
+    if _run_failed(result, strict_judge=strict_judge):
+        raise typer.Exit(1)
+
+
+@app.command("execute-dict")
+async def execute_dict_cmd(
+    file: Optional[Path] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="JSON file with scenario dict; omit to read JSON from stdin",
+    ),
+    root: Optional[Path] = ROOT_OPTION,
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        help="Override slug after seq prefix (e.g. demo → reports/001-demo/)",
+    ),
+    agent_name: Optional[str] = typer.Option(
+        None,
+        "--agent-name",
+        help="Override the target LiveKit worker name for this run (no config edit).",
+    ),
+    profile: Optional[str] = PROFILE_OPTION,
+    environment: Optional[str] = ENVIRONMENT_OPTION,
+    as_json: bool = JSON_OPTION,
+) -> None:
+    """Validate then run an in-memory scenario JSON. (MCP: execute_scenario_dict)"""
+    try:
+        if file is not None:
+            scenario = json.loads(file.read_text(encoding="utf-8"))
+        else:
+            scenario = json.load(sys.stdin)
+    except (OSError, json.JSONDecodeError) as e:
+        typer.secho(f"Invalid scenario JSON: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    if not isinstance(scenario, dict):
+        typer.secho("Scenario JSON must be an object", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    result = _run(
+        ops.execute_scenario_dict(
+            _root(root), scenario, run_name=name, agent_name=agent_name, profile=profile, environment=environment
+        )
+    )
+    from .suite import evaluate_run_result
+
+    gate = evaluate_run_result(result, strict_judge=False)
+    result = {**result, "gate": gate}
+    _emit(result, as_json, cli_render.render_execute)
+    if _run_failed(result):
+        raise typer.Exit(1)
+
+
+@app.command()
+async def optimize(
+    scenario_ids: str = typer.Argument(
+        ...,
+        help="Comma-separated scenario ids (dataset) to optimize over",
+    ),
+    held_out: Optional[str] = typer.Option(
+        None,
+        "--held-out",
+        help="Scenario id held out for generalization check (must not regress)",
+    ),
+    candidates: int = typer.Option(4, "--candidates", "-c", help="Max candidate variants to evaluate"),
+    max_candidates: int = typer.Option(6, "--max-candidates", help="Cap on LLM-proposed variants"),
+    strict_judge: bool = typer.Option(False, "--strict-judge", help="Treat judge fail as hard fail"),
+    repeat: int = typer.Option(1, "--repeat", "-n", help="Run each scenario N times for pass@k"),
+    pass_at_k: Optional[int] = typer.Option(None, "--pass-at-k", "-k", help="Min hard-pass iterations"),
+    agent_name: Optional[str] = typer.Option(None, "--agent-name", help="Override target worker name"),
+    name: Optional[str] = typer.Option(None, "--name", help="Artifact slug (default auto)"),
+    profile: Optional[str] = PROFILE_OPTION,
+    environment: Optional[str] = ENVIRONMENT_OPTION,
+    root: Optional[Path] = ROOT_OPTION,
+    as_json: bool = JSON_OPTION,
+) -> None:
+    """Run the persona-prompt optimizer over a dataset (live benchmark loop).
+
+    Writes the winning variant to .agent-sim/optimized/<name>/; apply it to a
+    run with `lks execute <scenario> --optimized <name>`. (MCP: optimize_persona)
+    """
+    ids = [s.strip() for s in scenario_ids.split(",") if s.strip()]
+    if not ids:
+        typer.secho("scenario_ids must be a non-empty comma-separated list", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    result = _run(
+        ops.optimize_persona(
+            _root(root),
+            ids,
+            held_out=held_out,
+            candidates=candidates,
+            max_candidates=max_candidates,
+            strict_judge=strict_judge,
+            repeat=repeat,
+            pass_at_k=pass_at_k,
+            agent_name=agent_name,
+            name=name,
+            profile=profile,
+            environment=environment,
+        )
+    )
+    _emit(result, as_json, cli_render.render_optimize)
+    if result.get("winner") is None:
+        typer.secho("No candidate beat baseline — keeping the builtin prompt.", fg=typer.colors.YELLOW)
+        raise typer.Exit(0)
 
 
 def _print(data: Any) -> None:

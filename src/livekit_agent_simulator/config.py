@@ -44,6 +44,7 @@ class LiveKitConfig:
     room_prepare_ms: int = 500
     agent_join_timeout_ms: int = 25_000
     dispatch_metadata: str | None = None
+    active_environment: str | None = None
 
 
 @dataclass
@@ -269,7 +270,7 @@ def _build_simulator_config(
     )
 
 
-def load_config(project_root: Path | str, profile: str | None = None) -> SimConfig:
+def load_config(project_root: Path | str, profile: str | None = None, environment: str | None = None) -> SimConfig:
     project_root = Path(project_root).resolve()
     config_path = project_root / DOT_FOLDER / CONFIG_FILENAME
     if not config_path.exists():
@@ -288,6 +289,51 @@ def load_config(project_root: Path | str, profile: str | None = None) -> SimConf
     lk_raw = raw.get("livekit")
     if not isinstance(lk_raw, dict):
         raise ConfigError(f"Missing `livekit:` section in {config_path}.")
+
+    # --- Environment resolution (mirroring simulator.profiles logic) ---
+    raw_environments: dict[str, Any] = {}
+    if "environments" in lk_raw and isinstance(lk_raw["environments"], dict):
+        raw_environments = lk_raw["environments"]
+
+    selected_environment: str | None = None
+    if environment is not None:
+        if not raw_environments:
+            raise ConfigError(
+                f"`--environment {environment}` requested but `livekit.environments:` is "
+                f"not a non-empty map in {config_path}."
+            )
+        if environment not in raw_environments:
+            raise ConfigError(
+                f"Environment {environment!r} not found. Available environments: "
+                + ", ".join(sorted(raw_environments)) or "none"
+            )
+        selected_environment = environment
+    elif raw_environments:
+        defaults = [
+            name
+            for name, p in raw_environments.items()
+            if isinstance(p, dict) and bool(p.get("default"))
+        ]
+        if len(defaults) > 1:
+            raise ConfigError(
+                "Multiple environments marked `default: true` in "
+                f"{config_path}: {', '.join(sorted(defaults))}. "
+                "Mark at most one environment as default (or use `--environment <name>`)."
+            )
+        if len(defaults) == 1:
+            selected_environment = defaults[0]
+
+    if selected_environment is not None:
+        env_raw = raw_environments[selected_environment]
+        if not isinstance(env_raw, dict):
+            raise ConfigError(
+                f"`livekit.environments.{selected_environment}` must be a mapping."
+            )
+        # Environment inherits unspecified keys from the flat livekit block.
+        merged_lk = {k: v for k, v in lk_raw.items() if k != "environments"}
+        merged_lk.update(env_raw)
+        lk_raw = merged_lk
+
     dispatch_metadata = lk_raw.get("dispatch_metadata")
     if dispatch_metadata is not None:
         dispatch_metadata = str(dispatch_metadata).strip() or None
@@ -300,6 +346,7 @@ def load_config(project_root: Path | str, profile: str | None = None) -> SimConf
         room_prepare_ms=int(lk_raw.get("room_prepare_ms", 500)),
         agent_join_timeout_ms=int(lk_raw.get("agent_join_timeout_ms", 25_000)),
         dispatch_metadata=dispatch_metadata,
+        active_environment=selected_environment,
     )
 
     sim_raw = raw.get("simulator")
@@ -517,6 +564,7 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
             "agent_name": cfg.livekit.agent_name,
             "agent_join_timeout_ms": cfg.livekit.agent_join_timeout_ms,
             "dispatch_metadata_set": bool(cfg.livekit.dispatch_metadata),
+            "active_environment": cfg.livekit.active_environment,
         },
         "simulator": {
             "provider": cfg.simulator.provider,

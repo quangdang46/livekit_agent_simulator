@@ -110,9 +110,10 @@ async def preflight(
     project_root: Path | str,
     connectivity: bool = True,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Config + folder + optional LiveKit API check. Returns {ok, checks}."""
-    result, _ = await run_preflight(project_root, connectivity=connectivity, profile=profile)
+    result, _ = await run_preflight(project_root, connectivity=connectivity, profile=profile, environment=environment)
     return {"ok": result.ok, "checks": result.checks}
 
 
@@ -382,10 +383,11 @@ async def _run_scenario_dict(
     run_name: str | None = None,
     agent_name: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Internal: run dict after preflight (no schema validation wrapper)."""
-    cfg = load_config(project_root, profile=profile)
-    pf = await preflight(cfg.project_root, connectivity=True, profile=profile)
+    cfg = load_config(project_root, profile=profile, environment=environment)
+    pf = await preflight(cfg.project_root, connectivity=True, profile=profile, environment=environment)
     if not pf["ok"]:
         failed = [c for c in pf["checks"] if c["status"] == "fail"]
         raise RuntimeError("Preflight failed: " + "; ".join(f"{c['name']}: {c['detail']}" for c in failed))
@@ -397,7 +399,7 @@ async def _run_scenario_dict(
 
 
 def _resolve_caller_policy(
-    project_root: Path | str, optimized: str | None, profile: str | None = None
+    project_root: Path | str, optimized: str | None, profile: str | None = None, environment: str | None = None
 ) -> Any:
     """Load a saved optimizer artifact into a caller policy (or None for builtin)."""
     if not optimized:
@@ -405,7 +407,7 @@ def _resolve_caller_policy(
     from .optimize.apply import policy_for_variant
     from .optimize.variant import load_variant
 
-    cfg = load_config(project_root, profile=profile)
+    cfg = load_config(project_root, profile=profile, environment=environment)
     artifact = cfg.optimized_dir / optimized / "prompt.yaml"
     if not artifact.is_file():
         raise ConfigError(
@@ -422,9 +424,10 @@ async def _run_scenario(
     agent_name: str | None = None,
     caller_policy: Any = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Internal: run JSONL scenario after preflight (orchestrator also preflights)."""
-    cfg = load_config(project_root, profile=profile)
+    cfg = load_config(project_root, profile=profile, environment=environment)
     return await run_orchestrator.run_scenario(
         cfg,
         scenario_id,
@@ -441,6 +444,7 @@ async def execute_scenario_dict(
     run_name: str | None = None,
     agent_name: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Validate dict-shaped scenario then run (no JSONL file on disk required)."""
     try:
@@ -448,7 +452,7 @@ async def execute_scenario_dict(
     except ScenarioError as e:
         return {"executed": False, "validation": {"valid": False, "error": str(e)}}
     result = await _run_scenario_dict(
-        project_root, scenario, run_name=run_name, agent_name=agent_name, profile=profile
+        project_root, scenario, run_name=run_name, agent_name=agent_name, profile=profile, environment=environment
     )
     return {"executed": True, "validation": {"valid": True}, **result}
 
@@ -463,6 +467,7 @@ async def execute_scenario(
     agent_name: str | None = None,
     optimized: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Validate then run one scenario from `.agent-sim/scenarios/<id>.jsonl`.
 
@@ -478,6 +483,9 @@ async def execute_scenario(
     ``profile`` (optional) selects a named ``simulator.profiles.<name>``
     caller profile instead of the legacy flat ``simulator:`` block (no config
     edit).
+
+    ``environment`` (optional) selects a named ``livekit.environments.<name>``
+    block (url, api_key, agent_name) instead of the legacy flat ``livekit:`` block.
     """
     if repeat < 1:
         raise ValueError(f"repeat must be >= 1, got {repeat}")
@@ -489,7 +497,7 @@ async def execute_scenario(
     if not validation.get("valid"):
         return {"executed": False, "validation": validation}
 
-    caller_policy = _resolve_caller_policy(project_root, optimized, profile=profile)
+    caller_policy = _resolve_caller_policy(project_root, optimized, profile=profile, environment=environment)
 
     from .suite import evaluate_run_result
     from .metrics import metrics_digest
@@ -505,6 +513,7 @@ async def execute_scenario(
             agent_name=agent_name,
             caller_policy=caller_policy,
             profile=profile,
+            environment=environment,
         )
 
     for i in range(repeat):
@@ -596,6 +605,7 @@ async def execute_scenarios(
     wait_s: float = 0.0,
     agent_name: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Run multiple scenarios + suite matrix / CI gate.
 
@@ -614,6 +624,9 @@ async def execute_scenarios(
     run). The first scenario(s) of the suite start immediately. Default 0 —
     this is an optional load knob for the target agent worker, not a substitute
     for per-run ``wait_for_agent`` / ``agent_join_timeout_ms``.
+
+    ``environment`` (optional) selects a named ``livekit.environments.<name>``
+    block (url, api_key, agent_name) instead of the legacy flat ``livekit:`` block.
     """
     import asyncio
 
@@ -624,7 +637,7 @@ async def execute_scenarios(
     if wait_s < 0:
         raise ValueError(f"wait_s must be >= 0, got {wait_s}")
 
-    cfg = load_config(project_root)
+    cfg = load_config(project_root, environment=environment)
     listed = _list_scenarios(cfg.scenarios_dir)
     if scenario_ids:
         targets = scenario_ids
@@ -644,6 +657,7 @@ async def execute_scenarios(
                 pass_at_k=pass_at_k,
                 agent_name=agent_name,
                 profile=profile,
+                environment=environment,
             )
         except Exception as e:
             return {
@@ -1134,6 +1148,7 @@ async def optimize_persona(
     agent_name: str | None = None,
     name: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
     parallel: int = 1,
     wait_s: float = 0.0,
 ) -> dict[str, Any]:
@@ -1156,6 +1171,7 @@ async def optimize_persona(
         agent_name=agent_name,
         name=name,
         profile=profile,
+        environment=environment,
         execute_scenario=execute_scenario,
     )
 

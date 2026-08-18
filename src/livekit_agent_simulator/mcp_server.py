@@ -58,13 +58,17 @@ async def preflight(
     project_root: str,
     connectivity: bool = True,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Check config + folders + optional LiveKit API connectivity without running a scenario.
 
     ``profile`` (optional) selects a named ``simulator.profiles.<name>`` caller
     profile for the check; omitted → the legacy flat ``simulator:`` block.
+
+    ``environment`` (optional) selects a named ``livekit.environments.<name>``
+    block (url, api_key, agent_name) for the check.
     """
-    return await ops.preflight(project_root, connectivity=connectivity, profile=profile)
+    return await ops.preflight(project_root, connectivity=connectivity, profile=profile, environment=environment)
 
 
 @mcp.tool
@@ -119,6 +123,7 @@ async def execute_scenario(
     agent_name: str | None = None,
     optimized: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Validate then execute one scenario from `.agent-sim/scenarios/*.yaml` (legacy `*.jsonl` still read).
 
@@ -135,6 +140,9 @@ async def execute_scenario(
     ``profile`` (optional): select a named ``simulator.profiles.<name>`` caller
     profile (provider + key) instead of the legacy flat ``simulator:`` block —
     no config edit needed to switch providers.
+
+    ``environment`` (optional): select a named ``livekit.environments.<name>``
+    block (url, api_key, agent_name) instead of the legacy flat ``livekit:`` block.
     """
     return await ops.execute_scenario(
         project_root,
@@ -145,6 +153,7 @@ async def execute_scenario(
         agent_name=agent_name,
         optimized=optimized,
         profile=profile,
+        environment=environment,
     )
 
 
@@ -161,6 +170,7 @@ async def optimize_persona(
     agent_name: str | None = None,
     name: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Run the persona-prompt optimizer over a dataset (live benchmark loop).
 
@@ -169,6 +179,7 @@ async def optimize_persona(
     held-out scenario, and writes it to ``.agent-sim/optimized/<name>/``.
     Apply it to a run with ``execute_scenario(..., optimized=<name>)``.
     ``profile`` (optional): caller profile for every run in the loop.
+    ``environment`` (optional): LiveKit environment for every run in the loop.
     """
     return await ops.optimize_persona(
         project_root,
@@ -182,6 +193,7 @@ async def optimize_persona(
         agent_name=agent_name,
         name=name,
         profile=profile,
+        environment=environment,
     )
 
 
@@ -198,6 +210,7 @@ async def execute_scenarios(
     wait_s: float = 0.0,
     agent_name: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Execute multiple scenarios; returns suite matrix + CI gate (hard: assert/script/status).
 
@@ -206,6 +219,7 @@ async def execute_scenarios(
     ``wait_s``: cooldown seconds after each finish before the next start on that
     slot (default 0; first wave is not delayed).
     ``profile`` (optional): caller profile for every scenario in the suite.
+    ``environment`` (optional): LiveKit environment for every scenario in the suite.
     """
     return await ops.execute_scenarios(
         project_root,
@@ -219,6 +233,7 @@ async def execute_scenarios(
         wait_s=wait_s,
         agent_name=agent_name,
         profile=profile,
+        environment=environment,
     )
 
 
@@ -229,13 +244,15 @@ async def execute_scenario_dict(
     run_name: str | None = None,
     agent_name: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Validate then run an in-memory scenario dict (no JSONL file). Same fields as export_scenario.
 
     ``profile`` (optional): caller profile for this run.
+    ``environment`` (optional): LiveKit environment for this run.
     """
     return await ops.execute_scenario_dict(
-        project_root, scenario, run_name=run_name, agent_name=agent_name, profile=profile
+        project_root, scenario, run_name=run_name, agent_name=agent_name, profile=profile, environment=environment
     )
 
 
