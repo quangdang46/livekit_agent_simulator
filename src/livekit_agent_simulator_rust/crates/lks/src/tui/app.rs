@@ -23,7 +23,7 @@ pub struct App {
 
 impl App {
     pub fn new(root: &Path) -> anyhow::Result<Self> {
-        let cfg = load_config(root.to_path_buf(), None).map_err(|e| {
+        let cfg = load_config(root.to_path_buf(), None, None).map_err(|e| {
             anyhow::anyhow!(
                 "load config: {e} (run `lksr init --root {}`)",
                 root.display()

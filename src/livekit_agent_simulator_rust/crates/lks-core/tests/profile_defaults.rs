@@ -26,7 +26,7 @@ fn explicit_profile_selects_and_merges_voice() {
         "explicit",
         "  api_key: flat-key\n  voice:\n    model: flat-model\n    voice: flat-voice\n  profiles:\n    google:\n      provider: google\n      api_key: gkey\n      voice:\n        model: gemini-x\n        voice: Aoede\n",
     );
-    let cfg = load_config(root, Some("google")).unwrap();
+    let cfg = load_config(root, Some("google"), None).unwrap();
     assert_eq!(cfg.simulator.api_key, "gkey");
     assert_eq!(cfg.simulator.voice.model, "gemini-x");
     assert_eq!(cfg.simulator.voice.voice, "Aoede");
@@ -39,7 +39,7 @@ fn single_default_autoselects() {
         "autoselect",
         "  api_key: flat-key\n  profiles:\n    google:\n      default: true\n      provider: google\n      api_key: gkey\n    openai:\n      provider: openai\n      api_key: okey\n",
     );
-    let cfg = load_config(root, None).unwrap();
+    let cfg = load_config(root, None, None).unwrap();
     assert_eq!(cfg.active_profile.as_deref(), Some("google"));
     assert_eq!(cfg.simulator.api_key, "gkey");
 }

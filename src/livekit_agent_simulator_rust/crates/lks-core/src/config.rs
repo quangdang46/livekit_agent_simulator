@@ -42,6 +42,7 @@ pub struct LiveKitConfig {
     pub room_prepare_ms: i64,
     pub agent_join_timeout_ms: i64,
     pub dispatch_metadata: Option<String>,
+    pub active_environment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -293,7 +294,11 @@ fn opt_str(v: &Json) -> Option<String> {
 // load_config
 // ---------------------------------------------------------------------------
 
-pub fn load_config(project_root: PathBuf, profile: Option<&str>) -> Result<SimConfig, ConfigError> {
+pub fn load_config(
+    project_root: PathBuf,
+    profile: Option<&str>,
+    environment: Option<&str>,
+) -> Result<SimConfig, ConfigError> {
     let project_root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.clone());
@@ -322,7 +327,7 @@ pub fn load_config(project_root: PathBuf, profile: Option<&str>) -> Result<SimCo
         }
     };
 
-    // ---- livekit ----
+    // ---- livekit (+ optional named environment merge) ----
     let lk_raw = match raw_obj.get("livekit") {
         Some(Json::Object(m)) => m.clone(),
         _ => {
@@ -332,6 +337,7 @@ pub fn load_config(project_root: PathBuf, profile: Option<&str>) -> Result<SimCo
             )))
         }
     };
+    let (lk_raw, active_environment) = apply_environment(lk_raw, environment, &config_path)?;
     let dispatch_metadata = match lk_raw.get("dispatch_metadata") {
         Some(v) if !v.is_null() => opt_str(v),
         _ => None,
@@ -344,6 +350,7 @@ pub fn load_config(project_root: PathBuf, profile: Option<&str>) -> Result<SimCo
         room_prepare_ms: int_or(&lk_raw, "room_prepare_ms", 500),
         agent_join_timeout_ms: int_or(&lk_raw, "agent_join_timeout_ms", 25_000),
         dispatch_metadata,
+        active_environment,
     };
 
     // ---- simulator (+ optional named profile merge) ----
@@ -530,6 +537,122 @@ fn apply_profile(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     for (k, v) in prof_raw {
+        merged.insert(k, v);
+    }
+    Ok((merged, Some(selected)))
+}
+
+/// Named `livekit.environments.<name>` selection (port of config.py's
+/// environment resolution — mirrors `apply_profile` above but for the
+/// `livekit:` section):
+///   * `--environment <name>` given   → that environment (explicit; must exist).
+///   * `--environment` absent + exactly one environment has `default: true`
+///                               → that environment.
+///   * `--environment` absent + no defaults → the legacy flat `livekit:` block.
+///   * 2+ environments marked `default: true` → error (no "first wins").
+/// A selected environment inherits unspecified keys from the flat block.
+fn apply_environment(
+    lk_raw: Map<String, Json>,
+    environment: Option<&str>,
+    config_path: &std::path::Path,
+) -> Result<(Map<String, Json>, Option<String>), ConfigError> {
+    let raw_environments: Option<Map<String, Json>> = match lk_raw.get("environments") {
+        Some(Json::Object(m)) if !m.is_empty() => Some(m.clone()),
+        _ => None,
+    };
+
+    let selected: Option<String> = match environment {
+        Some(e) => {
+            let map = match &raw_environments {
+                Some(m) => m,
+                None => {
+                    return Err(ConfigError(format!(
+                        "`--environment {e}` requested but `livekit.environments:` is \
+                         not a non-empty map in {}.",
+                        config_path.display()
+                    )))
+                }
+            };
+            match map.get(e) {
+                Some(Json::Object(_)) => Some(e.to_string()),
+                Some(_) => {
+                    return Err(ConfigError(format!(
+                        "`livekit.environments.{e}` must be a mapping."
+                    )))
+                }
+                None => {
+                    let mut names: Vec<&String> = map.keys().collect();
+                    names.sort();
+                    let list = names
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(ConfigError(format!(
+                        "Environment '{e}' not found. Available environments: {}",
+                        if list.is_empty() {
+                            "none".to_string()
+                        } else {
+                            list
+                        }
+                    )));
+                }
+            }
+        }
+        None => {
+            if let Some(map) = &raw_environments {
+                let mut defaults: Vec<&String> = map
+                    .iter()
+                    .filter(|(_, p)| {
+                        p.as_object()
+                            .and_then(|m| m.get("default"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                    })
+                    .map(|(name, _)| name)
+                    .collect();
+                defaults.sort();
+                if defaults.len() > 1 {
+                    return Err(ConfigError(format!(
+                        "Multiple environments marked `default: true` in {}: {}. \
+                         Mark at most one environment as default (or use `--environment <name>`).",
+                        config_path.display(),
+                        defaults
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
+                }
+                if defaults.len() == 1 {
+                    Some(defaults[0].to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    };
+
+    let Some(selected) = selected else {
+        return Ok((lk_raw, None));
+    };
+
+    let env_raw = raw_environments
+        .as_ref()
+        .and_then(|m| m.get(&selected))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    // Environment inherits unspecified keys from the flat block; drop `environments:` key.
+    let mut merged: Map<String, Json> = lk_raw
+        .iter()
+        .filter(|(k, _)| *k != "environments")
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for (k, v) in env_raw {
         merged.insert(k, v);
     }
     Ok((merged, Some(selected)))
@@ -792,6 +915,14 @@ impl SimConfig {
         livekit.insert(
             "dispatch_metadata_set".into(),
             Json::Bool(self.livekit.dispatch_metadata.is_some()),
+        );
+        livekit.insert(
+            "active_environment".into(),
+            self.livekit
+                .active_environment
+                .clone()
+                .map(Json::String)
+                .unwrap_or(Json::Null),
         );
         snapshot.insert("livekit".into(), Json::Object(livekit));
 

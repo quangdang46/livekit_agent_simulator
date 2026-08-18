@@ -82,13 +82,13 @@ pub fn op_convert_scenario(
     scenario_id: &str,
     force: bool,
 ) -> Result<Map<String, Json>, String> {
-    let cfg = load_config(project_root.to_path_buf(), None).map_err(|e| e.0)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None).map_err(|e| e.0)?;
     convert_scenario(&cfg.scenarios_dir(), scenario_id, force).map_err(|e| e.0)
 }
 
 /// ops.list_scenarios
 pub fn op_list_scenarios(project_root: &Path) -> Result<Vec<Map<String, Json>>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     Ok(list_scenarios(&cfg.scenarios_dir()))
 }
 
@@ -98,7 +98,7 @@ pub fn op_validate_scenario(
     project_root: &Path,
     scenario_id: &str,
 ) -> Result<Map<String, Json>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     let scenarios_dir = cfg.scenarios_dir();
     let s = match crate::scenario_ops::find_scenario(&scenarios_dir, scenario_id) {
         Ok(s) => s,
@@ -198,14 +198,14 @@ pub fn op_export_scenario(
     project_root: &Path,
     scenario_id: &str,
 ) -> Result<Map<String, Json>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     Ok(export_scenario(&cfg.scenarios_dir(), scenario_id))
 }
 
 /// ops.list_plugins — verify plugins are a P8 (pyo3) surface; local modules
 /// listed from `.agent-sim/plugins/*.py` (data-plane, no plugin loading).
 pub fn op_list_plugins(project_root: &Path) -> Result<Map<String, Json>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     let local_dir = cfg.dot_dir().join("plugins");
     let mut local_files: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&local_dir) {
@@ -616,7 +616,7 @@ const BUILTIN_CUES: [BuiltinCueEntry; 35] = [
 /// builtin entries (aliases first, then leftover files), target overrides,
 /// config aliases + extra dirs, usage.
 pub fn op_list_cues(project_root: &Path) -> Result<Map<String, Json>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     let cues_dir = crate::authoring::package_templates_dir()
         .map(|t| t.join("cues"))
         .unwrap_or_else(|| std::path::PathBuf::from("templates/cues"));
@@ -797,7 +797,7 @@ pub fn op_list_cues(project_root: &Path) -> Result<Map<String, Json>, ConfigErro
 pub fn describe_cue_resolution(project_root: &Path, asset: &str) -> Map<String, Json> {
     let mut m = Map::new();
     m.insert("asset".into(), json!(asset));
-    let cfg = load_config(project_root.to_path_buf(), None).ok();
+    let cfg = load_config(project_root.to_path_buf(), None, None).ok();
     let cues_dir = crate::authoring::package_templates_dir()
         .map(|t| t.join("cues"))
         .unwrap_or_else(|| std::path::PathBuf::from("templates/cues"));
@@ -865,7 +865,7 @@ pub fn op_get_run_status(
     project_root: &Path,
     run_id: &str,
 ) -> Result<Map<String, Json>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     if !cfg.sqlite_path().exists() {
         let mut m = Map::new();
         m.insert("found".into(), json!(false));
@@ -917,7 +917,7 @@ pub fn op_get_run_log(
     since_mono_ms: Option<i64>,
     limit: usize,
 ) -> Result<Map<String, Json>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     let events_path = cfg.reports_dir().join(run_id).join("events.jsonl");
     if !events_path.exists() {
         let mut m = Map::new();
@@ -991,7 +991,7 @@ pub fn op_get_run_report(
     project_root: &Path,
     run_id: &str,
 ) -> Result<Map<String, Json>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     let report_dir = cfg.reports_dir().join(run_id);
     let summary_path = report_dir.join("summary.json");
     if !summary_path.exists() {
@@ -1081,7 +1081,7 @@ pub fn op_list_runs(
     limit: i64,
     scenario_id: Option<&str>,
 ) -> Result<Vec<Map<String, Json>>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     if !cfg.sqlite_path().exists() {
         return Ok(Vec::new());
     }
@@ -1516,7 +1516,7 @@ pub fn op_scenario_from_run(
     scenario_id: Option<&str>,
     write: bool,
 ) -> Result<Map<String, Json>, String> {
-    let cfg = load_config(project_root.to_path_buf(), None).map_err(|e| e.0)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None).map_err(|e| e.0)?;
     crate::scenario_from_run::scenario_from_run(
         project_root,
         run_id,
@@ -1532,7 +1532,7 @@ pub fn render_prompt_variant(
     project_root: &Path,
     name: &str,
 ) -> Result<Map<String, Json>, ConfigError> {
-    let cfg = load_config(project_root.to_path_buf(), None)?;
+    let cfg = load_config(project_root.to_path_buf(), None, None)?;
     let artifact = cfg.optimized_dir().join(name).join("prompt.yaml");
     if !artifact.exists() {
         return Err(ConfigError(format!(
@@ -1560,6 +1560,7 @@ pub fn render_prompt_variant(
 pub fn op_preflight_core(
     project_root: &Path,
     profile: Option<&str>,
+    environment: Option<&str>,
 ) -> Result<(Map<String, Json>, Option<crate::config::SimConfig>), ConfigError> {
     let mut checks: Vec<Json> = Vec::new();
     let mut ok = true;
@@ -1577,8 +1578,8 @@ pub fn op_preflight_core(
         checks.push(Json::Object(c));
     }
 
-    // 1. config (load with profile; fail → early return)
-    let cfg = match load_config(project_root.to_path_buf(), profile) {
+    // 1. config (load with profile + environment; fail → early return)
+    let cfg = match load_config(project_root.to_path_buf(), profile, environment) {
         Ok(cfg) => {
             add(
                 &mut checks,

@@ -44,7 +44,7 @@ pub fn resolve_player_dir() -> PathBuf {
 
 impl WebServer {
     pub fn new(project_root: &Path) -> Self {
-        let cfg = lks_core::config::load_config(project_root.to_path_buf(), None)
+        let cfg = lks_core::config::load_config(project_root.to_path_buf(), None, None)
             .map(|c| c.reports_dir())
             .unwrap_or_else(|_| project_root.join(".agent-sim/reports"));
         Self {

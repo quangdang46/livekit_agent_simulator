@@ -134,7 +134,7 @@ mod tests {
         .expect("session starts");
         let mut scr = live_run::LiveRunScreen::new(session, "fake".to_string(), false);
         let root = tmp_root("live_cfg");
-        let cfg = lks_core::config::load_config(root.clone(), None).unwrap();
+        let cfg = lks_core::config::load_config(root.clone(), None, None).unwrap();
         let ctx = crate::tui::screen::ScreenCtx {
             root: &root,
             cfg: &cfg,

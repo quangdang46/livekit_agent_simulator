@@ -36,7 +36,7 @@ fn temp_root_with_raw(name: &str, body: &str) -> PathBuf {
 #[test]
 fn golden_config_template_parses() {
     let dir = temp_root_with_template("template");
-    let cfg = match load_config(dir, None) {
+    let cfg = match load_config(dir, None, None) {
         Ok(c) => c,
         Err(e) => panic!("template parse failed: {}", e),
     };
@@ -90,7 +90,7 @@ fn config_require_fails_fast() {
         "require",
         "livekit:\n  url: \"wss://x.livekit.cloud\"\n  api_key: \"key\"\n  api_secret: \"sec\"\n  agent_name: \"a\"\nsimulator:\n  provider: google\n  api_key: \"\"\n",
     );
-    let err = load_config(dir, None).expect_err("empty api_key must fail");
+    let err = load_config(dir, None, None).expect_err("empty api_key must fail");
     assert_eq!(
         err.to_string(),
         "Missing `simulator.api_key` in .agent-sim/config.yaml. Copy the value from LiveKit Cloud / your worker and try again."
@@ -104,14 +104,14 @@ fn config_require_zero_passes() {
         "zero",
         "livekit:\n  url: \"wss://x\"\n  api_key: \"k\"\n  api_secret: \"s\"\n  agent_name: \"a\"\n  agent_join_timeout_ms: 0\nsimulator:\n  api_key: \"ak\"\n",
     );
-    let cfg = load_config(dir, None).expect("0 passes _require");
+    let cfg = load_config(dir, None, None).expect("0 passes _require");
     assert_eq!(cfg.livekit.agent_join_timeout_ms, 0);
 }
 
 #[test]
 fn config_snapshot_redacts_secrets() {
     let dir = temp_root_with_template("snapshot");
-    let cfg = load_config(dir, None).expect("template parses");
+    let cfg = load_config(dir, None, None).expect("template parses");
     let snap = cfg.config_snapshot();
     // Never contains the api_key/api_secret VALUES.
     let serialized = serde_json::to_string(&snap).unwrap();
@@ -144,7 +144,7 @@ fn config_missing_file_error() {
     let dir = std::env::temp_dir().join("lks_p1_missing");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let err = load_config(dir, None).expect_err("missing file must fail");
+    let err = load_config(dir, None, None).expect_err("missing file must fail");
     let s = err.to_string();
     assert!(
         s.contains("not found. Run `lks init` (or the `init_project` MCP tool)"),
@@ -159,7 +159,7 @@ fn config_unknown_provider_fails() {
         "provider",
         "livekit:\n  url: \"wss://x\"\n  api_key: \"k\"\n  api_secret: \"s\"\n  agent_name: \"a\"\nsimulator:\n  provider: anthropic\n  api_key: \"ak\"\n",
     );
-    let err = load_config(dir, None).expect_err("unknown provider fails");
+    let err = load_config(dir, None, None).expect_err("unknown provider fails");
     assert!(
         err.to_string()
             .contains("`simulator.provider` must be `google` or `openai`"),
@@ -175,7 +175,7 @@ fn config_require_is_configerror() {
         "type",
         "livekit:\n  url: \"wss://x\"\n  api_key: \"k\"\n  api_secret: \"s\"\n  agent_name: \"a\"\n",
     );
-    match load_config(dir, None) {
+    match load_config(dir, None, None) {
         Err(e) => takes_configerror(&e),
         Ok(_) => panic!("must fail: missing simulator section"),
     }
@@ -184,7 +184,7 @@ fn config_require_is_configerror() {
 #[test]
 fn config_missing_livekit_section() {
     let dir = temp_root_with_raw("no_livekit", "simulator:\n  api_key: \"ak\"\n");
-    let err = load_config(dir, None).expect_err("missing livekit section");
+    let err = load_config(dir, None, None).expect_err("missing livekit section");
     assert!(
         err.to_string().contains("Missing `livekit:` section in"),
         "got: {err}"
@@ -198,7 +198,7 @@ fn config_bool_string_trap() {
         "booltrap",
         "livekit:\n  url: \"wss://x\"\n  api_key: \"k\"\n  api_secret: \"s\"\n  agent_name: \"a\"\nsimulator:\n  api_key: \"ak\"\nobserve:\n  lk_transcription: \"false\"\n  record_audio: \"false\"\n",
     );
-    let cfg = load_config(dir, None).expect("parses");
+    let cfg = load_config(dir, None, None).expect("parses");
     // The string "false" is truthy in Python bool(), so these are TRUE.
     assert!(cfg.observe.lk_transcription, "string \"false\" is truthy");
     assert!(cfg.observe.record_audio, "string \"false\" is truthy");
@@ -207,7 +207,7 @@ fn config_bool_string_trap() {
 #[test]
 fn config_yaml_not_mapping_fails() {
     let dir = temp_root_with_raw("notmap", "- just\n- a\n- list\n");
-    let err = load_config(dir, None).expect_err("top-level list must fail");
+    let err = load_config(dir, None, None).expect_err("top-level list must fail");
     assert!(
         err.to_string()
             .contains("must be a YAML mapping at the top level"),
