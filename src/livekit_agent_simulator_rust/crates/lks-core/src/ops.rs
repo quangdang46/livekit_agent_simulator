@@ -16,6 +16,19 @@ use crate::config::load_config;
 use crate::errors::ConfigError;
 use crate::scenario_ops::{convert_scenario, export_scenario, list_scenarios};
 
+/// Format a path for display: `\\?\UNC` prefix (Windows canonicalize) is
+/// stripped so the output matches Python's `str(path)` behavior.
+fn display_path(p: &Path) -> String {
+    let s = p.display().to_string();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(rest) = s.strip_prefix("\\\\?\\") {
+            return rest.to_string();
+        }
+    }
+    s
+}
+
 /// Fail-loud stub for ops that need the P2/P3.5 run infrastructure.
 pub fn not_implemented(name: &str) -> Map<String, Json> {
     let mut m = Map::new();
@@ -1586,7 +1599,7 @@ pub fn op_preflight_core(
                 &mut ok,
                 "config",
                 "pass",
-                cfg.dot_dir().join("config.yaml").display().to_string(),
+                display_path(&cfg.dot_dir().join("config.yaml")),
             );
             cfg
         }
@@ -1644,7 +1657,7 @@ pub fn op_preflight_core(
         &mut ok,
         "folders",
         "pass",
-        cfg.dot_dir().display().to_string(),
+        display_path(&cfg.dot_dir()),
     );
 
     // 5. simulator.api_key[provider]

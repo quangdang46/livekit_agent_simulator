@@ -592,7 +592,65 @@ fn parse_pass_criteria(
     }
     let mut judges = Vec::new();
     if let Some(Json::Array(j)) = pc.get("judges") {
-        judges = j.iter().filter_map(|x| x.as_object()).cloned().collect();
+        for (ji, j) in j.iter().enumerate() {
+            let obj = j.as_object().ok_or_else(|| {
+                ScenarioError(format!(
+                    "{where_}: PassCriteria.judges[{ji}] must be object"
+                ))
+            })?;
+            let jid = obj
+                .get("id")
+                .or_else(|| obj.get("name"))
+                .and_then(opt_str)
+                .unwrap_or_else(|| format!("judge-{ji}"));
+            let builtin = obj.get("builtin").and_then(opt_str);
+            let mut jc: Vec<String> = Vec::new();
+            if let Some(c) = obj.get("criteria") {
+                match c {
+                    Json::Array(a) => jc = a.iter().map(as_str).collect(),
+                    Json::String(s) => jc = vec![s.clone()],
+                    _ => {
+                        return Err(ScenarioError(format!(
+                            "{where_}: PassCriteria.judges[{ji}].criteria must be array"
+                        )));
+                    }
+                }
+            }
+            if jc.is_empty() && builtin.is_none() {
+                return Err(ScenarioError(format!(
+                    "{where_}: PassCriteria.judges[{ji}] needs criteria[] and/or builtin"
+                )));
+            }
+            let mut entry = Map::new();
+            entry.insert("id".into(), Json::String(jid));
+            entry.insert(
+                "criteria".into(),
+                Json::Array(jc.into_iter().map(Json::String).collect()),
+            );
+            if let Some(b) = builtin {
+                entry.insert("builtin".into(), Json::String(b.to_string()));
+            }
+            judges.push(entry);
+        }
+    }
+    // Backward compatible: flat criteria auto-flattened when judges present but no flat criteria
+    if !judges.is_empty() && criteria.is_empty() {
+        let mut flat: Vec<String> = Vec::new();
+        for j in &judges {
+            if let Some(b) = j.get("builtin").and_then(|v| v.as_str()) {
+                let jid = j.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                flat.push(format!("[{jid}] builtin:{b}"));
+            }
+            if let Some(arr) = j.get("criteria").and_then(|v| v.as_array()) {
+                let jid = j.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                for c in arr {
+                    if let Some(s) = c.as_str() {
+                        flat.push(format!("[{jid}] {s}"));
+                    }
+                }
+            }
+        }
+        criteria = flat;
     }
     Ok((criteria, mode, judges))
 }

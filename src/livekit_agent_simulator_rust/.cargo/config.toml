@@ -1,3 +1,26 @@
+[build]
+# Shorten the scratch/webrtc-sys include paths to stay under the Windows
+# MAX_PATH (260 char) limit.  Without this, abseil headers resolve to paths
+# like "…/scratch-<hash>/out/livekit_webrtc/…/include/third_party/abseil-cpp/
+# absl/base/nullability.h" which exceeds 260 chars.
+target-dir = "C:/t/lksr"
+
+# Windows: the prebuilt libwebrtc (win-x64-release) was compiled with /MT
+# (static CRT).  The cc crate defaults to /MD (dynamic CRT) for release
+# builds, causing LNK2038 RuntimeLibrary mismatches at link time.  Fix:
+#   1. Do NOT use -crt-static — Rust's MSVC default is already /MT.
+#   2. Push CFLAGS/CXXFLAGS=/MT so the cc crate also picks /MT.
+#      (cc crate appends CFLAGS *after* its own /MD flag; last CRT flag
+#       wins on MSVC cl.exe.)
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# Force the cc crate (used by webrtc-sys, cxx, etc.) to compile C/C++
+# with /MT so every artifact agrees on the static CRT.
+CFLAGS = { value = "/MT", force = true }
+CXXFLAGS = { value = "/MT", force = true }
+
 # macOS: the prebuilt libwebrtc uses ObjC categories that need -ObjC at link
 # time (livekit/rust-sdks#340, #795 — "+[NSString stringForAbslStringView:]
 # unrecognized selector" crash in PeerConnectionFactory init).
