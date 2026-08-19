@@ -63,6 +63,10 @@ ENVIRONMENT_OPTION = typer.Option(
 )
 
 
+def _root(root: Optional[Path]) -> Path:
+    return (root or Path.cwd()).resolve()
+
+
 @app.command()
 async def preflight(
     root: Optional[Path] = ROOT_OPTION,
