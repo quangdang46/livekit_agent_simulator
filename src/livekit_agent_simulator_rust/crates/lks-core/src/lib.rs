@@ -27,6 +27,7 @@ pub mod metrics;
 pub mod ops;
 pub mod optimize;
 pub mod persona_traits;
+pub mod plugin_bridge;
 pub mod prompt_sections;
 pub mod scenario;
 pub mod scenario_from_run;

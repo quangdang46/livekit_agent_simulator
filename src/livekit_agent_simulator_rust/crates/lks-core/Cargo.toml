@@ -1,6 +1,6 @@
 [package]
 name = "lks-core"
-description = "Pure logic for livekit-agent-simulator: config, scenario, script models, metrics, logging, evals, optimize. No livekit, no pyo3 — builds libwebrtc-free."
+description = "Pure logic for livekit-agent-simulator: config, scenario, script models, metrics, logging, evals, optimize. No livekit — builds libwebrtc-free."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,3 +22,10 @@ rust-embed = { version = "8.12", features = ["debug-embed"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-no-provider"] }
 rustls = "0.23"
 rusqlite = { version = "0.40", features = ["bundled"] }
+
+# Optional: PyO3 for executing Python plugins (verify, before_run, after_run).
+pyo3 = { version = "0.29", features = ["auto-initialize"], optional = true }
+
+[features]
+default = []
+python-plugins = ["dep:pyo3"]
