@@ -29,3 +29,4 @@ src/livekit_agent_simulator_rust/target/
 
 # macOS junk
 .DS_Store
+lksr-*
