@@ -110,6 +110,9 @@ enum Command {
         /// Select a named `simulator.profiles.<name>` caller profile.
         #[arg(long)]
         profile: Option<String>,
+        /// Select a named `livekit.environments.<name>` LiveKit target.
+        #[arg(long, short = 'e')]
+        environment: Option<String>,
         /// Emit raw JSON instead of a human-readable table.
         #[arg(long)]
         json: bool,
@@ -128,6 +131,9 @@ enum Command {
         /// Select a named `simulator.profiles.<name>` caller profile.
         #[arg(long)]
         profile: Option<String>,
+        /// Select a named `livekit.environments.<name>` LiveKit target.
+        #[arg(long, short = 'e')]
+        environment: Option<String>,
         /// Emit raw JSON instead of a human-readable table.
         #[arg(long)]
         json: bool,
@@ -163,6 +169,9 @@ enum Command {
         /// Select a named `simulator.profiles.<name>` caller profile.
         #[arg(long)]
         profile: Option<String>,
+        /// Select a named `livekit.environments.<name>` LiveKit target.
+        #[arg(long, short = 'e')]
+        environment: Option<String>,
         /// Emit raw JSON instead of a human-readable table.
         #[arg(long)]
         json: bool,
@@ -188,6 +197,9 @@ enum Command {
         /// Select a named `simulator.profiles.<name>` caller profile.
         #[arg(long)]
         profile: Option<String>,
+        /// Select a named `livekit.environments.<name>` LiveKit target.
+        #[arg(long, short = 'e')]
+        environment: Option<String>,
         /// Also fail CI exit if the LLM PassCriteria judge verdict is fail.
         #[arg(long)]
         strict_judge: bool,
@@ -294,6 +306,9 @@ enum Command {
         /// Select a named `simulator.profiles.<name>` caller profile.
         #[arg(long)]
         profile: Option<String>,
+        /// Select a named `livekit.environments.<name>` LiveKit target.
+        #[arg(long, short = 'e')]
+        environment: Option<String>,
         /// Emit raw JSON instead of a human-readable table.
         #[arg(long)]
         json: bool,
@@ -350,12 +365,14 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Preflight {
             no_connectivity,
             profile,
+            environment,
             json,
         }) => {
             let result = rt.block_on(lks_livekit::preflight::op_preflight(
                 std::path::Path::new(&root),
                 !no_connectivity,
                 profile.as_deref(),
+                environment.as_deref(),
             ))?;
             if json {
                 print_json(&serde_json::to_value(&result)?)?;
@@ -577,6 +594,7 @@ fn main() -> anyhow::Result<()> {
             agent_name,
             optimized,
             profile,
+            environment,
             strict_judge,
             json,
         }) => {
@@ -587,6 +605,7 @@ fn main() -> anyhow::Result<()> {
                 agent_name,
                 optimized,
                 profile,
+                environment,
                 ..Default::default()
             };
             let mut result = rt.block_on(lks_livekit::run::execute_scenario(
@@ -633,6 +652,7 @@ fn main() -> anyhow::Result<()> {
             wait,
             agent_name,
             profile,
+            environment,
             json,
         }) => {
             let opts = lks_livekit::ops_execute::SuiteOptions {
@@ -650,6 +670,7 @@ fn main() -> anyhow::Result<()> {
                 wait_s: wait,
                 agent_name,
                 profile,
+                environment,
             };
             let result = rt.block_on(lks_livekit::ops_execute::op_execute_scenarios(
                 std::path::Path::new(&root),
@@ -698,6 +719,7 @@ fn main() -> anyhow::Result<()> {
             name,
             agent_name,
             profile,
+            environment,
             json: _,
         }) => {
             let scenario_json: serde_json::Value = if let Some(f) = &file {
@@ -724,6 +746,7 @@ fn main() -> anyhow::Result<()> {
                 name.as_deref(),
                 agent_name.as_deref(),
                 profile.as_deref(),
+                environment.as_deref(),
             ))?;
             // CLI adds the CI gate (Python cli.py execute-dict: evaluate_run_result
             // → result["gate"]) and exits 1 on hard fail.
@@ -754,6 +777,7 @@ fn main() -> anyhow::Result<()> {
             agent_name,
             name,
             profile,
+            environment,
             json: _,
         }) => {
             let ids: Vec<String> = scenario_ids
@@ -775,6 +799,7 @@ fn main() -> anyhow::Result<()> {
                 agent_name,
                 name,
                 profile,
+                environment,
             };
             let result = rt.block_on(lks_livekit::ops_execute::op_optimize_persona(
                 std::path::Path::new(&root),
@@ -1063,13 +1088,37 @@ mod tests {
             Some(Command::Web { no_open, .. }) => assert!(no_open),
             other => panic!("expected Web, got {other:?}"),
         }
-        let cli = Cli::parse_from(["lksr", "preflight", "--profile", "gemini", "--json"]);
+        let cli = Cli::parse_from([
+            "lksr",
+            "preflight",
+            "--profile",
+            "gemini",
+            "--environment",
+            "production",
+            "--json",
+        ]);
         match cli.command {
-            Some(Command::Preflight { profile, json, .. }) => {
+            Some(Command::Preflight {
+                profile,
+                environment,
+                json,
+                ..
+            }) => {
                 assert_eq!(profile.as_deref(), Some("gemini"));
+                assert_eq!(environment.as_deref(), Some("production"));
                 assert!(json);
             }
             other => panic!("expected Preflight, got {other:?}"),
+        }
+        // execute --environment -e short flag
+        let cli = Cli::parse_from(["lksr", "execute", "x", "-e", "staging"]);
+        match cli.command {
+            Some(Command::Execute {
+                environment, ..
+            }) => {
+                assert_eq!(environment.as_deref(), Some("staging"));
+            }
+            other => panic!("expected Execute, got {other:?}"),
         }
         // scenario-from-run --id
         let cli = Cli::parse_from(["lksr", "scenario-from-run", "r", "--id", "golden"]);

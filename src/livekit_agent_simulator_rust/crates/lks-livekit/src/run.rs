@@ -449,7 +449,7 @@ pub async fn execute_scenario_parsed(
                     label,
                 } => {
                     // Resolve the WAV: builtin:<name> → templates/cues, else target cues dir.
-                    let cues_dir = lks_core::config::load_config(project_root_owned.clone(), None)
+                    let cues_dir = lks_core::config::load_config(project_root_owned.clone(), None, None)
                         .map(|c| c.cues_dir())
                         .unwrap_or_else(|_| project_root_owned.join(".agent-sim/cues"));
                     let resolved = if let Some(name) = asset.strip_prefix("builtin:") {

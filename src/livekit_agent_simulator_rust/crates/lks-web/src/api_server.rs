@@ -207,12 +207,14 @@ async fn execute_scenario(
     let run_name = body.get("run_name").and_then(|v| v.as_str());
     let agent_name = body.get("agent_name").and_then(|v| v.as_str());
     let profile = body.get("profile").and_then(|v| v.as_str());
+    let environment = body.get("environment").and_then(|v| v.as_str());
     let opts = lks_livekit::run::ExecuteOptions {
         run_name: run_name.map(String::from),
         repeat,
         pass_at_k,
         agent_name: agent_name.map(String::from),
         profile: profile.map(String::from),
+        environment: environment.map(String::from),
         ..Default::default()
     };
     let root = s.project_root.clone();
@@ -251,14 +253,22 @@ async fn preflight(
         Some(_) => true,
     };
     let profile = body.get("profile").and_then(|v| v.as_str());
+    let environment = body.get("environment").and_then(|v| v.as_str());
     let root = s.project_root.clone();
     let profile = profile.map(String::from);
+    let environment = environment.map(String::from);
     let result = run_op_async(move || {
         let root = root.clone();
         let profile = profile.clone();
+        let environment = environment.clone();
         async move {
-            lks_livekit::preflight::op_preflight(&root, connectivity, profile.as_deref())
-                .await
+            lks_livekit::preflight::op_preflight(
+                &root,
+                connectivity,
+                profile.as_deref(),
+                environment.as_deref(),
+            )
+            .await
                 .map(Value::Object)
                 .map_err(|e| e.0)
         }

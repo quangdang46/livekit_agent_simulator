@@ -22,7 +22,7 @@ impl PreflightScreen {
             "Preflight",
             ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
         )));
-        match lks_core::ops::op_preflight_core(ctx.root, None) {
+        match lks_core::ops::op_preflight_core(ctx.root, None, None) {
             Ok((map, _cfg)) => {
                 let ok = map.get("ok").and_then(Value::as_bool).unwrap_or(false);
                 lines.push(Line::from(format!(
@@ -75,7 +75,7 @@ impl PreflightScreen {
                         .enable_all()
                         .build()
                         .map_err(|e| e.to_string())?;
-                    rt.block_on(lks_livekit::preflight::op_preflight(&root, true, None))
+                    rt.block_on(lks_livekit::preflight::op_preflight(&root, true, None, None))
                         .map_err(|e| e.to_string())
                 })
                 .join()

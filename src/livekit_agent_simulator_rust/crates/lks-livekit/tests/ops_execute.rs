@@ -67,7 +67,7 @@ async fn dict_missing_persona_brief_returns_executed_false() {
     .as_object()
     .unwrap()
     .clone();
-    let result = op_execute_scenario_dict(dir.path(), &scenario, None, None, None)
+    let result = op_execute_scenario_dict(dir.path(), &scenario, None, None, None, None)
         .await
         .unwrap();
     assert_eq!(
@@ -95,7 +95,7 @@ async fn dict_missing_id_returns_executed_false() {
     .as_object()
     .unwrap()
     .clone();
-    let result = op_execute_scenario_dict(dir.path(), &scenario, None, None, None)
+    let result = op_execute_scenario_dict(dir.path(), &scenario, None, None, None, None)
         .await
         .unwrap();
     assert_eq!(

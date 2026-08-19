@@ -33,7 +33,7 @@ fn check_names(result: &serde_json::Map<String, serde_json::Value>) -> Vec<Strin
 async fn config_fail_early_return() {
     let dir = tmp_root();
     write_config(&dir, "not: [valid: yaml");
-    let result = op_preflight(dir.path(), false, None).await.unwrap();
+    let result = op_preflight(dir.path(), false, None, None).await.unwrap();
     assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(false));
     let names = check_names(&result);
     assert_eq!(
@@ -55,7 +55,7 @@ async fn config_fail_early_return() {
 async fn good_config_all_checks_pass() {
     let dir = tmp_root();
     write_config(&dir, GOOD_CONFIG);
-    let result = op_preflight(dir.path(), false, None).await.unwrap();
+    let result = op_preflight(dir.path(), false, None, None).await.unwrap();
     assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
     let names = check_names(&result);
     assert_eq!(
@@ -79,7 +79,7 @@ async fn bad_url_scheme_fails() {
         &dir,
         "livekit:\n  url: example.com\n  api_key: test-key\n  api_secret: test-secret\n  agent_name: test-agent\nsimulator:\n  provider: openai\n  api_key: sk-test-key-1234567890\n",
     );
-    let result = op_preflight(dir.path(), false, None).await.unwrap();
+    let result = op_preflight(dir.path(), false, None, None).await.unwrap();
     assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(false));
     let url_check = result
         .get("checks")
@@ -102,7 +102,7 @@ async fn bad_timezone_fails() {
         &dir,
         "livekit:\n  url: wss://example.livekit.cloud\n  api_key: test-key\n  api_secret: test-secret\n  agent_name: test-agent\nobserve:\n  timezone: Not/AZone\nsimulator:\n  provider: openai\n  api_key: sk-test-key-1234567890\n",
     );
-    let result = op_preflight(dir.path(), false, None).await.unwrap();
+    let result = op_preflight(dir.path(), false, None, None).await.unwrap();
     let tz_check = result
         .get("checks")
         .and_then(|v| v.as_array())
@@ -128,7 +128,7 @@ async fn short_api_key_warns_but_passes() {
         &dir,
         "livekit:\n  url: wss://example.livekit.cloud\n  api_key: test-key\n  api_secret: test-secret\n  agent_name: test-agent\nsimulator:\n  provider: openai\n  api_key: short\n",
     );
-    let result = op_preflight(dir.path(), false, None).await.unwrap();
+    let result = op_preflight(dir.path(), false, None, None).await.unwrap();
     assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
     let key_check = result
         .get("checks")
@@ -153,7 +153,7 @@ async fn whitespace_api_key_fails_at_config_load() {
         &dir,
         "livekit:\n  url: wss://example.livekit.cloud\n  api_key: test-key\n  api_secret: test-secret\n  agent_name: test-agent\nsimulator:\n  provider: openai\n  api_key: \"  \"\n",
     );
-    let result = op_preflight(dir.path(), false, None).await.unwrap();
+    let result = op_preflight(dir.path(), false, None, None).await.unwrap();
     assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(false));
     let names = check_names(&result);
     assert_eq!(names, vec!["config"], "early return: {names:?}");
@@ -172,7 +172,7 @@ async fn telephony_bits_and_recipe_warns() {
         &dir,
         "livekit:\n  url: wss://example.livekit.cloud\n  api_key: test-key\n  api_secret: test-secret\n  agent_name: test-agent\nsimulator:\n  provider: openai\n  api_key: sk-test-key-1234567890\ntelephony:\n  outbound_trunk_id: trunk-1\n",
     );
-    let result = op_preflight(dir.path(), false, None).await.unwrap();
+    let result = op_preflight(dir.path(), false, None, None).await.unwrap();
     let names = check_names(&result);
     assert!(names.contains(&"telephony".to_string()));
     assert!(names.contains(&"telephony.outbound_sim_callee".to_string()));
@@ -208,7 +208,7 @@ async fn telephony_bits_and_recipe_warns() {
 async fn telephony_not_configured_pass() {
     let dir = tmp_root();
     write_config(&dir, GOOD_CONFIG);
-    let result = op_preflight(dir.path(), false, None).await.unwrap();
+    let result = op_preflight(dir.path(), false, None, None).await.unwrap();
     let tel = result
         .get("checks")
         .and_then(|v| v.as_array())
@@ -230,7 +230,7 @@ async fn telephony_not_configured_pass() {
 async fn folders_created_as_side_effect() {
     let dir = tmp_root();
     write_config(&dir, GOOD_CONFIG);
-    let _ = op_preflight(dir.path(), false, None).await.unwrap();
+    let _ = op_preflight(dir.path(), false, None, None).await.unwrap();
     assert!(dir.path().join(".agent-sim/reports").is_dir());
     assert!(dir.path().join(".agent-sim/scenarios").is_dir());
 }

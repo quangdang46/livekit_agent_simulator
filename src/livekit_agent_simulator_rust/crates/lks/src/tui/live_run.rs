@@ -126,6 +126,7 @@ impl RunSession {
             agent_name: settings.agent_name.clone(),
             optimized: None,
             profile: settings.profile.clone(),
+            environment: None,
             live: Some(tx),
             abort_rx: Some(abort_rx),
         };

@@ -28,6 +28,7 @@ pub struct SuiteOptions {
     pub wait_s: f64,
     pub agent_name: Option<String>,
     pub profile: Option<String>,
+    pub environment: Option<String>,
 }
 
 /// Run multiple scenarios + suite matrix / CI gate (port of
@@ -46,8 +47,12 @@ pub async fn op_execute_scenarios(
         return Err(RunError(format!("wait_s must be >= 0, got {wait_s}")));
     }
 
-    let cfg = load_config(project_root.to_path_buf(), opts.profile.as_deref())
-        .map_err(|e| RunError(e.0))?;
+    let cfg = load_config(
+        project_root.to_path_buf(),
+        opts.profile.as_deref(),
+        opts.environment.as_deref(),
+    )
+    .map_err(|e| RunError(e.0))?;
     let listed = list_scenarios(&cfg.scenarios_dir());
     let targets: Vec<String> = if let Some(ids) = opts.scenario_ids.as_deref() {
         ids.to_vec()
@@ -79,12 +84,14 @@ pub async fn op_execute_scenarios(
         pass_at_k: Option<i64>,
         agent_name: Option<&str>,
         profile: Option<&str>,
+        environment: Option<&str>,
     ) -> Map<String, Json> {
         let opts = ExecuteOptions {
             repeat,
             pass_at_k,
             agent_name: agent_name.map(String::from),
             profile: profile.map(String::from),
+            environment: environment.map(String::from),
             ..Default::default()
         };
         match execute_scenario(project_root, sid, &opts).await {
@@ -115,6 +122,7 @@ pub async fn op_execute_scenarios(
                     opts.pass_at_k,
                     opts.agent_name.as_deref(),
                     opts.profile.as_deref(),
+                    opts.environment.as_deref(),
                 )
                 .await,
             );
@@ -142,6 +150,7 @@ pub async fn op_execute_scenarios(
             let project_root = project_root.to_path_buf();
             let agent_name = opts.agent_name.clone();
             let profile = opts.profile.clone();
+            let environment = opts.environment.clone();
             handles.push(tokio::spawn(async move {
                 loop {
                     let next = {
@@ -157,6 +166,7 @@ pub async fn op_execute_scenarios(
                         pass_at_k,
                         agent_name.as_deref(),
                         profile.as_deref(),
+                        environment.as_deref(),
                     )
                     .await;
                     results.lock().await.push((idx, out));
@@ -227,6 +237,7 @@ pub async fn op_execute_scenario_dict(
     run_name: Option<&str>,
     agent_name: Option<&str>,
     profile: Option<&str>,
+    environment: Option<&str>,
 ) -> Result<Map<String, Json>, RunError> {
     // scenario_from_dict parses the same shape as export_scenario.
     let parsed = match lks_core::scenario::scenario_from_dict(scenario, None, "scenario_dict") {
@@ -245,6 +256,7 @@ pub async fn op_execute_scenario_dict(
         run_name: run_name.map(String::from),
         agent_name: agent_name.map(String::from),
         profile: profile.map(String::from),
+        environment: environment.map(String::from),
         ..Default::default()
     };
     let mut result = execute_scenario_parsed(project_root, &parsed, &opts).await?;
@@ -268,6 +280,7 @@ pub struct OptimizeOptions {
     pub agent_name: Option<String>,
     pub name: Option<String>,
     pub profile: Option<String>,
+    pub environment: Option<String>,
 }
 
 /// Run the persona-prompt optimizer over a dataset (live benchmark loop — port
@@ -292,9 +305,11 @@ pub async fn op_optimize_persona(
     let agent_name = opts.agent_name.as_deref();
     let name = opts.name.as_deref();
     let profile = opts.profile.as_deref();
+    let environment = opts.environment.as_deref();
     use lks_core::optimize::{deterministic_candidates, variant_to_dict, write_variant};
 
-    let cfg = load_config(project_root.to_path_buf(), profile).map_err(|e| RunError(e.0))?;
+    let cfg = load_config(project_root.to_path_buf(), profile, environment)
+        .map_err(|e| RunError(e.0))?;
     let heldout_ids: Vec<String> = held_out
         .filter(|h| !scenario_ids.iter().any(|s| s == h))
         .map(|h| vec![h.to_string()])
@@ -319,6 +334,7 @@ pub async fn op_optimize_persona(
         pass_at_k: Option<i64>,
         agent_name: Option<&'a str>,
         profile: Option<&'a str>,
+        environment: Option<&'a str>,
     }
     async fn evaluate_variant(
         ctx: &EvalCtx<'_>,
@@ -334,6 +350,7 @@ pub async fn op_optimize_persona(
                 agent_name: ctx.agent_name.map(String::from),
                 optimized: optimize.map(String::from),
                 profile: ctx.profile.map(String::from),
+                environment: ctx.environment.map(String::from),
                 ..Default::default()
             };
             let result = execute_scenario(ctx.project_root, sid, &opts).await;
@@ -393,7 +410,7 @@ pub async fn op_optimize_persona(
 
     // Compose the SI a variant would produce (for diffs; port of
     // `optimize.py:_compose_instruction` — uses the first train scenario's persona).
-    let first_scenario = find_scenario_parsed(project_root, &train_ids[0]).await?;
+    let first_scenario = find_scenario_parsed(project_root, &train_ids[0], environment).await?;
     let compose_si = |v: Option<&PromptVariant>| -> String {
         match v {
             Some(variant) => lks_core::optimize::render_variant_prompt_for_persona(
@@ -415,6 +432,7 @@ pub async fn op_optimize_persona(
         pass_at_k,
         agent_name,
         profile,
+        environment,
     };
     let baseline = evaluate_variant(&eval_ctx, None, &train_ids, None).await;
     let current_si = compose_si(None);
@@ -696,8 +714,10 @@ pub async fn op_optimize_persona(
 async fn find_scenario_parsed(
     project_root: &Path,
     sid: &str,
+    environment: Option<&str>,
 ) -> Result<lks_core::scenario::Scenario, RunError> {
-    let cfg = load_config(project_root.to_path_buf(), None).map_err(|e| RunError(e.0))?;
+    let cfg = load_config(project_root.to_path_buf(), None, environment)
+        .map_err(|e| RunError(e.0))?;
     // Python optimize._compose_instruction parses `<scenarios_dir>/<id>.yaml`
     // DIRECTLY — the error is `Scenario file not found: <path>` (no fallback
     // scan). Match that for the optimizer compose path.

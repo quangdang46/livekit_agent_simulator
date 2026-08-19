@@ -1789,8 +1789,9 @@ pub fn op_preflight(
     project_root: &Path,
     connectivity: bool,
     profile: Option<&str>,
+    environment: Option<&str>,
 ) -> Result<Map<String, Json>, ConfigError> {
-    let (mut m, cfg) = op_preflight_core(project_root, profile)?;
+    let (mut m, cfg) = op_preflight_core(project_root, profile, environment)?;
     let _ = connectivity; // livekit.api check lands via lks-livekit::preflight
     if let Some(cfg) = cfg {
         append_telephony_checks(&mut m, &cfg);

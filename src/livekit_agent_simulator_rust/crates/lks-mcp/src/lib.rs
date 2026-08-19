@@ -76,6 +76,7 @@ pub struct PreflightParams {
     #[serde(default = "default_true")]
     pub connectivity: bool,
     pub profile: Option<String>,
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -103,6 +104,7 @@ pub struct ExecuteParams {
     pub agent_name: Option<String>,
     pub optimized: Option<String>,
     pub profile: Option<String>,
+    pub environment: Option<String>,
 }
 
 fn default_one() -> i64 {
@@ -126,6 +128,7 @@ pub struct OptimizeParams {
     pub agent_name: Option<String>,
     pub name: Option<String>,
     pub profile: Option<String>,
+    pub environment: Option<String>,
 }
 
 fn default_four() -> i64 {
@@ -153,6 +156,7 @@ pub struct ExecuteScenariosParams {
     pub wait_s: f64,
     pub agent_name: Option<String>,
     pub profile: Option<String>,
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -162,6 +166,7 @@ pub struct ExecuteDictParams {
     pub run_name: Option<String>,
     pub agent_name: Option<String>,
     pub profile: Option<String>,
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -301,6 +306,7 @@ impl SimServer {
             root(&p.project_root),
             p.connectivity,
             p.profile.as_deref(),
+            p.environment.as_deref(),
         )
         .await
         .map_err(|e| internal_error(e.0))?;
@@ -410,6 +416,7 @@ impl SimServer {
             agent_name: p.agent_name.clone(),
             optimized: p.optimized.clone(),
             profile: p.profile.clone(),
+            environment: p.environment.clone(),
             ..Default::default()
         };
         let result =
@@ -436,6 +443,7 @@ impl SimServer {
             agent_name: p.agent_name.clone(),
             name: p.name.clone(),
             profile: p.profile.clone(),
+            environment: p.environment.clone(),
         };
         let result = lks_livekit::ops_execute::op_optimize_persona(root(&p.project_root), &opts)
             .await
@@ -462,6 +470,7 @@ impl SimServer {
             wait_s: p.wait_s,
             agent_name: p.agent_name.clone(),
             profile: p.profile.clone(),
+            environment: p.environment.clone(),
         };
         let result = lks_livekit::ops_execute::op_execute_scenarios(root(&p.project_root), &opts)
             .await
@@ -489,6 +498,7 @@ impl SimServer {
             p.run_name.as_deref(),
             p.agent_name.as_deref(),
             p.profile.as_deref(),
+            p.environment.as_deref(),
         )
         .await
         .map_err(|e| internal_error(e.to_string()))?;
