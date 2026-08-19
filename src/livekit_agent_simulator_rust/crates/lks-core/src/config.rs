@@ -545,11 +545,12 @@ fn apply_profile(
 /// Named `livekit.environments.<name>` selection (port of config.py's
 /// environment resolution — mirrors `apply_profile` above but for the
 /// `livekit:` section):
-///   * `--environment <name>` given   → that environment (explicit; must exist).
-///   * `--environment` absent + exactly one environment has `default: true`
-///                               → that environment.
-///   * `--environment` absent + no defaults → the legacy flat `livekit:` block.
-///   * 2+ environments marked `default: true` → error (no "first wins").
+/// - `--environment <name>` given → that environment (explicit; must exist).
+/// - `--environment` absent + exactly one environment has `default: true`
+///   → that environment.
+/// - `--environment` absent + no defaults → the legacy flat `livekit:` block.
+/// - 2+ environments marked `default: true` → error (no "first wins").
+///
 /// A selected environment inherits unspecified keys from the flat block.
 fn apply_environment(
     lk_raw: Map<String, Json>,
