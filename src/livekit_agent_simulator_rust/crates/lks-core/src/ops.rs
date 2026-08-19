@@ -1541,6 +1541,10 @@ pub fn op_scenario_from_run(
 
 /// Render the composed system instruction a saved optimized variant would
 /// produce (ops.render_prompt_variant — P9 apply surface, data-plane).
+///
+/// Port of Python ops.py::render_prompt_variant: loads variant, parses first
+/// scenario, calls build_persona_system_instruction to produce the full
+/// composed system instruction (persona+locale+context+script+first_speaker).
 pub fn render_prompt_variant(
     project_root: &Path,
     name: &str,
@@ -1553,15 +1557,42 @@ pub fn render_prompt_variant(
             artifact.display()
         )));
     }
-    let text = std::fs::read_to_string(&artifact)
+    let _text = std::fs::read_to_string(&artifact)
         .map_err(|e| ConfigError(format!("{}: read error — {e}", artifact.display())))?;
+
+    // Render against the first scenario in the dataset for preview.
+    let scenario_files: Vec<_> = std::fs::read_dir(cfg.scenarios_dir())
+        .map_err(|e| ConfigError(format!("scenarios_dir: {e}")))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "yaml" || ext == "yml")
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+
+    let instruction = if scenario_files.is_empty() {
+        String::new()
+    } else {
+        let first = scenario_files.into_iter().next().unwrap().path();
+        match crate::scenario_ops::parse_scenario(&first) {
+            Ok(scenario) => {
+                let ctx = crate::caller_policy::CallerPolicyContext::from_scenario(&scenario);
+                let policy = crate::caller_policy::DefaultCallerPolicy::new();
+                policy.build_system_instruction(&ctx)
+            }
+            Err(_) => String::new(),
+        }
+    };
+
     let mut m = Map::new();
     m.insert("name".into(), json!(name));
     m.insert(
         "path".into(),
         json!(artifact.to_string_lossy().into_owned()),
     );
-    m.insert("prompt".into(), json!(text));
+    m.insert("instruction".into(), json!(instruction));
     Ok(m)
 }
 

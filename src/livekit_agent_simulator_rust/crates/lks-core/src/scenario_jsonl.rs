@@ -168,6 +168,7 @@ pub fn parse_scenario_jsonl(path: &PathBuf) -> Result<Scenario, ScenarioError> {
         plugin_modules: Vec::new(),
         asserts: None,
         behavior_spec: None,
+        caller_policy: None,
     };
 
     for (line_no, obj) in &records[1..] {
