@@ -75,8 +75,10 @@ impl PreflightScreen {
                         .enable_all()
                         .build()
                         .map_err(|e| e.to_string())?;
-                    rt.block_on(lks_livekit::preflight::op_preflight(&root, true, None, None))
-                        .map_err(|e| e.to_string())
+                    rt.block_on(lks_livekit::preflight::op_preflight(
+                        &root, true, None, None,
+                    ))
+                    .map_err(|e| e.to_string())
                 })
                 .join()
                 .unwrap_or(Err("thread panicked".into()));

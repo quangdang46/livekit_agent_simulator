@@ -269,8 +269,8 @@ async fn preflight(
                 environment.as_deref(),
             )
             .await
-                .map(Value::Object)
-                .map_err(|e| e.0)
+            .map(Value::Object)
+            .map_err(|e| e.0)
         }
     })
     .await;

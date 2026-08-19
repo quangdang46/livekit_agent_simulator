@@ -985,7 +985,8 @@ pub fn scenario_from_run(
     write: bool,
     locale_default: &str,
 ) -> Result<Map<String, Json>, String> {
-    let cfg = crate::config::load_config(project_root.to_path_buf(), None, None).map_err(|e| e.0)?;
+    let cfg =
+        crate::config::load_config(project_root.to_path_buf(), None, None).map_err(|e| e.0)?;
     let report_dir = cfg.reports_dir().join(run_id);
     if !report_dir.is_dir() {
         return Err(format!(

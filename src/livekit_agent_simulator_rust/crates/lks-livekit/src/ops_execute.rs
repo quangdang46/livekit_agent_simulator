@@ -308,8 +308,8 @@ pub async fn op_optimize_persona(
     let environment = opts.environment.as_deref();
     use lks_core::optimize::{deterministic_candidates, variant_to_dict, write_variant};
 
-    let cfg = load_config(project_root.to_path_buf(), profile, environment)
-        .map_err(|e| RunError(e.0))?;
+    let cfg =
+        load_config(project_root.to_path_buf(), profile, environment).map_err(|e| RunError(e.0))?;
     let heldout_ids: Vec<String> = held_out
         .filter(|h| !scenario_ids.iter().any(|s| s == h))
         .map(|h| vec![h.to_string()])
@@ -716,8 +716,8 @@ async fn find_scenario_parsed(
     sid: &str,
     environment: Option<&str>,
 ) -> Result<lks_core::scenario::Scenario, RunError> {
-    let cfg = load_config(project_root.to_path_buf(), None, environment)
-        .map_err(|e| RunError(e.0))?;
+    let cfg =
+        load_config(project_root.to_path_buf(), None, environment).map_err(|e| RunError(e.0))?;
     // Python optimize._compose_instruction parses `<scenarios_dir>/<id>.yaml`
     // DIRECTLY — the error is `Scenario file not found: <path>` (no fallback
     // scan). Match that for the optimizer compose path.

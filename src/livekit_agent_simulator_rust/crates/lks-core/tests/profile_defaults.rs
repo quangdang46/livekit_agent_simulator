@@ -146,7 +146,10 @@ fn explicit_environment_selects_and_merges() {
     // Inherited from the flat block (not overridden by the environment).
     assert_eq!(cfg.livekit.api_key, "flat-key");
     assert_eq!(cfg.livekit.api_secret, "flat-secret");
-    assert_eq!(cfg.livekit.active_environment.as_deref(), Some("production"));
+    assert_eq!(
+        cfg.livekit.active_environment.as_deref(),
+        Some("production")
+    );
 }
 
 #[test]

@@ -1113,9 +1113,7 @@ mod tests {
         // execute --environment -e short flag
         let cli = Cli::parse_from(["lksr", "execute", "x", "-e", "staging"]);
         match cli.command {
-            Some(Command::Execute {
-                environment, ..
-            }) => {
+            Some(Command::Execute { environment, .. }) => {
                 assert_eq!(environment.as_deref(), Some("staging"));
             }
             other => panic!("expected Execute, got {other:?}"),
