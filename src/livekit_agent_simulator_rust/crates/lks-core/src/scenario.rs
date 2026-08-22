@@ -349,6 +349,17 @@ impl Scenario {
         }
         "en-US".to_string()
     }
+
+    /// Scenario Dispatch.metadata wins over config livekit.dispatch_metadata
+    /// (port of `Scenario.dispatch_metadata`, scenario.py:217).
+    pub fn dispatch_metadata<'a>(&'a self, config_default: Option<&'a str>) -> Option<&'a str> {
+        if let Some(d) = &self.dispatch {
+            if let Some(m) = &d.metadata {
+                return Some(m.as_str());
+            }
+        }
+        config_default
+    }
 }
 
 /// `_parse_hold_timeout`: clamp [5.0, 300.0] inclusive; `:g` formatting in error.

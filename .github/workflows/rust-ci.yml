@@ -22,6 +22,8 @@ jobs:
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Guard against runner-infra hangs (apt-get stall burned 6h twice).
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

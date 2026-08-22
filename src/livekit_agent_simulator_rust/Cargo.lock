@@ -2318,6 +2318,7 @@ dependencies = [
  "livekit-protocol",
  "lks-core",
  "log",
+ "parking_lot",
  "rand 0.10.2",
  "regex",
  "serde",

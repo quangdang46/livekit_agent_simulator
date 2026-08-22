@@ -25,6 +25,12 @@ hound = "3.5.1"
 regex = "1.13.1"
 rand = { workspace = true }
 jiff = { workspace = true }
+parking_lot = "0.12"
+
+[features]
+# Passthrough so `cargo build -p lks --features lks-core/python-plugins`
+# (or lks-livekit/python-plugins) enables the embedded-CPython plugin bridge.
+python-plugins = ["lks-core/python-plugins"]
 
 [dev-dependencies]
 tempfile = "3.20.0"

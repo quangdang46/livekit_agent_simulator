@@ -4,7 +4,7 @@
 //! off — push-to-talk semantics), model audio is played back into the room,
 //! and transcripts/interruptions become run events.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -49,6 +49,15 @@ pub struct OpenAiCallerBridge {
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
     shared_mic: Option<crate::script::SharedMicSource>,
     recorder: Option<crate::script::SharedRecorder>,
+    /// Scenario Dispatch.metadata || config default (None = empty string).
+    dispatch_metadata: Option<String>,
+    /// Persona.speech_conditions.silent_mode — mute injects (P1.B1 port).
+    silent_mode: bool,
+    /// Persona.speech_conditions map (effects resolution at run time).
+    persona_speech_conditions: serde_json::Map<String, serde_json::Value>,
+    /// Mid-call cue channel receiver (ScriptRuntime → bridge). Mutex-wrapped
+    /// so `run(&self)` can take it once at loop start.
+    cue_rx: parking_lot::Mutex<Option<crate::script::CueRx>>,
 }
 
 impl OpenAiCallerBridge {
@@ -74,7 +83,38 @@ impl OpenAiCallerBridge {
             writer,
             shared_mic: None,
             recorder: None,
+            dispatch_metadata: None,
+            silent_mode: false,
+            persona_speech_conditions: Default::default(),
+            cue_rx: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Builder: opaque Dispatch.metadata passthrough (scenario > config).
+    pub fn with_dispatch_metadata(mut self, metadata: Option<String>) -> Self {
+        self.dispatch_metadata = metadata;
+        self
+    }
+
+    /// Builder: Persona.speech_conditions.silent_mode.
+    pub fn with_silent_mode(mut self, silent: bool) -> Self {
+        self.silent_mode = silent;
+        self
+    }
+
+    /// Builder: persona speech_conditions (for degradation effects).
+    pub fn with_speech_conditions(
+        mut self,
+        sc: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        self.persona_speech_conditions = sc;
+        self
+    }
+
+    /// Builder: mid-call cue channel (ScriptRuntime → bridge delivery).
+    pub fn with_cue_rx(self, rx: crate::script::CueRx) -> Self {
+        *self.cue_rx.lock() = Some(rx);
+        self
     }
 
     /// Sim caller identity/name — Python adapter.py SIM_IDENTITY/SIM_NAME. The
@@ -293,7 +333,7 @@ impl OpenAiCallerBridge {
             &livekit_cfg.api_secret,
             &self.room_name,
             &livekit_cfg.agent_name,
-            None,
+            self.dispatch_metadata.as_deref(),
         )
         .await?;
         {
@@ -311,7 +351,10 @@ impl OpenAiCallerBridge {
                 "dispatch_id".into(),
                 serde_json::Value::String(dispatch_id.clone()),
             );
-            spec_m.insert("metadata_set".into(), serde_json::Value::Bool(false));
+            spec_m.insert(
+                "metadata_set".into(),
+                serde_json::Value::Bool(self.dispatch_metadata.is_some()),
+            );
             spec_m.insert(
                 "mode".into(),
                 serde_json::Value::String("webrtc_sim".into()),
@@ -502,9 +545,18 @@ impl OpenAiCallerBridge {
             self.max_turns,
         ));
 
-        // Pump 3: audio out → mic source.
+        // Pump 3: audio out → mic source (with persona degradation effects).
         let rec_sim = self.recorder.clone();
-        let mic_task = tokio::spawn(pump_mic_shared(out_rx, source.clone(), rec_sim));
+        let mic_effects = {
+            let sc = &self.persona_speech_conditions;
+            crate::degradation::resolve_audio_effects(sc.get("effects")).unwrap_or_default()
+        };
+        let mic_task = tokio::spawn(pump_mic_shared(
+            out_rx,
+            source.clone(),
+            rec_sim,
+            mic_effects,
+        ));
 
         // Wait for end_call, the agent leaving, or a hard slice cap. Emits
         // room.active_speakers / room.disconnected as they happen (parity with
@@ -516,9 +568,111 @@ impl OpenAiCallerBridge {
         // sleep recreated per iteration resets it and the cap never triggers).
         let cap = tokio::time::sleep(std::time::Duration::from_secs(45));
         tokio::pin!(cap);
+        // Cue consumer: ScriptRuntime Speak/Dtmf commands (port of
+        // bridge.inject_cue). Speak = verbatim user-turn text item +
+        // response.create; Dtmf = LiveKit publish_dtmf data packet.
+        let mut cue_rx: Option<crate::script::CueRx> = self.cue_rx.lock().take();
+        let room_for_dtmf = room.clone();
+        let ws_tx_cue = ws_tx.clone();
+        let writer_cue = self.writer.clone();
         loop {
             tokio::select! {
                 _ = disconnect_rx.recv() => break,
+                cue = async {
+                    match cue_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match cue {
+                        Some(crate::script::CueCommand::Speak { text, label }) => {
+                            if self.silent_mode {
+                                let mut w = writer_cue.lock().await;
+                                w.emit(
+                                    "sim.silent_mode_skip_inject",
+                                    Some(&serde_json::json!({"label": label, "delivery": "openai_text", "text": text.chars().take(120).collect::<String>()}).as_object().cloned().unwrap_or_default()),
+                                    "sim",
+                                    None,
+                                    None,
+                                    false,
+                                    None,
+                                );
+                                continue;
+                            }
+                            let item = serde_json::json!({
+                                "type": "conversation.item.create",
+                                "item": {
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [{"type": "input_text", "text": text}],
+                                },
+                            });
+                            let _ = ws_tx_cue
+                                .send(Message::Text(serde_json::to_string(&item).unwrap().into()))
+                                .await;
+                            let rc = serde_json::json!({"type": "response.create"});
+                            let _ = ws_tx_cue
+                                .send(Message::Text(serde_json::to_string(&rc).unwrap().into()))
+                                .await;
+                            let mut w = writer_cue.lock().await;
+                            w.emit(
+                                "sim.script_inject",
+                                Some(&serde_json::json!({"label": label, "delivery": "openai_text"}).as_object().cloned().unwrap_or_default()),
+                                "sim.script",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                        }
+                        Some(crate::script::CueCommand::Dtmf { digits }) => {
+                            const DMAP: &[(&str, u32)] = &[
+                                ("0", 0), ("1", 1), ("2", 2), ("3", 3), ("4", 4),
+                                ("5", 5), ("6", 6), ("7", 7), ("8", 8), ("9", 9),
+                                ("*", 10), ("#", 11),
+                            ];
+                            let lp = room_for_dtmf.local_participant();
+                            for ch in digits.chars() {
+                                if ch == 'w' {
+                                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                                    continue;
+                                }
+                                let Some((_, code)) = DMAP.iter().find(|(d, _)| *d == ch.to_string()) else {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.dtmf_error",
+                                        Some(&serde_json::json!({"error": format!("unknown DTMF char {ch:?}")}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                    break;
+                                };
+                                    let dtmf = livekit::SipDTMF {
+                                    code: *code,
+                                    digit: ch.to_string(),
+                                    ..Default::default()
+                                };
+                                if let Err(e) = lp.publish_dtmf(dtmf).await {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.dtmf_error",
+                                        Some(&serde_json::json!({"error": format!("publish_dtmf: {e}")}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            }
+                        }
+                        None => {}
+                    }
+                }
                 ev = room_events_watch.recv() => {
                     match ev {
                         Ok(SimRoomEvent::ParticipantConnected { identity, name }) => {
@@ -721,6 +875,7 @@ async fn pump_agent_audio(
     let mut stream = agent_track.unwrap();
     let mut agent_audio_ms = 0u64;
     let mut last_speech: Option<std::time::Instant> = None;
+    let mut was_speaking = false;
     let mut commit_pending = false;
     // LiveKit's active-speaker detection (parity with observer.py
     // agent_is_active_speaker). The room marks the agent as an active speaker
@@ -735,15 +890,47 @@ async fn pump_agent_audio(
         let speaking = obs_speaking || rms >= AGENT_SPEECH_RMS;
         let now = std::time::Instant::now();
         if speaking {
+            // Rising edge → perceived agent-speech onset (port of
+            // observer.py _on_agent_onset; ts_mono_ms = detection frame).
+            if !was_speaking {
+                was_speaking = true;
+                let mut w = writer.lock().await;
+                let mut spec_m = serde_json::Map::new();
+                spec_m.insert(
+                    "onset_frame_idx".into(),
+                    serde_json::json!(agent_audio_ms as i64),
+                );
+                w.emit(
+                    "sim.agent.audio_onset",
+                    Some(&spec_m),
+                    "sim",
+                    None,
+                    None,
+                    false,
+                    None,
+                );
+            }
             last_speech = Some(now);
             commit_pending = false;
-        } else if let Some(ls) = last_speech {
-            if now.duration_since(ls).as_millis() >= AGENT_STREAM_END_SILENCE_MS {
-                commit_pending = true;
-                last_speech = None;
-                // Agent stopped speaking — commit the buffered audio + request
-                // the caller response (port of _commit_and_respond).
-                OpenAiCallerBridge::commit_and_respond(&ws_tx, &response_in_flight).await;
+            // Feed the hold-music-timeout watchdog (run.rs) + observer state.
+            LAST_AGENT_ACTIVITY_MS.store(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+                Ordering::SeqCst,
+            );
+            AGENT_HAS_SPOKEN.store(true, Ordering::SeqCst);
+        } else {
+            was_speaking = false;
+            if let Some(ls) = last_speech {
+                if now.duration_since(ls).as_millis() >= AGENT_STREAM_END_SILENCE_MS {
+                    commit_pending = true;
+                    last_speech = None;
+                    // Agent stopped speaking — commit the buffered audio + request
+                    // the caller response (port of _commit_and_respond).
+                    OpenAiCallerBridge::commit_and_respond(&ws_tx, &response_in_flight).await;
+                }
             }
         }
         if !speaking
@@ -800,6 +987,12 @@ const AGENT_STREAM_END_SILENCE_MS: u128 = 650;
 /// treats the agent as speaking when this is true OR RMS is above threshold —
 /// the active-speaker signal catches audio the RMS gate would miss.
 pub static AGENT_ACTIVE_SPEAKER: AtomicBool = AtomicBool::new(false);
+/// Last instant the agent produced audio (RMS or active-speaker) — read by
+/// the hold-music-timeout watchdog in run.rs (port of
+/// observer.last_agent_activity_mono).
+pub static LAST_AGENT_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
+/// True once the agent produced any audio this run.
+pub static AGENT_HAS_SPOKEN: AtomicBool = AtomicBool::new(false);
 
 pub fn find_subscribed_audio(
     room: &Arc<livekit::Room>,
@@ -1131,6 +1324,7 @@ pub async fn pump_mic_shared(
     mut out_rx: mpsc::Receiver<Vec<i16>>,
     source: Arc<livekit::webrtc::audio_source::native::NativeAudioSource>,
     recorder: Option<crate::script::SharedRecorder>,
+    effects: crate::degradation::PcmEffectChain,
 ) {
     // P2 slice: 10 ms frames at 24k = 240 samples. Re-chunk and capture.
     if let Some(rec) = &recorder {
@@ -1150,6 +1344,17 @@ pub async fn pump_mic_shared(
                     r.push_sim(&bytes, OPENAI_OUT_RATE);
                 }
             }
+            // Degradation effects (Persona.speech_conditions.effects) — the
+            // agent hears imperfect audio like a real caller (P3 port).
+            let frame: Vec<i16> = if effects.is_empty() {
+                frame
+            } else {
+                let bytes: Vec<u8> = frame.iter().flat_map(|s| s.to_le_bytes()).collect();
+                crate::degradation::apply_effects(&effects, &bytes)
+                    .chunks_exact(2)
+                    .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                    .collect()
+            };
             let mut af = livekit::webrtc::audio_frame::AudioFrame::new(
                 OPENAI_OUT_RATE,
                 1,

@@ -30,6 +30,13 @@ pub struct GeminiCallerBridge {
     room_name: String,
     identity: String,
     writer: Arc<Mutex<EventWriter>>,
+    /// Scenario Dispatch.metadata || config default (None = empty string).
+    dispatch_metadata: Option<String>,
+    /// Persona.speech_conditions.silent_mode — mute injects + no farewell
+    /// speech (port of Python `_silent_mode`, P1.B1).
+    silent_mode: bool,
+    /// Persona.speech_conditions map (effects resolution at run time).
+    persona_speech_conditions: serde_json::Map<String, serde_json::Value>,
 }
 
 impl GeminiCallerBridge {
@@ -49,7 +56,31 @@ impl GeminiCallerBridge {
             room_name,
             identity,
             writer,
+            dispatch_metadata: None,
+            silent_mode: false,
+            persona_speech_conditions: Default::default(),
         }
+    }
+
+    /// Builder: persona speech_conditions (for degradation effects).
+    pub fn with_speech_conditions(
+        mut self,
+        sc: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        self.persona_speech_conditions = sc;
+        self
+    }
+
+    /// Builder: opaque Dispatch.metadata passthrough (scenario > config).
+    pub fn with_dispatch_metadata(mut self, metadata: Option<String>) -> Self {
+        self.dispatch_metadata = metadata;
+        self
+    }
+
+    /// Builder: Persona.speech_conditions.silent_mode.
+    pub fn with_silent_mode(mut self, silent: bool) -> Self {
+        self.silent_mode = silent;
+        self
     }
 
     pub async fn run(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
@@ -78,7 +109,7 @@ impl GeminiCallerBridge {
             &livekit_cfg.api_secret,
             &self.room_name,
             &livekit_cfg.agent_name,
-            None,
+            self.dispatch_metadata.as_deref(),
         )
         .await?;
 
@@ -159,7 +190,16 @@ impl GeminiCallerBridge {
 
         // 4. Pumps.
         let (out_tx, out_rx) = mpsc::channel::<Vec<i16>>(128);
-        let mic_task = tokio::spawn(super::openai::pump_mic_shared(out_rx, source.clone(), None));
+        let mic_effects = {
+            let sc = &self.persona_speech_conditions;
+            crate::degradation::resolve_audio_effects(sc.get("effects")).unwrap_or_default()
+        };
+        let mic_task = tokio::spawn(super::openai::pump_mic_shared(
+            out_rx,
+            source.clone(),
+            None,
+            mic_effects,
+        ));
 
         // Gemini events → mic + transcripts.
         let writer = self.writer.clone();

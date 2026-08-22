@@ -247,7 +247,7 @@ pub async fn run_outbound_sim_callee(
         &cfg.livekit.api_secret,
         &agent_room_name,
         &cfg.livekit.agent_name,
-        None,
+        scenario.dispatch_metadata(cfg.livekit.dispatch_metadata.as_deref()),
     )
     .await?;
     let mut w = writer.lock().await;
@@ -337,7 +337,7 @@ pub async fn run_outbound_sim_callee(
 // ---------------------------------------------------------------------------
 pub async fn run_agent_dials(
     cfg: &SimConfig,
-    _scenario: &lks_core::scenario::Scenario,
+    scenario: &lks_core::scenario::Scenario,
     run_id: &str,
     persona_prompt: String,
     writer: Arc<Mutex<EventWriter>>,
@@ -371,7 +371,7 @@ pub async fn run_agent_dials(
         &cfg.livekit.api_secret,
         &agent_room_name,
         &cfg.livekit.agent_name,
-        None,
+        scenario.dispatch_metadata(cfg.livekit.dispatch_metadata.as_deref()),
     )
     .await?;
     let mut w = writer.lock().await;
@@ -445,7 +445,7 @@ pub async fn run_outbound_human_pickup(
         &cfg.livekit.api_secret,
         &agent_room_name,
         &cfg.livekit.agent_name,
-        None,
+        scenario.dispatch_metadata(cfg.livekit.dispatch_metadata.as_deref()),
     )
     .await?;
     let mut w = writer.lock().await;

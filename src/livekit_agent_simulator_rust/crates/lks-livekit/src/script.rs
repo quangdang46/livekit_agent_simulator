@@ -18,7 +18,21 @@ use livekit::webrtc::audio_source::native::NativeAudioSource;
 use lks_core::errors::RunError;
 use lks_core::logging::event::EventWriter;
 use serde_json::json;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
+
+/// A mid-call cue the Script runtime (or interrupt-rate runner) hands to the
+/// caller bridge for real delivery (port of `bridge.inject_cue`).
+#[derive(Debug, Clone)]
+pub enum CueCommand {
+    /// Verbatim caller speech — OpenAI: conversation.item.create + response.
+    Speak { text: String, label: String },
+    /// Keypad tones via LiveKit SIP DTMF data packet (publish_dtmf).
+    Dtmf { digits: String },
+}
+
+/// Channel the run wires between the ScriptRuntime and the caller bridge.
+pub type CueTx = mpsc::UnboundedSender<CueCommand>;
+pub type CueRx = mpsc::UnboundedReceiver<CueCommand>;
 
 /// Minimal observer state the runtime reads (fed by the bridge).
 #[derive(Debug, Default, Clone)]

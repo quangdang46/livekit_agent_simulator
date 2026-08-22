@@ -157,10 +157,12 @@ pub fn op_validate_scenario(
         );
     }
     if !s.plugin_modules.is_empty() {
-        // P8 decision: the Rust build does NOT embed CPython (binary size + CI
-        // complexity). Plugins fail loudly instead of silently skipping.
+        // P8: without the python-plugins feature the build cannot execute .py
+        // plugins — warn loudly. With the feature, loading happens at run
+        // time (plugin_bridge), so no static warning.
+        #[cfg(not(feature = "python-plugins"))]
         warnings.push(format!(
-            "verify plugins require the Python build (lks): {} — the Rust build does not embed CPython. Remove plugin_modules or use lks.",
+            "verify plugins require a lksr build with --features lks-core/python-plugins: {} — this build does not embed CPython and will not execute them.",
             s.plugin_modules.join(", ")
         ));
     }

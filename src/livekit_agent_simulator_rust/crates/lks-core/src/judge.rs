@@ -125,7 +125,7 @@ pub fn resolve_judge(judge_cfg: Option<&JudgeConfig>, sim_api_key: Option<&str>)
         model,
         temperature: cfg.temperature,
         base_url: None,
-        api_key: None,
+        api_key: gkey,
         mode: "gemini".into(),
         endpoint_type,
         ready: true,
@@ -242,6 +242,158 @@ impl HttpOpenAIBackend {
         };
         if text.trim().is_empty() {
             return Err("HTTP judge returned empty content".into());
+        }
+        Ok(text)
+    }
+}
+
+/// Anthropic Messages-wire backend (port of `http_anthropic.py`).
+pub struct HttpAnthropicBackend {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub temperature: f64,
+    pub max_tokens: u32,
+    pub timeout_s: u64,
+}
+
+impl HttpAnthropicBackend {
+    fn endpoint(&self) -> String {
+        if self.base_url.ends_with("/messages") {
+            self.base_url.clone()
+        } else {
+            format!("{}/messages", self.base_url)
+        }
+    }
+
+    /// POST the judge prompt (Messages wire) and return the raw text.
+    pub async fn complete_json(&self, system: &str, user: &str) -> Result<String, String> {
+        let body = json!({
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "stream": false,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        });
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(self.timeout_s))
+            .build()
+            .map_err(|e| format!("reqwest build: {e}"))?;
+        let resp = client
+            .post(self.endpoint())
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .body(serde_json::to_string(&body).unwrap_or_default())
+            .send()
+            .await
+            .map_err(|e| format!("HTTP anthropic judge unreachable: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let err_body = resp
+                .text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect::<String>();
+            return Err(format!("HTTP anthropic judge {status}: {err_body}"));
+        }
+        let payload: Json = resp
+            .json()
+            .await
+            .map_err(|e| format!("HTTP anthropic judge parse: {e}"))?;
+        // content: str | [{type?: "text"|"thinking", text}] — take text parts.
+        let text = match payload.get("content") {
+            Some(Json::String(s)) => s.clone(),
+            Some(Json::Array(parts)) => parts
+                .iter()
+                .filter(|p| {
+                    p.get("type")
+                        .and_then(|t| t.as_str())
+                        .map(|t| t == "text")
+                        .unwrap_or(true)
+                })
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        };
+        if text.trim().is_empty() {
+            return Err("HTTP anthropic judge returned empty content".into());
+        }
+        Ok(text)
+    }
+}
+
+/// Native Gemini generateContent backend (port of `backends/gemini.py`).
+pub struct GeminiRestBackend {
+    pub api_key: String,
+    pub model: String,
+    pub temperature: f64,
+    pub timeout_s: u64,
+}
+
+impl GeminiRestBackend {
+    fn endpoint(&self) -> String {
+        format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+            self.model.trim_start_matches("models/")
+        )
+    }
+
+    /// POST the judge prompt (generateContent wire) and return raw text.
+    pub async fn complete_json(&self, system: &str, user: &str) -> Result<String, String> {
+        let body = json!({
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "temperature": self.temperature,
+                "responseMimeType": "application/json",
+            },
+        });
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(self.timeout_s))
+            .build()
+            .map_err(|e| format!("reqwest build: {e}"))?;
+        let resp = client
+            .post(self.endpoint())
+            .query(&[("key", &self.api_key)])
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&body).unwrap_or_default())
+            .send()
+            .await
+            .map_err(|e| format!("gemini judge unreachable: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let err_body = resp
+                .text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect::<String>();
+            return Err(format!("gemini judge {status}: {err_body}"));
+        }
+        let payload: Json = resp
+            .json()
+            .await
+            .map_err(|e| format!("gemini judge parse: {e}"))?;
+        let text = payload["candidates"][0]["content"]["parts"]
+            .as_array()
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default();
+        if text.trim().is_empty() {
+            return Err("gemini judge returned empty content".into());
         }
         Ok(text)
     }
@@ -439,33 +591,77 @@ pub async fn judge_run(
         }
         .to_dict();
     };
-    let Some(base_url) = resolved.base_url.clone() else {
-        // Gemini mode not wired (needs the gemini REST call); skip loudly.
-        return JudgmentResult {
-            verdict: "skipped".into(),
-            notes: "Gemini judge backend not wired in the Rust build (use judge.base_url + judge.api_key).".into(),
-            ..Default::default()
-        }
-        .to_dict();
-    };
-    let backend = HttpOpenAIBackend {
-        base_url,
-        api_key,
-        model: resolved.model.clone(),
-        temperature: resolved.temperature,
-        timeout_s: 180,
-    };
     let (transcript, tool_spans) = build_evidence_packet(turns, tool_events);
     let user = build_user_prompt(pass_criteria, &transcript, &tool_spans, None, false);
-    let text = match backend.complete_json(JUDGE_SYSTEM, &user).await {
-        Ok(t) => t,
-        Err(e) => {
+    // Backend dispatch (port of evals/backend.py): gemini mode → native
+    // generateContent; endpoint_type anthropic → Messages wire; else OpenAI
+    // chat completions.
+    let text = if resolved.mode == "gemini" && resolved.base_url.is_none() {
+        let backend = GeminiRestBackend {
+            api_key,
+            model: resolved.model.clone(),
+            temperature: resolved.temperature,
+            timeout_s: 180,
+        };
+        match backend.complete_json(JUDGE_SYSTEM, &user).await {
+            Ok(t) => t,
+            Err(e) => {
+                return JudgmentResult {
+                    verdict: "error".into(),
+                    notes: e,
+                    ..Default::default()
+                }
+                .to_dict();
+            }
+        }
+    } else {
+        let Some(base_url) = resolved.base_url.clone() else {
             return JudgmentResult {
-                verdict: "error".into(),
-                notes: e,
+                verdict: "skipped".into(),
+                notes: "Judge backend unavailable.".into(),
                 ..Default::default()
             }
             .to_dict();
+        };
+        if resolved.endpoint_type == "anthropic" {
+            let backend = HttpAnthropicBackend {
+                base_url,
+                api_key,
+                model: resolved.model.clone(),
+                temperature: resolved.temperature,
+                max_tokens: 2048,
+                timeout_s: 180,
+            };
+            match backend.complete_json(JUDGE_SYSTEM, &user).await {
+                Ok(t) => t,
+                Err(e) => {
+                    return JudgmentResult {
+                        verdict: "error".into(),
+                        notes: e,
+                        ..Default::default()
+                    }
+                    .to_dict();
+                }
+            }
+        } else {
+            let backend = HttpOpenAIBackend {
+                base_url,
+                api_key,
+                model: resolved.model.clone(),
+                temperature: resolved.temperature,
+                timeout_s: 180,
+            };
+            match backend.complete_json(JUDGE_SYSTEM, &user).await {
+                Ok(t) => t,
+                Err(e) => {
+                    return JudgmentResult {
+                        verdict: "error".into(),
+                        notes: e,
+                        ..Default::default()
+                    }
+                    .to_dict();
+                }
+            }
         }
     };
     // Parse + repair truncated JSON, then apply the relevancy gate.

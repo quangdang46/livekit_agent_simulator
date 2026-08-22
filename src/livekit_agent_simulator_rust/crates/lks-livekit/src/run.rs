@@ -423,11 +423,16 @@ pub async fn execute_scenario_parsed(
     let script_state2 = script_state.clone();
     let end_tx2 = end_tx.clone();
 
+    // Cue channel: ScriptRuntime → caller bridge (real delivery, port of
+    // Python `bridge.inject_cue`). The bridge consumes Speak/Dtmf commands
+    // from its own run loop.
+    let (cue_tx, cue_rx) = tokio::sync::mpsc::unbounded_channel::<crate::script::CueCommand>();
     // Script runtime: fires the scenario's script steps (time/silence triggers).
     let script_task = if !scenario.script_steps.is_empty() {
         let end_rx_script = end_rx.resubscribe();
         let project_root_owned = project_root.to_path_buf();
         let shared_mic_closure = shared_mic.clone();
+        let cue_tx_script = cue_tx.clone();
         let runtime = crate::script::ScriptRuntime::new(
             scenario.script_steps.clone(),
             script_writer,
@@ -440,6 +445,12 @@ pub async fn execute_scenario_parsed(
                 }
                 crate::script::ScriptAction::Speak { text, label, .. } => {
                     eprintln!("[lksr] script speak ({label}): {text}");
+                    let _ = cue_tx_script.send(crate::script::CueCommand::Speak { text, label });
+                    Ok(())
+                }
+                crate::script::ScriptAction::Dtmf { digits } => {
+                    eprintln!("[lksr] script dtmf: {digits}");
+                    let _ = cue_tx_script.send(crate::script::CueCommand::Dtmf { digits });
                     Ok(())
                 }
                 crate::script::ScriptAction::RoomPcm {
@@ -606,35 +617,51 @@ pub async fn execute_scenario_parsed(
 
     // Caller nudge receiver (created before end_rx moves into the bridge).
     let nudge_rx = end_rx.resubscribe();
+    let rate_end_rx = end_rx.resubscribe();
 
     // Provider dispatch: config `simulator.provider` selects the caller bridge.
     let provider = cfg.simulator.provider.trim().to_lowercase();
     let bridge_future: std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), RunError>> + Send>,
-    > = if provider == "google" {
-        let bridge = crate::callers::GeminiCallerBridge::new(
-            cfg.livekit.clone(),
-            cfg.simulator.clone(),
-            persona_prompt.clone(),
-            room_name,
-            identity,
-            writer_arc.clone(),
-        );
-        Box::pin(async move { bridge.run(end_rx.resubscribe()).await })
-    } else {
-        let bridge = OpenAiCallerBridge::new(
-            cfg.livekit.clone(),
-            cfg.simulator.clone(),
-            persona_prompt.clone(),
-            run_spec.first_speaker.clone(),
-            run_spec.max_turns,
-            room_name,
-            identity,
-            writer_arc.clone(),
-        )
-        .with_shared_mic(shared_mic.clone())
-        .with_recorder(recorder.clone());
-        Box::pin(async move { bridge.run(end_rx).await })
+    > = {
+        let dispatch_meta = scenario
+            .dispatch_metadata(cfg.livekit.dispatch_metadata.as_deref())
+            .map(|s| s.to_string());
+        let silent = lks_core::behavior_compile::silent_mode_enabled(&scenario.persona);
+        let persona_sc =
+            lks_core::behavior_compile::speech_conditions_of(&scenario.persona).clone();
+        if provider == "google" {
+            let bridge = crate::callers::GeminiCallerBridge::new(
+                cfg.livekit.clone(),
+                cfg.simulator.clone(),
+                persona_prompt.clone(),
+                room_name,
+                identity,
+                writer_arc.clone(),
+            )
+            .with_dispatch_metadata(dispatch_meta)
+            .with_silent_mode(silent)
+            .with_speech_conditions(persona_sc.clone());
+            Box::pin(async move { bridge.run(end_rx.resubscribe()).await })
+        } else {
+            let bridge = OpenAiCallerBridge::new(
+                cfg.livekit.clone(),
+                cfg.simulator.clone(),
+                persona_prompt.clone(),
+                run_spec.first_speaker.clone(),
+                run_spec.max_turns,
+                room_name,
+                identity,
+                writer_arc.clone(),
+            )
+            .with_shared_mic(shared_mic.clone())
+            .with_recorder(recorder.clone())
+            .with_dispatch_metadata(dispatch_meta)
+            .with_silent_mode(silent)
+            .with_speech_conditions(persona_sc)
+            .with_cue_rx(cue_rx);
+            Box::pin(async move { bridge.run(end_rx).await })
+        }
     };
 
     // Caller nudge: first_speaker=agent + no script → nudge after greeting.
@@ -657,6 +684,174 @@ pub async fn execute_scenario_parsed(
     } else {
         None
     };
+    // Hold-music-timeout watchdog (P2.J port): agent dead air >=
+    // Execute.spec.hold_music_timeout_s after the agent spoke once → sim
+    // hangs up with end_reason hold_music_timeout (run_orchestrator.py:757-806).
+    let (hold_tx, _hold_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let hold_task = scenario.execute.as_ref().and_then(|ex| ex.hold_music_timeout_s).map(
+        |timeout_s| {
+            let w = writer_arc.clone();
+            let end = end_tx.clone();
+            tokio::spawn(async move {
+                let timeout = std::time::Duration::from_secs_f64(timeout_s);
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    if !crate::callers::openai::AGENT_HAS_SPOKEN
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        continue;
+                    }
+                    let last_ms = crate::callers::openai::LAST_AGENT_ACTIVITY_MS
+                        .load(std::sync::atomic::Ordering::SeqCst);
+                    if last_ms == 0 {
+                        continue;
+                    }
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    if now_ms - last_ms >= timeout.as_millis() as i64 {
+                        {
+                            let mut w = w.lock().await;
+                            w.emit(
+                                "sim.hold_timeout",
+                                Some(&serde_json::json!({
+                                    "timeout_s": timeout_s,
+                                    "agent_idle_ms": now_ms - last_ms,
+                                    "note": "Caller gave up waiting on agent dead air (hold_music_timeout_s)",
+                                })
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default()),
+                                "sim",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                        }
+                        let _ = hold_tx.send(()).await;
+                        let _ = end.send(());
+                        return;
+                    }
+                }
+            })
+        },
+    );
+
+    // Interruption-rate runner (P1.K port of InterruptRateRunner): recurring
+    // barges while the agent is the active speaker. Emits the same
+    // sim.script.cue / interruption events as Script barges so verify counts
+    // them identically, and sends a real Speak cue through the cue channel.
+    let rate_task = match lks_core::interrupt_rate::parse_interrupt_rate(&scenario.persona) {
+        Ok(Some(spec)) if !lks_core::behavior_compile::silent_mode_enabled(&scenario.persona) => {
+            let w = writer_arc.clone();
+            let end = rate_end_rx;
+            let cue = cue_tx.clone();
+            Some(tokio::spawn(async move {
+                w.lock().await.emit(
+                    "sim.interrupt_rate",
+                    Some(
+                        &serde_json::json!({
+                            "rate": spec.rate,
+                            "interval_ms": spec.interval_ms,
+                            "class": spec.interrupt_class,
+                            "say": spec.say,
+                            "min_agent_active_ms": spec.min_agent_active_ms,
+                        })
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                    ),
+                    "sim.interrupt_rate",
+                    None,
+                    None,
+                    false,
+                    None,
+                );
+                let mut fired: u32 = 0;
+                let mut last_fire: Option<std::time::Instant> = None;
+                let mut armed: Option<std::time::Instant> = None;
+                let mut was_active = false;
+                let mut end = std::pin::pin!(end);
+                loop {
+                    tokio::select! {
+                        _ = end.recv() => return,
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+                    }
+                    let active = crate::callers::openai::AGENT_ACTIVE_SPEAKER
+                        .load(std::sync::atomic::Ordering::SeqCst);
+                    if !active {
+                        armed = None;
+                        was_active = false;
+                        continue;
+                    }
+                    if !was_active {
+                        armed = Some(std::time::Instant::now());
+                    }
+                    was_active = true;
+                    let anchor = last_fire.or(armed);
+                    let Some(anchor) = anchor else { continue };
+                    if anchor.elapsed() < std::time::Duration::from_millis(spec.interval_ms as u64)
+                    {
+                        continue;
+                    }
+                    fired += 1;
+                    last_fire = Some(std::time::Instant::now());
+                    let step_id = format!("rate-barge-{fired}");
+                    {
+                        let mut w = w.lock().await;
+                        let mut ispec = serde_json::Map::new();
+                        ispec.insert("by".into(), serde_json::json!("sim"));
+                        ispec.insert("barge_in".into(), serde_json::json!(true));
+                        ispec.insert("class".into(), serde_json::json!(spec.interrupt_class));
+                        ispec.insert("step_id".into(), serde_json::json!(step_id));
+                        ispec.insert("label".into(), serde_json::json!(step_id));
+                        ispec.insert(
+                            "note".into(),
+                            serde_json::json!("InterruptRateRunner barge (typed)."),
+                        );
+                        w.emit(
+                            "interruption",
+                            Some(&ispec),
+                            "sim.interrupt_rate",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                        w.emit(
+                            "sim.script.cue",
+                            Some(
+                                &serde_json::json!({
+                                    "step_id": step_id,
+                                    "label": step_id,
+                                    "say": spec.say,
+                                    "trigger": "agent_speaking",
+                                    "action": "speak",
+                                    "barge_in": true,
+                                    "class": spec.interrupt_class,
+                                })
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                            ),
+                            "sim.script",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                    }
+                    let _ = cue.send(crate::script::CueCommand::Speak {
+                        text: spec.say.clone(),
+                        label: step_id,
+                    });
+                }
+            }))
+        }
+        _ => None,
+    };
 
     // The slice ends on the bridge's internal cap (agent hangup later).
     let run_result = bridge_future.await;
@@ -666,9 +861,15 @@ pub async fn execute_scenario_parsed(
     if let Some(t) = nudge_task {
         t.abort();
     }
+    if let Some(t) = hold_task {
+        t.abort();
+    }
+    if let Some(t) = rate_task {
+        t.abort();
+    }
 
     // --- finalize ---
-    let status = match &run_result {
+    let mut status = match &run_result {
         Ok(()) => "done",
         Err(e) => {
             eprintln!("[lksr] run error: {e}");
@@ -762,6 +963,193 @@ pub async fn execute_scenario_parsed(
         "scenario_id".into(),
         serde_json::Value::String(scenario.id.clone()),
     );
+
+    // ── Post-run hard verify (port of run_orchestrator.py:525-572) ────────
+    // script.verify + Assert evaluation + caller behavior digest, merged into
+    // the summary before it is written back. An assert failure flips a done
+    // run to failed (hard gates beat the LLM judge).
+    let events_snapshot = w.events().clone();
+    let mut summary_extra = serde_json::Map::new();
+    let has_script_verify = scenario.script_verify.is_some()
+        && (!scenario.script_steps.is_empty()
+            || scenario
+                .script_verify
+                .as_ref()
+                .and_then(|v| v.get("plugins"))
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| !a.is_empty()));
+    if status == "done" && has_script_verify {
+        let typed_verify = scenario
+            .script_verify
+            .as_ref()
+            .and_then(|v| lks_core::script::parse::parse_script_verify(v).ok())
+            .flatten();
+        let typed_steps: Vec<lks_core::script::ScriptStep> = {
+            let mut spec = serde_json::Map::new();
+            spec.insert(
+                "steps".into(),
+                serde_json::Value::Array(scenario.script_steps.clone()),
+            );
+            lks_core::script::parse::parse_script_steps(&spec, "script").unwrap_or_default()
+        };
+        let mut script_verify = lks_core::script::verify::evaluate_script_log(
+            &events_snapshot,
+            &typed_steps,
+            typed_verify.as_ref(),
+        );
+        // Verify plugins (P8): execute registered .py hooks when this build
+        // embeds CPython; without the feature, record a loud skip per plugin.
+        if let Some(verify) = &typed_verify {
+            for plugin_name in &verify.plugins {
+                #[cfg(feature = "python-plugins")]
+                {
+                    let ctx = lks_core::plugin_bridge::VerifyPluginContext {
+                        events: events_snapshot
+                            .iter()
+                            .map(|e| serde_json::Value::Object(e.clone()))
+                            .collect(),
+                        scenario_id: scenario.id.clone(),
+                        plugin_name: plugin_name.clone(),
+                        project_root: project_root.to_path_buf(),
+                    };
+                    let result =
+                        lks_core::plugin_bridge::run_verify_plugin(project_root, plugin_name, &ctx);
+                    let check = match result {
+                        Some(r) => serde_json::json!({
+                            "check": format!("plugin:{plugin_name}"),
+                            "pass": r.pass,
+                            "plugin": plugin_name,
+                            "checks": r.checks,
+                        }),
+                        None => serde_json::json!({
+                            "check": format!("plugin:{plugin_name}"),
+                            "pass": false,
+                            "reason": format!("verify plugin {plugin_name:?} is not registered"),
+                        }),
+                    };
+                    if let Some(checks) = script_verify
+                        .get_mut("checks")
+                        .and_then(|v| v.as_array_mut())
+                    {
+                        checks.push(check);
+                    }
+                    let all_pass = script_verify
+                        .get("checks")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .all(|c| c.get("pass").and_then(|v| v.as_bool()).unwrap_or(false))
+                        })
+                        .unwrap_or(false);
+                    script_verify.insert("pass".into(), serde_json::json!(all_pass));
+                }
+                #[cfg(not(feature = "python-plugins"))]
+                {
+                    if let Some(checks) = script_verify
+                        .get_mut("checks")
+                        .and_then(|v| v.as_array_mut())
+                    {
+                        checks.push(serde_json::json!({
+                            "check": format!("plugin:{plugin_name}"),
+                            "pass": false,
+                            "reason": format!(
+                                "verify plugin {plugin_name:?} requires a lksr build with --features lks-core/python-plugins"
+                            ),
+                        }));
+                    }
+                    script_verify.insert("pass".into(), serde_json::json!(false));
+                }
+            }
+        }
+        let mut w = writer_arc.lock().await;
+        w.emit(
+            "script.verify",
+            Some(&script_verify),
+            "sim.script",
+            None,
+            None,
+            false,
+            None,
+        );
+        summary_extra.insert(
+            "script_verify".into(),
+            serde_json::Value::Object(script_verify),
+        );
+    }
+    if status == "done" {
+        if let Some(asserts_map) = scenario.asserts.as_ref().and_then(|v| v.as_object()) {
+            match lks_core::asserts::parse_assert_spec(asserts_map, "Assert") {
+                Ok(assert_spec) if !assert_spec.empty() => {
+                    let assert_result =
+                        lks_core::asserts::evaluate_asserts(&events_snapshot, &assert_spec);
+                    {
+                        let mut w = writer_arc.lock().await;
+                        w.emit(
+                            "assert.verify",
+                            Some(&assert_result),
+                            "sim.assert",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                    }
+                    let passed = assert_result
+                        .get("pass")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    summary_extra.insert(
+                        "assert_verify".into(),
+                        serde_json::Value::Object(assert_result),
+                    );
+                    if !passed {
+                        if status == "done" {
+                            status = "failed";
+                        }
+                        meta.insert("assert_failed".into(), serde_json::Value::Bool(true));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // Caller behavior digest for reports / web (port of run_orchestrator.py:573-576).
+    if status == "done" || status == "failed" {
+        let mut behavior_summary =
+            lks_core::script::summary::build_caller_behavior_summary(&events_snapshot);
+        if let Some(av) = summary_extra
+            .get("assert_verify")
+            .and_then(|v| v.as_object())
+        {
+            for chk in av
+                .get("checks")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if chk.get("type").and_then(|v| v.as_str()) == Some("recovery") {
+                    if let Some(ms) = chk.get("recovery_ms").and_then(|v| v.as_i64()) {
+                        behavior_summary.insert("recovery_ms".into(), serde_json::json!(ms));
+                        behavior_summary.insert(
+                            "recovery_assert_pass".into(),
+                            serde_json::json!(chk
+                                .get("pass")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)),
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+        let mut caller = serde_json::Map::new();
+        caller.insert(
+            "behavior_summary".into(),
+            serde_json::Value::Object(behavior_summary),
+        );
+        summary_extra.insert("caller".into(), serde_json::Value::Object(caller));
+    }
+
     let mut summary = w.finalize(status, Some(&meta), None);
     // end_reason into summary (port of run_orchestrator.py:692-693).
     if !end_reason.is_empty() {
@@ -809,22 +1197,33 @@ pub async fn execute_scenario_parsed(
             .await
         };
         summary.insert("verdict".into(), serde_json::Value::Object(verdict));
-        // Re-write summary.json with the verdict (finalize wrote it already).
-        let _ = std::fs::write(
-            report_dir.join("summary.json"),
-            serde_json::to_string_pretty(&summary).unwrap_or_default(),
-        );
     }
+    // Merge verify/assert/caller extras + rewrite summary.json (port of
+    // run_orchestrator.py:696-705 — extras always persisted).
+    if !summary_extra.is_empty() {
+        for (k, v) in summary_extra {
+            summary.insert(k, v);
+        }
+    }
+    let _ = std::fs::write(
+        report_dir.join("summary.json"),
+        serde_json::to_string_pretty(&summary).unwrap_or_default(),
+    );
 
     // Save conversation.wav (agent audio captured during the run).
     if let Ok(mut rec) = recorder.lock() {
         let _ = rec.save(&report_dir.join("conversation.wav"));
     }
 
-    // Finish the sqlite row.
+    // Finish the sqlite row + persist full events/turns (port of
+    // run_orchestrator.py:707-709 — Python stores every envelope so
+    // cross-implementation DB reads stay parity, invariant I2).
     {
         let store =
             lks_core::logging::sqlite::RunStore::new(cfg.sqlite_path().to_string_lossy().as_ref());
+        let turns = w.turn_metrics();
+        let _ = store.insert_events(&run_id, &events_snapshot);
+        let _ = store.insert_turns(&run_id, &turns);
         let ended_utc = jiff::Zoned::now()
             .strftime("%Y-%m-%dT%H:%M:%SZ")
             .to_string();

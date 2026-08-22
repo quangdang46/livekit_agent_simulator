@@ -21,15 +21,16 @@ impl PluginsScreen {
     pub fn load(ctx: &ScreenCtx) -> Self {
         let mut items = Vec::new();
         if let Ok(map) = lks_core::ops::op_list_plugins(ctx.root) {
-            if let Some(arr) = map.get("plugins").and_then(Value::as_array) {
-                for p in arr {
-                    if let Some(s) = p.as_str() {
-                        items.push(s.to_string());
-                    } else if let Some(obj) = p.as_object() {
-                        let name = obj.get("name").and_then(Value::as_str).unwrap_or("?");
-                        let source = obj.get("source").and_then(Value::as_str).unwrap_or("");
-                        items.push(format!("{name} ({source})"));
-                    }
+            // op_list_plugins returns {verify_plugins: [names], local_modules:
+            // [file stems]} — render both (registered names first).
+            if let Some(arr) = map.get("verify_plugins").and_then(Value::as_array) {
+                for name in arr.iter().filter_map(Value::as_str) {
+                    items.push(name.to_string());
+                }
+            }
+            if let Some(arr) = map.get("local_modules").and_then(Value::as_array) {
+                for m in arr.iter().filter_map(Value::as_str) {
+                    items.push(format!("{m} (local)"));
                 }
             }
         }
