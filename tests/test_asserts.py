@@ -130,6 +130,62 @@ def test_outcome_transcript_contains():
     assert result["pass"] is True
 
 
+def test_outcome_transcript_contains_negate_pass_when_absent():
+    events = [
+        {"kind": "transcript.agent.final", "spec": {"text": "Thank you, that's everything."}},
+    ]
+    result = evaluate_asserts(
+        events,
+        AssertSpec(
+            outcomes=[
+                OutcomeExpect(
+                    id="no_retry",
+                    type="transcript_contains",
+                    phrases=("again, please",),
+                    negate=True,
+                )
+            ]
+        ),
+    )
+    assert result["pass"] is True
+
+
+def test_outcome_transcript_contains_negate_fail_when_present():
+    events = [
+        {"kind": "transcript.agent.final", "spec": {"text": "Could you say that again, please?"}},
+    ]
+    result = evaluate_asserts(
+        events,
+        AssertSpec(
+            outcomes=[
+                OutcomeExpect(
+                    id="no_retry",
+                    type="transcript_contains",
+                    phrases=("again, please",),
+                    negate=True,
+                )
+            ]
+        ),
+    )
+    assert result["pass"] is False
+
+
+def test_parse_outcome_negate_field():
+    spec = parse_assert_spec(
+        {
+            "outcomes": [
+                {
+                    "id": "no_retry",
+                    "type": "transcript_contains",
+                    "phrases": ["again, please"],
+                    "negate": True,
+                }
+            ]
+        }
+    )
+    assert spec.outcomes[0].negate is True
+
+
 def test_parse_latency_outcome():
     spec = parse_assert_spec(
         {

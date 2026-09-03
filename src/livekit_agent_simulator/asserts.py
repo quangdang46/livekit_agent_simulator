@@ -52,6 +52,10 @@ class OutcomeExpect:
     phrases: tuple[str, ...] = ()
     prompt: str | None = None  # for llm_bool
     role: str = "any"
+    # transcript_contains only: invert the match — pass iff NONE of `phrases`
+    # appear (e.g. asserting a retry prompt like "again, please" never fires).
+    # Ignored (no-op) for every other outcome type.
+    negate: bool = False
     min_agent_finals_after_barge_in: int = 1
     min_interruptions: int = 0
     max_ms_after_barge_to_agent_final: int | None = None
@@ -239,6 +243,7 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
                 phrases=tuple(str(p) for p in phrases),
                 prompt=str(raw["prompt"]) if raw.get("prompt") else None,
                 role=str(raw.get("role", "any")),
+                negate=bool(raw.get("negate", False)),
                 min_agent_finals_after_barge_in=int(
                     raw.get("min_agent_finals_after_barge_in", 1)
                 ),
@@ -460,13 +465,15 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
             else:
                 texts = _transcript_texts(events, role)
             blob = "\n".join(texts)
-            ok = bool(oc.phrases) and any(p.lower() in blob.lower() for p in oc.phrases)
+            matched = bool(oc.phrases) and any(p.lower() in blob.lower() for p in oc.phrases)
+            ok = (not matched) if oc.negate else matched
             checks.append(
                 {
                     "check": f"outcome:{oc.id}",
                     "pass": ok,
                     "type": oc.type,
                     "phrases": list(oc.phrases),
+                    **({"negate": True} if oc.negate else {}),
                 }
             )
         elif oc.type == "recovery":
