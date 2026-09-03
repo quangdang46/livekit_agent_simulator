@@ -291,6 +291,7 @@ Three silence concepts — do not mix them:
   - Without explicit `goals`, falls back to `Persona.spec.goals` from the scenario
 - **Assert** `outcomes` type **`constraint_respected`** → hard fail if **caller** transcript contains forbidden phrases/patterns (`must_not_phrases` and/or `must_not_match`)
   - Example: `{"id":"no_card","type":"constraint_respected","must_not_phrases":["4111","CVV"]}`
+- **Assert** `outcomes` type **`transcript_contains`** with `negate: true` → PASS iff **none** of the `phrases` appear in the transcript (inverted match). Use to verify a prompt/interruption never fired, e.g. `{"id":"no_retry","type":"transcript_contains","phrases":["again, please"],"negate":true}` — fails if the agent asked the caller to repeat
 - **Assert** `tool_order` → required subsequence of `tool.start` names (not necessarily contiguous)
   - Example: `{"kind":"Assert","spec":{"tool_order":["lookup","book"]}}`
 - **Assert** `outcomes` type **`handoff`** → at least `min_handoffs` agent→agent transfers occurred (LiveKit AgentHandoff chat items, e.g. tool-based handoff or WarmTransferTask) — surfaced as `handoff.*` events

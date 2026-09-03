@@ -717,6 +717,7 @@ Assert highlights (for scenario authors after setup):
 - `ended_by` — `sim` | `agent` | `detect` after script `hang_up` or natural end  
 - `goals_met` — LLM judge verifies caller pursued N persona goals before `[END_CALL]` (hard fail)  
 - `constraint_respected` — hard fail if caller transcript leaks `must_not_phrases` / `must_not_match`  
+- `transcript_contains` — PASS iff any phrase in `phrases` appears in the transcript for `role`; add `negate: true` to invert: PASS iff **none** of the phrases appear (e.g. `{"type":"transcript_contains","phrases":["again, please"],"negate":true}` asserts the agent never prompted the caller to repeat)  
 - `tool_order` — required subsequence of `tool.start` names  
 - `agent_must_respond` — PASS iff the agent produced ≥ 1 **audio onset** (no transcript fallback); FAIL when the agent only produced text but no audio  
 - `ttfa` / `turn_taking_audio` — **perceived** audio-onset latency gates (see §below); missing sample → **SKIP** (not fail), but `require_audio_samples` set + short → fail
