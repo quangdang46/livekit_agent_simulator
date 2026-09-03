@@ -11,6 +11,16 @@ def build_caller_behavior_summary(events: list[dict]) -> dict[str, Any]:
     """
     cues = [e for e in events if e.get("kind") == "sim.script.cue"]
     waits = [e for e in events if e.get("kind") == "sim.script.wait"]
+    # Every script action kind that counts as "a cue fired" (speak, DTMF tone,
+    # wait hold, hang-up). DTMF steps emit sim.script.dtmf, so a pure-DTMF run
+    # must not report 0 cues fired.
+    script_action_kinds = {
+        "sim.script.cue",
+        "sim.script.dtmf",
+        "sim.script.wait",
+        "sim.script.hang_up",
+    }
+    all_script_actions = [e for e in events if e.get("kind") in script_action_kinds]
     from .models import counts_for_recovery_barge
 
     barges = []
@@ -67,7 +77,7 @@ def build_caller_behavior_summary(events: list[dict]) -> dict[str, Any]:
             assets.append(str(a))
 
     return {
-        "script_cues_fired": len(cues),
+        "script_cues_fired": len(all_script_actions),
         "waits_fired": len(waits),
         "barges_fired": len(barges),
         "barges_during_agent": len(barges_during),

@@ -358,6 +358,7 @@ pub fn parse_script_steps(
             action,
             mute_persona: raw_map
                 .get("mute_persona")
+                .filter(|v| !v.is_null()) // JSON null from a serde round-trip = absent (Python None)
                 .map(py_bool)
                 .filter(|_| raw_map.contains_key("mute_persona")),
             require_agent_spoke_first: py_bool(

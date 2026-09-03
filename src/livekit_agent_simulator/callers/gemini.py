@@ -64,7 +64,12 @@ _AGENT_TRAILING_PAD_MS = 120.0
 # with 1007 "Precondition check failed" / "invalid frame payload data". The
 # inject path already sleeps 150ms before reopening; use the same order of
 # magnitude so a quick agent re-utterance does not kill the Live socket.
-_AGENT_ACTIVITY_REOPEN_COOLDOWN_MS = 200.0
+# 16-8-2026: raised 200ms → 600ms. Run-008 proved 200ms is marginal: a reopen
+# 188ms after an agent_silence close (post-reconnect) still tripped 1007 — the
+# 200ms cooldown measures from the *local close send*, but Gemini's close
+# processing + the fresh session after reconnect need more headroom. 600ms is
+# below any human-perceptible pause and safely clears the rejection window.
+_AGENT_ACTIVITY_REOPEN_COOLDOWN_MS = 600.0
 
 __all__ = [
     "END_CALL_TOKEN",

@@ -40,6 +40,7 @@ export type Cue = {
   script_step_id?: string;
   script_say?: string;
   script_label?: string;
+  script_overlay?: "line" | "card" | string;
   inject_ms?: number;
   synthetic?: boolean;
 };
@@ -100,6 +101,7 @@ export type ScriptVerify = {
   pass?: boolean;
   script_steps?: number;
   cues_fired?: number;
+  dtmf_fired?: number;
   waits_fired?: number;
   agent_finals_after_barge_in?: number;
   agent_finals_after_silence?: number;

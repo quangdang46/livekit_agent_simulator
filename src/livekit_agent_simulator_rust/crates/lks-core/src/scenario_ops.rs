@@ -73,7 +73,7 @@ fn name_matches(name: &str, pattern: &str) -> bool {
     name.ends_with(ext)
 }
 
-fn parse_scenario(path: &Path) -> Result<crate::scenario::Scenario, ScenarioError> {
+pub fn parse_scenario(path: &Path) -> Result<crate::scenario::Scenario, ScenarioError> {
     let lower = path
         .extension()
         .and_then(|e| e.to_str())

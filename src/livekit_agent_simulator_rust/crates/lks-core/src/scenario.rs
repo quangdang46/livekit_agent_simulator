@@ -53,6 +53,193 @@ pub const HOLD_TIMEOUT_MIN_S: f64 = 5.0;
 pub const HOLD_TIMEOUT_MAX_S: f64 = 300.0;
 
 // ---------------------------------------------------------------------------
+// EffectiveTelephony — resolved telephony after scenario > config > built-in
+// ---------------------------------------------------------------------------
+
+/// Resolved telephony after scenario > config > built-in merge.
+/// Port of scenario.py::EffectiveTelephony (lines 141-153).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectiveTelephony {
+    pub outbound_trunk_id: Option<String>,
+    pub inbound_trunk_id: Option<String>,
+    pub call_to: Option<String>,
+    pub dial_in: Option<String>,
+    pub prepare_ms: i64,
+    pub wait_until_answered: bool,
+    pub krisp_enabled: bool,
+    pub agent_room: Option<String>,
+    pub agent_room_name_template: Option<String>,
+    pub handset_isolation: String,
+}
+
+/// pick_str: scenario value wins over config value (non-empty string preferred).
+/// Port of effective_telephony's inner pick_str closure.
+fn pick_str(sc_val: Option<&str>, cfg_val: Option<&str>) -> Option<String> {
+    if let Some(v) = sc_val {
+        let t = v.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+    if let Some(v) = cfg_val {
+        let t = v.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+    None
+}
+
+/// Merge scenario Telephony over config.telephony (scenario wins when set).
+/// Port of scenario.py::effective_telephony (lines 556-637).
+pub fn effective_telephony(
+    scenario: &Scenario,
+    tel_cfg: Option<&crate::config::TelephonyConfig>,
+) -> EffectiveTelephony {
+    let sc = scenario.telephony.as_ref();
+    let mode = scenario.effective_caller_mode();
+
+    let outbound = pick_str(
+        sc.and_then(|s| s.sip_trunk_id.as_deref()),
+        tel_cfg.and_then(|c| c.outbound_trunk_id.as_deref()),
+    );
+
+    // inbound_trunk_id is config-only (scenario never supplies it).
+    let inbound = pick_str(None, tel_cfg.and_then(|c| c.inbound_trunk_id.as_deref()));
+
+    // sim_inbound_number is only a call_to fallback for Gemini-as-callee hairpin.
+    let call_to = if mode == "outbound_sim_callee" {
+        pick_str(
+            sc.and_then(|s| s.call_to.as_deref()),
+            tel_cfg.and_then(|c| c.sim_inbound_number.as_deref()),
+        )
+    } else {
+        pick_str(sc.and_then(|s| s.call_to.as_deref()), None)
+    };
+
+    let dial_in = pick_str(
+        sc.and_then(|s| s.dial_in.as_deref()),
+        tel_cfg.and_then(|c| c.dial_in.as_deref()),
+    );
+
+    // prepare_ms: builtin 3000 → config → scenario
+    let mut prepare_ms: i64 = 3000;
+    if let Some(c) = tel_cfg {
+        prepare_ms = c.prepare_ms;
+    }
+    if let Some(s) = sc.and_then(|s| s.prepare_ms) {
+        prepare_ms = s;
+    }
+
+    // wait_until_answered: builtin true → config → scenario
+    let mut wait_answered = true;
+    if let Some(c) = tel_cfg {
+        wait_answered = c.wait_until_answered;
+    }
+    if let Some(s) = sc.and_then(|s| s.wait_until_answered) {
+        wait_answered = s;
+    }
+
+    // krisp_enabled: builtin false → config → scenario
+    let mut krisp = false;
+    if let Some(c) = tel_cfg {
+        krisp = c.krisp_enabled;
+    }
+    if let Some(s) = sc.and_then(|s| s.krisp_enabled) {
+        krisp = s;
+    }
+
+    // handset_isolation: builtin "mute_and_unsubscribe" → config → scenario
+    let mut handset_isolation = "mute_and_unsubscribe".to_string();
+    if let Some(c) = tel_cfg {
+        let v = c.handset_isolation.trim().to_lowercase();
+        if !v.is_empty() {
+            handset_isolation = v;
+        }
+    }
+    if let Some(s) = sc.and_then(|s| s.handset_isolation.as_deref()) {
+        let v = s.trim().to_lowercase();
+        if !v.is_empty() {
+            handset_isolation = v;
+        }
+    }
+    if !HANDSET_ISOLATION_MODES.contains(&handset_isolation.as_str()) {
+        handset_isolation = "mute_and_unsubscribe".to_string();
+    }
+
+    let agent_room = pick_str(
+        sc.and_then(|s| s.agent_room.as_deref()),
+        tel_cfg.and_then(|c| c.agent_room.as_deref()),
+    );
+    let agent_room_tmpl = pick_str(
+        sc.and_then(|s| s.agent_room_name_template.as_deref()),
+        tel_cfg.and_then(|c| c.agent_room_name_template.as_deref()),
+    );
+
+    EffectiveTelephony {
+        outbound_trunk_id: outbound,
+        inbound_trunk_id: inbound,
+        call_to,
+        dial_in,
+        prepare_ms,
+        wait_until_answered: wait_answered,
+        krisp_enabled: krisp,
+        agent_room,
+        agent_room_name_template: agent_room_tmpl,
+        handset_isolation,
+    }
+}
+
+/// Fail-fast if SIP mode is missing required trunk/number after merge.
+/// Port of scenario.py::validate_telephony_for_mode (lines 640-673).
+pub fn validate_telephony_for_mode(
+    scenario: &Scenario,
+    tel_cfg: Option<&crate::config::TelephonyConfig>,
+) -> Result<(), ScenarioError> {
+    let mode = scenario.effective_caller_mode();
+    if !SIP_MODES.contains(&mode) {
+        return Ok(());
+    }
+    let tel = effective_telephony(scenario, tel_cfg);
+    if matches!(
+        mode,
+        "outbound_human_pickup" | "outbound_sim_callee" | "inbound_sip"
+    ) && tel.outbound_trunk_id.is_none()
+    {
+        return Err(ScenarioError(format!(
+            "Scenario `{}` mode={} requires telephony.outbound_trunk_id \
+             in config or Telephony.sip_trunk_id in the scenario.",
+            scenario.id, mode
+        )));
+    }
+    if mode == "outbound_human_pickup" && tel.call_to.is_none() {
+        return Err(ScenarioError(format!(
+            "Scenario `{}` mode=outbound_human_pickup requires Telephony.call_to \
+             (human/PSTN number that will answer). \
+             For Gemini-as-callee hairpin use mode=outbound_sim_callee + sim_inbound_number.",
+            scenario.id
+        )));
+    }
+    if mode == "outbound_sim_callee" && tel.call_to.is_none() {
+        return Err(ScenarioError(format!(
+            "Scenario `{}` mode=outbound_sim_callee requires Telephony.call_to \
+             or config telephony.sim_inbound_number (sim DID Gemini answers via Cloud hairpin). \
+             Do not put a real handset PSTN here — that is mode=outbound_human_pickup. \
+             The DID must dispatch into the sim-room where Gemini already sits.",
+            scenario.id
+        )));
+    }
+    if mode == "inbound_sip" && tel.dial_in.is_none() {
+        return Err(ScenarioError(format!(
+            "Scenario `{}` mode=inbound_sip requires Telephony.dial_in \
+             or config telephony.dial_in (agent-side inbound DID).",
+            scenario.id
+        )));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Spec dataclasses
 // ---------------------------------------------------------------------------
 
@@ -115,6 +302,9 @@ pub struct Scenario {
     pub plugin_modules: Vec<String>,
     pub asserts: Option<Json>,
     pub behavior_spec: Option<Map<String, Json>>,
+    /// Caller policy override from the optimizer (None = use builtin DefaultCallerPolicy).
+    /// Port of Python Scenario.caller_policy: Any = None.
+    pub caller_policy: Option<crate::caller_policy::CallerPolicyContext>,
 }
 
 impl Scenario {
@@ -158,6 +348,17 @@ impl Scenario {
             return self.locale.clone();
         }
         "en-US".to_string()
+    }
+
+    /// Scenario Dispatch.metadata wins over config livekit.dispatch_metadata
+    /// (port of `Scenario.dispatch_metadata`, scenario.py:217).
+    pub fn dispatch_metadata<'a>(&'a self, config_default: Option<&'a str>) -> Option<&'a str> {
+        if let Some(d) = &self.dispatch {
+            if let Some(m) = &d.metadata {
+                return Some(m.as_str());
+            }
+        }
+        config_default
     }
 }
 
@@ -333,12 +534,24 @@ pub fn scenario_from_dict(
             }
         });
 
-    // script (steps + verify) — full parse deferred to P1 script module; store raw.
+    // script (steps + verify). Steps are normalized through the typed parser so
+    // exports carry the full Python field set with defaults (P5 export parity);
+    // verify stays raw JSON (typed parse happens on demand).
     let mut script_steps = Vec::new();
     let mut script_verify = None;
     if let Some(script) = data.get("script").and_then(|v| v.as_object()) {
-        if let Some(steps) = script.get("steps").and_then(|v| v.as_array()) {
-            script_steps = steps.clone();
+        if script.get("steps").and_then(|v| v.as_array()).is_some() {
+            match crate::script::parse::parse_script_steps(script, path_label) {
+                Ok(typed) => {
+                    script_steps = typed
+                        .iter()
+                        .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
+                        .collect();
+                }
+                Err(e) => {
+                    return Err(ScenarioError(e));
+                }
+            }
         }
         script_verify = script.get("verify").cloned();
     }
@@ -452,7 +665,12 @@ pub fn scenario_from_dict(
         plugin_modules,
         asserts,
         behavior_spec,
+        caller_policy: None,
     };
+
+    // Hamming-style: compile speech_conditions + Behavior into Script (explicit
+    // Script wins by id) — mirrors scenario.py/scenario_from_dict.py parse end.
+    let scenario = apply_behavior_compile(scenario, path_label)?;
 
     // Validation (order matters — mirrors scenario_from_dict.py).
     if scenario.simulator.first_speaker != "agent" && scenario.simulator.first_speaker != "user" {
@@ -467,6 +685,50 @@ pub fn scenario_from_dict(
         )));
     }
 
+    Ok(scenario)
+}
+
+/// Run `behavior_compile.apply_caller_behavior` over the parsed scenario —
+/// speech_conditions auto-steps (auto-ambient/auto-barge/auto-silence) and
+/// Behavior.spec compile into script_steps, with explicit steps merged by id.
+/// Mirrors the Python parse-end call in scenario.py:543.
+pub fn apply_behavior_compile(
+    mut scenario: Scenario,
+    path_label: &str,
+) -> Result<Scenario, ScenarioError> {
+    use crate::behavior_compile::apply_caller_behavior;
+    use crate::script::parse::{parse_script_steps, parse_script_verify};
+
+    // Typed parse of the raw script section (steps + verify) so
+    // apply_caller_behavior can merge/compile; the raw section is reconstructed
+    // from the typed steps for the compile call.
+    let mut typed_steps: Vec<crate::script::ScriptStep> = Vec::new();
+    let mut typed_verify: Option<crate::script::ScriptVerifySpec> = None;
+    let script_raw = scenario.script_steps.clone();
+    if !script_raw.is_empty() {
+        // Wrap the raw steps in a {steps: [...]} spec the parser expects.
+        let mut spec = Map::new();
+        spec.insert("steps".into(), Json::Array(script_raw));
+        typed_steps = parse_script_steps(&spec, path_label).map_err(ScenarioError)?;
+    }
+    if let Some(sv) = &scenario.script_verify {
+        typed_verify = parse_script_verify(sv).map_err(ScenarioError)?;
+    }
+
+    let (compiled_steps, compiled_verify) = apply_caller_behavior(
+        &scenario.persona,
+        scenario.behavior_spec.as_ref(),
+        &typed_steps,
+        typed_verify.as_ref(),
+        path_label,
+    )
+    .map_err(ScenarioError)?;
+
+    scenario.script_steps = compiled_steps
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
+        .collect();
+    scenario.script_verify = compiled_verify.map(|v| serde_json::to_value(v).unwrap_or(Json::Null));
     Ok(scenario)
 }
 
@@ -532,7 +794,65 @@ fn parse_pass_criteria(
     }
     let mut judges = Vec::new();
     if let Some(Json::Array(j)) = pc.get("judges") {
-        judges = j.iter().filter_map(|x| x.as_object()).cloned().collect();
+        for (ji, j) in j.iter().enumerate() {
+            let obj = j.as_object().ok_or_else(|| {
+                ScenarioError(format!(
+                    "{where_}: PassCriteria.judges[{ji}] must be object"
+                ))
+            })?;
+            let jid = obj
+                .get("id")
+                .or_else(|| obj.get("name"))
+                .and_then(opt_str)
+                .unwrap_or_else(|| format!("judge-{ji}"));
+            let builtin = obj.get("builtin").and_then(opt_str);
+            let mut jc: Vec<String> = Vec::new();
+            if let Some(c) = obj.get("criteria") {
+                match c {
+                    Json::Array(a) => jc = a.iter().map(as_str).collect(),
+                    Json::String(s) => jc = vec![s.clone()],
+                    _ => {
+                        return Err(ScenarioError(format!(
+                            "{where_}: PassCriteria.judges[{ji}].criteria must be array"
+                        )));
+                    }
+                }
+            }
+            if jc.is_empty() && builtin.is_none() {
+                return Err(ScenarioError(format!(
+                    "{where_}: PassCriteria.judges[{ji}] needs criteria[] and/or builtin"
+                )));
+            }
+            let mut entry = Map::new();
+            entry.insert("id".into(), Json::String(jid));
+            entry.insert(
+                "criteria".into(),
+                Json::Array(jc.into_iter().map(Json::String).collect()),
+            );
+            if let Some(b) = builtin {
+                entry.insert("builtin".into(), Json::String(b.to_string()));
+            }
+            judges.push(entry);
+        }
+    }
+    // Backward compatible: flat criteria auto-flattened when judges present but no flat criteria
+    if !judges.is_empty() && criteria.is_empty() {
+        let mut flat: Vec<String> = Vec::new();
+        for j in &judges {
+            if let Some(b) = j.get("builtin").and_then(|v| v.as_str()) {
+                let jid = j.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                flat.push(format!("[{jid}] builtin:{b}"));
+            }
+            if let Some(arr) = j.get("criteria").and_then(|v| v.as_array()) {
+                let jid = j.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                for c in arr {
+                    if let Some(s) = c.as_str() {
+                        flat.push(format!("[{jid}] {s}"));
+                    }
+                }
+            }
+        }
+        criteria = flat;
     }
     Ok((criteria, mode, judges))
 }

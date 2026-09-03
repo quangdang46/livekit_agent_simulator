@@ -1,0 +1,19 @@
+# NOTE for Windows builders:
+#   The prebuilt webrtc-sys headers need short paths to stay under MAX_PATH
+#   (260 chars).  Before building on Windows, set:
+#     CARGO_TARGET_DIR=C:/t/lksr
+#   The cc crate must also use /MT (static CRT) to match the prebuilt webrtc:
+#     CFLAGS=/MT CXXFLAGS=/MT
+#   Or combine: CARGO_TARGET_DIR=C:/t/lksr CFLAGS=/MT CXXFLAGS=/MT cargo build
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# macOS: the prebuilt libwebrtc uses ObjC categories that need -ObjC at link
+# time (livekit/rust-sdks#340, #795 — "+[NSString stringForAbslStringView:]
+# unrecognized selector" crash in PeerConnectionFactory init).
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-ObjC"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-ObjC"]

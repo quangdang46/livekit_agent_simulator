@@ -44,13 +44,15 @@ async def evaluate_variant(
     agent_name: str | None = None,
     optimize: str | None = None,
     profile: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
     """Run a variant over a scenario set (via injected execute_scenario) → dataset metric.
 
     ``execute_scenario`` is injected so tests can mock it; production passes
     ``ops.execute_scenario``. ``optimize`` = the saved artifact name to apply
     (optional; ``None`` runs the builtin persona). ``profile`` selects a named
-    caller profile (optional). Returns {variant_id, pass_rate, ok, total,
+    caller profile (optional). ``environment`` selects a named LiveKit
+    environment (optional). Returns {variant_id, pass_rate, ok, total,
     passed_gate, per_scenario: [...]}.
     """
     per_scenario: list[dict[str, Any]] = []
@@ -62,6 +64,8 @@ async def evaluate_variant(
             kwargs["optimized"] = optimize
         if profile is not None:
             kwargs["profile"] = profile
+        if environment is not None:
+            kwargs["environment"] = environment
         result = await execute_scenario(project_root, sid, **kwargs)
         gate = evaluate_run_result(result, strict_judge=strict_judge)
         per_scenario.append(

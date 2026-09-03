@@ -242,6 +242,19 @@ See `web/README.md`.
 
 ---
 
+### lksr — experimental Rust binary
+
+`lksr` is the in-progress **Rust full port** of `lks` (single static-ish binary, no Python runtime). Source: `src/livekit_agent_simulator_rust/`. Same 22 CLI commands + MCP server + report player.
+
+**Status:** data-plane ops (scenarios/validate/export/cues/plugins/runs/report/compare/optimize) and offline gates are at parity; the live-run path still has known gaps vs Python (script `speak` cues reach the room via the OpenAI bridge only, judge defaults to skip without `judge.base_url`, verify plugins need a build with `--features python-plugins`). For CI-critical runs use the Python `lks`; try `lksr` for quick local checks.
+
+```bash
+curl -fsSL "https://github.com/quangdang46/livekit_agent_simulator/raw/main/install-rust.sh" | bash -s -- --verify   # once a v*-rust release exists
+cd src/livekit_agent_simulator_rust && cargo build -p lks && cargo test --workspace   # from source
+```
+
+---
+
 ## Quick Start
 
 ```bash

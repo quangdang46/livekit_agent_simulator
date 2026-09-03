@@ -4,6 +4,7 @@
 project: my-voice-agent
 
 livekit:
+  # Legacy flat block: used when no --environment flag is passed (backward compatible).
   url: "wss://YOUR-PROJECT.livekit.cloud"
   api_key: "APIxxxxxxxxxxxx"
   api_secret: "secretxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -13,6 +14,29 @@ livekit:
   # Opaque JSON string passed to LiveKit RoomAgentDispatch.metadata (project-specific keys).
   # Per-scenario override: add {"kind":"Dispatch","spec":{"metadata":"..."}} in *.jsonl
   # dispatch_metadata: '{"yourProjectKey":"value"}'
+
+  # Optional named environments — switch LiveKit target without editing the file:
+  #   lks execute <scenario> --environment production
+  #   lks execute <scenario> --environment local
+  # Selection: `--environment <name>` wins; otherwise a environment marked
+  # `default: true` (at most one) wins; otherwise the flat block above runs
+  # (backward compatible). Precedence: environment field → flat livekit field →
+  # built-in default. Each environment inherits unspecified fields (url, api_key, etc.)
+  # from the flat block; an environment only needs what it overrides.
+  # environments:
+  #   local:
+  #     default: true                  # auto-selected when no --environment flag
+  #     url: "wss://test-local-kz02647i.livekit.cloud"
+  #     api_key: "APIaAheUJ9U7PcU"
+  #     api_secret: "O7bYKzZPOldCePfpdi7HBsm0TOh2oDKUZlLqeFbPzn3B"
+  #     agent_name: "voice-ai-worker-local"
+  #     agent_join_timeout_ms: 25000
+  #   production:
+  #     url: "wss://your-prod-project.livekit.cloud"
+  #     api_key: "APIaAheUJ9U7PcU"
+  #     api_secret: "O7bYKzZPOldCePfpdi7HBsm0TOh2oDKUZlLqeFbPzn3B"
+  #     agent_name: "voice-ai-worker-prod"
+  #     agent_join_timeout_ms: 25000
 
 simulator:
   # Caller brain: provider google | openai, mode realtime (cascade reserved).

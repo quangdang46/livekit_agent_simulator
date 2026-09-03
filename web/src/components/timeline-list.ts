@@ -24,6 +24,17 @@ function roleClass(role: string, origin?: string | null): string {
   return "role-other";
 }
 
+/**
+ * Markers that are metadata about audio/timing — not standalone conversation
+ * events. They should be attached as tags to the nearest cue, not rendered
+ * as separate timeline items. This declutters the timeline significantly.
+ */
+const METADATA_MARKER_TYPES = new Set([
+  "audio_onset",
+  "user_audio_source",
+  "agent_audio_onset",
+]);
+
 export function buildTimelineItems(
   cues: Cue[],
   markers: Marker[],
@@ -33,8 +44,13 @@ export function buildTimelineItems(
   for (const c of cues) {
     items.push({ kind: "cue", start_ms: c.start_ms, end_ms: c.end_ms, cue: c });
   }
-  for (const m of markers) {
-    if (m.type === "tool" || m.type === "tool_error") continue;
+
+  // Attach metadata markers (audio_onset, user_audio_source) to the nearest
+  // cue as marker_tags instead of rendering them as standalone items.
+  const metadataMarkers = markers.filter((m) => METADATA_MARKER_TYPES.has(m.type));
+  const standaloneMarkers = markers.filter((m) => !METADATA_MARKER_TYPES.has(m.type) && m.type !== "tool" && m.type !== "tool_error");
+
+  for (const m of standaloneMarkers) {
     items.push({
       kind: "marker",
       start_ms: m.start_ms,
@@ -42,6 +58,26 @@ export function buildTimelineItems(
       marker: m,
     });
   }
+
+  // Attach metadata markers to the nearest cue
+  for (const m of metadataMarkers) {
+    let bestCue: TimelineItem | null = null;
+    let bestDist = Infinity;
+    for (const item of items) {
+      if (item.kind !== "cue") continue;
+      // Marker should be within or very close to the cue's time range
+      const dist = Math.abs(m.start_ms - item.start_ms);
+      if (dist < bestDist && dist < 5000) {
+        bestDist = dist;
+        bestCue = item;
+      }
+    }
+    if (bestCue && bestCue.kind === "cue") {
+      if (!bestCue.cue.marker_tags) bestCue.cue.marker_tags = [];
+      bestCue.cue.marker_tags.push(m.type);
+    }
+  }
+
   for (const t of tools) {
     items.push({ kind: "tool", start_ms: t.start_ms, end_ms: t.end_ms, tool: t });
   }

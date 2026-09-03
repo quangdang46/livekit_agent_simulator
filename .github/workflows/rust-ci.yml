@@ -22,26 +22,53 @@ jobs:
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Guard against runner-infra hangs (apt-get stall burned 6h twice).
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            runs: "-p lks-core -p lks"
+            runs: "-p lks-core -p lks -p lks-mcp -p lks-livekit"
           - os: macos-latest
-            runs: "-p lks-core -p lks"
+            runs: "-p lks-core -p lks -p lks-mcp -p lks-livekit"
           - os: windows-latest
-            runs: "-p lks-core -p lks" # cargo check only
+            runs: "-p lks-core" # check only; the lks binary pulls libwebrtc via lks-livekit/lks-mcp (not supported on Windows)
     defaults:
       run:
         working-directory: src/livekit_agent_simulator_rust
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      # lks-web rust-embeds web/dist at compile time — build it first
+      # (web/dist is gitignored; the Python CI builds it for the wheel).
+      - name: Setup pnpm
+        if: matrix.os != 'windows-latest'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Setup Node
+        if: matrix.os != 'windows-latest'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Build web UI (report player embed)
+        if: matrix.os != 'windows-latest'
+        run: pnpm install --frozen-lockfile && pnpm build
+        working-directory: web
+
+      - name: Install libwebrtc system deps (ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libssl-dev pkg-config
 
       - name: Cache cargo registry + target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -57,6 +84,10 @@ jobs:
       - name: Clippy (workspace)
         if: matrix.os != 'windows-latest'
         run: cargo clippy -- -D warnings
+
+      - name: Build lksr binary (harness dependency)
+        if: matrix.os != 'windows-latest'
+        run: cargo build -p lks
 
       - name: Build + test (offline core)
         if: matrix.os != 'windows-latest'

@@ -15,23 +15,100 @@ use crate::scenario_yaml::load_scenario_yaml;
 
 pub const DOT_FOLDER: &str = ".agent-sim";
 
-/// Find the package templates dir — repo-root `templates/` (walk up ≤ 6 parents).
-fn package_templates_dir() -> PathBuf {
-    // In the Rust port, templates live at the repo root `templates/`. Walk up
-    // from the crate dir (crate is at <root>/src/livekit_agent_simulator_rust/
-    // crates/lks-core) to find <root>/templates.
+/// Embedded template texts — shipped inside the binary so `guide`/`init`/
+/// `scenario-init` work from ANY cwd (installed binary has no repo walk).
+const EMBEDDED: &[(&str, &str)] = &[
+    (
+        "GUIDE.md",
+        include_str!("../../../../../templates/GUIDE.md"),
+    ),
+    (
+        "config.yaml",
+        include_str!("../../../../../templates/config.yaml"),
+    ),
+    (
+        "smoke-hello.yaml",
+        include_str!("../../../../../templates/smoke-hello.yaml"),
+    ),
+    (
+        "scenario-scaffold.yaml",
+        include_str!("../../../../../templates/scenario-scaffold.yaml"),
+    ),
+    (
+        "plugins/example_verify.py",
+        include_str!("../../../../../templates/plugins/example_verify.py"),
+    ),
+    (
+        "cues/README.md",
+        include_str!("../../../../../templates/cues/README.md"),
+    ),
+];
+
+/// Find the package templates dir — repo-root `templates/` (walk up ≤ 6
+/// parents, dev checkout) with an embedded fallback for installed binaries.
+/// Returns a path only when the CWD walk finds the repo (needed for the cues
+/// WAV catalog); callers use the embedded texts when this returns None.
+pub fn package_templates_dir() -> Option<PathBuf> {
     let mut p = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     for _ in 0..8 {
         let cand = p.join("templates");
         if cand.join("config.yaml").exists() {
-            return cand;
+            return Some(cand);
         }
         if !p.pop() {
             break;
         }
     }
-    // Fallback: look relative to the crate source.
-    PathBuf::from("templates")
+    // Installed binary: materialize the embedded cue WAVs so the catalog and
+    // room_pcm playback resolve builtin: assets (parity with the Python
+    // package, which ships web_static/cues in the wheel).
+    materialize_embedded_cues()
+}
+
+/// Builtin cue WAVs embedded into the binary (port of the Python package's
+/// web_static/cues). rust-embed resolves relative to CARGO_MANIFEST_DIR
+/// (crates/lks-core) → 4 up = repo root → templates/cues.
+#[derive(rust_embed::Embed)]
+#[folder = "../../../../templates/cues"]
+struct EmbeddedCues;
+
+/// Write the embedded cue WAVs to a cache dir once, returning the dir.
+/// Falls back to a unique temp dir (no home/cache) — callers must not cache
+/// the returned path across runs.
+fn materialize_embedded_cues() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    // Return the TEMPLATES parent (like package_templates_dir does): callers
+    // join "cues" on top. So materialize to <base>/lksr/embedded/templates/cues.
+    let templates = base.join("lksr").join("embedded").join("templates");
+    let dir = templates.join("cues");
+    let meta = templates.join("EMBEDDED_MARKER");
+    // Re-materialize if the marker is missing/stale (cheap; done once per run).
+    let need = !meta.is_file();
+    if need {
+        let _ = std::fs::create_dir_all(&dir);
+        for file in EmbeddedCues::iter() {
+            let name = file.as_ref();
+            let rel = name.strip_prefix("templates/cues/").unwrap_or(name);
+            let dst = dir.join(rel);
+            if let Some(f) = EmbeddedCues::get(name) {
+                let _ = std::fs::write(&dst, f.data.as_ref());
+            }
+        }
+        let _ = std::fs::write(&meta, "v1");
+    }
+    if dir.is_dir() {
+        Some(templates)
+    } else {
+        None
+    }
+}
+
+/// Read an embedded template text (installed-binary fallback).
+pub fn embedded_template(name: &str) -> Option<&'static str> {
+    EMBEDDED.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
 }
 
 fn copy_if_missing(src: &Path, dst: &Path, created: &mut Vec<String>) -> std::io::Result<()> {
@@ -39,6 +116,28 @@ fn copy_if_missing(src: &Path, dst: &Path, created: &mut Vec<String>) -> std::io
         return Ok(());
     }
     std::fs::copy(src, dst)?;
+    created.push(dst.to_string_lossy().into_owned());
+    Ok(())
+}
+
+/// Copy a template to dst — from the repo file when available (dev), else the
+/// embedded text (installed binary).
+fn copy_text_if_missing(
+    name: &str,
+    src: Option<PathBuf>,
+    dst: &Path,
+    created: &mut Vec<String>,
+) -> std::io::Result<()> {
+    if dst.exists() {
+        return Ok(());
+    }
+    if let Some(src) = src {
+        return copy_if_missing(&src, dst, created);
+    }
+    let text = embedded_template(name).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, format!("{name} not embedded"))
+    })?;
+    std::fs::write(dst, text)?;
     created.push(dst.to_string_lossy().into_owned());
     Ok(())
 }
@@ -63,27 +162,35 @@ pub fn init_project(project_root: &Path) -> Result<Map<String, Json>, ConfigErro
     if !cues_readme.exists() {
         std::fs::write(
             &cues_readme,
-            "# Target audio cues (room_pcm)\n\nDrop **PCM16 mono @ 24 kHz** WAVs here to override package built-ins or add project-specific noise.\n\nScenario: `\"delivery\":\"room_pcm\",\"asset\":\"my_noise.wav\"` or `\"asset\":\"builtin:noise.loud\"`.\n\nList: `lks cues --root .`\n",
+            embedded_template("cues/README.md").unwrap_or(
+                "# Target audio cues (room_pcm)\n\nDrop **PCM16 mono @ 24 kHz** WAVs here to override package built-ins or add project-specific noise.\n\nScenario: `\"delivery\":\"room_pcm\",\"asset\":\"my_noise.wav\"` or `\"asset\":\"builtin:noise.loud\"`.\n\nList: `lks cues --root .`\n",
+            ),
         )
         .map_err(io_err)?;
         created.push(cues_readme.to_string_lossy().into_owned());
     }
 
-    // config.yaml, smoke scenario, example plugin (copy from templates)
-    copy_if_missing(
-        &templates.join("config.yaml"),
+    // config.yaml, smoke scenario, example plugin (copy from templates;
+    // embedded texts when the repo walk fails — installed binary).
+    copy_text_if_missing(
+        "config.yaml",
+        templates.as_ref().map(|t| t.join("config.yaml")),
         &dot.join("config.yaml"),
         &mut created,
     )
     .map_err(io_err)?;
-    copy_if_missing(
-        &templates.join("smoke-hello.yaml"),
+    copy_text_if_missing(
+        "smoke-hello.yaml",
+        templates.as_ref().map(|t| t.join("smoke-hello.yaml")),
         &dot.join("scenarios").join("smoke-hello.yaml"),
         &mut created,
     )
     .map_err(io_err)?;
-    copy_if_missing(
-        &templates.join("plugins").join("example_verify.py"),
+    copy_text_if_missing(
+        "plugins/example_verify.py",
+        templates
+            .as_ref()
+            .map(|t| t.join("plugins").join("example_verify.py")),
         &dot.join("plugins").join("example_verify.py"),
         &mut created,
     )
@@ -97,6 +204,7 @@ pub fn init_project(project_root: &Path) -> Result<Map<String, Json>, ConfigErro
     } else {
         String::new()
     };
+    let gitignore_existed = gitignore.exists();
     let already = content.split('\n').any(|l| l.trim_end() == line);
     if !already {
         if !content.trim().is_empty() {
@@ -104,11 +212,23 @@ pub fn init_project(project_root: &Path) -> Result<Map<String, Json>, ConfigErro
         }
         content.push_str(&format!("\n# livekit-agent-simulator\n{line}\n"));
         std::fs::write(&gitignore, content).map_err(io_err)?;
-        created.push(format!("{} (+{})", gitignore.to_string_lossy(), DOT_FOLDER));
+        if gitignore_existed {
+            created.push(format!(
+                "{} (+{})",
+                gitignore.to_string_lossy(),
+                line.trim_end()
+            ));
+        } else {
+            created.push(gitignore.to_string_lossy().into_owned());
+        }
     }
 
+    let config_dst = dot.join("config.yaml");
     let next = vec![
-        json!("Fill in LiveKit + provider credentials in .agent-sim/config.yaml"),
+        json!(format!(
+            "Fill in LiveKit + Google credentials in {}",
+            config_dst.display()
+        )),
         json!("Make sure your worker is running with the configured agent_name"),
         json!("Run the smoke scenario: lks execute smoke-hello"),
     ];
@@ -154,16 +274,23 @@ pub fn init_scenario(
     }
 
     let templates = package_templates_dir();
-    let scaffold = templates.join("scenario-scaffold.yaml");
-    if !scaffold.exists() {
-        return Err(ConfigError(format!(
-            "Package scaffold missing: {}",
-            scaffold.display()
-        )));
+    let text = match templates {
+        Some(t) => {
+            let scaffold = t.join("scenario-scaffold.yaml");
+            if !scaffold.exists() {
+                return Err(ConfigError(format!(
+                    "Package scaffold missing: {}",
+                    scaffold.display()
+                )));
+            }
+            std::fs::read_to_string(&scaffold)
+                .map_err(|e| ConfigError(format!("{}: read error — {e}", scaffold.display())))?
+        }
+        None => embedded_template("scenario-scaffold.yaml")
+            .ok_or_else(|| ConfigError("scenario-scaffold.yaml not embedded".into()))?
+            .to_string(),
     }
-    let text = std::fs::read_to_string(&scaffold)
-        .map_err(|e| ConfigError(format!("{}: read error — {e}", scaffold.display())))?
-        .replace("{{SCENARIO_ID}}", scenario_id);
+    .replace("{{SCENARIO_ID}}", scenario_id);
     std::fs::write(&dest, &text)
         .map_err(|e| ConfigError(format!("{}: write error — {e}", dest.display())))?;
 
@@ -175,10 +302,17 @@ pub fn init_scenario(
 
     let next = vec![
         json!(format!(
-            "Edit .agent-sim/scenarios/{scenario_id}.yaml (persona.brief is required)"
+            "Edit {} — # lines are guides; remove unused sections",
+            dest.display()
         )),
-        json!("Validate: lks validate <id> --root ."),
-        json!("Run: lks execute <id> --root ."),
+        json!(format!(
+            "Validate: lks validate {scenario_id} --root {}",
+            root.display()
+        )),
+        json!(format!(
+            "Run: lks execute {scenario_id} --root {}",
+            root.display()
+        )),
     ];
 
     let mut out = Map::new();

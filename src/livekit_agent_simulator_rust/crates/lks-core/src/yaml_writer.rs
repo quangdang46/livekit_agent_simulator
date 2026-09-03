@@ -62,14 +62,21 @@ fn emit(v: &Json, depth: usize, out: &mut String) {
                 out.push_str(&scalar_key(k));
                 out.push(':');
                 match val {
-                    Json::Object(_) | Json::Array(_) => {
+                    // PyYAML: nested containers on the next line; BLOCK-LIST
+                    // items sit at the KEY's depth (2-space under `tags:`), not
+                    // depth+1 — matches safe_dump block style.
+                    Json::Object(_) => {
                         out.push('\n');
                         emit(val, depth + 1, out);
+                    }
+                    Json::Array(_) => {
+                        out.push('\n');
+                        emit(val, depth, out);
                     }
                     Json::Null => out.push_str(" null\n"),
                     other => {
                         out.push(' ');
-                        emit_scalar(other, out);
+                        emit_scalar(other, out, depth + 1);
                         out.push('\n');
                     }
                 }
@@ -105,7 +112,7 @@ fn emit(v: &Json, depth: usize, out: &mut String) {
                                 emit(val, depth + 2, out);
                             } else {
                                 out.push(' ');
-                                emit_scalar(val, out);
+                                emit_scalar(val, out, depth + 2);
                                 out.push('\n');
                             }
                         }
@@ -116,29 +123,87 @@ fn emit(v: &Json, depth: usize, out: &mut String) {
                     }
                     other => {
                         out.push(' ');
-                        emit_scalar(other, out);
+                        emit_scalar(other, out, depth + 1);
                         out.push('\n');
                     }
                 }
             }
         }
         other => {
-            emit_scalar(other, out);
+            emit_scalar(other, out, depth);
             out.push('\n');
         }
     }
 }
 
 /// Emit a scalar (string / number / bool) with PyYAML-compatible quoting.
-fn emit_scalar(v: &Json, out: &mut String) {
+/// `depth` is the container depth — used for folding long quoted scalars.
+fn emit_scalar(v: &Json, out: &mut String, depth: usize) {
     match v {
         Json::Null => out.push_str("null"),
         Json::Bool(true) => out.push_str("true"),
         Json::Bool(false) => out.push_str("false"),
         Json::Number(n) => out.push_str(&n.to_string()),
-        Json::String(s) => out.push_str(&quote_str(s)),
+        Json::String(s) => {
+            let q = quote_str(s);
+            if q.starts_with('\'') && q.len() > 80 {
+                // PyYAML folds single-quoted scalars at width=100; continuation
+                // lines indent to the CONTAINER depth (the key's indent + 2 for
+                // the value position — i.e. depth*2 spaces where depth is the
+                // value's container depth). Literal \n in the value become blank
+                // continuation lines.
+                out.push_str(&fold_quoted(&q, depth));
+            } else {
+                out.push_str(&q);
+            }
+        }
         Json::Object(_) | Json::Array(_) => out.push_str("{}"),
     }
+}
+
+/// Fold a single-quoted scalar the way PyYAML does: break at word boundaries
+/// near `width=100` (measured from the continuation indent), keeping the quote
+/// style. Literal newlines inside the value become blank continuation lines.
+fn fold_quoted(q: &str, cont_indent: usize) -> String {
+    const WIDTH: usize = 100;
+    // PyYAML continuation indent = the KEY's indent (container depth in
+    // 2-space units → cont_indent * 2 spaces... actually the key line indent).
+    let cont = indent(cont_indent);
+    // Content between the outer quotes ('' escapes preserved).
+    let inner = &q[1..q.len() - 1];
+    let mut out = String::new();
+    out.push('\'');
+    let mut line = String::new();
+    let mut first_line = true;
+    for c in inner.chars() {
+        if c == '\n' {
+            // Literal newline → blank continuation line (PyYAML folds to a
+            // blank indented line between wrapped fragments).
+            out.push('\n');
+            out.push_str(&cont);
+            line.clear();
+            first_line = false;
+            continue;
+        }
+        // Continuation lines: width budget is WIDTH minus the indent.
+        let budget = if first_line {
+            WIDTH - 2 // approx key+prefix on the first line
+        } else {
+            WIDTH - cont.len()
+        };
+        if line.len() >= budget && c == ' ' {
+            // Break at the space (drop the space).
+            out.push('\n');
+            out.push_str(&cont);
+            first_line = false;
+            line.clear();
+            continue;
+        }
+        line.push(c);
+        out.push(c);
+    }
+    out.push('\'');
+    out
 }
 
 /// Quote strings the way PyYAML's SafeDumper does for the strings the exporter

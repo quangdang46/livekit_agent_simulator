@@ -89,3 +89,48 @@ fn init_scenario_invalid_id() {
         "got: {err}"
     );
 }
+
+#[test]
+fn build_authoring_report_structure() {
+    use lks_core::authoring_warnings::build_authoring_report;
+    use serde_json::{json, Map};
+    let mut persona = Map::new();
+    persona.insert("brief".into(), json!("Test caller"));
+    persona.insert("goals".into(), json!(["Goal one"]));
+    let report = build_authoring_report(
+        &persona,
+        &["smoke".to_string()],
+        &[],
+        None,
+        None,
+        None,
+        &lks_core::scenario::SimulatorSpec {
+            max_turns: 6,
+            timeout_s: 120,
+            first_speaker: "agent".into(),
+        },
+        None,
+    );
+    // scorecard present with 6 dims, max 12
+    let scorecard = report.get("scorecard").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(scorecard.get("max").and_then(|v| v.as_i64()), Some(12));
+    let dims = scorecard
+        .get("dimensions")
+        .and_then(|v| v.as_object())
+        .unwrap();
+    assert_eq!(dims.len(), 6);
+    // tier + message + soft
+    assert!(report.get("tier").and_then(|v| v.as_str()).is_some());
+    let msg = report.get("message").and_then(|v| v.as_str()).unwrap();
+    assert!(msg.contains("authoring tier="), "{msg}");
+    assert_eq!(report.get("soft").and_then(|v| v.as_bool()), Some(true));
+    // warning_codes/info_codes arrays
+    assert!(report
+        .get("warning_codes")
+        .and_then(|v| v.as_array())
+        .is_some());
+    assert!(report
+        .get("info_codes")
+        .and_then(|v| v.as_array())
+        .is_some());
+}

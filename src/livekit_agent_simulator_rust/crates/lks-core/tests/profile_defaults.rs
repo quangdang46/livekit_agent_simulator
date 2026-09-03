@@ -1,0 +1,204 @@
+//! Profile default-selection parity — port of config.py profile rules:
+//! explicit --profile, exactly-one `default: true` auto-select, multiple
+//! defaults error, and no-profile+no-flat-creds error.
+
+use lks_core::config::load_config;
+use std::path::PathBuf;
+
+fn tmp_root(name: &str, sim_yaml: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lksr_prof_{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let dot = dir.join(".agent-sim");
+    std::fs::create_dir_all(&dot).unwrap();
+    std::fs::write(
+        dot.join("config.yaml"),
+        format!(
+            "livekit:\n  url: wss://example.livekit.cloud\n  api_key: test-key\n  api_secret: test-secret\n  agent_name: test-agent\nsimulator:\n{sim_yaml}\n"
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn explicit_profile_selects_and_merges_voice() {
+    let root = tmp_root(
+        "explicit",
+        "  api_key: flat-key\n  voice:\n    model: flat-model\n    voice: flat-voice\n  profiles:\n    google:\n      provider: google\n      api_key: gkey\n      voice:\n        model: gemini-x\n        voice: Aoede\n",
+    );
+    let cfg = load_config(root, Some("google"), None).unwrap();
+    assert_eq!(cfg.simulator.api_key, "gkey");
+    assert_eq!(cfg.simulator.voice.model, "gemini-x");
+    assert_eq!(cfg.simulator.voice.voice, "Aoede");
+    assert_eq!(cfg.active_profile.as_deref(), Some("google"));
+}
+
+#[test]
+fn single_default_autoselects() {
+    let root = tmp_root(
+        "autoselect",
+        "  api_key: flat-key\n  profiles:\n    google:\n      default: true\n      provider: google\n      api_key: gkey\n    openai:\n      provider: openai\n      api_key: okey\n",
+    );
+    let cfg = load_config(root, None, None).unwrap();
+    assert_eq!(cfg.active_profile.as_deref(), Some("google"));
+    assert_eq!(cfg.simulator.api_key, "gkey");
+}
+
+#[test]
+fn no_default_uses_flat_block() {
+    let root = tmp_root(
+        "flat",
+        "  api_key: flat-key\n  profiles:\n    google:\n      provider: google\n      api_key: gkey\n",
+    );
+    let cfg = load_config(root, None, None).unwrap();
+    assert_eq!(cfg.active_profile, None);
+    assert_eq!(cfg.simulator.api_key, "flat-key");
+}
+
+#[test]
+fn multiple_defaults_is_error() {
+    let root = tmp_root(
+        "multi_default",
+        "  api_key: flat-key\n  profiles:\n    google:\n      default: true\n      api_key: gkey\n    openai:\n      default: true\n      api_key: okey\n",
+    );
+    let err = load_config(root, None, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Multiple profiles marked `default: true`"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn no_profile_no_flat_creds_is_error() {
+    let root = tmp_root(
+        "no_creds",
+        "  profiles:\n    google:\n      provider: google\n      api_key: gkey\n",
+    );
+    let err = load_config(root, None, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("No default profile configured"), "got: {msg}");
+}
+
+#[test]
+fn unknown_profile_lists_available() {
+    let root = tmp_root(
+        "unknown",
+        "  api_key: flat-key\n  profiles:\n    google:\n      api_key: gkey\n    openai:\n      api_key: okey\n",
+    );
+    let err = load_config(root, Some("nope"), None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("Profile 'nope' not found"), "got: {msg}");
+    assert!(msg.contains("google"), "got: {msg}");
+    assert!(msg.contains("openai"), "got: {msg}");
+}
+
+#[test]
+fn yaml11_bool_scalars_resolve_like_pyyaml() {
+    // PyYAML 1.1 resolves off/no/yes/on to booleans; the Rust 1.2 parser keeps
+    // them as strings, so py_bool must resolve them (config.py parity).
+    let root = tmp_root("yaml11", "  api_key: flat-key\n  provider: openai\n");
+    // Rewrite config with observe scalars in 1.1 style.
+    let cfg_path = root.join(".agent-sim/config.yaml");
+    let txt = std::fs::read_to_string(&cfg_path).unwrap();
+    let txt =
+        txt + "observe:\n  record_audio: off\n  lk_agent_session: yes\n  lk_transcription: on\n";
+    std::fs::write(&cfg_path, txt).unwrap();
+    let cfg = load_config(root, None, None).unwrap();
+    assert!(!cfg.observe.record_audio, "record_audio: off must be false");
+    assert!(
+        cfg.observe.lk_agent_session,
+        "lk_agent_session: yes must be true"
+    );
+    assert!(
+        cfg.observe.lk_transcription,
+        "lk_transcription: on must be true"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Environment default-selection parity — mirrors the profile tests above but
+// for `livekit.environments` (port of config.py's environment resolution).
+// ---------------------------------------------------------------------------
+
+fn tmp_root_env(name: &str, lk_yaml: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lksr_env_{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let dot = dir.join(".agent-sim");
+    std::fs::create_dir_all(&dot).unwrap();
+    std::fs::write(
+        dot.join("config.yaml"),
+        format!("livekit:\n{lk_yaml}\nsimulator:\n  api_key: sim-key\n"),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn explicit_environment_selects_and_merges() {
+    let root = tmp_root_env(
+        "explicit",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    production:\n      url: wss://prod.livekit.cloud\n      agent_name: prod-agent\n",
+    );
+    let cfg = load_config(root, None, Some("production")).unwrap();
+    assert_eq!(cfg.livekit.url, "wss://prod.livekit.cloud");
+    assert_eq!(cfg.livekit.agent_name, "prod-agent");
+    // Inherited from the flat block (not overridden by the environment).
+    assert_eq!(cfg.livekit.api_key, "flat-key");
+    assert_eq!(cfg.livekit.api_secret, "flat-secret");
+    assert_eq!(
+        cfg.livekit.active_environment.as_deref(),
+        Some("production")
+    );
+}
+
+#[test]
+fn single_default_environment_autoselects() {
+    let root = tmp_root_env(
+        "autoselect",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    local:\n      default: true\n      url: wss://local.livekit.cloud\n      agent_name: local-agent\n    production:\n      url: wss://prod.livekit.cloud\n      agent_name: prod-agent\n",
+    );
+    let cfg = load_config(root, None, None).unwrap();
+    assert_eq!(cfg.livekit.active_environment.as_deref(), Some("local"));
+    assert_eq!(cfg.livekit.url, "wss://local.livekit.cloud");
+    assert_eq!(cfg.livekit.agent_name, "local-agent");
+}
+
+#[test]
+fn no_default_environment_uses_flat_block() {
+    let root = tmp_root_env(
+        "flat",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    production:\n      url: wss://prod.livekit.cloud\n      agent_name: prod-agent\n",
+    );
+    let cfg = load_config(root, None, None).unwrap();
+    assert_eq!(cfg.livekit.active_environment, None);
+    assert_eq!(cfg.livekit.url, "wss://flat.livekit.cloud");
+    assert_eq!(cfg.livekit.agent_name, "flat-agent");
+}
+
+#[test]
+fn multiple_default_environments_is_error() {
+    let root = tmp_root_env(
+        "multi_default",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    local:\n      default: true\n      url: wss://local.livekit.cloud\n    production:\n      default: true\n      url: wss://prod.livekit.cloud\n",
+    );
+    let err = load_config(root, None, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Multiple environments marked `default: true`"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn unknown_environment_lists_available() {
+    let root = tmp_root_env(
+        "unknown",
+        "  url: wss://flat.livekit.cloud\n  api_key: flat-key\n  api_secret: flat-secret\n  agent_name: flat-agent\n  environments:\n    local:\n      url: wss://local.livekit.cloud\n    production:\n      url: wss://prod.livekit.cloud\n",
+    );
+    let err = load_config(root, None, Some("nope")).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("Environment 'nope' not found"), "got: {msg}");
+    assert!(msg.contains("local"), "got: {msg}");
+    assert!(msg.contains("production"), "got: {msg}");
+}

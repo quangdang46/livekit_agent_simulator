@@ -253,6 +253,39 @@ Presence of `profiles:` never changes behavior when neither `--profile` nor a
 compatible). A missing profile name fails loudly (lists available profiles),
 no silent fallback.
 
+**Switch LiveKit target without editing the file — `livekit.environments` + `--environment <name>`:**
+
+```yaml
+livekit:
+  # legacy flat block = fallback (used when no --environment and no default environment)
+  url: "wss://local.livekit.cloud"
+  api_key: "APIaAheUJ9U7PcU"
+  api_secret: "O7bYKzZ..."
+  agent_name: "voice-ai-worker-local"
+
+  environments:                  # optional named LiveKit targets
+    local:                       #   lks execute <scenario> --environment local
+      default: true              # auto-selected when no --environment flag
+      url: "wss://local.livekit.cloud"
+      agent_name: "voice-ai-worker-local"
+    production:                  #   lks execute <scenario> --environment production
+      url: "wss://prod.livekit.cloud"
+      agent_name: "voice-ai-worker-prod"
+```
+
+**Selection** (no `--environment`): exactly one `default: true` environment wins;
+otherwise the legacy flat `livekit:` block runs. 2+ defaults → error.
+`environments:` with no default and no flat credentials → config error (no silent
+fallback). `--environment <name>` always wins regardless of which environment is
+default. Environment names are **case-sensitive**.
+
+Precedence: **environment field → flat `livekit:` field → built-in default**. An
+environment inherits unspecified fields (url, api_key, api_secret, etc.) from the
+flat block. Presence of `environments:` never changes behavior when neither
+`--environment` nor a `default: true` environment is present — that is always the
+flat block (backward compatible). A missing environment name fails loudly (lists
+available environments), no silent fallback.
+
 Optional but common:
 
 ```yaml
@@ -620,10 +653,13 @@ lks execute smoke-hello --name demo --root "$TARGET_ROOT"
 lks execute smoke-hello --root "$TARGET_ROOT" --repeat 3 --pass-at-k 2
 # named caller profile (provider/key from simulator.profiles.<name>):
 lks execute smoke-hello --profile openai --root "$TARGET_ROOT"
+# named environment (LiveKit target from livekit.environments.<name>):
+lks execute smoke-hello --environment production --root "$TARGET_ROOT"
 # suite:
 lks execute-all --tag smoke --root "$TARGET_ROOT"
 # lks execute-all --tag smoke --parallel 2 --root "$TARGET_ROOT"
 # lks execute-all --tag smoke --profile openai --root "$TARGET_ROOT"
+# lks execute-all --tag smoke --environment production --root "$TARGET_ROOT"
 ```
 
 #### Risk-tier recipe (skip exploratory in CI)
@@ -681,6 +717,7 @@ Assert highlights (for scenario authors after setup):
 - `ended_by` — `sim` | `agent` | `detect` after script `hang_up` or natural end  
 - `goals_met` — LLM judge verifies caller pursued N persona goals before `[END_CALL]` (hard fail)  
 - `constraint_respected` — hard fail if caller transcript leaks `must_not_phrases` / `must_not_match`  
+- `transcript_contains` — PASS iff any phrase in `phrases` appears in the transcript for `role`; add `negate: true` to invert: PASS iff **none** of the phrases appear (e.g. `{"type":"transcript_contains","phrases":["again, please"],"negate":true}` asserts the agent never prompted the caller to repeat)  
 - `tool_order` — required subsequence of `tool.start` names  
 - `agent_must_respond` — PASS iff the agent produced ≥ 1 **audio onset** (no transcript fallback); FAIL when the agent only produced text but no audio  
 - `ttfa` / `turn_taking_audio` — **perceived** audio-onset latency gates (see §below); missing sample → **SKIP** (not fail), but `require_audio_samples` set + short → fail
@@ -844,6 +881,7 @@ Mark setup complete only when **all** of these are true:
 - [ ] (Optional) `lks execute smoke-hello --root "$TARGET_ROOT"` → `status: done` or a clear next fix (agent timeout / Gemini quota)
 - [ ] (Optional SIP) `telephony:` trunk/DID filled when testing `inbound_sip` / `outbound_human_pickup` / `outbound_sim_callee`; scenarios validated
 - [ ] (Optional) new surfaces known: `lks serve` (REST API on :8787), `lks optimize` (persona-prompt optimizer), `speech_conditions.effects` (audio degradation), `handoff` / `no_unplanned_handoff` asserts — see `lks guide`
+- [ ] (Optional) multi-environment: `livekit.environments` configured in `config.yaml` and `--environment <name>` / `-e` used to switch between local/production targets
 
 **Do not claim “fully working E2E”** if preflight failed or the agent is not registered.
 
@@ -882,10 +920,11 @@ lks init --root "$TARGET_ROOT"
 # 3) STOP: discover TARGET_ROOT (§4.0), then fill $TARGET_ROOT/.agent-sim/config.yaml
 #    livekit.url / api_key / api_secret / agent_name
 #    simulator.api_key (provider: google or openai)
-#    optional: livekit.dispatch_metadata, observe.data_topics (from consumer docs/search)
+#    optional: livekit.environments (local/production), livekit.dispatch_metadata, observe.data_topics
 #    Then continue:
 
 lks preflight --root "$TARGET_ROOT"
+# switch environment: lks preflight -e production --root "$TARGET_ROOT"
 # 4) Ensure agent under test is running with matching agent_name
 # lks execute smoke-hello --root "$TARGET_ROOT"
 # lks web --root "$TARGET_ROOT"

@@ -1,0 +1,83 @@
+name: Release (Rust binary)
+
+on:
+  push:
+    tags:
+      - "v*-rust*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-15 (Xcode 16): webrtc-sys C++/cxxbridge fails against the
+          # Xcode 15.4 libc++ pointer_traits header (known upstream issue).
+          - os: macos-15
+            target: aarch64-apple-darwin
+            asset: lksr-macos-aarch64.tar.gz
+          # x86_64-apple-darwin: webrtc-sys C++ fails on Xcode 15.4 x86_64 SDK
+          # (libwebrtc prebuilt mismatch) — ship aarch64 macos (Apple Silicon,
+          # the standard dev machine) + linux x86_64.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: lksr-linux-x86_64.tar.gz
+    defaults:
+      run:
+        working-directory: src/livekit_agent_simulator_rust
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      # lks-web rust-embeds web/dist at compile time — build it first.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build web UI (report player embed)
+        run: pnpm install --frozen-lockfile && pnpm build
+        working-directory: web
+      - name: Install libwebrtc deps (linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libssl-dev pkg-config
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }} -p lks
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/lksr dist/lksr
+          tar -czf ${{ matrix.asset }} -C dist lksr
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: src/livekit_agent_simulator_rust/${{ matrix.asset }}
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          ls -la
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true

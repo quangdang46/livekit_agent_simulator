@@ -144,6 +144,37 @@ inherit unspecified fields (voice/language/mode) from the flat block. Presence
 of `profiles:` never changes what runs without `--profile` and without a
 default profile; a missing profile name fails loudly with the available list.
 
+**Switch LiveKit target without editing config** — define named environments
+and pass `--environment <name>` (or `-e`):
+
+```yaml
+livekit:
+  # flat block = fallback (no --environment / no default)
+  url: "wss://local.livekit.cloud"
+  api_key: "…"
+  api_secret: "…"
+  agent_name: "worker-local"
+
+  environments:
+    local:
+      default: true       # auto-selected when no --environment flag
+      url: "wss://local.livekit.cloud"
+      agent_name: "worker-local"
+    production:           # lks execute <scenario> --environment production
+      url: "wss://prod.livekit.cloud"
+      agent_name: "worker-prod"
+```
+
+Selection (no `--environment`): one `default: true` environment wins; else
+the flat block. 2+ defaults → error. `environments:` with no default and no
+flat creds → config error. `--environment <name>` always wins over any default.
+Environment names are **case-sensitive**.
+Precedence: **environment → flat `livekit:` → built-in default**; environments
+inherit unspecified fields (url, api_key, api_secret, etc.) from the flat block.
+Presence of `environments:` never changes what runs without `--environment`
+and without a default environment; a missing environment name fails loudly with
+the available list.
+
 judge:
   # Gemini (default when base_url omitted) — uses simulator.api_key (provider: google)
   model: "gemini-3.1-flash-lite"
@@ -260,6 +291,7 @@ Three silence concepts — do not mix them:
   - Without explicit `goals`, falls back to `Persona.spec.goals` from the scenario
 - **Assert** `outcomes` type **`constraint_respected`** → hard fail if **caller** transcript contains forbidden phrases/patterns (`must_not_phrases` and/or `must_not_match`)
   - Example: `{"id":"no_card","type":"constraint_respected","must_not_phrases":["4111","CVV"]}`
+- **Assert** `outcomes` type **`transcript_contains`** with `negate: true` → PASS iff **none** of the `phrases` appear in the transcript (inverted match). Use to verify a prompt/interruption never fired, e.g. `{"id":"no_retry","type":"transcript_contains","phrases":["again, please"],"negate":true}` — fails if the agent asked the caller to repeat
 - **Assert** `tool_order` → required subsequence of `tool.start` names (not necessarily contiguous)
   - Example: `{"kind":"Assert","spec":{"tool_order":["lookup","book"]}}`
 - **Assert** `outcomes` type **`handoff`** → at least `min_handoffs` agent→agent transfers occurred (LiveKit AgentHandoff chat items, e.g. tool-based handoff or WarmTransferTask) — surfaced as `handoff.*` events
@@ -404,6 +436,8 @@ lks execute my-case --repeat 5 --pass-at-k 3   # pass@k flake control
 lks execute-all --tag smoke --root /path/to/target
 lks execute-all --tag smoke --repeat 3 --pass-at-k 2   # flake in batch
 lks execute-all --tag smoke --parallel 3 --root /path/to/target  # up to 3 scenarios at once
+# named environment (LiveKit target from livekit.environments.<name>):
+lks execute my-case --environment production --root /path/to/target
 # In-memory (CI / agents): MCP execute_scenario_dict or CLI execute-dict -f file.json [--name]
 ```
 
@@ -517,16 +551,16 @@ Full guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/doc
 | `guide` | `guide` |
 | `web` | `web` |
 | `init` | `init_project` |
-| `preflight` | `preflight` |
+| `preflight` | `preflight` (flags: ``--environment <name>``, ``--profile <name>``) |
 | `scenarios` | `list_scenarios` |
 | `plugins` | `list_plugins` |
 | `cues` | `list_cues` |
 | `validate` | `validate_scenario` |
 | `export` | `export_scenario` |
 | `scenario-init` | `init_scenario` |
-| `execute` | `execute_scenario` (flags: ``--name``, ``--repeat N --pass-at-k K``, ``--strict-judge``) |
-| `execute-all` | `execute_scenarios` (suite matrix + CI gate; flags: ``--repeat --pass-at-k --parallel N``, ``--strict-judge``) |
-| `execute-dict` | `execute_scenario_dict` (flag: ``--name`` / MCP ``run_name``) |
+| `execute` | `execute_scenario` (flags: ``--name``, ``--repeat N --pass-at-k K``, ``--strict-judge``, ``--environment <name>``, ``--profile <name>``) |
+| `execute-all` | `execute_scenarios` (suite matrix + CI gate; flags: ``--repeat --pass-at-k --parallel N``, ``--strict-judge``, ``--environment <name>``, ``--profile <name>``) |
+| `execute-dict` | `execute_scenario_dict` (flag: ``--name`` / MCP ``run_name``, ``--environment <name>``) |
 | `scenario-from-run` | `scenario_from_run` |
 | `status` | `get_run_status` |
 | `log` | `get_run_log` |
@@ -534,7 +568,7 @@ Full guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/doc
 | `compare` | `compare_runs` (optional `--baseline` hard regression gate) |
 | `runs` | `list_runs` |
 | `serve` | — | REST API (JSON over HTTP; same ops as CLI/MCP) |
-| `optimize` | `optimize_persona` | Offline persona-prompt optimizer (live benchmark loop) → `.agent-sim/optimized/` artifact |
+| `optimize` | `optimize_persona` | Offline persona-prompt optimizer (live benchmark loop) → `.agent-sim/optimized/` artifact (flags: ``--environment <name>``) |
 | `mcp` | *(stdio server — all tools above)* |
 
 There is **no** separate `run` command — always validate-then-run via `execute*`.

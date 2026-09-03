@@ -96,7 +96,7 @@ pub fn counts_for_recovery_barge(barge_in: bool, interrupt_class: Option<&str>) 
 }
 
 /// ScriptStep — frozen dataclass mirror.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ScriptStep {
     pub id: String,
     pub trigger: String,
@@ -144,7 +144,7 @@ pub fn effective_overlay(step: &ScriptStep) -> &'static str {
 }
 
 /// ScriptVerifySpec — mirror.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ScriptVerifySpec {
     pub require_during_agent_speech: bool,
     pub min_agent_finals_after_first_cue: i64,

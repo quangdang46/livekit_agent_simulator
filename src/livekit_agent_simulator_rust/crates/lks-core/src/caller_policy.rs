@@ -49,7 +49,7 @@ fn str_list(v: &Json) -> Vec<String> {
 }
 
 /// Immutable-enough bag for policy builders (no I/O).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CallerPolicyContext {
     pub persona: Map<String, Json>,
     pub locale: String,
@@ -59,6 +59,17 @@ pub struct CallerPolicyContext {
 }
 
 impl CallerPolicyContext {
+    /// Build from a Scenario (for render_prompt_variant preview).
+    pub fn from_scenario(scenario: &crate::scenario::Scenario) -> Self {
+        CallerPolicyContext {
+            persona: scenario.persona.clone(),
+            locale: scenario.effective_locale(),
+            context: scenario.context.clone(),
+            script_steps: scenario.script_steps.clone(),
+            first_speaker: scenario.run_spec().first_speaker.clone(),
+        }
+    }
+
     pub fn goals(&self) -> Vec<String> {
         str_list(self.persona.get("goals").unwrap_or(&Json::Null))
             .into_iter()
