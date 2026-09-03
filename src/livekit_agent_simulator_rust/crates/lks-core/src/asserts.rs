@@ -56,6 +56,8 @@ pub struct OutcomeExpect {
     pub id: String,
     pub otype: String,
     pub phrases: Vec<String>,
+    /// transcript_contains only: invert match — pass when NONE of `phrases` appear.
+    pub negate: bool,
     pub prompt: Option<String>,
     pub role: String,
     pub min_agent_finals_after_barge_in: i64,
@@ -432,6 +434,7 @@ pub fn parse_assert_spec(spec: &Map<String, Json>, path_label: &str) -> Result<A
                 id,
                 otype,
                 phrases,
+                negate: m.get("negate").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt: m.get("prompt").and_then(|v| v.as_str()).map(String::from),
                 role: as_str(m.get("role").unwrap_or(&Json::String("any".into()))),
                 min_agent_finals_after_barge_in: m
@@ -631,12 +634,14 @@ pub fn evaluate_asserts(events: &[Map<String, Json>], asserts: &AssertSpec) -> M
                     transcript_texts(events, role)
                 };
                 let blob = texts.join("\n").to_lowercase();
-                let ok = oc.phrases.iter().any(|p| blob.contains(&p.to_lowercase()));
+                let matched = oc.phrases.iter().any(|p| blob.contains(&p.to_lowercase()));
+                let ok = if oc.negate { !matched } else { matched };
                 checks.push(json!({
                     "check": format!("outcome:{}", oc.id),
                     "pass": ok,
                     "type": oc.otype,
                     "phrases": oc.phrases,
+                    "negate": oc.negate,
                 }));
             }
             "ended_by" => {

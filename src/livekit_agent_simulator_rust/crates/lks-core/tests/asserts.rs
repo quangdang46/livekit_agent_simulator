@@ -161,6 +161,76 @@ fn transcript_must_not_match() {
 }
 
 #[test]
+fn outcome_transcript_contains_negate_pass_when_absent() {
+    let events = vec![agent_final("Thank you, that's everything.", 100)];
+    let a = AssertSpec {
+        tools: vec![],
+        transcript: vec![],
+        outcomes: vec![OutcomeExpect {
+            id: "no_retry".into(),
+            otype: "transcript_contains".into(),
+            phrases: vec!["again, please".into()],
+            negate: true,
+            prompt: None,
+            role: "any".into(),
+            min_agent_finals_after_barge_in: 1,
+            min_interruptions: 0,
+            max_ms_after_barge_to_agent_final: None,
+            min_handoffs: 1,
+            no_unplanned_handoff: false,
+            max_turn_p50_ms: None,
+            max_turn_p95_ms: None,
+            max_ttfw_ms: None,
+            max_recovery_p95_ms: None,
+            min_barge_recovery_rate: None,
+            ended_by: None,
+            min_goals: 0,
+            must_not_phrases: vec![],
+            must_not_match: None,
+        }],
+        sip: None,
+        tool_order: vec![],
+    };
+    let res = evaluate_asserts(&events, &a);
+    assert_eq!(res["pass"], json!(true), "phrase absent + negate → pass");
+}
+
+#[test]
+fn outcome_transcript_contains_negate_fail_when_present() {
+    let events = vec![agent_final("Could you say that again, please?", 100)];
+    let a = AssertSpec {
+        tools: vec![],
+        transcript: vec![],
+        outcomes: vec![OutcomeExpect {
+            id: "no_retry".into(),
+            otype: "transcript_contains".into(),
+            phrases: vec!["again, please".into()],
+            negate: true,
+            prompt: None,
+            role: "any".into(),
+            min_agent_finals_after_barge_in: 1,
+            min_interruptions: 0,
+            max_ms_after_barge_to_agent_final: None,
+            min_handoffs: 1,
+            no_unplanned_handoff: false,
+            max_turn_p50_ms: None,
+            max_turn_p95_ms: None,
+            max_ttfw_ms: None,
+            max_recovery_p95_ms: None,
+            min_barge_recovery_rate: None,
+            ended_by: None,
+            min_goals: 0,
+            must_not_phrases: vec![],
+            must_not_match: None,
+        }],
+        sip: None,
+        tool_order: vec![],
+    };
+    let res = evaluate_asserts(&events, &a);
+    assert_eq!(res["pass"], json!(false), "phrase present + negate → fail");
+}
+
+#[test]
 fn recovery_outcome_after_barge() {
     let events = vec![barge_cue(100), agent_final("ok let me check", 500)];
     let a = AssertSpec {
@@ -170,6 +240,7 @@ fn recovery_outcome_after_barge() {
             id: "r1".into(),
             otype: "recovery".into(),
             phrases: vec![],
+            negate: false,
             prompt: None,
             role: "any".into(),
             min_agent_finals_after_barge_in: 1,
@@ -212,6 +283,7 @@ fn no_unplanned_handoff_assert() {
             id: "h1".into(),
             otype: "no_unplanned_handoff".into(),
             phrases: vec![],
+            negate: false,
             prompt: None,
             role: "any".into(),
             min_agent_finals_after_barge_in: 1,
