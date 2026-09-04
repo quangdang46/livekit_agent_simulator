@@ -124,6 +124,57 @@ def test_relevancy_filters_irrelevant_fails():
     assert out.verdict == "pass"
 
 
+def test_relevancy_promotion_flags_human_review():
+    """fail→pass promotion via self-labeled-irrelevant criteria must not be
+    trusted blindly — flag for human review (issue #99)."""
+    raw = JudgmentResult(
+        verdict="fail",
+        score=40,
+        criteria=[
+            CriterionScore("A", met=True, relevant=True, evidence="ok"),
+            CriterionScore("B", met=False, relevant=False, evidence="n/a"),
+        ],
+    )
+    out = apply_relevancy(raw)
+    assert out.verdict == "pass"
+    assert out.needs_human_review is True
+
+
+def test_parse_judgment_ungrounded_met_criterion_is_not_trusted():
+    """A criterion the judge marks met=True but cites no evidence for is a
+    hallucination risk (issue #99): a topically-related-but-wrong agent
+    reply must not be able to pass just because the judge asserts it did,
+    with no quoted transcript evidence backing the claim."""
+    j = parse_judgment_payload(
+        {
+            "verdict": "pass",
+            "criteria": [
+                {"criterion": "asked for company name", "met": True, "relevant": True, "evidence": ""},
+            ],
+        }
+    )
+    assert j.criteria[0].met is False
+    assert j.needs_human_review is True
+
+
+def test_parse_judgment_grounded_met_criterion_is_trusted():
+    j = parse_judgment_payload(
+        {
+            "verdict": "pass",
+            "criteria": [
+                {
+                    "criterion": "asked for company name",
+                    "met": True,
+                    "relevant": True,
+                    "evidence": "Agent said: 'Could you say company name again, please?'",
+                },
+            ],
+        }
+    )
+    assert j.criteria[0].met is True
+    assert j.needs_human_review is False
+
+
 def test_parse_judgment_maybe():
     j = parse_judgment_payload(
         {
