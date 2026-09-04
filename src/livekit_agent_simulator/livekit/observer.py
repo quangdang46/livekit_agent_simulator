@@ -35,6 +35,12 @@ _SIM_TRANSCRIPT_SOURCES = ("sim.gemini", "sim.openai")
 _USER_FINAL_PRIORITY = (*_SIM_TRANSCRIPT_SOURCES, "data", "lk.transcription")
 _AGENT_FINAL_PRIORITY = ("data", "lk.transcription", *_SIM_TRANSCRIPT_SOURCES)
 
+# A user final arriving within this window of a short agent final is treated
+# as a possible split-utterance continuation rather than a new turn — see
+# on_transcript()'s same_turn merge logic.
+_BACKCHANNEL_GRACE_MS = 700
+_BACKCHANNEL_MAX_WORDS = 6
+
 
 def _lookup_path(payload: dict[str, Any], dotted: str) -> Any:
     cur: Any = payload
@@ -504,17 +510,43 @@ class Observer:
 
         if role == "user":
             norm = _normalize_text(text)
-            if self._last_user_final_mono is not None and not self._agent_replied_this_turn:
+            is_echo_of_prior_turn = self._agent_replied_this_turn and (
+                norm == self._current_turn_user_norm
+                or _similar_text(norm, self._current_turn_user_norm or "")
+            )
+            if is_echo_of_prior_turn:
+                return
+            merge_as_same_turn = (
+                self._last_user_final_mono is not None and not self._agent_replied_this_turn
+            )
+            if (
+                not merge_as_same_turn
+                and self._last_user_final_mono is not None
+                and self._agent_replied_this_turn
+                and self._last_agent_final_mono is not None
+            ):
+                # STT/VAD can split one utterance into two finals with a
+                # short/backchannel-like agent reply interjected in between
+                # (e.g. "mm-hm", a premature partial answer). That reply is
+                # not the turn-ending answer — treat the second half as a
+                # continuation of the same turn instead of starting a new
+                # one, so latency and transcript checks see the whole
+                # utterance rather than a truncated first half.
+                agent_gap_ms = (self._last_agent_final_mono - self._last_user_final_mono) * 1000
+                agent_word_count = len((self._last_agent_final_text or "").split())
+                if 0 <= agent_gap_ms <= _BACKCHANNEL_GRACE_MS and (
+                    agent_word_count <= _BACKCHANNEL_MAX_WORDS
+                ):
+                    merge_as_same_turn = True
+            if merge_as_same_turn:
                 self.writer.emit(
                     "transcript.user.final",
                     spec={**spec, "same_turn": True},
                     source=source,
                 )
-                return
-            if self._agent_replied_this_turn and (
-                norm == self._current_turn_user_norm
-                or _similar_text(norm, self._current_turn_user_norm or "")
-            ):
+                # Don't let the interjected reply count as this turn's
+                # answer — keep waiting for the real one.
+                self._agent_replied_this_turn = False
                 return
             self._user_has_spoken = True
             self.turn += 1

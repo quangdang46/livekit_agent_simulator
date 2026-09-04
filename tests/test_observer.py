@@ -98,6 +98,46 @@ def test_late_user_echo_after_agent_reply_not_new_turn(tmp_path) -> None:
     assert len(user_finals) == 1
 
 
+def test_split_utterance_with_short_agent_interjection_stays_same_turn(tmp_path) -> None:
+    """A user utterance split into two finals with a short/backchannel-like
+    agent reply in between must not be counted as two turns (issue #100)."""
+    obs, writer = _observer(tmp_path, first_speaker="user")
+
+    obs.on_transcript("user", "My name is Jane", final=True, source="lk.transcription")
+    turn_after_first_half = obs.turn
+    # Short, distinct (not an echo) agent interjection — e.g. a premature
+    # partial reply, not the real turn-ending answer.
+    obs.on_transcript("agent", "Got it", final=True, source="app.transcript")
+    obs.on_transcript(
+        "user", "and the company is Acme", final=True, source="lk.transcription"
+    )
+
+    assert obs.turn == turn_after_first_half
+    user_finals = [e for e in writer._events if e["kind"] == "transcript.user.final"]
+    assert len(user_finals) == 2
+    assert user_finals[-1]["spec"].get("same_turn") is True
+
+    row = writer.turn_metrics()[-1]
+    assert row["user_text"] == "My name is Jane and the company is Acme"
+
+
+def test_new_turn_starts_after_a_real_agent_answer(tmp_path) -> None:
+    """A longer, genuine agent reply still ends the turn as before."""
+    obs, writer = _observer(tmp_path, first_speaker="user")
+
+    obs.on_transcript("user", "My name is Jane", final=True, source="lk.transcription")
+    turn_after_first = obs.turn
+    obs.on_transcript(
+        "agent",
+        "Thanks Jane, could you tell me your company name as well, please?",
+        final=True,
+        source="app.transcript",
+    )
+    obs.on_transcript("user", "Acme Corp", final=True, source="lk.transcription")
+
+    assert obs.turn == turn_after_first + 1
+
+
 def test_parse_transcript_payload_custom_type_from_config(tmp_path) -> None:
     obs, _ = _observer(
         tmp_path,
