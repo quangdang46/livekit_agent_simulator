@@ -238,7 +238,10 @@ impl EventWriter {
                 "transcript.user.final" => {
                     if let Some(s) = spec {
                         let text = s.get("text").cloned().unwrap_or(Json::Null);
-                        let same_turn = s.get("same_turn").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let same_turn = s
+                            .get("same_turn")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
                         let prior = row.get("user_text").cloned().unwrap_or(Json::Null);
                         match (same_turn, prior.as_str(), text.as_str()) {
                             // Split-utterance continuation — append, don't
