@@ -109,20 +109,30 @@ def parse_judgment_payload(raw: dict[str, Any]) -> JudgmentResult:
         verdict_raw = "error"
 
     criteria: list[CriterionScore] = []
+    ungrounded_criteria = False
     for item in raw.get("criteria") or []:
         if not isinstance(item, dict):
             continue
         met = item.get("met")
         if met is None:
             met = bool(item.get("pass"))
+        met = bool(met)
         relevant = item.get("relevant")
         if relevant is None:
             relevant = True
+        evidence = str(item.get("evidence") or item.get("rationale") or "").strip()
+        if met and not evidence:
+            # An ungrounded "met" claim — the judge didn't cite any transcript
+            # evidence for it. Don't trust it blindly (this is how a
+            # topically-related-but-wrong agent reply slips past as a pass);
+            # flip to unmet and flag the whole judgment for human review.
+            met = False
+            ungrounded_criteria = True
         criteria.append(
             CriterionScore(
                 criterion=str(item.get("criterion") or item.get("id") or ""),
-                met=bool(met),
-                evidence=str(item.get("evidence") or item.get("rationale") or ""),
+                met=met,
+                evidence=evidence,
                 relevant=bool(relevant),
             )
         )
@@ -184,7 +194,7 @@ def parse_judgment_payload(raw: dict[str, Any]) -> JudgmentResult:
         score=score,
         criteria=criteria,
         confidence=confidence,
-        needs_human_review=bool(raw.get("needs_human_review")),
+        needs_human_review=bool(raw.get("needs_human_review")) or ungrounded_criteria,
         critical_failure=bool(raw.get("critical_failure")),
         notes=str(raw.get("notes") or raw.get("reasoning") or ""),
         judge_id=str(raw["judge_id"]) if raw.get("judge_id") else None,

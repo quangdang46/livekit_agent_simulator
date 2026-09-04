@@ -40,12 +40,21 @@ def apply_relevancy(result: JudgmentResult) -> JudgmentResult:
 
     # All relevant criteria met — promote maybe→pass if model was uncertain on noise
     verdict = result.verdict
+    needs_human_review = result.needs_human_review
     if verdict == "fail":
-        # Model said fail but all relevant met (irrelevant fails) → pass
+        # Model self-labeled the failing criteria as "irrelevant" and flipped
+        # the overall verdict to fail→pass on that basis alone. That
+        # self-label is not independently verified (see parse_judgment_payload
+        # grounding check), so a judge that mistook a topically-related but
+        # wrong answer for "irrelevant" could silently launder a real failure
+        # into a pass. Keep the promotion (it's usually right), but flag for
+        # human review instead of trusting it blindly.
         verdict = "pass"
+        needs_human_review = True
     return replace(
         result,
         verdict=verdict if verdict in ("pass", "fail", "maybe") else "pass",
+        needs_human_review=needs_human_review,
     )
 
 
