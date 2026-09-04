@@ -60,8 +60,6 @@ pub struct OutcomeExpect {
     pub negate: bool,
     pub prompt: Option<String>,
     pub role: String,
-    /// transcript_contains only: invert match — pass when NONE of `phrases` appear.
-    pub negate: bool,
     pub min_agent_finals_after_barge_in: i64,
     pub min_interruptions: i64,
     pub max_ms_after_barge_to_agent_final: Option<i64>,
@@ -439,7 +437,6 @@ pub fn parse_assert_spec(spec: &Map<String, Json>, path_label: &str) -> Result<A
                 phrases,
                 negate: m.get("negate").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt: m.get("prompt").and_then(|v| v.as_str()).map(String::from),
-                negate: m.get("negate").and_then(|v| v.as_bool()).unwrap_or(false),
                 role: as_str(m.get("role").unwrap_or(&Json::String("any".into()))),
                 min_agent_finals_after_barge_in: m
                     .get("min_agent_finals_after_barge_in")

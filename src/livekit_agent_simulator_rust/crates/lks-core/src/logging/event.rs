@@ -237,10 +237,20 @@ impl EventWriter {
             match kind {
                 "transcript.user.final" => {
                     if let Some(s) = spec {
-                        row.insert(
-                            "user_text".into(),
-                            s.get("text").cloned().unwrap_or(Json::Null),
-                        );
+                        let text = s.get("text").cloned().unwrap_or(Json::Null);
+                        let same_turn = s.get("same_turn").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let prior = row.get("user_text").cloned().unwrap_or(Json::Null);
+                        match (same_turn, prior.as_str(), text.as_str()) {
+                            // Split-utterance continuation — append, don't
+                            // overwrite, so the full utterance is visible to
+                            // latency/judge checks.
+                            (true, Some(p), Some(t)) if !p.is_empty() => {
+                                row.insert("user_text".into(), json!(format!("{p} {t}").trim()));
+                            }
+                            _ => {
+                                row.insert("user_text".into(), text);
+                            }
+                        }
                     }
                 }
                 "transcript.agent.final" => {

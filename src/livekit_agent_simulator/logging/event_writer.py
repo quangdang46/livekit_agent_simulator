@@ -216,7 +216,14 @@ class EventWriter:
             kind = e["kind"]
             spec = e.get("spec", {})
             if kind == "transcript.user.final":
-                row["user_text"] = spec.get("text")
+                text = spec.get("text")
+                if spec.get("same_turn") and row["user_text"]:
+                    # Split-utterance continuation (observer merged a second
+                    # final into this turn) — append, don't overwrite, so the
+                    # full utterance is visible to latency/judge checks.
+                    row["user_text"] = f"{row['user_text']} {text}".strip()
+                else:
+                    row["user_text"] = text
             elif kind == "transcript.agent.final":
                 row["agent_text"] = spec.get("text")
                 if spec.get("turn_taking_ms") is not None:
