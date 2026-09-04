@@ -56,6 +56,8 @@ pub struct OutcomeExpect {
     pub id: String,
     pub otype: String,
     pub phrases: Vec<String>,
+    /// transcript_contains only: invert match — pass when NONE of `phrases` appear.
+    pub negate: bool,
     pub prompt: Option<String>,
     pub role: String,
     /// transcript_contains only: invert match — pass when NONE of `phrases` appear.
@@ -435,6 +437,7 @@ pub fn parse_assert_spec(spec: &Map<String, Json>, path_label: &str) -> Result<A
                 id,
                 otype,
                 phrases,
+                negate: m.get("negate").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt: m.get("prompt").and_then(|v| v.as_str()).map(String::from),
                 negate: m.get("negate").and_then(|v| v.as_bool()).unwrap_or(false),
                 role: as_str(m.get("role").unwrap_or(&Json::String("any".into()))),
