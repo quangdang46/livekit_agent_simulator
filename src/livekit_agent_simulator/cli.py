@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import typer
+from .update_check import notify_update, run_update, start_background_check
 
 
 def _ensure_utf8_stdio() -> None:
@@ -684,8 +685,21 @@ def mcp_serve() -> None:
     mcp_main()
 
 
+@app.command()
+def update() -> None:
+    """Update lks to the latest version via the detected package manager."""
+    success = run_update()
+    raise typer.Exit(0 if success else 1)
+
+
 def main() -> None:
-    app()
+    start_background_check()
+    try:
+        app()
+    except SystemExit:
+        notify_update()
+        raise
+    notify_update()
 
 
 if __name__ == "__main__":

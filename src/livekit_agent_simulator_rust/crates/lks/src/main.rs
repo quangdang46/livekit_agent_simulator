@@ -4,6 +4,7 @@
 //! Python `lks` CLI. `--version`/`--help` from clap (typer-equivalent).
 
 mod tui;
+mod update;
 
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
@@ -327,11 +328,14 @@ enum Command {
         #[arg(long)]
         no_open: bool,
     },
+    /// Update lksr to the latest version from GitHub releases.
+    Update,
 }
 
 fn main() -> anyhow::Result<()> {
     // reqwest + livekit both use rustls — install one default CryptoProvider.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    update::start_background_check();
     let cli = Cli::parse();
     let root = cli.root.clone();
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -341,6 +345,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         None => {
             println!("lksr {}", env!("CARGO_PKG_VERSION"));
+            update::notify_update();
             Ok(())
         }
         Some(Command::Tui) => tui::run(std::path::Path::new(&root)),
@@ -957,6 +962,11 @@ fn main() -> anyhow::Result<()> {
             )
             .map_err(anyhow::Error::msg)?;
             print_map(&s)
+        }
+        Some(Command::Update) => {
+            update::run_update().ok();
+            update::notify_update();
+            Ok(())
         }
     }
 }
