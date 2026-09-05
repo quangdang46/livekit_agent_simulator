@@ -101,3 +101,27 @@ pub fn should_end_call_on_turn(
     }
     ended || farewell
 }
+
+/// Locale-aware hang-up farewell text (port of `script/farewell.py`).
+/// Uses `language` (normalized: lowercase, `_` → `-`, base fallback to `en`).
+pub fn default_hangup_farewell(language: &str) -> &'static str {
+    let lang = language.to_lowercase().replace('_', "-");
+    let base = lang.split('-').next().unwrap_or("en");
+    match base {
+        "vi" => "Cảm ơn bạn. Tạm biệt.",
+        "ja" => "ありがとうございます。失礼します。",
+        _ => "Okay, thanks. Bye.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn farewell_defaults() {
+        assert_eq!(default_hangup_farewell("en"), "Okay, thanks. Bye.");
+        assert_eq!(default_hangup_farewell("vi-VN"), "Cảm ơn bạn. Tạm biệt.");
+        assert_eq!(default_hangup_farewell("ja-JP"), "ありがとうございます。失礼します。");
+        assert_eq!(default_hangup_farewell("ko"), "Okay, thanks. Bye."); // fallback en
+    }
+}

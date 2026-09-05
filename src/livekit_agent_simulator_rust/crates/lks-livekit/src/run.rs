@@ -412,6 +412,7 @@ pub async fn execute_scenario_parsed(
         let project_root_owned = project_root.to_path_buf();
         let shared_mic_closure = shared_mic.clone();
         let cue_tx_script = cue_tx.clone();
+        let locale = cfg.simulator.language.clone();
         let runtime = crate::script::ScriptRuntime::new(
             scenario.script_steps.clone(),
             script_writer,
@@ -509,6 +510,7 @@ pub async fn execute_scenario_parsed(
                 }
                 _ => Ok(()),
             }),
+            locale,
         );
         Some(tokio::spawn(
             async move { runtime.run(end_rx_script).await },
