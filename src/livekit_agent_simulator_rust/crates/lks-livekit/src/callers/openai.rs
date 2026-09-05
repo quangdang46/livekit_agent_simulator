@@ -187,6 +187,10 @@ impl OpenAiCallerBridge {
             false,
             None,
         );
+        crate::callers::openai::LAST_ANY_ACTIVITY_MS.store(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         drop(w);
         // sim.heard_agent (port of openai.py:1202).
         let mut w = writer.lock().await;
@@ -1019,6 +1023,9 @@ pub static AGENT_ACTIVE_SPEAKER: AtomicBool = AtomicBool::new(false);
 /// the hold-music-timeout watchdog in run.rs (port of
 /// observer.last_agent_activity_mono).
 pub static LAST_AGENT_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
+/// Last transcript event (user or agent final) — used by dead_call_silence
+/// watchdog (port of observer.last_activity_mono fallback chain).
+pub static LAST_ANY_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 /// True once the agent produced any audio this run.
 pub static AGENT_HAS_SPOKEN: AtomicBool = AtomicBool::new(false);
 
@@ -1135,6 +1142,10 @@ async fn pump_openai_events(
                                 false,
                                 None,
                             );
+                            crate::callers::openai::LAST_ANY_ACTIVITY_MS.store(
+                                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
+                                std::sync::atomic::Ordering::SeqCst,
+                            );
                             let mut src = serde_json::Map::new();
                             src.insert("provider".into(), json!("openai"));
                             src.insert("voice_gain".into(), json!(1.0));
@@ -1209,6 +1220,10 @@ async fn pump_openai_events(
                                 None,
                                 false,
                                 None,
+                            );
+                            crate::callers::openai::LAST_ANY_ACTIVITY_MS.store(
+                                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
+                                std::sync::atomic::Ordering::SeqCst,
                             );
                             // sim.caller.audio_source_start once per utterance.
                             let mut src = serde_json::Map::new();

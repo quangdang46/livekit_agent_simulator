@@ -670,6 +670,8 @@ pub async fn execute_scenario_parsed(
     // Hold-music-timeout watchdog (P2.J port): agent dead air >=
     // Execute.spec.hold_music_timeout_s after the agent spoke once → sim
     // hangs up with end_reason hold_music_timeout (run_orchestrator.py:757-806).
+    let silence_end_reason: std::sync::Arc<std::sync::atomic::AtomicBool> =
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (hold_tx, _hold_rx) = tokio::sync::mpsc::channel::<()>(1);
     let hold_task = scenario.execute.as_ref().and_then(|ex| ex.hold_music_timeout_s).map(
         |timeout_s| {
@@ -721,6 +723,63 @@ pub async fn execute_scenario_parsed(
             })
         },
     );
+
+    // dead_call_silence watchdog (port of run_orchestrator.py:742-834):
+    // no transcript activity for 3x silence_threshold_ms -> end run.
+    let silence_dead_ms = cfg.observe.silence_threshold_ms * 3;
+    let end_silence = end_tx.clone();
+    let silence_flag = silence_end_reason.clone();
+    let silence_task = tokio::spawn({
+        let w = writer_arc.clone();
+        let end = end_silence;
+        async move {
+            let mut armed = false;
+            let mut silence_event_fired = false;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let last_any = crate::callers::openai::LAST_ANY_ACTIVITY_MS
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                if last_any == 0 {
+                    continue;
+                }
+                armed = true;
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let silent_for = now_ms - last_any;
+                if silent_for >= cfg.observe.silence_threshold_ms && !silence_event_fired {
+                    {
+                        let mut w = w.lock().await;
+                        w.emit(
+                            "silence.detected",
+                            Some(&serde_json::json!({
+                                "duration_ms": silent_for,
+                                "scripted_user_silence": false,
+                            })
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default()),
+                            "observer",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                    }
+                    silence_event_fired = true;
+                }
+                if silent_for < cfg.observe.silence_threshold_ms {
+                    silence_event_fired = false;
+                }
+                if armed && silent_for >= silence_dead_ms {
+                    silence_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = end.send(());
+                    return;
+                }
+            }
+        }
+    });
 
     // Interruption-rate runner (P1.K port of InterruptRateRunner): recurring
     // barges while the agent is the active speaker. Emits the same
@@ -870,6 +929,7 @@ pub async fn execute_scenario_parsed(
     if let Some(t) = rate_task {
         t.abort();
     }
+    silence_task.abort();
 
     // --- finalize ---
     let mut status = match &run_result {
@@ -935,18 +995,29 @@ pub async fn execute_scenario_parsed(
             }
         }
         Err(e) => {
-            if e.to_string().contains("Agent `") && e.to_string().contains("did not join") {
+            let msg = e.to_string();
+            if msg.contains("Agent `") && msg.contains("did not join") {
+                // dispatch.agent_timeout (port of run_orchestrator.py:285-291)
+                let spec = serde_json::json!({"error": msg, "mode": scenario.effective_caller_mode()});
+                w.emit("dispatch.agent_timeout", Some(spec.as_object().unwrap()), "mcp", None, None, false, None);
                 "agent_join_timeout"
             } else {
+                // sim.leg_error (port of run_orchestrator.py:287)
+                let spec = serde_json::json!({"error": msg, "mode": scenario.effective_caller_mode()});
+                w.emit("sim.leg_error", Some(spec.as_object().unwrap()), "sim", None, None, false, None);
                 "error"
             }
         }
     };
+    let mut end_reason = end_reason.to_string();
+    if silence_end_reason.load(std::sync::atomic::Ordering::SeqCst) && end_reason.is_empty() {
+        end_reason = "dead_call_silence".to_string();
+    }
     {
         let mut ec = serde_json::Map::new();
         ec.insert(
             "reason".into(),
-            serde_json::Value::String(end_reason.into()),
+            serde_json::Value::String(end_reason.clone()),
         );
         w.emit(
             "run.end_condition",
