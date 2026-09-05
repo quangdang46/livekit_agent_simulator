@@ -54,12 +54,27 @@ fn parse_judgment_bad_score_none() {
 
 #[test]
 fn parse_judgment_criteria_pass_alias() {
+    // `pass` is accepted as a met alias (grounded by evidence — see #99).
     let raw = as_map(json!({
         "verdict": "pass",
-        "criteria": [{"criterion": "c1", "pass": true}]
+        "criteria": [{"criterion": "c1", "pass": true, "evidence": "quoted line"}]
     }));
     let j = parse_judgment_payload(&raw);
     assert!(j.criteria[0].met, "pass alias → met");
+    assert_eq!(j.needs_human_review, false);
+}
+
+#[test]
+fn parse_judgment_ungrounded_met_not_trusted() {
+    // Python test_parse_judgment_ungrounded_met_criterion_is_not_trusted (#99):
+    // met=true with NO evidence flips to unmet + flags human review.
+    let raw = as_map(json!({
+        "verdict": "pass",
+        "criteria": [{"criterion": "asked for company name", "pass": true, "evidence": ""}]
+    }));
+    let j = parse_judgment_payload(&raw);
+    assert!(!j.criteria[0].met, "ungrounded met must flip to unmet");
+    assert!(j.needs_human_review, "ungrounded claim flags human review");
 }
 
 #[test]

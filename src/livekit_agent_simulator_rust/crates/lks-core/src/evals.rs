@@ -295,6 +295,10 @@ pub fn parse_judgment_payload(raw: &Map<String, Json>) -> JudgmentResult {
     }
 
     let mut criteria: Vec<CriterionScore> = Vec::new();
+    // Ungrounded "met" claims (no evidence cited) are flipped to unmet and
+    // flag the whole judgment for human review (port of commit #99 — don't
+    // trust ungrounded met=true).
+    let mut ungrounded_criteria = false;
     if let Some(items) = raw.get("criteria").and_then(|v| v.as_array()) {
         for item in items {
             let Some(m) = item.as_object() else { continue };
@@ -304,6 +308,19 @@ pub fn parse_judgment_payload(raw: &Map<String, Json>) -> JudgmentResult {
                 .or_else(|| m.get("pass").map(as_bool))
                 .unwrap_or(false);
             let relevant = m.get("relevant").map(as_bool).unwrap_or(true);
+            let evidence = as_str(
+                m.get("evidence")
+                    .or_else(|| m.get("rationale"))
+                    .unwrap_or(&Json::String("".into())),
+            )
+            .trim()
+            .to_string();
+            let met = if met && evidence.is_empty() {
+                ungrounded_criteria = true;
+                false
+            } else {
+                met
+            };
             criteria.push(CriterionScore {
                 criterion: as_str(
                     m.get("criterion")
@@ -311,11 +328,7 @@ pub fn parse_judgment_payload(raw: &Map<String, Json>) -> JudgmentResult {
                         .unwrap_or(&Json::String("".into())),
                 ),
                 met,
-                evidence: as_str(
-                    m.get("evidence")
-                        .or_else(|| m.get("rationale"))
-                        .unwrap_or(&Json::String("".into())),
-                ),
+                evidence,
                 relevant,
             });
         }
@@ -403,7 +416,8 @@ pub fn parse_judgment_payload(raw: &Map<String, Json>) -> JudgmentResult {
         score,
         criteria,
         confidence,
-        needs_human_review: raw.get("needs_human_review").map(as_bool).unwrap_or(false),
+        needs_human_review: raw.get("needs_human_review").map(as_bool).unwrap_or(false)
+            || ungrounded_criteria,
         critical_failure: raw.get("critical_failure").map(as_bool).unwrap_or(false),
         notes: as_str(
             raw.get("notes")
@@ -463,15 +477,29 @@ pub fn apply_relevancy(result: JudgmentResult) -> JudgmentResult {
             ..result
         };
     }
-    // All relevant criteria met — promote fail → pass (irrelevant fails), sanitize.
-    let verdict = if result.verdict == "fail" {
+    // All relevant criteria met — promote fail → pass (irrelevant fails). The
+    // promotion is based on the model's own "irrelevant" self-label, so flag
+    // for human review instead of trusting it blindly (Python relevancy.py).
+    let mut verdict = if result.verdict == "fail" {
         "pass".to_string()
     } else if result.verdict == "pass" || result.verdict == "maybe" {
         result.verdict.clone()
     } else {
         "pass".to_string()
     };
-    JudgmentResult { verdict, ..result }
+    if !matches!(verdict.as_str(), "pass" | "fail" | "maybe") {
+        verdict = "pass".to_string();
+    }
+    let needs_human_review = if result.verdict == "fail" && verdict == "pass" {
+        true
+    } else {
+        result.needs_human_review
+    };
+    JudgmentResult {
+        verdict,
+        needs_human_review,
+        ..result
+    }
 }
 
 /// Multi-judge aggregation (port of `evals/aggregate.py`) — LiveKit

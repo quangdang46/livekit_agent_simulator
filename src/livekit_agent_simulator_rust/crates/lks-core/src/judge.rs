@@ -591,8 +591,20 @@ pub async fn judge_run(
         }
         .to_dict();
     };
+    // Builtin preset expansion (port of runner._judge expand_criteria).
+    let criteria = match crate::presets::expand_criteria(pass_criteria) {
+        Ok(c) => c,
+        Err(e) => {
+            return JudgmentResult {
+                verdict: "error".into(),
+                notes: e,
+                ..Default::default()
+            }
+            .to_dict()
+        }
+    };
     let (transcript, tool_spans) = build_evidence_packet(turns, tool_events);
-    let user = build_user_prompt(pass_criteria, &transcript, &tool_spans, None, false);
+    let user = build_user_prompt(&criteria, &transcript, &tool_spans, None, false);
     // Backend dispatch (port of evals/backend.py): gemini mode → native
     // generateContent; endpoint_type anthropic → Messages wire; else OpenAI
     // chat completions.
@@ -674,28 +686,59 @@ pub async fn judge_run(
 pub async fn judge_run_multi(
     judge_cfg: Option<&crate::config::JudgeConfig>,
     sim_api_key: &str,
-    pass_criteria: &[String],
+    _pass_criteria: &[String], // global flat criteria — multi mode uses per-group criteria (Python parity)
     turns: &[Map<String, Json>],
     tool_events: &[Map<String, Json>],
     judges: &[Map<String, Json>],
     mode: &str,
 ) -> Map<String, Json> {
-    if pass_criteria.is_empty() {
-        return crate::evals::JudgmentResult {
+    if judges.is_empty() {
+        return JudgmentResult {
             verdict: "skipped".into(),
-            notes: "No criteria.".into(),
+            notes: "No judges.".into(),
             ..Default::default()
         }
         .to_dict();
     }
     // Per-judge overrides: judge_id, model, temperature, base_url, api_key.
+    // Per-judge criteria from the group (builtin preset prepended + expanded —
+    // port of runner.judge_run_multi expand_judge_group per judge).
     let mut results: Vec<Map<String, Json>> = Vec::new();
     for j in judges {
-        let judge_id = j
-            .get("judge_id")
+        let group = match crate::presets::expand_judge_group(j) {
+            Ok(g) => g,
+            Err(e) => {
+                let mut r = JudgmentResult {
+                    verdict: "error".into(),
+                    notes: e,
+                    ..Default::default()
+                }
+                .to_dict();
+                r.insert(
+                    "judge_id".into(),
+                    serde_json::Value::String(
+                        j.get("id")
+                            .or_else(|| j.get("judge_id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("judge")
+                            .to_string(),
+                    ),
+                );
+                results.push(r);
+                continue;
+            }
+        };
+        let judge_id = group
+            .get("id")
+            .or_else(|| j.get("judge_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("judge")
             .to_string();
+        let group_criteria: Vec<String> = group
+            .get("criteria")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect())
+            .unwrap_or_default();
         let per = crate::config::JudgeConfig {
             model: j
                 .get("model")
@@ -721,11 +764,133 @@ pub async fn judge_run_multi(
                 .map(|c| c.endpoint_type.clone())
                 .unwrap_or_default(),
         };
-        let mut v = judge_run(Some(&per), sim_api_key, pass_criteria, turns, tool_events).await;
-        if !judge_id.is_empty() {
-            v.insert("judge_id".into(), serde_json::Value::String(judge_id));
-        }
+        let mut v =
+            judge_run(Some(&per), sim_api_key, &group_criteria, turns, tool_events).await;
+        v.insert("judge_id".into(), serde_json::Value::String(judge_id));
         results.push(v);
     }
     crate::evals::aggregate_judges(&results, mode)
+}
+
+/// Goals judge for `goals_met` asserts (port of `runner.judge_goals`):
+/// verify the CALLER stated/pursued at least `min_goals` of `goals`.
+/// Returns `{verdict, score, notes, ...}` (verdict pass|fail|maybe|skipped|error).
+pub async fn judge_goals(
+    judge_cfg: Option<&JudgeConfig>,
+    sim_api_key: &str,
+    goals: &[String],
+    min_goals: i64,
+    turns: &[Map<String, Json>],
+) -> Map<String, Json> {
+    if judge_cfg.is_none() {
+        let mut r = JudgmentResult {
+            verdict: "skipped".into(),
+            notes: "goals_met skipped: no judge config.".into(),
+            ..Default::default()
+        }
+        .to_dict();
+        r.insert("score".into(), json!(0));
+        return r;
+    }
+    let resolved = resolve_judge(judge_cfg, Some(sim_api_key));
+    if !resolved.ready {
+        let mut r = JudgmentResult {
+            verdict: "skipped".into(),
+            notes: resolved.skip_reason.clone(),
+            ..Default::default()
+        }
+        .to_dict();
+        r.insert("score".into(), json!(0));
+        return r;
+    }
+    // Goal criteria text mirrors runner.judge_goals verbatim.
+    let criteria = vec![format!(
+        "The simulated caller stated or pursued the following goal(s) before the \
+         call ended: {goals:?}. Verify at least {min_goals} of {n} goals were \
+         explicitly mentioned or pursued.",
+        goals = goals,
+        min_goals = min_goals,
+        n = goals.len(),
+    )];
+    let (transcript, tool_spans) = build_evidence_packet(turns, &[]);
+    let user = build_user_prompt(&criteria, &transcript, &tool_spans, None, true);
+    let Some(api_key) = resolved.api_key.clone() else {
+        let mut r = JudgmentResult {
+            verdict: "skipped".into(),
+            notes: resolved.skip_reason.clone(),
+            ..Default::default()
+        }
+        .to_dict();
+        r.insert("score".into(), json!(0));
+        return r;
+    };
+    let text = if resolved.mode == "gemini" && resolved.base_url.is_none() {
+        let backend = GeminiRestBackend {
+            api_key,
+            model: resolved.model.clone(),
+            temperature: resolved.temperature,
+            timeout_s: 180,
+        };
+        match backend.complete_json(JUDGE_SYSTEM, &user).await {
+            Ok(t) => t,
+            Err(e) => {
+                let mut r = JudgmentResult {
+                    verdict: "error".into(),
+                    notes: e,
+                    ..Default::default()
+                }
+                .to_dict();
+                r.insert("score".into(), json!(0));
+                return r;
+            }
+        }
+    } else {
+        let Some(base_url) = resolved.base_url.clone() else {
+            let mut r = JudgmentResult {
+                verdict: "skipped".into(),
+                notes: resolved.skip_reason.clone(),
+                ..Default::default()
+            }
+            .to_dict();
+            r.insert("score".into(), json!(0));
+            return r;
+        };
+        let complete = |base_url: String| async {
+            if resolved.endpoint_type == "anthropic" {
+                let backend = HttpAnthropicBackend {
+                    base_url,
+                    api_key: api_key.clone(),
+                    model: resolved.model.clone(),
+                    temperature: resolved.temperature,
+                    max_tokens: 2048,
+                    timeout_s: 180,
+                };
+                backend.complete_json(JUDGE_SYSTEM, &user).await
+            } else {
+                let backend = HttpOpenAIBackend {
+                    base_url,
+                    api_key: api_key.clone(),
+                    model: resolved.model.clone(),
+                    temperature: resolved.temperature,
+                    timeout_s: 180,
+                };
+                backend.complete_json(JUDGE_SYSTEM, &user).await
+            }
+        };
+        match complete(base_url).await {
+            Ok(t) => t,
+            Err(e) => {
+                let mut r = JudgmentResult {
+                    verdict: "error".into(),
+                    notes: e,
+                    ..Default::default()
+                }
+                .to_dict();
+                r.insert("score".into(), json!(0));
+                return r;
+            }
+        }
+    };
+    let parsed = apply_relevancy(parse_judgment_payload(&repair_json(&text)));
+    parsed.to_dict()
 }

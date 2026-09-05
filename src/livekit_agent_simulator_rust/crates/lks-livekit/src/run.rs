@@ -1055,6 +1055,28 @@ pub async fn execute_scenario_parsed(
             serde_json::Value::Object(script_verify),
         );
     }
+    // llm_bool outcome prompts (extra judge criteria) + goals_met outcomes
+    // (resolved via judge_goals after the soft judge) — mirror Python, which
+    // reads scenario.asserts regardless of run status (run_orchestrator.py:583,
+    // 616-624).
+    let (llm_criteria, goals_outcomes) = {
+        let mut llm: Vec<String> = Vec::new();
+        let mut goals: Vec<(String, i64, Vec<String>)> = Vec::new();
+        if let Some(am) = scenario.asserts.as_ref().and_then(|v| v.as_object()) {
+            if let Ok(spec) = lks_core::asserts::parse_assert_spec(am, "Assert") {
+                for oc in &spec.outcomes {
+                    if oc.otype == "llm_bool" {
+                        if let Some(p) = &oc.prompt {
+                            llm.push(format!("[outcome:{}] {p}", oc.id));
+                        }
+                    } else if oc.otype == "goals_met" {
+                        goals.push((oc.id.clone(), oc.min_goals, oc.goals.clone()));
+                    }
+                }
+            }
+        }
+        (llm, goals)
+    };
     if status == "done" {
         if let Some(asserts_map) = scenario.asserts.as_ref().and_then(|v| v.as_object()) {
             match lks_core::asserts::parse_assert_spec(asserts_map, "Assert") {
@@ -1066,7 +1088,7 @@ pub async fn execute_scenario_parsed(
                         w.emit(
                             "assert.verify",
                             Some(&assert_result),
-                            "sim.assert",
+                            "mcp",
                             None,
                             None,
                             false,
@@ -1139,7 +1161,8 @@ pub async fn execute_scenario_parsed(
     }
 
     // LLM judge over pass_criteria (P7) — HTTP backend (judge.base_url + key).
-    if !scenario.pass_criteria.is_empty() {
+    // Soft judge only (Python parity): no judge config → no judge at all.
+    if cfg.judge.is_some() && !scenario.pass_criteria.is_empty() {
         let turns: Vec<serde_json::Map<String, serde_json::Value>> = w
             .events()
             .iter()
@@ -1153,7 +1176,10 @@ pub async fn execute_scenario_parsed(
             .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some("tool.start"))
             .cloned()
             .collect();
-        let criteria: Vec<String> = scenario.pass_criteria.clone();
+        // Include llm_bool outcome prompts as extra criteria when present
+        // (run_orchestrator.py:583-587).
+        let mut criteria: Vec<String> = scenario.pass_criteria.clone();
+        criteria.extend(llm_criteria.clone());
         let verdict = if scenario.pass_judges.is_empty() {
             lks_core::judge::judge_run(
                 cfg.judge.as_ref(),
@@ -1175,7 +1201,103 @@ pub async fn execute_scenario_parsed(
             )
             .await
         };
+        {
+            let mut w = writer_arc.lock().await;
+            w.emit("judge.verdict", Some(&verdict), "mcp", None, None, false, None);
+        }
         summary.insert("verdict".into(), serde_json::Value::Object(verdict));
+    }
+
+    // Post-run goals_met (port of run_orchestrator.py:616-685): hard fail only
+    // on an explicit LLM fail; judge unavailable → soft-skip.
+    if cfg.judge.is_some() {
+        let persona_goals: Vec<String> = scenario
+            .persona
+            .get("goals")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|g| g.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        for (oc_id, min_goals, oc_goals) in &goals_outcomes {
+            let goal_list: Vec<String> = if oc_goals.is_empty() {
+                persona_goals.clone()
+            } else {
+                oc_goals.clone()
+            };
+            if goal_list.is_empty() {
+                continue;
+            }
+            let goals_result = lks_core::judge::judge_goals(
+                cfg.judge.as_ref(),
+                &cfg.simulator.api_key,
+                &goal_list,
+                *min_goals,
+                &w.turn_metrics(),
+            )
+            .await;
+            let gv = goals_result
+                .get("verdict")
+                .and_then(|v| v.as_str())
+                .unwrap_or("fail")
+                .to_lowercase();
+            let notes = goals_result
+                .get("notes")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if gv == "skipped" || gv == "error" {
+                let spec = serde_json::json!({
+                    "outcome_id": oc_id,
+                    "min_goals": min_goals,
+                    "goals": goal_list,
+                    "verdict": gv,
+                    "pass": true,
+                    "skipped": true,
+                    "notes": if notes.is_empty() { "goals_met soft-skipped (judge unavailable).".to_string() } else { notes },
+                });
+                let mut w2 = writer_arc.lock().await;
+                w2.emit("assert.goals_met", Some(spec.as_object().unwrap()), "mcp", None, None, false, None);
+                continue;
+            }
+            let gs = goals_result
+                .get("score")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let goals_pass = gv == "pass" && gs >= 50;
+            let spec = serde_json::json!({
+                "outcome_id": oc_id,
+                "min_goals": min_goals,
+                "goals": goal_list,
+                "verdict": gv,
+                "score": gs,
+                "pass": goals_pass,
+                "notes": notes,
+            });
+            {
+                let mut w2 = writer_arc.lock().await;
+                w2.emit("assert.goals_met", Some(spec.as_object().unwrap()), "mcp", None, None, false, None);
+            }
+            if !goals_pass {
+                if status == "done" {
+                    status = "failed";
+                    summary.insert("status".into(), serde_json::Value::String("failed".into()));
+                }
+                meta.entry("goals_failed".to_string())
+                    .and_modify(|v| {
+                        if let Some(arr) = v.as_array_mut() {
+                            arr.push(serde_json::Value::String(oc_id.clone()));
+                        }
+                    })
+                    .or_insert_with(|| serde_json::json!([oc_id]));
+            }
+        }
+        // finalize already wrote meta.json before the goals flip — persist the
+        // updated meta (goals_failed) so artifacts match the final status.
+        if meta.get("goals_failed").is_some() {
+            let _ = std::fs::write(
+                report_dir.join("meta.json"),
+                serde_json::to_string_pretty(&meta).unwrap_or_default(),
+            );
+        }
     }
     // Merge verify/assert/caller extras + rewrite summary.json (port of
     // run_orchestrator.py:696-705 — extras always persisted).
