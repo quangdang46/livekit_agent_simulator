@@ -1431,6 +1431,12 @@ pub async fn execute_scenario_parsed(
         report_dir.join("summary.json"),
         serde_json::to_string_pretty(&summary).unwrap_or_default(),
     );
+    // Write review.md when judge verdict has renderable content (Python parity).
+    if let Some(verdict) = summary.get("verdict").and_then(|v| v.as_object()) {
+        if let Some(review_md) = lks_core::logging::event::render_review(verdict) {
+            let _ = std::fs::write(report_dir.join("review.md"), review_md);
+        }
+    }
 
     // Save conversation.wav (agent audio captured during the run).
     let audio_record_result = recorder.lock().ok().map(|mut rec| {

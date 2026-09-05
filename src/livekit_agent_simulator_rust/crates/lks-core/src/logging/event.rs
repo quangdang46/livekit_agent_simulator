@@ -398,7 +398,9 @@ impl EventWriter {
             );
         }
         let _ = std::fs::write(self.report_dir.join("timeline.md"), self.render_timeline());
-
+        // review.md — human-readable judge verdict (port of event_writer._render_review).
+        // Verdict is passed in from the summary map after judge resolution.
+        // Write handled by caller (run.rs) after verdict is inserted.
         summary
     }
 
@@ -495,6 +497,143 @@ pub fn describe(e: &Map<String, Json>) -> String {
             }
         }
         trunc(&keys.join(", "))
+    }
+}
+
+/// Render judge verdict as markdown review.md (port of
+/// event_writer._render_review). Returns None when verdict has no
+/// renderable content.
+pub fn render_review(verdict: &Map<String, Json>) -> Option<String> {
+    fn has_content(v: &Map<String, Json>) -> bool {
+        ["overall_summary", "strengths", "missing_checks", "language_naturalness", "final_assessment"]
+            .iter()
+            .any(|k| v.get(*k).map(|v| v.as_str().unwrap_or("").len() > 0).unwrap_or(false))
+    }
+    // Multi-judge: verdict.judges array present.
+    if let Some(judges) = verdict.get("judges").and_then(|v| v.as_array()) {
+        if judges.is_empty() { return None; }
+        let mut lines: Vec<String> = Vec::new();
+        let v = verdict.get("verdict").and_then(|v| v.as_str()).unwrap_or("");
+        let s = verdict.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
+        let c = verdict.get("confidence").and_then(|v| v.as_str()).unwrap_or("");
+        let m = verdict.get("needs_human_review").and_then(|v| v.as_bool()).unwrap_or(false);
+        lines.push("# Review".into());
+        lines.push(format!("Verdict: {v} | Score: {s} | Confidence: {c} | needs_human_review: {m}\n"));
+        for j in judges {
+            let jid = j.get("judge_id").or_else(|| j.get("id")).and_then(|v| v.as_str()).unwrap_or("judge");
+            lines.push(format!("## Judge: {jid}"));
+            if let Some(s) = j.get("overall_summary").and_then(|v| v.as_str()) {
+                if !s.is_empty() { lines.push("### Overall".into()); lines.push(s.to_string()); lines.push(String::new()); }
+            }
+            if let Some(arr) = j.get("strengths").and_then(|v| v.as_array()) {
+                if !arr.is_empty() { lines.push("### Strengths".into()); for item in arr { lines.push(format!("- {item}")); } lines.push(String::new()); }
+            }
+            if let Some(arr) = j.get("issues").and_then(|v| v.as_array()) {
+                if !arr.is_empty() { lines.push("### Findings".into()); for issue in arr {
+                    let title = issue.get("title").and_then(|v| v.as_str()).unwrap_or("issue");
+                    let sev = issue.get("severity").and_then(|v| v.as_str()).unwrap_or("Minor");
+                    let evid = issue.get("evidence").or_else(|| issue.get("agent_line")).and_then(|v| v.as_str()).unwrap_or("");
+                    let imp = issue.get("impact").and_then(|v| v.as_str()).unwrap_or("");
+                    let rec = issue.get("recommendation").and_then(|v| v.as_str()).unwrap_or("");
+                    lines.push(format!("### {title}"));
+                    lines.push(format!("Severity: {sev}"));
+                    if !evid.is_empty() { lines.push(format!("Evidence: {evid}")); }
+                    if !imp.is_empty() { lines.push(format!("Impact: {imp}")); }
+                    if !rec.is_empty() { lines.push(format!("Recommendation: {rec}")); }
+                    lines.push(String::new());
+                }}
+            }
+            if let Some(arr) = j.get("missing_checks").and_then(|v| v.as_array()) {
+                if !arr.is_empty() { lines.push("### Missing or Unclear Information".into()); for item in arr { lines.push(format!("- {item}")); } lines.push(String::new()); }
+            }
+            if let Some(arr) = j.get("language_naturalness").and_then(|v| v.as_array()) {
+                if !arr.is_empty() { lines.push("### Language and Conversation Quality".into()); for item in arr { lines.push(format!("- {item}")); } lines.push(String::new()); }
+            }
+            if let Some(obj) = j.get("final_assessment").and_then(|v| v.as_object()) {
+                if !obj.is_empty() {
+                    lines.push("### Final Assessment".into());
+                    let cats = ["goal_achievement","understanding","conversation_flow","clarity","user_experience"];
+                    lines.push("| Category | Assessment |".into());
+                    lines.push("|---|---|".into());
+                    for cat in cats.iter() {
+                        let val = obj.get(*cat).and_then(|v| v.as_str()).unwrap_or("");
+                        lines.push(format!("| {cat} | {val} |"));
+                    }
+                    if let Some(conclusion) = obj.get("conclusion").and_then(|v| v.as_str()) {
+                        lines.push(format!("\n**Conclusion:** {conclusion}"));
+                    }
+                    lines.push(String::new());
+                }
+            }
+            // Failed criteria count.
+            let empty_criteria = vec![];
+            let criteria = j.get("criteria").and_then(|v| v.as_array()).unwrap_or(&empty_criteria);
+            let total = criteria.len();
+            let met = criteria.iter().filter(|c| c.get("met").or_else(|| c.get("pass")).and_then(|v| v.as_bool()).unwrap_or(false)).count();
+            if met < total {
+                lines.push(format!("*{met}/{total} criteria met.*\n"));
+            }
+            if let Some(notes) = j.get("notes").and_then(|v| v.as_str()) {
+                if !notes.is_empty() { lines.push("## Notes".into()); lines.push(notes.to_string()); }
+            }
+        }
+        let out = lines.join("\n");
+        if out.trim().is_empty() { None } else { Some(out) }
+    } else {
+        // Single-judge mode.
+        if !has_content(verdict) { return None; }
+        let mut lines: Vec<String> = Vec::new();
+        let v = verdict.get("verdict").and_then(|v| v.as_str()).unwrap_or("");
+        let s = verdict.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
+        lines.push(format!("# Review\n\nVerdict: {v} | Score: {s}\n"));
+        if let Some(s) = verdict.get("overall_summary").and_then(|v| v.as_str()) {
+            if !s.is_empty() { lines.push(format!("## Overall\n{s}\n")); }
+        }
+        if let Some(arr) = verdict.get("strengths").and_then(|v| v.as_array()) {
+            if !arr.is_empty() { lines.push("## Strengths".into()); for item in arr { lines.push(format!("- {item}")); } lines.push(String::new()); }
+        }
+        if let Some(arr) = verdict.get("issues").and_then(|v| v.as_array()) {
+            if !arr.is_empty() { lines.push("## Findings".into()); for issue in arr {
+                let title = issue.get("title").and_then(|v| v.as_str()).unwrap_or("issue");
+                let sev = issue.get("severity").and_then(|v| v.as_str()).unwrap_or("Minor");
+                let evid = issue.get("evidence").or_else(|| issue.get("agent_line")).and_then(|v| v.as_str()).unwrap_or("");
+                let imp = issue.get("impact").and_then(|v| v.as_str()).unwrap_or("");
+                let rec = issue.get("recommendation").and_then(|v| v.as_str()).unwrap_or("");
+                lines.push(format!("### {title}"));
+                lines.push(format!("Severity: {sev}"));
+                if !evid.is_empty() { lines.push(format!("Evidence: {evid}")); }
+                if !imp.is_empty() { lines.push(format!("Impact: {imp}")); }
+                if !rec.is_empty() { lines.push(format!("Recommendation: {rec}")); }
+                lines.push(String::new());
+            }}
+        }
+        if let Some(arr) = verdict.get("missing_checks").and_then(|v| v.as_array()) {
+            if !arr.is_empty() { lines.push("## Missing or Unclear Information".into()); for item in arr { lines.push(format!("- {item}")); } lines.push(String::new()); }
+        }
+        if let Some(arr) = verdict.get("language_naturalness").and_then(|v| v.as_array()) {
+            if !arr.is_empty() { lines.push("## Language and Conversation Quality".into()); for item in arr { lines.push(format!("- {item}")); } lines.push(String::new()); }
+        }
+        if let Some(obj) = verdict.get("final_assessment").and_then(|v| v.as_object()) {
+            if !obj.is_empty() {
+                lines.push("## Final Assessment".into());
+                let cats = ["goal_achievement","understanding","conversation_flow","clarity","user_experience"];
+                lines.push("| Category | Assessment |".into());
+                lines.push("|---|---|".into());
+                for cat in cats.iter() {
+                    let val = obj.get(*cat).and_then(|v| v.as_str()).unwrap_or("");
+                    lines.push(format!("| {cat} | {val} |"));
+                }
+                if let Some(conclusion) = obj.get("conclusion").and_then(|v| v.as_str()) {
+                    lines.push(format!("\n**Conclusion:** {conclusion}"));
+                }
+                lines.push(String::new());
+            }
+        }
+        if let Some(notes) = verdict.get("notes").and_then(|v| v.as_str()) {
+            if !notes.is_empty() { lines.push("## Notes".into()); lines.push(notes.to_string()); }
+        }
+        let out = lines.join("\n");
+        if out.trim().is_empty() { None } else { Some(out) }
     }
 }
 
