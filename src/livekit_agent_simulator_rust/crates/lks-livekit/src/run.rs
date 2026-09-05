@@ -86,7 +86,10 @@ pub async fn execute_scenario(
 
     // Plugin before_run hooks (port of run_orchestrator:107-134).
     if !scenario.plugin_modules.is_empty() {
-        let _ = lks_core::plugin_bridge::ensure_plugins_loaded(project_root, Some(&scenario.plugin_modules));
+        let _ = lks_core::plugin_bridge::ensure_plugins_loaded(
+            project_root,
+            Some(&scenario.plugin_modules),
+        );
     }
     {
         let br_ctx = lks_core::plugin_bridge::BeforeRunContext {
@@ -214,14 +217,21 @@ pub async fn execute_scenario(
 
     // Plugin after_run hooks (port of run_orchestrator:134-145).
     {
-        let last_run_id = iterations.last()
+        let last_run_id = iterations
+            .last()
             .and_then(|it| it.get("run_id").and_then(|v| v.as_str()).map(String::from))
             .unwrap_or_default();
-        let last_status = iterations.last()
+        let last_status = iterations
+            .last()
             .and_then(|it| it.get("status").and_then(|v| v.as_str()).map(String::from))
             .unwrap_or_default();
-        let last_report = iterations.last()
-            .and_then(|it| it.get("report_dir").and_then(|v| v.as_str()).map(String::from))
+        let last_report = iterations
+            .last()
+            .and_then(|it| {
+                it.get("report_dir")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
             .unwrap_or_default();
         let ar_ctx = lks_core::plugin_bridge::AfterRunContext {
             scenario_id: scenario_id.to_string(),
@@ -775,6 +785,7 @@ pub async fn execute_scenario_parsed(
         let w = writer_arc.clone();
         let end = end_silence;
         async move {
+            #[allow(unused_assignments)]
             let mut armed = false;
             let mut silence_event_fired = false;
             loop {
@@ -795,13 +806,15 @@ pub async fn execute_scenario_parsed(
                         let mut w = w.lock().await;
                         w.emit(
                             "silence.detected",
-                            Some(&serde_json::json!({
-                                "duration_ms": silent_for,
-                                "scripted_user_silence": false,
-                            })
-                            .as_object()
-                            .cloned()
-                            .unwrap_or_default()),
+                            Some(
+                                &serde_json::json!({
+                                    "duration_ms": silent_for,
+                                    "scripted_user_silence": false,
+                                })
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                            ),
                             "observer",
                             None,
                             None,
@@ -1040,13 +1053,31 @@ pub async fn execute_scenario_parsed(
             let msg = e.to_string();
             if msg.contains("Agent `") && msg.contains("did not join") {
                 // dispatch.agent_timeout (port of run_orchestrator.py:285-291)
-                let spec = serde_json::json!({"error": msg, "mode": scenario.effective_caller_mode()});
-                w.emit("dispatch.agent_timeout", Some(spec.as_object().unwrap()), "mcp", None, None, false, None);
+                let spec =
+                    serde_json::json!({"error": msg, "mode": scenario.effective_caller_mode()});
+                w.emit(
+                    "dispatch.agent_timeout",
+                    Some(spec.as_object().unwrap()),
+                    "mcp",
+                    None,
+                    None,
+                    false,
+                    None,
+                );
                 "agent_join_timeout"
             } else {
                 // sim.leg_error (port of run_orchestrator.py:287)
-                let spec = serde_json::json!({"error": msg, "mode": scenario.effective_caller_mode()});
-                w.emit("sim.leg_error", Some(spec.as_object().unwrap()), "sim", None, None, false, None);
+                let spec =
+                    serde_json::json!({"error": msg, "mode": scenario.effective_caller_mode()});
+                w.emit(
+                    "sim.leg_error",
+                    Some(spec.as_object().unwrap()),
+                    "sim",
+                    None,
+                    None,
+                    false,
+                    None,
+                );
                 "error"
             }
         }
@@ -1365,7 +1396,15 @@ pub async fn execute_scenario_parsed(
         };
         {
             let mut w = writer_arc.lock().await;
-            w.emit("judge.verdict", Some(&verdict), "mcp", None, None, false, None);
+            w.emit(
+                "judge.verdict",
+                Some(&verdict),
+                "mcp",
+                None,
+                None,
+                false,
+                None,
+            );
         }
         summary.insert("verdict".into(), serde_json::Value::Object(verdict));
     }
@@ -1377,7 +1416,11 @@ pub async fn execute_scenario_parsed(
             .persona
             .get("goals")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|g| g.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|g| g.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         for (oc_id, min_goals, oc_goals) in &goals_outcomes {
             let goal_list: Vec<String> = if oc_goals.is_empty() {
@@ -1418,7 +1461,15 @@ pub async fn execute_scenario_parsed(
                     "notes": if notes.is_empty() { "goals_met soft-skipped (judge unavailable).".to_string() } else { notes },
                 });
                 let mut w2 = writer_arc.lock().await;
-                w2.emit("assert.goals_met", Some(spec.as_object().unwrap()), "mcp", None, None, false, None);
+                w2.emit(
+                    "assert.goals_met",
+                    Some(spec.as_object().unwrap()),
+                    "mcp",
+                    None,
+                    None,
+                    false,
+                    None,
+                );
                 continue;
             }
             let gs = goals_result
@@ -1437,7 +1488,15 @@ pub async fn execute_scenario_parsed(
             });
             {
                 let mut w2 = writer_arc.lock().await;
-                w2.emit("assert.goals_met", Some(spec.as_object().unwrap()), "mcp", None, None, false, None);
+                w2.emit(
+                    "assert.goals_met",
+                    Some(spec.as_object().unwrap()),
+                    "mcp",
+                    None,
+                    None,
+                    false,
+                    None,
+                );
             }
             if !goals_pass {
                 if status == "done" {
@@ -1483,7 +1542,10 @@ pub async fn execute_scenario_parsed(
     // Save conversation.wav (agent audio captured during the run).
     let audio_record_result = recorder.lock().ok().map(|mut rec| {
         let res = rec.save(&report_dir.join("conversation.wav"));
-        let t0_ms = rec.started_mono().map(|s| s.elapsed().as_millis() as i64).unwrap_or(0);
+        let t0_ms = rec
+            .started_mono()
+            .map(|s| s.elapsed().as_millis() as i64)
+            .unwrap_or(0);
         (res, t0_ms)
     });
     if let Some((res, t0_ms)) = audio_record_result {
@@ -1500,14 +1562,30 @@ pub async fn execute_scenario_parsed(
                 });
                 {
                     let mut w2 = writer_arc.lock().await;
-                    w2.emit("sim.audio_recorded", Some(spec.as_object().unwrap()), "sim", None, None, false, None);
+                    w2.emit(
+                        "sim.audio_recorded",
+                        Some(spec.as_object().unwrap()),
+                        "sim",
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
                 }
             }
             Err(e) => {
                 let spec = serde_json::json!({"where": "audio_finalize", "error": e});
                 {
                     let mut w2 = writer_arc.lock().await;
-                    w2.emit("sim.error", Some(spec.as_object().unwrap()), "sim", None, None, false, None);
+                    w2.emit(
+                        "sim.error",
+                        Some(spec.as_object().unwrap()),
+                        "sim",
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
                 }
             }
         }

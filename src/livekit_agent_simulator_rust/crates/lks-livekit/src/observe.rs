@@ -57,7 +57,10 @@ impl SessionObserver {
     /// Route one decoded AgentSessionMessage event map (proto output).
     pub fn handle_event(&mut self, event: &Map<String, Json>, w: &mut EventWriter) {
         // Oneof — exactly one of these keys is present.
-        if let Some(started) = event.get("function_tools_started").and_then(|v| v.as_object()) {
+        if let Some(started) = event
+            .get("function_tools_started")
+            .and_then(|v| v.as_object())
+        {
             for call in started
                 .get("function_calls")
                 .and_then(|v| v.as_array())
@@ -70,15 +73,24 @@ impl SessionObserver {
             }
             return;
         }
-        if let Some(executed) = event.get("function_tools_executed").and_then(|v| v.as_object()) {
+        if let Some(executed) = event
+            .get("function_tools_executed")
+            .and_then(|v| v.as_object())
+        {
             self.handle_tools_executed(executed, w);
             return;
         }
-        if let Some(update) = event.get("tool_execution_updated").and_then(|v| v.as_object()) {
+        if let Some(update) = event
+            .get("tool_execution_updated")
+            .and_then(|v| v.as_object())
+        {
             self.handle_tool_execution_updated(update, w);
             return;
         }
-        if let Some(added) = event.get("conversation_item_added").and_then(|v| v.as_object()) {
+        if let Some(added) = event
+            .get("conversation_item_added")
+            .and_then(|v| v.as_object())
+        {
             self.handle_conversation_item_added(added, w);
             return;
         }
@@ -110,17 +122,22 @@ impl SessionObserver {
             return;
         }
         if let Some(err) = event.get("error").and_then(|v| v.as_object()) {
-            let msg = err
-                .get("message")
-                .cloned()
-                .unwrap_or(Json::Null);
+            let msg = err.get("message").cloned().unwrap_or(Json::Null);
             self.emit_session("session.error", json!({"message": msg}), w);
         }
     }
 
     fn emit_session(&self, kind: &str, spec: Json, w: &mut EventWriter) {
         let spec_map = spec.as_object().cloned().unwrap_or_default();
-        w.emit(kind, Some(&spec_map), SESSION_SOURCE, None, None, false, None);
+        w.emit(
+            kind,
+            Some(&spec_map),
+            SESSION_SOURCE,
+            None,
+            None,
+            false,
+            None,
+        );
     }
 
     /// Port of `_handle_tools_executed`: pair calls with outputs by index.
@@ -136,12 +153,16 @@ impl SessionObserver {
             .cloned()
             .unwrap_or_default();
         for (index, call_v) in calls.iter().enumerate() {
-            let Some(call) = call_v.as_object() else { continue };
+            let Some(call) = call_v.as_object() else {
+                continue;
+            };
             let start = self.emit_tool_start(call, w);
             if index >= outputs.len() {
                 continue;
             }
-            let Some(output) = outputs[index].as_object() else { continue };
+            let Some(output) = outputs[index].as_object() else {
+                continue;
+            };
             let call_id = call.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
             let output_call_id = output.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
             if !call_id.is_empty() && !output_call_id.is_empty() && call_id != output_call_id {
@@ -218,12 +239,7 @@ impl SessionObserver {
                     .unwrap_or_else(|| json!(status)),
                 "is_error": is_error,
             });
-            self.emit_tool_output(
-                output.as_object().unwrap(),
-                start,
-                key.as_deref(),
-                w,
-            );
+            self.emit_tool_output(output.as_object().unwrap(), start, key.as_deref(), w);
         }
     }
 
@@ -247,8 +263,14 @@ impl SessionObserver {
     /// Port of `_emit_handoff`: agent→agent transfer; skip session bootstrap
     /// (empty old_agent_id) and no-op handoffs.
     fn emit_handoff(&self, handoff: &Map<String, Json>, w: &mut EventWriter) {
-        let old_id = handoff.get("old_agent_id").and_then(|v| v.as_str()).unwrap_or("");
-        let new_id = handoff.get("new_agent_id").and_then(|v| v.as_str()).unwrap_or("");
+        let old_id = handoff
+            .get("old_agent_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let new_id = handoff
+            .get("new_agent_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if old_id.is_empty() || old_id == new_id {
             return;
         }
@@ -262,7 +284,11 @@ impl SessionObserver {
     }
 
     /// Port of `_emit_tool_start` — dedupe by call key, track open tool.
-    fn emit_tool_start(&mut self, call: &Map<String, Json>, w: &mut EventWriter) -> Option<OpenTool> {
+    fn emit_tool_start(
+        &mut self,
+        call: &Map<String, Json>,
+        w: &mut EventWriter,
+    ) -> Option<OpenTool> {
         let spec = json!({
             "id": call.get("id").cloned().unwrap_or(Json::Null),
             "call_id": call.get("call_id").cloned().unwrap_or(Json::Null),
@@ -278,11 +304,30 @@ impl SessionObserver {
                 return self.open_tools.get(k).cloned();
             }
         }
-        let event = w.emit("tool.start", Some(spec.as_object().unwrap()), SESSION_SOURCE, None, None, false, None);
+        let event = w.emit(
+            "tool.start",
+            Some(spec.as_object().unwrap()),
+            SESSION_SOURCE,
+            None,
+            None,
+            false,
+            None,
+        );
         let open = OpenTool {
-            event_id: event.get("event_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            ts_mono_ms: event.get("ts_mono_ms").and_then(|v| v.as_i64()).unwrap_or(0),
-            name: call.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            event_id: event
+                .get("event_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            ts_mono_ms: event
+                .get("ts_mono_ms")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+            name: call
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         };
         if let Some(k) = &key {
             self.started_call_ids.insert(k.clone());
@@ -345,7 +390,15 @@ impl SessionObserver {
             spec["error"] = output.get("output").cloned().unwrap_or(Json::Null);
         }
         let kind = if is_error { "tool.error" } else { "tool.end" };
-        w.emit(kind, Some(spec.as_object().unwrap()), SESSION_SOURCE, None, parent_id, false, None);
+        w.emit(
+            kind,
+            Some(spec.as_object().unwrap()),
+            SESSION_SOURCE,
+            None,
+            parent_id,
+            false,
+            None,
+        );
         if let Some(k) = &key {
             self.completed_call_ids.insert(k.clone());
         }
@@ -376,6 +429,7 @@ pub struct DataRouter {
     /// Optional transcript sink (role, text, source) — wired by the caller
     /// bridges to their transcript pipeline. When absent, parsed transcript
     /// payloads are consumed (not emitted as data.message), mirroring Python.
+    #[allow(clippy::type_complexity)]
     pub on_transcript: Option<Box<dyn Fn(&str, &str, &str) + Send>>,
 }
 
@@ -397,7 +451,9 @@ impl DataRouter {
         sender: Option<&str>,
         w: &mut EventWriter,
     ) -> bool {
-        if !self.observe.data_topics.is_empty() && !self.observe.data_topics.iter().any(|t| t == topic) {
+        if !self.observe.data_topics.is_empty()
+            && !self.observe.data_topics.iter().any(|t| t == topic)
+        {
             return false;
         }
         let source = if topic.is_empty() { "data" } else { topic };
@@ -408,7 +464,15 @@ impl DataRouter {
             Some(p) => p,
             None => {
                 let spec = json!({"topic": topic, "bytes": data.len(), "sender": sender.map(String::from)});
-                w.emit("data.raw", Some(spec.as_object().unwrap()), source, None, None, false, None);
+                w.emit(
+                    "data.raw",
+                    Some(spec.as_object().unwrap()),
+                    source,
+                    None,
+                    None,
+                    false,
+                    None,
+                );
                 return true;
             }
         };
@@ -427,17 +491,34 @@ impl DataRouter {
             "sender": sender.map(String::from),
             "payload": payload,
         });
-        w.emit("data.message", Some(spec.as_object().unwrap()), source, None, None, true, None);
+        w.emit(
+            "data.message",
+            Some(spec.as_object().unwrap()),
+            source,
+            None,
+            None,
+            true,
+            None,
+        );
         true
     }
 
     /// Port of `_parse_transcript_payload` — generic transcript_turn shape.
     fn parse_transcript_payload(&self, payload: &Json) -> Option<(String, String)> {
         let ptype = payload.get("type").and_then(|v| v.as_str())?;
-        if !self.observe.transcript_payload_types.iter().any(|t| t == ptype) {
+        if !self
+            .observe
+            .transcript_payload_types
+            .iter()
+            .any(|t| t == ptype)
+        {
             return None;
         }
-        if payload.get("interim").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if payload
+            .get("interim")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             return None;
         }
         let turn = payload.get("turn").and_then(|v| v.as_object())?;
@@ -486,7 +567,13 @@ impl DataRouter {
     }
 
     /// Port of `_emit_tool_event` — data-plane tool events with pairing.
-    fn emit_tool_event(&mut self, emit_kind: &str, topic: &str, payload: &Json, w: &mut EventWriter) {
+    fn emit_tool_event(
+        &mut self,
+        emit_kind: &str,
+        topic: &str,
+        payload: &Json,
+        w: &mut EventWriter,
+    ) {
         let obj = payload.as_object();
         let name = obj
             .and_then(|o| o.get("tool").or_else(|| o.get("name")).cloned())
@@ -503,13 +590,28 @@ impl DataRouter {
         });
 
         if emit_kind == "tool.start" {
-            let event = w.emit("tool.start", Some(spec.as_object().unwrap()), topic, None, None, false, None);
+            let event = w.emit(
+                "tool.start",
+                Some(spec.as_object().unwrap()),
+                topic,
+                None,
+                None,
+                false,
+                None,
+            );
             if let Some(cid) = call_id.as_str().filter(|s| !s.is_empty()) {
                 self.open_tools.insert(
                     cid.to_string(),
                     OpenTool {
-                        event_id: event.get("event_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        ts_mono_ms: event.get("ts_mono_ms").and_then(|v| v.as_i64()).unwrap_or(0),
+                        event_id: event
+                            .get("event_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        ts_mono_ms: event
+                            .get("ts_mono_ms")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0),
                         name: name.as_str().unwrap_or("").to_string(),
                     },
                 );
@@ -532,7 +634,15 @@ impl DataRouter {
             spec["error"] = err;
         }
         let parent_ref = parent_id.as_deref();
-        w.emit(emit_kind, Some(spec.as_object().unwrap()), topic, None, parent_ref, false, None);
+        w.emit(
+            emit_kind,
+            Some(spec.as_object().unwrap()),
+            topic,
+            None,
+            parent_ref,
+            false,
+            None,
+        );
     }
 }
 
@@ -580,10 +690,23 @@ mod tests {
         // Dropped topic.
         assert!(!router.handle_data("other", br#"{"a":1}"#, Some("agent"), &mut w));
         // Accepted topic → data.message with payload.
-        assert!(router.handle_data("flow.events", br#"{"node":"booking"}"#, Some("agent"), &mut w));
-        let kinds: Vec<&str> = w.events().iter().filter_map(|e| e.get("kind").and_then(|v| v.as_str())).collect();
+        assert!(router.handle_data(
+            "flow.events",
+            br#"{"node":"booking"}"#,
+            Some("agent"),
+            &mut w
+        ));
+        let kinds: Vec<&str> = w
+            .events()
+            .iter()
+            .filter_map(|e| e.get("kind").and_then(|v| v.as_str()))
+            .collect();
         assert!(kinds.contains(&"data.message"), "{kinds:?}");
-        let msg = w.events().iter().find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("data.message")).unwrap();
+        let msg = w
+            .events()
+            .iter()
+            .find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("data.message"))
+            .unwrap();
         assert_eq!(msg["source"], json!("flow.events"));
         assert_eq!(msg["spec"]["payload"]["node"], json!("booking"));
         drop(dir);
@@ -594,7 +717,10 @@ mod tests {
         let (dir, mut w) = tmp_writer();
         let mut router = DataRouter::new(observe_cfg());
         assert!(router.handle_data("t", &[0xff, 0xfe], None, &mut w));
-        assert!(w.events().iter().any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("data.raw")));
+        assert!(w
+            .events()
+            .iter()
+            .any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("data.raw")));
         drop(dir);
     }
 
@@ -605,14 +731,20 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
         router.on_transcript = Some(Box::new(move |role, text, _src| {
-            sink.lock().unwrap().push((role.to_string(), text.to_string()));
+            sink.lock()
+                .unwrap()
+                .push((role.to_string(), text.to_string()));
         }));
         let payload = br#"{"type":"transcript_turn","turn":{"role":"agent","text":"hello there"}}"#;
         assert!(router.handle_data("t", payload, None, &mut w));
         assert_eq!(seen.lock().unwrap().len(), 1);
-        assert!(!w.events().iter().any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("data.message")));
+        assert!(!w
+            .events()
+            .iter()
+            .any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("data.message")));
         // Interim payloads are ignored entirely.
-        let interim = br#"{"type":"transcript_turn","interim":true,"turn":{"role":"agent","text":"x"}}"#;
+        let interim =
+            br#"{"type":"transcript_turn","interim":true,"turn":{"role":"agent","text":"x"}}"#;
         assert!(router.handle_data("t", interim, None, &mut w));
         assert_eq!(seen.lock().unwrap().len(), 1);
         drop(dir);
@@ -630,20 +762,38 @@ mod tests {
         }];
         let mut m2 = Map::new();
         m2.insert("type".into(), json!("tool_finished"));
-        cfg.tool_event_patterns.push(lks_core::config::ToolEventPattern {
-            mat: m2,
-            emit: "tool.end".into(),
-        });
+        cfg.tool_event_patterns
+            .push(lks_core::config::ToolEventPattern {
+                mat: m2,
+                emit: "tool.end".into(),
+            });
         let mut router = DataRouter::new(cfg);
-        router.handle_data("tools", br#"{"type":"tool_started","name":"search","call_id":"c9"}"#, None, &mut w);
-        router.handle_data("tools", br#"{"type":"tool_finished","name":"search","call_id":"c9"}"#, None, &mut w);
+        router.handle_data(
+            "tools",
+            br#"{"type":"tool_started","name":"search","call_id":"c9"}"#,
+            None,
+            &mut w,
+        );
+        router.handle_data(
+            "tools",
+            br#"{"type":"tool_finished","name":"search","call_id":"c9"}"#,
+            None,
+            &mut w,
+        );
         let kinds: Vec<String> = w
             .events()
             .iter()
             .filter_map(|e| e.get("kind").and_then(|v| v.as_str()).map(String::from))
             .collect();
-        assert!(kinds.contains(&"tool.start".to_string()) && kinds.contains(&"tool.end".to_string()), "{kinds:?}");
-        let end = w.events().iter().find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("tool.end")).unwrap();
+        assert!(
+            kinds.contains(&"tool.start".to_string()) && kinds.contains(&"tool.end".to_string()),
+            "{kinds:?}"
+        );
+        let end = w
+            .events()
+            .iter()
+            .find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("tool.end"))
+            .unwrap();
         assert_eq!(end["spec"]["name"], json!("search"));
         assert!(end["spec"]["duration_ms"].as_i64().is_some());
         assert!(!end["parent_event_id"].as_str().unwrap_or("").is_empty());
@@ -672,8 +822,19 @@ mod tests {
             .collect();
         assert!(kinds.contains(&"tool.start".to_string()));
         assert!(kinds.contains(&"tool.end".to_string()));
-        assert_eq!(kinds.iter().filter(|k| **k == "tool.start".to_string()).count(), 1, "no duplicate start");
-        let end = w.events().iter().find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("tool.end")).unwrap();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|k| **k == "tool.start".to_string())
+                .count(),
+            1,
+            "no duplicate start"
+        );
+        let end = w
+            .events()
+            .iter()
+            .find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("tool.end"))
+            .unwrap();
         assert_eq!(end["spec"]["output"], json!("22C"));
         assert!(end["spec"]["duration_ms"].as_i64().is_some());
         assert_eq!(end["source"], json!("lk.agent.session"));
@@ -687,11 +848,18 @@ mod tests {
         // Bootstrap: empty old_agent_id → skipped.
         let boot = json!({"conversation_item_added": {"item": {"type": "agent_handoff", "id": "h", "old_agent_id": "", "new_agent_id": "b"}}});
         session.handle_event(boot.as_object().unwrap(), &mut w);
-        assert!(!w.events().iter().any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("handoff")));
+        assert!(!w
+            .events()
+            .iter()
+            .any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("handoff")));
         // Real transfer.
         let real = json!({"conversation_item_added": {"item": {"type": "agent_handoff", "id": "h", "old_agent_id": "a", "new_agent_id": "b"}}});
         session.handle_event(real.as_object().unwrap(), &mut w);
-        let h = w.events().iter().find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("handoff")).unwrap();
+        let h = w
+            .events()
+            .iter()
+            .find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("handoff"))
+            .unwrap();
         assert_eq!(h["spec"]["old_agent_id"], json!("a"));
         assert_eq!(h["spec"]["new_agent_id"], json!("b"));
         drop(dir);
@@ -704,7 +872,11 @@ mod tests {
         // ended without a paired start → still emits tool.error with status text.
         let upd = json!({"tool_execution_updated": {"ended": {"id": "i1", "call_id": "cx", "status": "TC_ERROR"}}});
         session.handle_event(upd.as_object().unwrap(), &mut w);
-        let e = w.events().iter().find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("tool.error")).unwrap();
+        let e = w
+            .events()
+            .iter()
+            .find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("tool.error"))
+            .unwrap();
         assert_eq!(e["spec"]["output"], json!("TC_ERROR"));
         assert_eq!(e["spec"]["error"], json!("TC_ERROR"));
         drop(dir);

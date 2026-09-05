@@ -516,7 +516,10 @@ pub fn build_evidence_packet(
     let mut elapsed_ms = 0.0f64;
     for t in turns {
         let start = ms_to_mmss(elapsed_ms);
-        let ttm = t.get("turn_taking_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let ttm = t
+            .get("turn_taking_ms")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         elapsed_ms += ttm;
         let end = ms_to_mmss(elapsed_ms);
         let time_range = format!("{start} - {end}");
@@ -545,7 +548,11 @@ pub fn build_evidence_packet(
     let spans: Vec<String> = tool_events
         .iter()
         .map(|e| {
-            let spec = e.get("spec").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            let spec = e
+                .get("spec")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
             json!({
                 "kind": e.get("kind").cloned().unwrap_or(Json::Null),
                 "turn": e.get("turn").cloned().unwrap_or(Json::Null),
@@ -579,7 +586,11 @@ pub fn build_evidence_packet(
                     .filter(|(k, _)| k.as_str() != "_seq" && k.as_str() != "ts")
                     .map(|(k, v)| format!("{k}={v}"))
                     .collect();
-                flow_lines.push(if bits.is_empty() { payload.to_string() } else { bits.join(" | ") });
+                flow_lines.push(if bits.is_empty() {
+                    payload.to_string()
+                } else {
+                    bits.join(" | ")
+                });
             }
             _ => flow_lines.push(payload.to_string()),
         }
@@ -643,8 +654,15 @@ pub async fn judge_run(
             .to_dict()
         }
     };
-    let (transcript, tool_spans, flow_digest) = build_evidence_packet(turns, tool_events, flow_events);
-    let user = build_user_prompt(&criteria, &transcript, &tool_spans, Some(&flow_digest), false);
+    let (transcript, tool_spans, flow_digest) =
+        build_evidence_packet(turns, tool_events, flow_events);
+    let user = build_user_prompt(
+        &criteria,
+        &transcript,
+        &tool_spans,
+        Some(&flow_digest),
+        false,
+    );
     // Backend dispatch (port of evals/backend.py): gemini mode → native
     // generateContent; endpoint_type anthropic → Messages wire; else OpenAI
     // chat completions.
@@ -723,6 +741,7 @@ pub async fn judge_run(
 
 /// Multi-judge run (port of `runner.judge_run_multi`): evaluate each judge in
 /// `pass_judges` (config judges list or per-judge overrides) then aggregate.
+#[allow(clippy::too_many_arguments)]
 pub async fn judge_run_multi(
     judge_cfg: Option<&crate::config::JudgeConfig>,
     sim_api_key: &str,
@@ -778,7 +797,11 @@ pub async fn judge_run_multi(
         let group_criteria: Vec<String> = group
             .get("criteria")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect())
+            .map(|a| {
+                a.iter()
+                    .map(|v| v.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
             .unwrap_or_default();
         let per = crate::config::JudgeConfig {
             model: j
@@ -805,8 +828,15 @@ pub async fn judge_run_multi(
                 .map(|c| c.endpoint_type.clone())
                 .unwrap_or_default(),
         };
-        let mut v =
-            judge_run(Some(&per), sim_api_key, &group_criteria, turns, tool_events, flow_events).await;
+        let mut v = judge_run(
+            Some(&per),
+            sim_api_key,
+            &group_criteria,
+            turns,
+            tool_events,
+            flow_events,
+        )
+        .await;
         v.insert("judge_id".into(), serde_json::Value::String(judge_id));
         results.push(v);
     }
@@ -855,7 +885,13 @@ pub async fn judge_goals(
         n = goals.len(),
     )];
     let (transcript, tool_spans, flow_digest) = build_evidence_packet(turns, &[], flow_events);
-    let user = build_user_prompt(&criteria, &transcript, &tool_spans, Some(&flow_digest), true);
+    let user = build_user_prompt(
+        &criteria,
+        &transcript,
+        &tool_spans,
+        Some(&flow_digest),
+        true,
+    );
     let Some(api_key) = resolved.api_key.clone() else {
         let mut r = JudgmentResult {
             verdict: "skipped".into(),

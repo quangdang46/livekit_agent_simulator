@@ -121,7 +121,11 @@ pub fn expand_judge_group(group: &Map<String, Json>) -> Result<Map<String, Json>
     let criteria: Vec<String> = group
         .get("criteria")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect())
+        .map(|a| {
+            a.iter()
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+                .collect()
+        })
         .unwrap_or_default();
     let expanded = match builtin {
         Some(key) => {

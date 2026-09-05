@@ -71,6 +71,7 @@ pub enum ScriptAction {
 
 /// Hang-up deferral bookkeeping (port of script/runtime.py _hang_up_ready).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct DeferState {
     start: std::time::Instant,
     prior_reason: String,
@@ -88,6 +89,7 @@ pub struct ScriptRuntime {
     /// Active hang-up deferral (None = not deferring).
     defer_state: parking_lot::Mutex<Option<DeferState>>,
     /// Locale for the default hang-up farewell text (from config).
+    #[allow(dead_code)]
     locale: String,
 }
 
@@ -144,7 +146,8 @@ impl ScriptRuntime {
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {}
             }
             // Clear mute_persona when the loop re-arms.
-            crate::callers::openai::MUTE_PERSONA_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+            crate::callers::openai::MUTE_PERSONA_ACTIVE
+                .store(false, std::sync::atomic::Ordering::SeqCst);
             // Post-cue gap: after a speak step, wait for the agent to reply
             // (up to 8s) before arming the next step — mirrors the Python
             // _await_agent_reply window so steps don't fire over the agent.
@@ -220,13 +223,24 @@ impl ScriptRuntime {
             match action.as_str() {
                 "hang_up" => {
                     // ── Hang-up deferral (port of runtime.py _hang_up_ready) ──
-                    let require_reply = Self::step_bool(&step, "require_agent_reply_this_turn", true);
+                    let require_reply =
+                        Self::step_bool(&step, "require_agent_reply_this_turn", true);
                     let defer_open = Self::step_bool(&step, "defer_on_open_question", true);
-                    let budget_ms = { let raw = Self::step_i64(&step, "open_question_idle_ms"); if raw > 0 { raw } else { 20000 } };
+                    let budget_ms = {
+                        let raw = Self::step_i64(&step, "open_question_idle_ms");
+                        if raw > 0 {
+                            raw
+                        } else {
+                            20000
+                        }
+                    };
                     let state_snapshot = self.state.lock().await;
-                    let user_spoke = state_snapshot.user_has_spoken && !state_snapshot.agent_replied_this_turn;
+                    let user_spoke =
+                        state_snapshot.user_has_spoken && !state_snapshot.agent_replied_this_turn;
                     let open_question = defer_open
-                        && lks_core::script::hang_up_gate::agent_left_open_turn(Some(&state_snapshot.last_agent_final_text));
+                        && lks_core::script::hang_up_gate::agent_left_open_turn(Some(
+                            &state_snapshot.last_agent_final_text,
+                        ));
                     let should_defer = (require_reply && user_spoke) || open_question;
                     let reason = if require_reply && user_spoke {
                         Some("awaiting_agent_reply")
@@ -244,13 +258,30 @@ impl ScriptRuntime {
                                     let mut ds_spec = serde_json::Map::new();
                                     ds_spec.insert("step_id".into(), json!(id));
                                     ds_spec.insert("label".into(), json!(label));
-                                    ds_spec.insert("reason".into(), json!("defer_budget_exhausted"));
+                                    ds_spec
+                                        .insert("reason".into(), json!("defer_budget_exhausted"));
                                     ds_spec.insert("prior_reason".into(), json!(d.prior_reason));
                                     ds_spec.insert("deferred_ms".into(), json!(deferred_ms));
                                     ds_spec.insert("budget_ms".into(), json!(budget_ms));
-                                    ds_spec.insert("last_agent_final".into(), json!(state_snapshot.last_agent_final_text[..state_snapshot.last_agent_final_text.len().min(240)]));
+                                    ds_spec.insert(
+                                        "last_agent_final".into(),
+                                        json!(
+                                            state_snapshot.last_agent_final_text[..state_snapshot
+                                                .last_agent_final_text
+                                                .len()
+                                                .min(240)]
+                                        ),
+                                    );
                                     drop(state_snapshot);
-                                    w.emit("sim.script.hang_up_deferred", Some(&ds_spec), "sim.script", None, None, false, None);
+                                    w.emit(
+                                        "sim.script.hang_up_deferred",
+                                        Some(&ds_spec),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
                                     *ds = None;
                                     drop(ds);
                                 } else {
@@ -268,9 +299,23 @@ impl ScriptRuntime {
                                 ds_spec.insert("reason".into(), json!(prior));
                                 ds_spec.insert("deferred_ms".into(), json!(0));
                                 ds_spec.insert("budget_ms".into(), json!(budget_ms));
-                                ds_spec.insert("last_agent_final".into(), json!(state_snapshot.last_agent_final_text[..state_snapshot.last_agent_final_text.len().min(240)]));
+                                ds_spec.insert(
+                                    "last_agent_final".into(),
+                                    json!(
+                                        state_snapshot.last_agent_final_text
+                                            [..state_snapshot.last_agent_final_text.len().min(240)]
+                                    ),
+                                );
                                 drop(state_snapshot);
-                                w.emit("sim.script.hang_up_deferred", Some(&ds_spec), "sim.script", None, None, false, None);
+                                w.emit(
+                                    "sim.script.hang_up_deferred",
+                                    Some(&ds_spec),
+                                    "sim.script",
+                                    None,
+                                    None,
+                                    false,
+                                    None,
+                                );
                                 *ds = Some(DeferState {
                                     start: std::time::Instant::now(),
                                     prior_reason: prior,
@@ -299,8 +344,24 @@ impl ScriptRuntime {
                     spec.insert("action".into(), json!("hang_up"));
                     spec.insert("barge_in".into(), json!(barge_in));
                     spec.insert("waited_ms".into(), json!(waited_ms));
-                    w.emit("sim.script.hang_up", Some(&spec), "sim.script", None, None, false, None);
-                    w.emit("sim.hang_up", Some(&spec), "sim.script", None, None, false, None);
+                    w.emit(
+                        "sim.script.hang_up",
+                        Some(&spec),
+                        "sim.script",
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
+                    w.emit(
+                        "sim.hang_up",
+                        Some(&spec),
+                        "sim.script",
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
                     drop(w);
                     let _ = (self.on_action)(ScriptAction::HangUp { farewell, label });
                     let _ = self.end_tx.send(());
@@ -457,7 +518,8 @@ impl ScriptRuntime {
                     let step_mute = Self::step_bool(&step, "mute_persona", false);
                     drop(w);
                     if step_mute {
-                        crate::callers::openai::MUTE_PERSONA_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+                        crate::callers::openai::MUTE_PERSONA_ACTIVE
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                     let _ = (self.on_action)(ScriptAction::Speak {
                         text: say,

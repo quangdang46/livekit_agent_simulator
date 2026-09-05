@@ -417,7 +417,6 @@ impl SimServer {
             optimized: p.optimized.clone(),
             profile: p.profile.clone(),
             environment: p.environment.clone(),
-            ..Default::default()
         };
         let result =
             lks_livekit::run::execute_scenario(root(&p.project_root), &p.scenario_id, &opts)

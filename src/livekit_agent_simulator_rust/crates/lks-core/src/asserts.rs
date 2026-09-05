@@ -189,18 +189,6 @@ impl Default for OutcomeExpect {
     }
 }
 
-impl Default for AssertSpec {
-    fn default() -> Self {
-        Self {
-            tools: Vec::new(),
-            transcript: Vec::new(),
-            outcomes: Vec::new(),
-            sip: None,
-            tool_order: Vec::new(),
-        }
-    }
-}
-
 /// SipExpect mirror.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SipExpect {
@@ -210,7 +198,7 @@ pub struct SipExpect {
 }
 
 /// AssertSpec mirror.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AssertSpec {
     pub tools: Vec<ToolExpect>,
     pub transcript: Vec<TranscriptExpect>,
@@ -755,12 +743,20 @@ pub fn parse_assert_spec(spec: &Map<String, Json>, path_label: &str) -> Result<A
 
 /// One threshold gate (mirror asserts._eval_latency_outcome._gate):
 /// None limit → skip; None actual → fail "no sample"; `val > limit` → fail.
-fn gate(actual: Option<f64>, limit: Option<i64>, label: &str, ok: &mut bool, reasons: &mut Vec<String>) {
+fn gate(
+    actual: Option<f64>,
+    limit: Option<i64>,
+    label: &str,
+    ok: &mut bool,
+    reasons: &mut Vec<String>,
+) {
     let Some(limit) = limit else { return };
     match actual {
         None => {
             *ok = false;
-            reasons.push(format!("{label}: no sample (need measured value ≤ {limit}ms)"));
+            reasons.push(format!(
+                "{label}: no sample (need measured value ≤ {limit}ms)"
+            ));
         }
         Some(val) => {
             if val > limit as f64 {
@@ -793,13 +789,55 @@ fn eval_latency_outcome(oc: &OutcomeExpect, events: &[Map<String, Json>]) -> Jso
     }
 
     let p = |blk: Option<&Map<String, Json>>, key: &str| blk.and_then(|b| f64_or_none(b.get(key)));
-    gate(p(tt, "p50"), oc.max_turn_p50_ms, "turn_p50", &mut ok, &mut reasons);
-    gate(p(tt, "p95"), oc.max_turn_p95_ms, "turn_p95", &mut ok, &mut reasons);
-    gate(p(tt, "p99"), oc.max_turn_p99_ms, "turn_p99", &mut ok, &mut reasons);
-    gate(p(tt, "max"), oc.max_turn_max_ms, "turn_max", &mut ok, &mut reasons);
-    gate(f64_or_none(m.get("ttfw_ms")), oc.max_ttfw_ms, "ttfw", &mut ok, &mut reasons);
-    gate(p(rec, "p50"), oc.max_recovery_p50_ms, "recovery_p50", &mut ok, &mut reasons);
-    gate(p(rec, "p95"), oc.max_recovery_p95_ms, "recovery_p95", &mut ok, &mut reasons);
+    gate(
+        p(tt, "p50"),
+        oc.max_turn_p50_ms,
+        "turn_p50",
+        &mut ok,
+        &mut reasons,
+    );
+    gate(
+        p(tt, "p95"),
+        oc.max_turn_p95_ms,
+        "turn_p95",
+        &mut ok,
+        &mut reasons,
+    );
+    gate(
+        p(tt, "p99"),
+        oc.max_turn_p99_ms,
+        "turn_p99",
+        &mut ok,
+        &mut reasons,
+    );
+    gate(
+        p(tt, "max"),
+        oc.max_turn_max_ms,
+        "turn_max",
+        &mut ok,
+        &mut reasons,
+    );
+    gate(
+        f64_or_none(m.get("ttfw_ms")),
+        oc.max_ttfw_ms,
+        "ttfw",
+        &mut ok,
+        &mut reasons,
+    );
+    gate(
+        p(rec, "p50"),
+        oc.max_recovery_p50_ms,
+        "recovery_p50",
+        &mut ok,
+        &mut reasons,
+    );
+    gate(
+        p(rec, "p95"),
+        oc.max_recovery_p95_ms,
+        "recovery_p95",
+        &mut ok,
+        &mut reasons,
+    );
 
     if let Some(min_rate) = oc.min_barge_recovery_rate {
         let rate = f64_or_none(m.get("barge_recovery_rate"));
@@ -876,7 +914,11 @@ fn eval_agent_must_respond(oc: &OutcomeExpect, events: &[Map<String, Json>]) -> 
 
 /// Port of asserts._eval_audio_latency_outcome — gate on audio-onset latency.
 /// Missing sample → SKIP (not fail); require_audio_samples short → FAIL.
-fn eval_audio_latency_outcome(oc: &OutcomeExpect, events: &[Map<String, Json>], metric: &str) -> Json {
+fn eval_audio_latency_outcome(
+    oc: &OutcomeExpect,
+    events: &[Map<String, Json>],
+    metric: &str,
+) -> Json {
     let m = compute_voice_metrics(events);
     let mut ok = true;
     let mut skipped = false;
@@ -886,7 +928,10 @@ fn eval_audio_latency_outcome(oc: &OutcomeExpect, events: &[Map<String, Json>], 
     type Gate<'a> = (&'a str, Option<i64>, Option<f64>);
     let (counts, actual, gates): (i64, Json, Vec<Gate>) = if metric == "ttfa" {
         let ttfa = f64_or_none(m.get("ttfa_run_ms"));
-        let counts = m.get("agent_audio_onset_count").and_then(|v| v.as_i64()).unwrap_or(0);
+        let counts = m
+            .get("agent_audio_onset_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         (
             counts,
             m.get("ttfa_run_ms").cloned().unwrap_or(Json::Null),
@@ -1025,7 +1070,8 @@ fn eval_constraint_respected(
     events: &[Map<String, Json>],
     pending_llm: &mut Vec<Json>,
 ) -> Json {
-    let mut blobs: Vec<(&str, String)> = vec![("user", transcript_texts(events, "user").join("\n"))];
+    let mut blobs: Vec<(&str, String)> =
+        vec![("user", transcript_texts(events, "user").join("\n"))];
     if oc.check_agent_transcript {
         blobs.push(("agent", transcript_texts(events, "agent").join("\n")));
     }
@@ -1202,12 +1248,11 @@ pub fn evaluate_asserts(events: &[Map<String, Json>], asserts: &AssertSpec) -> M
         match oc.otype.as_str() {
             "transcript_contains" => {
                 let blob = role_texts(events, &oc.role).join("\n");
-                let matched =
-                    !oc.phrases.is_empty()
-                        && oc
-                            .phrases
-                            .iter()
-                            .any(|p| blob.to_lowercase().contains(&p.to_lowercase()));
+                let matched = !oc.phrases.is_empty()
+                    && oc
+                        .phrases
+                        .iter()
+                        .any(|p| blob.to_lowercase().contains(&p.to_lowercase()));
                 let ok = if oc.negate { !matched } else { matched };
                 let mut c = json!({
                     "check": format!("outcome:{}", oc.id),
@@ -1237,7 +1282,8 @@ pub fn evaluate_asserts(events: &[Map<String, Json>], asserts: &AssertSpec) -> M
                             None => ok = false,
                             Some(next) => {
                                 recovery_ms = Some(next - fb);
-                                ok = recovery_ms.unwrap() <= oc.max_ms_after_barge_to_agent_final.unwrap();
+                                ok = recovery_ms.unwrap()
+                                    <= oc.max_ms_after_barge_to_agent_final.unwrap_or(i64::MAX);
                             }
                         }
                     } else {
@@ -1307,10 +1353,8 @@ pub fn evaluate_asserts(events: &[Map<String, Json>], asserts: &AssertSpec) -> M
                 }
             }
             "handoff" | "no_unplanned_handoff" => {
-                let handoffs: Vec<&Map<String, Json>> = events
-                    .iter()
-                    .filter(|e| ev_kind(e) == "handoff")
-                    .collect();
+                let handoffs: Vec<&Map<String, Json>> =
+                    events.iter().filter(|e| ev_kind(e) == "handoff").collect();
                 let n = handoffs.len();
                 if oc.otype == "no_unplanned_handoff" {
                     let ok = n == 0;
@@ -1382,7 +1426,11 @@ pub fn evaluate_asserts(events: &[Map<String, Json>], asserts: &AssertSpec) -> M
 
     let hard = checks
         .iter()
-        .filter(|c| !c.get("pending_judge").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter(|c| {
+            !c.get("pending_judge")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        })
         .collect::<Vec<_>>();
     let pass = if hard.is_empty() {
         true

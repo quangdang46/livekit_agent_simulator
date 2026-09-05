@@ -121,7 +121,10 @@ mod tests {
     fn farewell_defaults() {
         assert_eq!(default_hangup_farewell("en"), "Okay, thanks. Bye.");
         assert_eq!(default_hangup_farewell("vi-VN"), "Cảm ơn bạn. Tạm biệt.");
-        assert_eq!(default_hangup_farewell("ja-JP"), "ありがとうございます。失礼します。");
+        assert_eq!(
+            default_hangup_farewell("ja-JP"),
+            "ありがとうございます。失礼します。"
+        );
         assert_eq!(default_hangup_farewell("ko"), "Okay, thanks. Bye."); // fallback en
     }
 }

@@ -115,8 +115,10 @@ fn turn_events() -> Vec<Json> {
 
 #[test]
 fn outcome_latency_pass_and_fail() {
-    let events: Vec<serde_json::Map<String, Json>> =
-        turn_events().iter().map(|e| e.as_object().unwrap().clone()).collect();
+    let events: Vec<serde_json::Map<String, Json>> = turn_events()
+        .iter()
+        .map(|e| e.as_object().unwrap().clone())
+        .collect();
     let ok = evaluate_asserts(
         &events,
         &AssertSpec {
@@ -155,7 +157,10 @@ fn outcome_latency_pass_and_fail() {
         .iter()
         .map(|v| v.as_str().unwrap_or_default().to_string())
         .collect();
-    assert!(reasons.iter().any(|r| r.contains("turn_p95")), "{reasons:?}");
+    assert!(
+        reasons.iter().any(|r| r.contains("turn_p95")),
+        "{reasons:?}"
+    );
 }
 
 #[test]
@@ -184,17 +189,23 @@ fn outcome_latency_barge_recovery_rate() {
             .iter()
             .map(|e| e.as_object().unwrap().clone())
             .collect::<Vec<serde_json::Map<String, Json>>>();
-    assert!(!evaluate_asserts(&no_barge, &assert_spec())["pass"].as_bool().unwrap());
+    assert!(!evaluate_asserts(&no_barge, &assert_spec())["pass"]
+        .as_bool()
+        .unwrap());
 }
 
 // ---------------------------------------------------------------- ended_by
 
 #[test]
 fn outcome_ended_by_sim_hang() {
-    let events = vec![ev("sim.hang_up", 100, json!({"by": "sim", "source": "script"}))]
-        .iter()
-        .map(|e| e.as_object().unwrap().clone())
-        .collect::<Vec<serde_json::Map<String, Json>>>();
+    let events = vec![ev(
+        "sim.hang_up",
+        100,
+        json!({"by": "sim", "source": "script"}),
+    )]
+    .iter()
+    .map(|e| e.as_object().unwrap().clone())
+    .collect::<Vec<serde_json::Map<String, Json>>>();
     let assert_spec = |who: &str| AssertSpec {
         outcomes: vec![OutcomeExpect {
             id: "h".into(),
@@ -204,18 +215,28 @@ fn outcome_ended_by_sim_hang() {
         }],
         ..Default::default()
     };
-    assert!(evaluate_asserts(&events, &assert_spec("sim"))["pass"].as_bool().unwrap());
-    assert!(evaluate_asserts(&events, &assert_spec("detect"))["pass"].as_bool().unwrap());
+    assert!(evaluate_asserts(&events, &assert_spec("sim"))["pass"]
+        .as_bool()
+        .unwrap());
+    assert!(evaluate_asserts(&events, &assert_spec("detect"))["pass"]
+        .as_bool()
+        .unwrap());
     // agent expectation fails when sim hung up.
-    assert!(!evaluate_asserts(&events, &assert_spec("agent"))["pass"].as_bool().unwrap());
+    assert!(!evaluate_asserts(&events, &assert_spec("agent"))["pass"]
+        .as_bool()
+        .unwrap());
 }
 
 #[test]
 fn outcome_ended_by_agent() {
-    let events = vec![ev("run.end_condition", 100, json!({"reason": "agent_disconnected"}))]
-        .iter()
-        .map(|e| e.as_object().unwrap().clone())
-        .collect::<Vec<serde_json::Map<String, Json>>>();
+    let events = vec![ev(
+        "run.end_condition",
+        100,
+        json!({"reason": "agent_disconnected"}),
+    )]
+    .iter()
+    .map(|e| e.as_object().unwrap().clone())
+    .collect::<Vec<serde_json::Map<String, Json>>>();
     let assert_spec = |who: &str| AssertSpec {
         outcomes: vec![OutcomeExpect {
             id: "ag".into(),
@@ -225,8 +246,12 @@ fn outcome_ended_by_agent() {
         }],
         ..Default::default()
     };
-    assert!(evaluate_asserts(&events, &assert_spec("agent"))["pass"].as_bool().unwrap());
-    assert!(!evaluate_asserts(&events, &assert_spec("sim"))["pass"].as_bool().unwrap());
+    assert!(evaluate_asserts(&events, &assert_spec("agent"))["pass"]
+        .as_bool()
+        .unwrap());
+    assert!(!evaluate_asserts(&events, &assert_spec("sim"))["pass"]
+        .as_bool()
+        .unwrap());
 }
 
 // ---------------------------------------------------------------- audio asserts
@@ -265,7 +290,8 @@ fn agent_must_respond_fails_without_audio() {
 
 #[test]
 fn ttfa_skips_when_no_sample() {
-    let spec = spec_from(json!({"outcomes": [{"id": "a", "type": "ttfa", "max_ttfa_p95_ms": 1000}]}));
+    let spec =
+        spec_from(json!({"outcomes": [{"id": "a", "type": "ttfa", "max_ttfa_p95_ms": 1000}]}));
     let res = evaluate_asserts(&[], &spec);
     assert!(res["pass"].as_bool().unwrap());
     assert_eq!(res["checks"][0]["skipped"], json!(true));
@@ -274,7 +300,8 @@ fn ttfa_skips_when_no_sample() {
 #[test]
 fn ttfa_fails_when_slow_with_sample() {
     let events = audio_events(&[2000], &[500]);
-    let spec = spec_from(json!({"outcomes": [{"id": "a", "type": "ttfa", "max_ttfa_p95_ms": 1000}]}));
+    let spec =
+        spec_from(json!({"outcomes": [{"id": "a", "type": "ttfa", "max_ttfa_p95_ms": 1000}]}));
     let res = evaluate_asserts(&maps(&events), &spec);
     assert!(!res["pass"].as_bool().unwrap());
     assert_eq!(res["checks"][0]["skipped"], json!(false));
@@ -282,7 +309,8 @@ fn ttfa_fails_when_slow_with_sample() {
 
 #[test]
 fn ttfa_require_audio_samples_fails_when_short() {
-    let spec = spec_from(json!({"outcomes": [{"id": "a", "type": "ttfa", "require_audio_samples": 2}]}));
+    let spec =
+        spec_from(json!({"outcomes": [{"id": "a", "type": "ttfa", "require_audio_samples": 2}]}));
     let res = evaluate_asserts(&maps(&audio_events(&[1000], &[])), &spec);
     assert!(!res["pass"].as_bool().unwrap());
 }
@@ -326,12 +354,19 @@ fn backchannel_agent_continued_pass_and_tool_storm() {
         let mut evs: Vec<Json> = vec![
             ev("sim.script.cue", first_bc, json!({"class": "backchannel"})),
             // agent continued after the backchannel (+100ms guard).
-            ev("transcript.agent.final", first_bc + 500, json!({"text": "sure"})),
+            ev(
+                "transcript.agent.final",
+                first_bc + 500,
+                json!({"text": "sure"}),
+            ),
         ];
         evs.extend(extra);
-        evs.iter().map(|e| e.as_object().unwrap().clone()).collect::<Vec<serde_json::Map<String, Json>>>()
+        evs.iter()
+            .map(|e| e.as_object().unwrap().clone())
+            .collect::<Vec<serde_json::Map<String, Json>>>()
     };
-    let spec = spec_from(json!({"outcomes": [{"id": "bc", "type": "backchannel_agent_continued"}]}));
+    let spec =
+        spec_from(json!({"outcomes": [{"id": "bc", "type": "backchannel_agent_continued"}]}));
     let res = evaluate_asserts(&bc(1000, vec![]), &spec);
     assert!(res["pass"].as_bool().unwrap(), "{res:?}");
     assert_eq!(res["checks"][0]["continued"], json!(true));
@@ -359,9 +394,11 @@ fn backchannel_agent_continued_pass_and_tool_storm() {
 #[test]
 fn transcript_must_not_match_regex() {
     // (asserts.py uses re.search(pat, blob, re.I) — regex, case-insensitive)
-    let events = vec![
-        ev("transcript.agent.final", 100, json!({"text": "Your total is 50 USD"})),
-    ];
+    let events = vec![ev(
+        "transcript.agent.final",
+        100,
+        json!({"text": "Your total is 50 USD"}),
+    )];
     let assert_spec = |pat: Option<&str>| AssertSpec {
         transcript: vec![lks_core::asserts::TranscriptExpect {
             role: "agent".into(),
@@ -392,9 +429,12 @@ fn transcript_must_not_match_regex() {
 #[test]
 fn constraint_respected_hard_and_pending() {
     let events = vec![
-        ev("transcript.user.final", 100, json!({"text": "my card is 1234 5678"})),
-        ev("transcript.agent.final", 200, json!({"text": "got it"}),
+        ev(
+            "transcript.user.final",
+            100,
+            json!({"text": "my card is 1234 5678"}),
         ),
+        ev("transcript.agent.final", 200, json!({"text": "got it"})),
     ];
     let spec = spec_from(json!({
         "outcomes": [{"id": "pci", "type": "constraint_respected",
@@ -418,7 +458,10 @@ fn constraint_respected_hard_and_pending() {
     }));
     let res = evaluate_asserts(&maps(&leak_events), &spec);
     assert!(!res["pass"].as_bool().unwrap());
-    assert_eq!(res["checks"][0]["violations"][0], json!("agent:regex:\\b\\d{4}[- ]?\\d{4}\\b"));
+    assert_eq!(
+        res["checks"][0]["violations"][0],
+        json!("agent:regex:\\b\\d{4}[- ]?\\d{4}\\b")
+    );
 
     // Prompt-only → pending_judge, excluded from hard pass.
     let spec = spec_from(json!({
@@ -483,8 +526,14 @@ fn preset_judge_group_expansion() {
     let out = lks_core::presets::expand_judge_group(group.as_object().unwrap()).unwrap();
     let criteria = out["criteria"].as_array().unwrap();
     assert_eq!(criteria.len(), 3);
-    assert!(criteria[0].as_str().unwrap().starts_with("Empathy and professionalism"));
-    assert!(criteria[1].as_str().unwrap().starts_with("Coherence (LiveKit-style)"));
+    assert!(criteria[0]
+        .as_str()
+        .unwrap()
+        .starts_with("Empathy and professionalism"));
+    assert!(criteria[1]
+        .as_str()
+        .unwrap()
+        .starts_with("Coherence (LiveKit-style)"));
     assert_eq!(criteria[2], json!("extra custom rule"));
 
     // Unknown builtin → error.

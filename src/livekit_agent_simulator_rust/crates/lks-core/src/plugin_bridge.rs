@@ -139,38 +139,53 @@ pub fn run_verify_plugin(
 }
 
 /// Execute registered before_run hooks (port of plugin_registry.before_run).
-pub fn run_before_run_hooks(
-    _project_root: &Path,
-    _ctx: &BeforeRunContext,
-) -> Vec<String> {
+pub fn run_before_run_hooks(_project_root: &Path, _ctx: &BeforeRunContext) -> Vec<String> {
     #[cfg(feature = "python-plugins")]
     {
-        python_impl::_run_hooks_python("before_run", _project_root, _ctx.scenario_id.as_str(),
-            Some(&format!("{{'run_id': '{}', 'run_name': {}}}",
+        python_impl::_run_hooks_python(
+            "before_run",
+            _project_root,
+            _ctx.scenario_id.as_str(),
+            Some(&format!(
+                "{{'run_id': '{}', 'run_name': {}}}",
                 _ctx.run_id,
-                _ctx.run_name.as_deref().map(|s| format!("'{}'", s)).unwrap_or("None".into()),
-            )))
+                _ctx.run_name
+                    .as_deref()
+                    .map(|s| format!("'{}'", s))
+                    .unwrap_or("None".into()),
+            )),
+        )
     }
     #[cfg(not(feature = "python-plugins"))]
-    { Vec::new() }
+    {
+        Vec::new()
+    }
 }
 
 /// Execute registered after_run hooks (port of plugin_registry.after_run).
-pub fn run_after_run_hooks(
-    _project_root: &Path,
-    _ctx: &AfterRunContext,
-) -> Vec<String> {
+pub fn run_after_run_hooks(_project_root: &Path, _ctx: &AfterRunContext) -> Vec<String> {
     #[cfg(feature = "python-plugins")]
     {
-        python_impl::_run_hooks_python("after_run", _project_root, _ctx.scenario_id.as_str(),
-            Some(&format!("{{'run_id': '{}', 'run_name': {}, 'report_dir': '{}', 'status': '{}'}}",
+        python_impl::_run_hooks_python(
+            "after_run",
+            _project_root,
+            _ctx.scenario_id.as_str(),
+            Some(&format!(
+                "{{'run_id': '{}', 'run_name': {}, 'report_dir': '{}', 'status': '{}'}}",
                 _ctx.run_id,
-                _ctx.run_name.as_deref().map(|s| format!("'{}'", s)).unwrap_or("None".into()),
-                _ctx.report_dir.display(), _ctx.status,
-            )))
+                _ctx.run_name
+                    .as_deref()
+                    .map(|s| format!("'{}'", s))
+                    .unwrap_or("None".into()),
+                _ctx.report_dir.display(),
+                _ctx.status,
+            )),
+        )
     }
     #[cfg(not(feature = "python-plugins"))]
-    { Vec::new() }
+    {
+        Vec::new()
+    }
 }
 
 // ===========================================================================
@@ -305,8 +320,8 @@ mod python_impl {
         scenario_id: &str,
         extra_context: Option<&str>,
     ) -> Vec<String> {
-        let mut results = Vec::new();
-        let extra = extra_context.unwrap_or("{}");
+        let results = Vec::new();
+        let _extra = extra_context.unwrap_or("{}");
         let script = format!(
             "import json
              from livekit_agent_simulator.plugins.registry import list_verify_plugins, get_verify
@@ -328,12 +343,13 @@ mod python_impl {
         );
         Python::attach(|py| -> PyResult<()> {
             let locals = pyo3::types::PyDict::new(py);
-            let script_c = std::ffi::CString::new(script).map_err(|e|
+            let script_c = std::ffi::CString::new(script).map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("invalid script: {e}"))
-            )?;
+            })?;
             py.run(script_c.as_c_str(), None, Some(&locals))?;
             Ok(())
-        }).ok();
+        })
+        .ok();
         results
     }
 

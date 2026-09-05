@@ -606,7 +606,6 @@ fn main() -> anyhow::Result<()> {
                 optimized,
                 profile,
                 environment,
-                ..Default::default()
             };
             let mut result = rt.block_on(lks_livekit::run::execute_scenario(
                 std::path::Path::new(&root),
