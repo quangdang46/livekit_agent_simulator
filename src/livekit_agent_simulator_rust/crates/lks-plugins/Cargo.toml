@@ -8,3 +8,7 @@ license.workspace = true
 
 [dependencies]
 lks-core = { path = "../lks-core" }
+
+[features]
+default = ["python-plugins"]
+python-plugins = ["lks-core/python-plugins"]

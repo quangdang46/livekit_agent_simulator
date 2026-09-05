@@ -33,6 +33,26 @@ pub struct VerifyPluginResult {
     pub checks: Vec<Json>,
 }
 
+/// Context for before_run hooks (port of api.BeforeRunContext).
+#[derive(Debug, Clone)]
+pub struct BeforeRunContext {
+    pub scenario_id: String,
+    pub project_root: std::path::PathBuf,
+    pub run_id: String,
+    pub run_name: Option<String>,
+}
+
+/// Context for after_run hooks (port of api.AfterRunContext).
+#[derive(Debug, Clone)]
+pub struct AfterRunContext {
+    pub scenario_id: String,
+    pub project_root: std::path::PathBuf,
+    pub run_id: String,
+    pub run_name: Option<String>,
+    pub report_dir: std::path::PathBuf,
+    pub status: String,
+}
+
 // ===========================================================================
 // Feature-gated implementations
 // ===========================================================================
@@ -116,6 +136,41 @@ pub fn run_verify_plugin(
     {
         None
     }
+}
+
+/// Execute registered before_run hooks (port of plugin_registry.before_run).
+pub fn run_before_run_hooks(
+    _project_root: &Path,
+    _ctx: &BeforeRunContext,
+) -> Vec<String> {
+    #[cfg(feature = "python-plugins")]
+    {
+        python_impl::_run_hooks_python("before_run", _project_root, _ctx.scenario_id.as_str(),
+            Some(&format!("{{'run_id': '{}', 'run_name': {}}}",
+                _ctx.run_id,
+                _ctx.run_name.as_deref().map(|s| format!("'{}'", s)).unwrap_or("None".into()),
+            )))
+    }
+    #[cfg(not(feature = "python-plugins"))]
+    { Vec::new() }
+}
+
+/// Execute registered after_run hooks (port of plugin_registry.after_run).
+pub fn run_after_run_hooks(
+    _project_root: &Path,
+    _ctx: &AfterRunContext,
+) -> Vec<String> {
+    #[cfg(feature = "python-plugins")]
+    {
+        python_impl::_run_hooks_python("after_run", _project_root, _ctx.scenario_id.as_str(),
+            Some(&format!("{{'run_id': '{}', 'run_name': {}, 'report_dir': '{}', 'status': '{}'}}",
+                _ctx.run_id,
+                _ctx.run_name.as_deref().map(|s| format!("'{}'", s)).unwrap_or("None".into()),
+                _ctx.report_dir.display(), _ctx.status,
+            )))
+    }
+    #[cfg(not(feature = "python-plugins"))]
+    { Vec::new() }
 }
 
 // ===========================================================================
@@ -242,6 +297,46 @@ mod python_impl {
     }
 
     /// Execute a verify plugin via Python.
+    /// Generic hook runner (before_run / after_run) — calls
+    /// plugin_registry.{hook_name} for each loaded plugin.
+    pub fn _run_hooks_python(
+        hook_name: &str,
+        _project_root: &Path,
+        scenario_id: &str,
+        extra_context: Option<&str>,
+    ) -> Vec<String> {
+        let mut results = Vec::new();
+        let extra = extra_context.unwrap_or("{}");
+        let script = format!(
+            "import json
+             from livekit_agent_simulator.plugins.registry import list_verify_plugins, get_verify
+             for _name in list_verify_plugins():
+                 try:
+                     from importlib import import_module as _im
+                     _mod = _im('livekit_agent_simulator.plugins.' + _name.replace('-','_'))
+                     _fn = getattr(_mod, '{hook_name}', None)
+                     if _fn is None:
+                         continue
+                     class _C: pass
+                     _c = _C()
+                     _c.scenario_id = '{scenario_id}'
+                     _c.project_root = None
+                     _fn(_c)
+                 except Exception as _e:
+                     pass
+"
+        );
+        Python::attach(|py| -> PyResult<()> {
+            let locals = pyo3::types::PyDict::new(py);
+            let script_c = std::ffi::CString::new(script).map_err(|e|
+                pyo3::exceptions::PyValueError::new_err(format!("invalid script: {e}"))
+            )?;
+            py.run(script_c.as_c_str(), None, Some(&locals))?;
+            Ok(())
+        }).ok();
+        results
+    }
+
     pub fn _run_verify_python(
         plugin_name: &str,
         ctx: &VerifyPluginContext,

@@ -84,6 +84,23 @@ pub async fn execute_scenario(
         serde_json::Value::String(scenario_id.to_string()),
     );
 
+    // Plugin before_run hooks (port of run_orchestrator:107-134).
+    if !scenario.plugin_modules.is_empty() {
+        let _ = lks_core::plugin_bridge::ensure_plugins_loaded(project_root, Some(&scenario.plugin_modules));
+    }
+    {
+        let br_ctx = lks_core::plugin_bridge::BeforeRunContext {
+            scenario_id: scenario_id.to_string(),
+            project_root: project_root.to_path_buf(),
+            run_id: String::new(),
+            run_name: opts.run_name.clone(),
+        };
+        let errs = lks_core::plugin_bridge::run_before_run_hooks(project_root, &br_ctx);
+        if !errs.is_empty() {
+            eprintln!("[lksr] before_run hook errors: {:?}", errs);
+        }
+    }
+
     let mut hard_passes = 0i64;
     let mut iterations: Vec<serde_json::Value> = Vec::new();
 
@@ -192,6 +209,31 @@ pub async fn execute_scenario(
         iterations.push(serde_json::Value::Object(it));
         if gate.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
             hard_passes += 1;
+        }
+    }
+
+    // Plugin after_run hooks (port of run_orchestrator:134-145).
+    {
+        let last_run_id = iterations.last()
+            .and_then(|it| it.get("run_id").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_default();
+        let last_status = iterations.last()
+            .and_then(|it| it.get("status").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_default();
+        let last_report = iterations.last()
+            .and_then(|it| it.get("report_dir").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_default();
+        let ar_ctx = lks_core::plugin_bridge::AfterRunContext {
+            scenario_id: scenario_id.to_string(),
+            project_root: project_root.to_path_buf(),
+            run_id: last_run_id,
+            run_name: opts.run_name.clone(),
+            report_dir: std::path::PathBuf::from(last_report),
+            status: last_status,
+        };
+        let errs = lks_core::plugin_bridge::run_after_run_hooks(project_root, &ar_ctx);
+        if !errs.is_empty() {
+            eprintln!("[lksr] after_run hook errors: {:?}", errs);
         }
     }
 

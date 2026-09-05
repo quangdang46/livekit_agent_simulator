@@ -27,5 +27,5 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 pyo3 = { version = "0.29", features = ["auto-initialize"], optional = true }
 
 [features]
-default = []
+default = ["python-plugins"]
 python-plugins = ["dep:pyo3"]
