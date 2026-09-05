@@ -36,6 +36,8 @@ pub enum SimRoomEvent {
     DataReceived {
         topic: String,
         data: Vec<u8>,
+        /// Sender identity (Python packet.participant.identity), if known.
+        sender: Option<String>,
     },
 }
 
@@ -88,10 +90,17 @@ pub async fn connect_room(
                         identities: speakers.iter().map(|p| p.identity().to_string()).collect(),
                     })
                 }
-                RoomEvent::DataReceived { payload, topic, .. } => {
+                RoomEvent::DataReceived {
+                    payload,
+                    topic,
+                    participant,
+                    ..
+                } => {
+                    let sender = participant.map(|p| p.identity().to_string());
                     Some(SimRoomEvent::DataReceived {
                         topic: topic.unwrap_or_default(),
                         data: payload.to_vec(),
+                        sender,
                     })
                 }
                 _ => None,

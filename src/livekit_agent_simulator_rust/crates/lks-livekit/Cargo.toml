@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 lks-core = { path = "../lks-core" }
+agent-sim-proto = { path = "../agent-sim-proto" }
 gemini-live = { path = "../gemini-live" }
 
 livekit = { version = "0.8.3", features = ["rustls-tls-webpki-roots"] }

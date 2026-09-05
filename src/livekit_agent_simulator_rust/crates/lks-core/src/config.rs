@@ -71,6 +71,20 @@ pub struct JudgeConfig {
     pub endpoint_type: String,
 }
 
+impl Default for AudioOnsetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            vad: "rms".into(),
+            threshold: 0.012,
+            win_ms: 20,
+            energy_frames: 3,
+            exit_frames: 5,
+            refractory_ms: 60,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioOnsetConfig {
     pub enabled: bool,
@@ -86,6 +100,26 @@ pub struct AudioOnsetConfig {
 pub struct ToolEventPattern {
     pub mat: Map<String, Json>,
     pub emit: String,
+}
+
+impl Default for ObserveConfig {
+    /// Mirror of build_observe_config defaults (config.yaml omitted keys).
+    fn default() -> Self {
+        Self {
+            timezone: DEFAULT_TIMEZONE.into(),
+            lk_transcription: true,
+            lk_agent_session: true,
+            record_audio: true,
+            data_topics: Vec::new(),
+            flow_topics: Vec::new(),
+            tool_event_patterns: Vec::new(),
+            audio_onset: AudioOnsetConfig::default(),
+            transcript_payload_types: vec!["transcript_turn".into()],
+            transcript_dedupe_window_ms: 15000,
+            silence_threshold_ms: 4000,
+            turn_taking_warn_ms: 2500,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

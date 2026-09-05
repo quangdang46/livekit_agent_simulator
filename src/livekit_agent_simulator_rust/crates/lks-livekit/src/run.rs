@@ -620,6 +620,7 @@ pub async fn execute_scenario_parsed(
             )
             .with_dispatch_metadata(dispatch_meta)
             .with_silent_mode(silent)
+            .with_observe(cfg.observe.clone())
             .with_speech_conditions(persona_sc.clone());
             Box::pin(async move { bridge.run(end_rx.resubscribe()).await })
         } else {
@@ -637,6 +638,7 @@ pub async fn execute_scenario_parsed(
             .with_recorder(recorder.clone())
             .with_dispatch_metadata(dispatch_meta)
             .with_silent_mode(silent)
+            .with_observe(cfg.observe.clone())
             .with_speech_conditions(persona_sc)
             .with_cue_rx(cue_rx);
             Box::pin(async move { bridge.run(end_rx).await })
@@ -1176,6 +1178,29 @@ pub async fn execute_scenario_parsed(
             .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some("tool.start"))
             .cloned()
             .collect();
+        // Flow-lifecycle payloads published on observe.flow_topics (port of
+        // run_orchestrator._collect_flow_events — opaque, never interpreted).
+        let flow_events: Vec<serde_json::Map<String, serde_json::Value>> = w
+            .events()
+            .iter()
+            .filter(|e| {
+                e.get("kind").and_then(|k| k.as_str()) == Some("data.message")
+                    && cfg
+                        .observe
+                        .flow_topics
+                        .iter()
+                        .any(|t| e.get("source").and_then(|s| s.as_str()) == Some(t.as_str()))
+            })
+            .filter(|e| {
+                e.get("spec")
+                    .and_then(|s| s.as_object())
+                    .and_then(|s| s.get("payload"))
+                    .and_then(|p| p.as_object())
+                    .map(|o| !o.is_empty())
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
         // Include llm_bool outcome prompts as extra criteria when present
         // (run_orchestrator.py:583-587).
         let mut criteria: Vec<String> = scenario.pass_criteria.clone();
@@ -1187,6 +1212,7 @@ pub async fn execute_scenario_parsed(
                 &criteria,
                 &turns,
                 &tool_events,
+                &flow_events,
             )
             .await
         } else {
@@ -1196,6 +1222,7 @@ pub async fn execute_scenario_parsed(
                 &criteria,
                 &turns,
                 &tool_events,
+                &flow_events,
                 &scenario.pass_judges,
                 &scenario.pass_criteria_mode,
             )
@@ -1232,6 +1259,7 @@ pub async fn execute_scenario_parsed(
                 &goal_list,
                 *min_goals,
                 &w.turn_metrics(),
+                &[],
             )
             .await;
             let gv = goals_result

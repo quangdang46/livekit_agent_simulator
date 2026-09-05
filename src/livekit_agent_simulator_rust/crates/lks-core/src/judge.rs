@@ -502,27 +502,37 @@ Return ONLY valid JSON."#;
 pub fn build_evidence_packet(
     turns: &[Map<String, Json>],
     tool_events: &[Map<String, Json>],
-) -> (String, String) {
-    // Transcript: Caller / {mm:ss.xx} - {mm:ss.xx} / text lines.
+    flow_events: &[Map<String, Json>],
+) -> (String, String, String) {
+    // Transcript: Caller/Agent blocks with mm:ss.xx ranges (evidence.py
+    // format_transcript) — elapsed time accumulates turn_taking_ms.
+    let ms_to_mmss = |ms: f64| -> String {
+        let total_s = ms / 1000.0;
+        let minutes = (total_s as i64) / 60;
+        let seconds = total_s % 60.0;
+        format!("{minutes}:{seconds:05.2}")
+    };
     let mut lines: Vec<String> = Vec::new();
+    let mut elapsed_ms = 0.0f64;
     for t in turns {
+        let start = ms_to_mmss(elapsed_ms);
+        let ttm = t.get("turn_taking_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        elapsed_ms += ttm;
+        let end = ms_to_mmss(elapsed_ms);
+        let time_range = format!("{start} - {end}");
         let user = t.get("user_text").and_then(|v| v.as_str()).unwrap_or("");
         let agent = t.get("agent_text").and_then(|v| v.as_str()).unwrap_or("");
-        let tt = t
-            .get("turn_taking_ms")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
         if !user.is_empty() {
-            lines.push(format!("Caller: {user}"));
+            lines.push("Caller".into());
+            lines.push(time_range.clone());
+            lines.push(user.to_string());
+            lines.push(String::new());
         }
         if !agent.is_empty() {
-            let ts = format!(
-                "[{:02}:{:02}.{:02}]",
-                tt / 60000,
-                (tt % 60000) / 1000,
-                (tt % 1000) / 10
-            );
-            lines.push(format!("{ts} {agent}"));
+            lines.push("Agent".into());
+            lines.push(time_range);
+            lines.push(agent.to_string());
+            lines.push(String::new());
         }
     }
     let transcript = if lines.is_empty() {
@@ -531,19 +541,19 @@ pub fn build_evidence_packet(
         lines.join("\n")
     };
 
-    // Tool spans: one JSON object per event.
+    // Tool spans: one compact JSON object per event (evidence.py format_tool_spans).
     let spans: Vec<String> = tool_events
         .iter()
         .map(|e| {
-            let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let spec = e.get("spec").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-            let name = spec.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
-            let turn = e.get("turn").and_then(|v| v.as_i64()).unwrap_or(0);
-            let err = spec.get("error").and_then(|v| v.as_str()).unwrap_or("");
-            let dur = spec.get("duration_ms").and_then(|v| v.as_i64()).unwrap_or(0);
-            format!(
-                "{{\"kind\": \"{kind}\", \"turn\": {turn}, \"name\": \"{name}\", \"error\": \"{err}\", \"duration_ms\": {dur}}}"
-            )
+            json!({
+                "kind": e.get("kind").cloned().unwrap_or(Json::Null),
+                "turn": e.get("turn").cloned().unwrap_or(Json::Null),
+                "name": spec.get("name").cloned().unwrap_or(Json::Null),
+                "error": spec.get("error").cloned().unwrap_or(Json::Null),
+                "duration_ms": spec.get("duration_ms").cloned().unwrap_or(Json::Null),
+            })
+            .to_string()
         })
         .collect();
     let tool_spans = if spans.is_empty() {
@@ -551,7 +561,36 @@ pub fn build_evidence_packet(
     } else {
         spans.join("\n")
     };
-    (transcript, tool_spans)
+
+    // Flow digest: opaque flow-lifecycle payloads, key=value per event
+    // (evidence.py format_flow_digest — core never interprets payload keys).
+    let mut flow_lines: Vec<String> = Vec::new();
+    for e in flow_events {
+        let payload = e
+            .get("spec")
+            .and_then(|v| v.as_object())
+            .and_then(|s| s.get("payload"))
+            .cloned()
+            .unwrap_or(Json::Null);
+        match payload.as_object() {
+            Some(o) if !o.is_empty() => {
+                let bits: Vec<String> = o
+                    .iter()
+                    .filter(|(k, _)| k.as_str() != "_seq" && k.as_str() != "ts")
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                flow_lines.push(if bits.is_empty() { payload.to_string() } else { bits.join(" | ") });
+            }
+            _ => flow_lines.push(payload.to_string()),
+        }
+    }
+    let flow_digest = if flow_lines.is_empty() {
+        "(none)".to_string()
+    } else {
+        flow_lines.join("\n")
+    };
+
+    (transcript, tool_spans, flow_digest)
 }
 
 /// Run the judge over pass_criteria (port of `judge_run`).
@@ -561,6 +600,7 @@ pub async fn judge_run(
     pass_criteria: &[String],
     turns: &[Map<String, Json>],
     tool_events: &[Map<String, Json>],
+    flow_events: &[Map<String, Json>],
 ) -> Map<String, Json> {
     if pass_criteria.is_empty() {
         return JudgmentResult {
@@ -603,8 +643,8 @@ pub async fn judge_run(
             .to_dict()
         }
     };
-    let (transcript, tool_spans) = build_evidence_packet(turns, tool_events);
-    let user = build_user_prompt(&criteria, &transcript, &tool_spans, None, false);
+    let (transcript, tool_spans, flow_digest) = build_evidence_packet(turns, tool_events, flow_events);
+    let user = build_user_prompt(&criteria, &transcript, &tool_spans, Some(&flow_digest), false);
     // Backend dispatch (port of evals/backend.py): gemini mode → native
     // generateContent; endpoint_type anthropic → Messages wire; else OpenAI
     // chat completions.
@@ -689,6 +729,7 @@ pub async fn judge_run_multi(
     _pass_criteria: &[String], // global flat criteria — multi mode uses per-group criteria (Python parity)
     turns: &[Map<String, Json>],
     tool_events: &[Map<String, Json>],
+    flow_events: &[Map<String, Json>],
     judges: &[Map<String, Json>],
     mode: &str,
 ) -> Map<String, Json> {
@@ -765,7 +806,7 @@ pub async fn judge_run_multi(
                 .unwrap_or_default(),
         };
         let mut v =
-            judge_run(Some(&per), sim_api_key, &group_criteria, turns, tool_events).await;
+            judge_run(Some(&per), sim_api_key, &group_criteria, turns, tool_events, flow_events).await;
         v.insert("judge_id".into(), serde_json::Value::String(judge_id));
         results.push(v);
     }
@@ -781,6 +822,7 @@ pub async fn judge_goals(
     goals: &[String],
     min_goals: i64,
     turns: &[Map<String, Json>],
+    flow_events: &[Map<String, Json>],
 ) -> Map<String, Json> {
     if judge_cfg.is_none() {
         let mut r = JudgmentResult {
@@ -812,8 +854,8 @@ pub async fn judge_goals(
         min_goals = min_goals,
         n = goals.len(),
     )];
-    let (transcript, tool_spans) = build_evidence_packet(turns, &[]);
-    let user = build_user_prompt(&criteria, &transcript, &tool_spans, None, true);
+    let (transcript, tool_spans, flow_digest) = build_evidence_packet(turns, &[], flow_events);
+    let user = build_user_prompt(&criteria, &transcript, &tool_spans, Some(&flow_digest), true);
     let Some(api_key) = resolved.api_key.clone() else {
         let mut r = JudgmentResult {
             verdict: "skipped".into(),

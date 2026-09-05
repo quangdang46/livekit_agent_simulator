@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 
-use lks_core::config::{LiveKitConfig, SimulatorConfig};
+use lks_core::config::{LiveKitConfig, ObserveConfig, SimulatorConfig};
 use lks_core::errors::RunError;
 use lks_core::logging::event::EventWriter;
 use serde_json::json;
@@ -58,6 +58,8 @@ pub struct OpenAiCallerBridge {
     /// Mid-call cue channel receiver (ScriptRuntime → bridge). Mutex-wrapped
     /// so `run(&self)` can take it once at loop start.
     cue_rx: parking_lot::Mutex<Option<crate::script::CueRx>>,
+    /// observe.* knobs for data-topic/session observation (Python parity).
+    observe: ObserveConfig,
 }
 
 impl OpenAiCallerBridge {
@@ -87,7 +89,14 @@ impl OpenAiCallerBridge {
             silent_mode: false,
             persona_speech_conditions: Default::default(),
             cue_rx: parking_lot::Mutex::new(None),
+            observe: ObserveConfig::default(),
         }
+    }
+
+    /// Builder: observe config for data-topic + lk.agent.session observation.
+    pub fn with_observe(mut self, observe: ObserveConfig) -> Self {
+        self.observe = observe;
+        self
     }
 
     /// Builder: opaque Dispatch.metadata passthrough (scenario > config).
@@ -562,6 +571,15 @@ impl OpenAiCallerBridge {
         // room.active_speakers / room.disconnected as they happen (parity with
         // observer.py handlers).
         let mut room_events_watch = room_events;
+
+        // lk.agent.session + data-topic observation (Python observer parity).
+        let mut session_observer = crate::observe::SessionObserver::new();
+        let mut data_router = crate::observe::DataRouter::new(self.observe.clone());
+        data_router.on_transcript = Some(Box::new(|_role, _text, _source| {
+            // Transcript payloads published on data topics are consumed (not
+            // data.message) per Python; the model-session transcript pipeline
+            // already drives turn tracking in this build.
+        }));
         let writer_obs = self.writer.clone();
         let mut disconnect_rx = end_rx.resubscribe();
         // Hard cap: single immutable timer so it actually fires after 45s (a
@@ -738,6 +756,16 @@ impl OpenAiCallerBridge {
                             spec_m.insert("sid".into(), serde_json::Value::String(track_sid));
                             w.emit("room.track_subscribed", Some(&spec_m), "room", None, None, false, None);
                             drop(w);
+                        }
+                        Ok(SimRoomEvent::DataReceived { topic, data, sender }) => {
+                            if self.observe.lk_agent_session && topic == crate::observe::TOPIC_SESSION_MESSAGES {
+                                // Agent SDK byte stream → tool/session events.
+                                let mut w = writer_obs.lock().await;
+                                crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                            } else {
+                                let mut w = writer_obs.lock().await;
+                                data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                            }
                         }
                         _ => {}
                     }

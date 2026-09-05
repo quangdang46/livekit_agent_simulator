@@ -2046,6 +2046,7 @@ dependencies = [
 name = "lks-livekit"
 version = "0.1.0-rust"
 dependencies = [
+ "agent-sim-proto",
  "anyhow",
  "base64 0.23.1",
  "futures-util",

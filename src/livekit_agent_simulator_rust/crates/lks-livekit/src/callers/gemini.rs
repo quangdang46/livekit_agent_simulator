@@ -15,7 +15,7 @@ use gemini_live::{
 };
 use tokio::sync::{broadcast, mpsc, Mutex};
 
-use lks_core::config::{LiveKitConfig, SimulatorConfig};
+use lks_core::config::{LiveKitConfig, ObserveConfig, SimulatorConfig};
 use lks_core::errors::RunError;
 use lks_core::logging::event::EventWriter;
 
@@ -37,6 +37,8 @@ pub struct GeminiCallerBridge {
     silent_mode: bool,
     /// Persona.speech_conditions map (effects resolution at run time).
     persona_speech_conditions: serde_json::Map<String, serde_json::Value>,
+    /// observe.* knobs for data-topic/session observation (Python parity).
+    observe: ObserveConfig,
 }
 
 impl GeminiCallerBridge {
@@ -59,7 +61,14 @@ impl GeminiCallerBridge {
             dispatch_metadata: None,
             silent_mode: false,
             persona_speech_conditions: Default::default(),
+            observe: ObserveConfig::default(),
         }
+    }
+
+    /// Builder: observe config for data-topic + lk.agent.session observation.
+    pub fn with_observe(mut self, observe: ObserveConfig) -> Self {
+        self.observe = observe;
+        self
     }
 
     /// Builder: persona speech_conditions (for degradation effects).
@@ -305,6 +314,14 @@ impl GeminiCallerBridge {
         let cap = tokio::time::sleep(std::time::Duration::from_secs(45));
         tokio::pin!(cap);
         let mut room_events_watch = room_events;
+
+        // lk.agent.session + data-topic observation (Python observer parity).
+        let mut session_observer = crate::observe::SessionObserver::new();
+        let mut data_router = crate::observe::DataRouter::new(self.observe.clone());
+        data_router.on_transcript = Some(Box::new(|_role, _text, _source| {
+            // Consumed per Python; model-session transcript pipeline drives
+            // turn tracking in this build.
+        }));
         let writer_obs = self.writer.clone();
         loop {
             tokio::select! {
@@ -368,6 +385,16 @@ impl GeminiCallerBridge {
                             spec_m.insert("sid".into(), serde_json::Value::String(track_sid));
                             w.emit("room.track_subscribed", Some(&spec_m), "room", None, None, false, None);
                             drop(w);
+                        }
+                        Ok(SimRoomEvent::DataReceived { topic, data, sender }) => {
+                            if self.observe.lk_agent_session && topic == crate::observe::TOPIC_SESSION_MESSAGES {
+                                // Agent SDK byte stream → tool/session events.
+                                let mut w = writer_obs.lock().await;
+                                crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                            } else {
+                                let mut w = writer_obs.lock().await;
+                                data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                            }
                         }
                         _ => {}
                     }
