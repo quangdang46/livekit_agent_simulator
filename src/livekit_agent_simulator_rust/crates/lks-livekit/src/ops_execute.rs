@@ -790,12 +790,33 @@ async fn propose_llm(
     if !resolved.ready {
         return Ok(None); // deterministic set stands
     }
-    let backend = HttpOpenAIBackend {
-        base_url: resolved.base_url.clone().unwrap_or_default(),
-        api_key: resolved.api_key.clone().unwrap_or_default(),
-        model: resolved.model.clone(),
-        temperature: resolved.temperature,
-        timeout_s: 60,
+    // Support Gemini REST mode in addition to OpenAI HTTP proposer
+    let propose_mode = resolved.mode.clone();
+    let propose_api_key = resolved.api_key.clone().unwrap_or_default();
+    let propose_base_url = resolved.base_url.clone().unwrap_or_default();
+    let propose_model = resolved.model.clone();
+    let propose_temp = resolved.temperature;
+    let propose_with = |system: String, user: String| async move {
+        if propose_mode == "gemini" && propose_base_url.is_empty() {
+            lks_core::judge::GeminiRestBackend {
+                api_key: propose_api_key.clone(),
+                model: propose_model.clone(),
+                temperature: propose_temp,
+                timeout_s: 60,
+            }
+            .complete_json(&system, &user)
+            .await
+        } else {
+            HttpOpenAIBackend {
+                base_url: propose_base_url.clone(),
+                api_key: propose_api_key.clone(),
+                model: propose_model.clone(),
+                temperature: propose_temp,
+                timeout_s: 60,
+            }
+            .complete_json(&system, &user)
+            .await
+        }
     };
     let system = "You are a prompt-optimization assistant for a simulated-caller \
 persona-prompt composer. You propose SMALL, STRUCTURAL mutations to improve how \
@@ -815,7 +836,7 @@ or {\"id\":\"...\",\"description\":\"...\",\"extra_guardrails\":[\"...\"]}.";
         "Here is the current composed caller instruction. Propose up to {llm_count} \
 distinct structural mutations (JSON array):\n\n---\n{current_si}\n---"
     );
-    match backend.complete_json(system, &user).await {
+    match propose_with(system.to_string(), user.clone()).await {
         Ok(text) => Ok(Some(text)),
         Err(_) => Ok(None),
     }

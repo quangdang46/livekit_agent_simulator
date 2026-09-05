@@ -424,6 +424,7 @@ pub fn router(server: Arc<WebServer>) -> Router {
         .route("/index.html", get(index))
         .route("/player.html", get(player_redirect))
         .route("/api/runs", get(api_runs))
+        .route("/api/runs/{run_id}", get(api_cues))
         .route("/api/runs/{run_id}/cues", get(api_cues))
         .route("/assets/{*name}", get(static_asset))
         .route("/runs/{run_id}/{name}", get(run_file))

@@ -133,6 +133,11 @@ impl LocalConversationRecorder {
     }
 
     /// Write conversation.wav (16 kHz PCM16 stereo, L=sim R=agent).
+    /// Time the recorder was created (when the first audio arrived).
+    pub fn started_mono(&self) -> Option<std::time::Instant> {
+        self.started_mono
+    }
+
     pub fn save(&mut self, path: &std::path::Path) -> Result<RecordResult, String> {
         let _g = self.lock.lock().unwrap();
         self.finalized = true;

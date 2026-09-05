@@ -765,6 +765,22 @@ pub async fn execute_scenario_parsed(
                     let active = crate::callers::openai::AGENT_ACTIVE_SPEAKER
                         .load(std::sync::atomic::Ordering::SeqCst);
                     if !active {
+                        if was_active {
+                            // Emit interrupt_rate_skip once when agent goes inactive
+                            let skip_spec = serde_json::json!({
+                                "reason": "agent_not_active",
+                                "active_ms": 0,
+                            });
+                            w.lock().await.emit(
+                                "sim.interrupt_rate_skip",
+                                Some(skip_spec.as_object().unwrap()),
+                                "sim.interrupt_rate",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                        }
                         armed = None;
                         was_active = false;
                         continue;
@@ -775,6 +791,10 @@ pub async fn execute_scenario_parsed(
                     was_active = true;
                     let anchor = last_fire.or(armed);
                     let Some(anchor) = anchor else { continue };
+                    let active_ms = anchor.elapsed().as_millis() as i64;
+                    if active_ms < spec.min_agent_active_ms {
+                        continue; // skip silently — not enough active time
+                    }
                     if anchor.elapsed() < std::time::Duration::from_millis(spec.interval_ms as u64)
                     {
                         continue;
@@ -1342,8 +1362,36 @@ pub async fn execute_scenario_parsed(
     );
 
     // Save conversation.wav (agent audio captured during the run).
-    if let Ok(mut rec) = recorder.lock() {
-        let _ = rec.save(&report_dir.join("conversation.wav"));
+    let audio_record_result = recorder.lock().ok().map(|mut rec| {
+        let res = rec.save(&report_dir.join("conversation.wav"));
+        let t0_ms = rec.started_mono().map(|s| s.elapsed().as_millis() as i64).unwrap_or(0);
+        (res, t0_ms)
+    });
+    if let Some((res, t0_ms)) = audio_record_result {
+        match res {
+            Ok(result) => {
+                let spec = serde_json::json!({
+                    "path": result.path,
+                    "sample_rate": result.sample_rate,
+                    "duration_ms": result.duration_ms,
+                    "channels": {"left": "sim", "right": "agent"},
+                    "sim_samples": result.sim_samples,
+                    "agent_samples": result.agent_samples,
+                    "t0_mono_ms": t0_ms,
+                });
+                {
+                    let mut w2 = writer_arc.lock().await;
+                    w2.emit("sim.audio_recorded", Some(spec.as_object().unwrap()), "sim", None, None, false, None);
+                }
+            }
+            Err(e) => {
+                let spec = serde_json::json!({"where": "audio_finalize", "error": e});
+                {
+                    let mut w2 = writer_arc.lock().await;
+                    w2.emit("sim.error", Some(spec.as_object().unwrap()), "sim", None, None, false, None);
+                }
+            }
+        }
     }
 
     // Finish the sqlite row + persist full events/turns (port of
