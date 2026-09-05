@@ -3,7 +3,6 @@
 //! Same public ops as the MCP server (22 data commands + `mcp`), mirroring the
 //! Python `lks` CLI. `--version`/`--help` from clap (typer-equivalent).
 
-mod tui;
 mod update;
 
 use clap::{Parser, Subcommand};
@@ -294,9 +293,6 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
     },
-    /// Full-feature interactive TUI: scenarios → run (live) · runs → reports ·
-    /// preflight · cues · plugins. 1-6 tabs, ↑↓/Enter navigate, Esc back, q quit.
-    Tui,
     /// Start the MCP server over stdio (same 21 tools as the Python server).
     Mcp,
     /// Check config + folders + optional LiveKit API connectivity.
@@ -348,7 +344,6 @@ fn main() -> anyhow::Result<()> {
             update::notify_update();
             Ok(())
         }
-        Some(Command::Tui) => tui::run(std::path::Path::new(&root)),
         Some(Command::Mcp) => {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1000,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn all_23_commands_parse() {
+    fn all_commands_parse() {
         for args in [
             &["lksr", "init"][..],
             &["lksr", "guide"][..],
@@ -1021,8 +1016,10 @@ mod tests {
             &["lksr", "compare", "a", "b"][..],
             &["lksr", "runs"][..],
             &["lksr", "scenario-from-run", "r"][..],
+            &["lksr", "serve"][..],
             &["lksr", "preflight"][..],
             &["lksr", "web"][..],
+            &["lksr", "update"][..],
             &["lksr", "mcp"][..],
         ] {
             let cli = Cli::parse_from(args);

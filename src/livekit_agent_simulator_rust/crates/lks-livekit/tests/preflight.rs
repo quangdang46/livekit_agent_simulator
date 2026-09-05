@@ -2,7 +2,6 @@
 //! livekit.api/telephony). Offline (connectivity=false) except where noted.
 
 use lks_livekit::preflight::op_preflight;
-use serde_json::json;
 
 fn tmp_root() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();

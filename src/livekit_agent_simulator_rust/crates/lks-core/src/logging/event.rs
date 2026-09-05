@@ -42,10 +42,6 @@ pub struct EventWriter {
     t0_mono: std::time::Instant,
     events_file: std::fs::File,
     events: Vec<Map<String, Json>>,
-    /// Optional live channel — every emitted envelope is cloned to it so a
-    /// TUI/web consumer can stream events as they happen (std mpsc; no tokio
-    /// dependency in lks-core). None = no live stream.
-    live: Option<std::sync::mpsc::Sender<Map<String, Json>>>,
     turn: i64,
     dialogue_user: Map<String, Json>,
     dialogue_agent: Map<String, Json>,
@@ -67,18 +63,6 @@ impl EventWriter {
         timezone_name: &str,
         turn_taking_warn_ms: i64,
     ) -> Result<Self, std::io::Error> {
-        Self::new_with_live(run_id, report_dir, timezone_name, turn_taking_warn_ms, None)
-    }
-
-    /// Like [`EventWriter::new`] but also clones every emitted envelope to the
-    /// given live channel (used by the lksr TUI live-run view).
-    pub fn new_with_live(
-        run_id: &str,
-        report_dir: PathBuf,
-        timezone_name: &str,
-        turn_taking_warn_ms: i64,
-        live: Option<std::sync::mpsc::Sender<Map<String, Json>>>,
-    ) -> Result<Self, std::io::Error> {
         std::fs::create_dir_all(&report_dir)?;
         let events_path = report_dir.join("events.jsonl");
         let events_file = std::fs::OpenOptions::new()
@@ -94,7 +78,6 @@ impl EventWriter {
             t0_mono: std::time::Instant::now(),
             events_file,
             events: Vec::new(),
-            live,
             turn: 0,
             dialogue_user: fresh_dialogue("user"),
             dialogue_agent: fresh_dialogue("agent"),
@@ -207,9 +190,6 @@ impl EventWriter {
         let _ = self.events_file.write_all(line.as_bytes());
         let _ = self.events_file.flush();
         self.events.push(event.clone());
-        if let Some(tx) = &self.live {
-            let _ = tx.send(event.clone());
-        }
         event
     }
 
@@ -464,8 +444,7 @@ impl EventWriter {
     }
 }
 
-/// Event detail description (mirror event_writer._describe). Public so the
-/// TUI live-run activity stream and Log screen reuse the exact format.
+/// Event detail description (mirror event_writer._describe).
 pub fn describe(e: &Map<String, Json>) -> String {
     let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     let spec = e.get("spec").and_then(|v| v.as_object());
