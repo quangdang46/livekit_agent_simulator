@@ -1028,6 +1028,8 @@ pub static LAST_AGENT_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 pub static LAST_ANY_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 /// True once the agent produced any audio this run.
 pub static AGENT_HAS_SPOKEN: AtomicBool = AtomicBool::new(false);
+/// True while a script step with mute_persona=true is active — suppress freestyle audio.
+pub static MUTE_PERSONA_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub fn find_subscribed_audio(
     room: &Arc<livekit::Room>,
@@ -1095,7 +1097,11 @@ async fn pump_openai_events(
                         drop(w);
                     }
                     "response.output_audio.delta" => {
-                        if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                        if crate::callers::openai::MUTE_PERSONA_ACTIVE
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                        {
+                            // Persona muted during script cue — drop audio.
+                        } else if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
                             if let Ok(pcm) = base64::engine::general_purpose::STANDARD.decode(delta) {
                                 let samples: Vec<i16> = pcm.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
                                 let _ = out_tx.send(samples).await;

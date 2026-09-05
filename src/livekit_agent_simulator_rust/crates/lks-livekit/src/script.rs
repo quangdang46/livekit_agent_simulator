@@ -143,6 +143,8 @@ impl ScriptRuntime {
                 _ = stop_rx.recv() => return Ok(()),
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {}
             }
+            // Clear mute_persona when the loop re-arms.
+            crate::callers::openai::MUTE_PERSONA_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
             // Post-cue gap: after a speak step, wait for the agent to reply
             // (up to 8s) before arming the next step — mirrors the Python
             // _await_agent_reply window so steps don't fire over the agent.
@@ -452,7 +454,11 @@ impl ScriptRuntime {
                         false,
                         None,
                     );
+                    let step_mute = Self::step_bool(&step, "mute_persona", false);
                     drop(w);
+                    if step_mute {
+                        crate::callers::openai::MUTE_PERSONA_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     let _ = (self.on_action)(ScriptAction::Speak {
                         text: say,
                         label,
