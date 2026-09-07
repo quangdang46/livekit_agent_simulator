@@ -445,6 +445,14 @@ try {{
             "-File",
             str(script_path),
         ],
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        # DETACHED_PROCESS / CREATE_NEW_PROCESS_GROUP only exist on the
+        # `subprocess` module on Windows — this function is only ever called
+        # from the `sys.platform == "win32"` branch, but the module-level
+        # attributes are looked up unconditionally, so guard them for
+        # importability/testability on other platforms too.
+        creationflags=(
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        ),
         close_fds=True,
     )

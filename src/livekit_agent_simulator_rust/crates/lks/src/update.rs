@@ -243,8 +243,7 @@ pub fn run_update() -> Result<()> {
     // Always resolve a fresh tag rather than trusting the cached (stripped)
     // version string — the download URL needs the exact tag (with its
     // `-rust` suffix), which the cache does not preserve.
-    let release =
-        fetch_latest_release().context("failed to fetch latest release from GitHub")?;
+    let release = fetch_latest_release().context("failed to fetch latest release from GitHub")?;
     let tag = release
         .get("tag_name")
         .and_then(|v| v.as_str())
