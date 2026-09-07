@@ -97,6 +97,44 @@ fn is_newer(latest: &str, current: &str) -> bool {
 
 // ── network ─────────────────────────────────────────────────────────────────
 
+// This repo publishes two independent release tracks into the *same* GitHub
+// Releases list: Python (`lks`, tags like `v0.1.10`) and Rust (`lksr`, tags
+// like `v0.1.0-rust`). `GET /releases/latest` returns whichever track was
+// tagged most recently and may hand us a release with no `lksr-*.tar.gz`
+// asset. List releases instead and keep only the rust-track tags — mirrors
+// install.sh's `latest_release_tag` (which does the inverse: skip `-rust`).
+const RUST_TAG_SUFFIX: &str = "-rust";
+
+fn fetch_latest_release() -> Option<serde_json::Value> {
+    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=100");
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("lksr-update-check")
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .ok()?;
+
+    let resp = client.get(&url).send().ok()?;
+    let releases: Vec<serde_json::Value> = resp.json().ok()?;
+
+    releases.into_iter().find(|release| {
+        if release
+            .get("draft")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || release
+                .get("prerelease")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
+            return false;
+        }
+        release
+            .get("tag_name")
+            .and_then(|v| v.as_str())
+            .is_some_and(|tag| tag.ends_with(RUST_TAG_SUFFIX))
+    })
+}
+
 fn fetch_available_update() -> Option<String> {
     // Check timestamp BEFORE the request (prevents API hammering on failure).
     if let Some(ts) = cache_timestamp() {
@@ -107,18 +145,10 @@ fn fetch_available_update() -> Option<String> {
         }
     }
 
-    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("lksr-update-check")
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .ok()?;
-
-    let resp = client.get(&url).send().ok()?;
-    let release: serde_json::Value = resp.json().ok()?;
-
+    let release = fetch_latest_release()?;
     let tag = release.get("tag_name")?.as_str()?;
     let version = tag.strip_prefix('v').unwrap_or(tag);
+    let version = version.strip_suffix(RUST_TAG_SUFFIX).unwrap_or(version);
 
     // Save to cache (timestamp first, even on partial success).
     let mut cache = read_cache().as_object().cloned().unwrap_or_default();
@@ -210,17 +240,21 @@ pub fn run_update() -> Result<()> {
         .context("unsupported platform (expected linux-x86_64 or macos-aarch64)")?
         .to_string();
 
-    let cache = read_cache();
-    let latest = cache
-        .get("latest_version")
+    // Always resolve a fresh tag rather than trusting the cached (stripped)
+    // version string — the download URL needs the exact tag (with its
+    // `-rust` suffix), which the cache does not preserve.
+    let release =
+        fetch_latest_release().context("failed to fetch latest release from GitHub")?;
+    let tag = release
+        .get("tag_name")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // If no cached version, fetch now.
-    let latest = match latest {
-        Some(v) => v,
-        None => fetch_available_update().context("failed to fetch latest version from GitHub")?,
-    };
+        .context("release missing tag_name")?
+        .to_string();
+    let without_v = tag.strip_prefix('v').unwrap_or(tag.as_str());
+    let latest = without_v
+        .strip_suffix(RUST_TAG_SUFFIX)
+        .unwrap_or(without_v)
+        .to_string();
 
     let current = current_version().to_string();
     if !is_newer(&latest, &current) {
@@ -229,7 +263,7 @@ pub fn run_update() -> Result<()> {
     }
 
     let asset_name = format!("lksr-{platform}.tar.gz");
-    let url = format!("https://github.com/{GITHUB_REPO}/releases/download/v{latest}/{asset_name}");
+    let url = format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/{asset_name}");
 
     eprintln!("Downloading: {url}");
 
