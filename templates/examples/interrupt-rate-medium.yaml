@@ -25,6 +25,29 @@ execute:
   max_turns: 10
   timeout_s: 120
   first_speaker: agent
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# Persona/assert/execute blocks below unchanged.
+# Seeded interruption policy (contract equivalent of the legacy
+# InterruptRateRunner, deterministic per agent-turn instead of wall-clock):
+# while the ask behavior runs, the driver may emit a fixed "Mhm." cut-in
+# when the agent is speaking. The explicit interrupt: below stays as the
+# authored cut-in. speech_conditions: above unchanged (legacy bridge).
+caller_steps:
+  - say: "Hi, what are your hours?"
+  - do:
+      behavior: ask
+      target: hours
+      constraints:
+        max_turns: 4
+      interaction:
+        interruption_rate: medium
+        interruption_interval_ms: 12000
+        interruption_seed: 7
+  - interrupt: true
+  - say: "Sorry — quick question — what are your hours?"
+  - say: "Thanks, bye."
+  - end: true
 assert:
   outcomes:
   - id: recovers

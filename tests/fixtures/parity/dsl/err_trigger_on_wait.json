@@ -1,0 +1,12 @@
+{
+  "id": "err_trigger_on_wait",
+  "steps": [
+    {
+      "wait": 10,
+      "trigger": {
+        "kind": "time"
+      }
+    }
+  ],
+  "expect": "error"
+}

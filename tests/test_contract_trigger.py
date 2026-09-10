@@ -74,7 +74,10 @@ class FakeSink:
         return True
 
 
-def _driver(orch=None):
+def _driver(orch=None, utterance: str = "Could you tell me more?"):
+    """Scripted backend: echoes the behavior/target with a fixed utterance
+    that passes the rule-based verifier as ``ask`` (default) or the given
+    text for callers that need a specific valid line."""
     orch = orch or Orchestrator()
     return (
         ContractCallerDriver(
@@ -85,11 +88,11 @@ def _driver(orch=None):
                     "B",
                     (),
                     {
-                        "generate": lambda self, ctx: {
-                            "act": "ask",
-                            "target": None,
+                        "generate": lambda self, ctx, _u=utterance: {
+                            "act": ctx["current_behavior"]["act"],
+                            "target": ctx["current_behavior"]["target"],
                             "slots": {},
-                            "utterance": "hi",
+                            "utterance": _u,
                         }
                     },
                 )()
@@ -176,6 +179,182 @@ def test_trigger_strictness(step):
 
 
 # --- execution ---
+
+
+@pytest.mark.asyncio
+async def test_gap_tolerance_survives_brief_dropout():
+    """A signal dropout shorter than TRIGGER_GAP_TOLERANCE_S must not reset
+    the agent_speaking continuity clock (legacy 1200ms parity)."""
+    import livekit_agent_simulator.caller_contract.driver as driver_mod
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(driver_mod, "TRIGGER_GAP_TOLERANCE_S", 0.3)
+    try:
+        driver, orch = _driver()
+        actions = parse_steps(
+            [
+                {
+                    "say": "One second.",
+                    "trigger": {
+                        "kind": "agent_speaking",
+                        "min_agent_active_ms": 150,
+                        "delay_ms": 0,
+                    },
+                    "barge_in": True,
+                }
+            ],
+            file="t",
+        )
+        sink = FakeSink(orch)
+        # Sustained speech with one short dropout mid-way: with naive reset
+        # this would restart the clock; with gap tolerance it still fires.
+        agent = FakeAgent(speaking=[True] * 3 + [False] + [True] * 20)
+        result = await driver.run(actions, sink, agent)
+    finally:
+        monkeypatch.undo()
+    assert result.failure is None
+    assert len(sink.published) == 1
+
+
+@pytest.mark.asyncio
+async def test_long_gap_resets_continuity_clock(monkeypatch):
+    """A dropout LONGER than the gap tolerance resets the clock: speech that
+    never sustains min_agent_active_ms within budget -> BEHAVIOR_TIMEOUT."""
+    monkeypatch.setattr(driver_mod, "TRIGGER_GAP_TOLERANCE_S", 0.05)
+    monkeypatch.setattr(driver_mod, "TRIGGER_WAIT_BUDGET_S", 0.4)
+    driver, orch = _driver()
+    actions = parse_steps(
+        [
+            {
+                "say": "One second.",
+                "trigger": {
+                    "kind": "agent_speaking",
+                    "min_agent_active_ms": 10000,
+                    "delay_ms": 0,
+                },
+                "barge_in": True,
+            }
+        ],
+        file="t",
+    )
+    sink = FakeSink(orch)
+    agent = FakeAgent(speaking=[True, False] + [True, False] * 20)
+    result = await driver.run(actions, sink, agent)
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.BEHAVIOR_TIMEOUT
+    assert len(sink.published) == 0
+
+
+@pytest.mark.asyncio
+async def test_interruption_policy_is_deterministic_and_gated():
+    """Seeded policy: same (scenario, seed, turn) decides the same way;
+    silent agent never gets interrupted; interval gates repeats."""
+    import asyncio as _asyncio
+
+    from livekit_agent_simulator.caller_contract.dsl import InteractionConfig
+    from livekit_agent_simulator.caller_contract.interaction_planner import (
+        CallerInteractionPlanner,
+    )
+
+    planner = CallerInteractionPlanner()
+    ic = InteractionConfig(interruption_rate="high", interruption_seed=3)
+    first = [planner.should_interrupt(ic, scenario_id="s", agent_turn_index=i) for i in range(8)]
+    second = [planner.should_interrupt(ic, scenario_id="s", agent_turn_index=i) for i in range(8)]
+    assert first == second
+    assert planner.should_interrupt(None, scenario_id="s", agent_turn_index=0) is False
+
+    # Driver: speaking agent + favorable flip -> policy_interrupt published.
+    driver, orch = _driver()
+    driver._scenario_id = "interrupt-rate-medium"
+    seed_yes = next(
+        s
+        for s in range(50)
+        if planner.should_interrupt(
+            InteractionConfig(interruption_rate="high", interruption_seed=s),
+            scenario_id="interrupt-rate-medium",
+            agent_turn_index=0,
+        )
+    )
+    actions = parse_steps(
+        [
+            {
+                "do": {
+                    "behavior": "ask",
+                    "constraints": {"max_turns": 1},
+                    "interaction": {
+                        "interruption_rate": "high",
+                        "interruption_seed": seed_yes,
+                        "interruption_interval_ms": 1000,
+                    },
+                }
+            }
+        ],
+        file="t",
+    )
+    sink = FakeSink(orch)
+    agent = FakeAgent(replies=["Sure, open 9 to 5."], speaking=[True] * 30)
+    result = await driver.run(actions, sink, agent)
+    assert result.failure is None
+    assert any(label == "policy_interrupt" for _, label in sink.published)
+
+    # Driver: silent agent -> never interrupted even with favorable flip.
+    driver2, orch2 = _driver()
+    driver2._scenario_id = "interrupt-rate-medium"
+    actions2 = parse_steps(
+        [
+            {
+                "do": {
+                    "behavior": "ask",
+                    "constraints": {"max_turns": 1},
+                    "interaction": {
+                        "interruption_rate": "high",
+                        "interruption_seed": seed_yes,
+                        "interruption_interval_ms": 1000,
+                    },
+                }
+            }
+        ],
+        file="t",
+    )
+    sink2 = FakeSink(orch2)
+    agent2 = FakeAgent(replies=["Sure, open 9 to 5."], speaking=[False] * 30)
+    result2 = await driver2.run(actions2, sink2, agent2)
+    assert result2.failure is None
+    assert all(label != "policy_interrupt" for _, label in sink2.published)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_publishes_immediately_without_validator():
+    """interrupt: is an explicit interaction action (barge delivery): fixed
+    text, no AI, no validator, immediate publish even mid-speech."""
+    driver, orch = _driver()
+    actions = parse_steps([{"interrupt": True}], file="t")
+    sink = FakeSink(orch)
+    agent = FakeAgent(speaking=[True] * 20)
+    texts: list[str] = []
+    orig_speak = driver._speak
+    driver._speak = lambda text: (texts.append(text), orig_speak(text))[1]
+    result = await driver.run(actions, sink, agent)
+    assert result.failure is None
+    assert texts == ["Wait — one second."]
+    assert len(sink.published) == 1
+
+
+@pytest.mark.asyncio
+async def test_interrupt_backchannel_class_uses_backchannel_line():
+    driver, orch = _driver()
+    actions = parse_steps(
+        [{"interrupt": True, "interaction": {"interrupt_class": "backchannel"}}],
+        file="t",
+    )
+    sink = FakeSink(orch)
+    agent = FakeAgent()
+    texts: list[str] = []
+    orig_speak = driver._speak
+    driver._speak = lambda text: (texts.append(text), orig_speak(text))[1]
+    result = await driver.run(actions, sink, agent)
+    assert result.failure is None
+    assert texts == ["Mhm."]
 
 
 def test_agent_wait_speaking_signal_delegates_to_observer():
@@ -343,3 +522,159 @@ async def test_trigger_timeout_is_behavior_timeout(monkeypatch):
     assert len(sink.published) == 0
     kinds = [k for k, _ in events]
     assert "contract.trigger_armed" in kinds
+
+
+@pytest.mark.asyncio
+async def test_tts_flaky_retries_same_text_no_ai_recall():
+    """TTS-only retry: flaky synth fails twice then succeeds — same text,
+    AI backend called once (never re-invoked for an audio failure)."""
+    calls = {"tts": 0, "ai": 0}
+
+    class _Backend:
+        def generate(self, context):
+            calls["ai"] += 1
+            return {
+                "act": "ask",
+                "target": None,
+                "slots": {},
+                "utterance": "Could you tell me more?",
+            }
+
+    def _flaky(text: str) -> bytes:
+        calls["tts"] += 1
+        if calls["tts"] <= 2:
+            raise RuntimeError("synth boom")
+        return b"\x00\x01" * 10
+
+    orch = Orchestrator()
+    driver = ContractCallerDriver(
+        orchestrator=orch,
+        validator=ContractValidator(semantic_verifier=RuleBasedSemanticVerifier()),
+        adapter=AILanguageAdapter(backend=_Backend()),
+        synthesize=_flaky,
+    )
+    from livekit_agent_simulator.caller_contract.driver import (
+        ContractCallerDriver as _D,
+    )
+
+    assert _D is ContractCallerDriver  # import sanity
+    sink = FakeSink(orch)
+    agent = FakeAgent()
+    result = await driver.run(parse_steps([{"say": "Hi."}], file="t"), sink, agent)
+    assert result.failure is None
+    assert calls["tts"] == 3
+
+
+@pytest.mark.asyncio
+async def test_tts_broken_maps_to_tts_error_not_violation():
+    """Permanently broken TTS -> TTS_ERROR / EndedBy.ERROR (never
+    CALLER_BEHAVIOR_VIOLATION, never TRANSPORT — the wire was untouched)."""
+    from livekit_agent_simulator.caller_contract import EndedBy, FailureReason
+
+    def _broken(text: str) -> bytes:
+        raise RuntimeError("synth dead")
+
+    orch = Orchestrator()
+    driver = ContractCallerDriver(
+        orchestrator=orch,
+        validator=ContractValidator(semantic_verifier=RuleBasedSemanticVerifier()),
+        adapter=AILanguageAdapter(
+            backend=type(
+                "B",
+                (),
+                {
+                    "generate": lambda self, ctx: {
+                        "act": "ask",
+                        "target": None,
+                        "slots": {},
+                        "utterance": "Could you tell me more?",
+                    }
+                },
+            )()
+        ),
+        synthesize=_broken,
+    )
+    sink = FakeSink(orch)
+    agent = FakeAgent()
+    result = await driver.run(parse_steps([{"say": "Hi."}], file="t"), sink, agent)
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.TTS_ERROR
+    assert result.ended_by == EndedBy.ERROR
+    assert len(sink.published) == 0
+
+
+@pytest.mark.asyncio
+async def test_hold_watchdog_fires_after_agent_dead_air():
+    """Contract hold timeout (legacy hold_music_timeout_s equivalent):
+    armed once the agent demonstrably spoke; fires on_hold_timeout +
+    sim.hold_timeout after the silence budget."""
+    import time as _time
+
+    from livekit_agent_simulator.caller_contract.driver import (
+        ContractCallerDriver as _Driver,
+    )
+
+    class _HoldAgent(FakeAgent):
+        def __init__(self):
+            super().__init__(replies=[])
+            self._t0 = _time.monotonic()
+
+        def last_speech_at_ms(self):
+            return (self._t0 - 5.0) * 1000.0  # spoke 5s ago
+
+    orch = Orchestrator()
+    driver = _Driver(
+        orchestrator=orch,
+        validator=ContractValidator(semantic_verifier=RuleBasedSemanticVerifier()),
+        adapter=AILanguageAdapter(
+            backend=type(
+                "B",
+                (),
+                {
+                    "generate": lambda self, ctx: {
+                        "act": "ask",
+                        "target": None,
+                        "slots": {},
+                        "utterance": "Could you tell me more?",
+                    }
+                },
+            )()
+        ),
+        synthesize=lambda text: b"\x00\x01" * 10,
+    )
+    fired: list[bool] = []
+    events: list[tuple[str, dict]] = []
+    result = await driver.run(
+        parse_steps([{"wait": 1500}], file="t"),
+        FakeSink(orch),
+        _HoldAgent(),
+        emit=lambda kind, spec=None: events.append((kind, spec or {})),
+        hold_timeout_s=0.4,
+        on_hold_timeout=lambda: fired.append(True),
+    )
+    assert result.failure is None
+    assert fired == [True]
+    assert any(k == "sim.hold_timeout" for k, _ in events)
+
+
+@pytest.mark.asyncio
+async def test_hold_watchdog_stays_off_before_agent_speaks():
+    """No agent speech evidence -> watchdog never arms (same rule as the
+    legacy loop: hold fires only after agent_has_spoken)."""
+
+    class _QuietAgent(FakeAgent):
+        def last_speech_at_ms(self):
+            return None
+
+    orch = Orchestrator()
+    driver, _ = _driver(orch)
+    fired: list[bool] = []
+    result = await driver.run(
+        parse_steps([{"wait": 400}], file="t"),
+        FakeSink(orch),
+        _QuietAgent(),
+        hold_timeout_s=0.1,
+        on_hold_timeout=lambda: fired.append(True),
+    )
+    assert result.failure is None
+    assert fired == []

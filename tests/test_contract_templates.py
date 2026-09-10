@@ -134,10 +134,10 @@ async def test_constraint_no_card_template_runs_contract_path():
     assert len(sink.published) == 3
 
 
-def test_silent_caller_template_stays_legacy():
-    """silent-caller-dead-air has no caller_steps yet: it parses with empty
-    caller_actions, so run_orchestrator keeps it on the legacy path. This
-    test locks that boundary — migrating it is a later slice (contract-native
-    silent scenario), not silent behavior drift."""
+def test_silent_caller_template_is_contract_native():
+    """silent-caller-dead-air migrated: wait + end under silent_mode (the
+    legacy speech_conditions.silent_mode bridge). Covered end-to-end by
+    test_silent_template_stays_mute_but_observes_greeting in
+    test_contract_all_templates.py; this locks the parse shape here."""
     scenario = parse_scenario(TEMPLATES / "silent-caller-dead-air.yaml")
-    assert scenario.caller_actions == []
+    assert [a.kind for a in scenario.caller_actions] == ["wait", "end"]

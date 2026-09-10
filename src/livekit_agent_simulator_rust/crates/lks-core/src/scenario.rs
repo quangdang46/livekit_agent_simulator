@@ -16,7 +16,7 @@ use crate::errors::ScenarioError;
 
 pub const API_VERSION: &str = "agent-sim/v1";
 
-pub const KNOWN_KINDS: [&str; 12] = [
+pub const KNOWN_KINDS: [&str; 13] = [
     "Persona",
     "Context",
     "Simulator",
@@ -29,6 +29,7 @@ pub const KNOWN_KINDS: [&str; 12] = [
     "Assert",
     "Caller",
     "Telephony",
+    "CallerSteps",
 ];
 
 pub const CALLER_MODES: [&str; 5] = [
@@ -299,6 +300,10 @@ pub struct Scenario {
     pub pass_criteria_mode: String,
     pub script_steps: Vec<Json>,
     pub script_verify: Option<Json>,
+    /// Parsed caller_steps (contract path). Raw-validated CallerAction
+    /// payloads — mirrors Python Scenario.caller_actions (parse only;
+    /// no driver/orchestrator in this crate).
+    pub caller_actions: Vec<crate::caller_dsl::CallerAction>,
     pub plugin_modules: Vec<String>,
     pub asserts: Option<Json>,
     pub behavior_spec: Option<Map<String, Json>>,
@@ -556,6 +561,19 @@ pub fn scenario_from_dict(
         script_verify = script.get("verify").cloned();
     }
 
+    // caller_steps (contract path): strict parse via caller_dsl — same
+    // rejections as Python dsl.parse_steps (unknown keys fail loudly).
+    // NOTE: a present-but-unparseable caller_steps is a hard error (never
+    // a silent fallback to the legacy script path).
+    let mut caller_actions = Vec::new();
+    if let Some(raw_steps) = data.get("caller_steps") {
+        let arr = raw_steps.as_array().ok_or_else(|| {
+            ScenarioError(format!("{path_label}: caller_steps must be an array"))
+        })?;
+        caller_actions =
+            crate::caller_dsl::parse_steps(arr, path_label)?;
+    }
+
     let persona = data
         .get("persona")
         .and_then(|v| v.as_object())
@@ -662,6 +680,7 @@ pub fn scenario_from_dict(
         pass_judges,
         script_steps,
         script_verify,
+        caller_actions,
         plugin_modules,
         asserts,
         behavior_spec,

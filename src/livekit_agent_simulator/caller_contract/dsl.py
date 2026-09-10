@@ -57,10 +57,27 @@ _CONSTRAINTS_ALLOWED_KEYS = frozenset(
     {"max_turns", "max_budget", "max_words", "max_duration_s", "forbidden_intents", "must_not"}
 )
 _INTERACTION_ALLOWED_KEYS = frozenset(
-    {"pace", "hesitation", "stumble", "pre_delay", "backchannel", "barge_in"}
+    {
+        "pace",
+        "hesitation",
+        "stumble",
+        "pre_delay",
+        "backchannel",
+        "barge_in",
+        "interrupt_class",
+        "interruption_rate",
+        "interruption_interval_ms",
+        "interruption_seed",
+    }
+)
+_INTERRUPT_CLASSES = frozenset({"correction", "backchannel"})
+_INTERRUPTION_RATES = frozenset({"low", "medium", "high"})
+
+_KNOWN_ACTION_KINDS = frozenset(
+    {"say", "do", "wait", "dtmf", "interrupt", "play_audio", "end", "silence", "hangup"}
 )
 
-_KNOWN_ACTION_KINDS = frozenset({"say", "do", "wait", "dtmf", "interrupt", "end", "silence", "hangup"})
+_PLAY_AUDIO_ALLOWED_KEYS = frozenset({"asset", "gain", "loop"})
 
 
 class DSLError(Exception):
@@ -89,6 +106,15 @@ class InteractionConfig:
     pre_delay_ms: int | None = None
     backchannel: bool | None = None
     barge_in: bool | None = None
+    interrupt_class: str | None = None
+    # Seeded interruption policy (contract equivalent of the legacy
+    # InterruptRateRunner): while a ``do:`` behavior runs, the driver may
+    # emit a fixed backchannel cut-in at most once per interval while the
+    # agent is speaking. Deterministic in (scenario_id, seed, agent-turn
+    # index) — never an LLM decision. None = off (default).
+    interruption_rate: str | None = None
+    interruption_interval_ms: int | None = None
+    interruption_seed: int | None = None
 
 
 @dataclass
@@ -151,11 +177,17 @@ class CallerAction:
     barge_in: bool = False
     dtmf_digits: str | None = None
     wait_ms: int | None = None
+    audio_asset: str | None = None
+    audio_gain: float = 1.0
+    audio_loop: bool = False
     requires_turn_gate: bool = True
     bypasses_ai_and_validator: bool = False
 
     def __post_init__(self) -> None:
         if self.kind == "say":
+            self.bypasses_ai_and_validator = True
+        if self.kind == "play_audio":
+            # Audio beds are delivery, never semantic content.
             self.bypasses_ai_and_validator = True
 
 
@@ -186,6 +218,49 @@ def _parse_interaction(raw: dict[str, Any] | None, *, file: str | None, line: in
     unknown = set(raw.keys()) - _INTERACTION_ALLOWED_KEYS
     if unknown:
         raise _err(f"unknown interaction key(s): {sorted(unknown)}", file=file, line=line, field="interaction")
+    interrupt_class = raw.get("interrupt_class")
+    if interrupt_class is not None and interrupt_class not in _INTERRUPT_CLASSES:
+        raise _err(
+            f"unknown interrupt_class {interrupt_class!r}; expected one of {sorted(_INTERRUPT_CLASSES)}",
+            file=file,
+            line=line,
+            field="interaction.interrupt_class",
+        )
+    rate = raw.get("interruption_rate")
+    if rate is not None:
+        rate = str(rate).strip().lower()
+        if rate in ("", "none", "off"):
+            rate = None
+        elif rate not in _INTERRUPTION_RATES:
+            raise _err(
+                f"unknown interruption_rate {rate!r}; expected one of {sorted(_INTERRUPTION_RATES)}",
+                file=file,
+                line=line,
+                field="interaction.interruption_rate",
+            )
+    interval_ms = raw.get("interruption_interval_ms")
+    if interval_ms is not None and (not isinstance(interval_ms, int) or interval_ms < 1000):
+        raise _err(
+            "interaction.interruption_interval_ms must be an integer >= 1000",
+            file=file,
+            line=line,
+            field="interaction.interruption_interval_ms",
+        )
+    seed = raw.get("interruption_seed")
+    if seed is not None and (not isinstance(seed, int) or seed < 0):
+        raise _err(
+            "interaction.interruption_seed must be a non-negative integer",
+            file=file,
+            line=line,
+            field="interaction.interruption_seed",
+        )
+    if (interval_ms is not None or seed is not None) and rate is None:
+        raise _err(
+            "interaction.interruption_interval_ms/seed require interruption_rate",
+            file=file,
+            line=line,
+            field="interaction.interruption_rate",
+        )
     return InteractionConfig(
         pace=raw.get("pace"),
         hesitation=raw.get("hesitation"),
@@ -193,6 +268,10 @@ def _parse_interaction(raw: dict[str, Any] | None, *, file: str | None, line: in
         pre_delay_ms=raw.get("pre_delay_ms", raw.get("pre_delay")),
         backchannel=raw.get("backchannel"),
         barge_in=raw.get("barge_in"),
+        interrupt_class=interrupt_class,
+        interruption_rate=rate,
+        interruption_interval_ms=interval_ms,
+        interruption_seed=seed,
     )
 
 
@@ -351,14 +430,106 @@ def parse_step(
             raise _err("wait: must be a non-negative integer (milliseconds)", file=file, line=line_no, field="wait")
         return CallerAction(kind="wait", line_no=line_no, wait_ms=ms)
 
-    if "trigger" in raw_step or "barge_in" in raw_step:
+    if kind == "play_audio":
+        pass  # handled below (trigger allowed, barge_in rejected there)
+    elif "trigger" in raw_step or "barge_in" in raw_step:
         raise _err(
             "trigger:/barge_in: are only supported on say: steps in this slice",
             file=file,
             line=line_no,
             field=kind,
         )
-    # interrupt / end / silence / hangup: no payload validation needed beyond
+    if kind == "interrupt":
+        # Explicit caller cut-in: optional interaction.interrupt_class only.
+        # Any other sibling is a hard error (no silent config).
+        allowed = {"interrupt", "interaction"}
+        unknown = set(raw_step.keys()) - allowed
+        if unknown:
+            raise _err(
+                f"unknown interrupt: sibling key(s): {sorted(unknown)}",
+                file=file,
+                line=line_no,
+                field="interrupt",
+            )
+        raw_flag = raw_step.get("interrupt", True)
+        if raw_flag not in (True, None) and not (
+            isinstance(raw_flag, dict) and not raw_flag
+        ):
+            raise _err(
+                "interrupt: takes no value (optionally interaction: {interrupt_class})",
+                file=file,
+                line=line_no,
+                field="interrupt",
+            )
+        interaction = _parse_interaction(
+            raw_step.get("interaction"), file=file, line=line_no
+        )
+        return CallerAction(
+            kind="interrupt", line_no=line_no, interaction=interaction
+        )
+    if kind == "play_audio":
+        # Delivery primitive for background beds (ambient/office noise):
+        # an asset ref resolved at publish time, never a say: string.
+        # ``say: "noise.wav"`` is a design violation — audio files are not
+        # utterances and must never flow through TTS or the validator.
+        raw_spec = raw_step["play_audio"]
+        if not isinstance(raw_spec, dict):
+            raise _err(
+                "play_audio: must be a mapping {asset:, gain:, loop:}",
+                file=file,
+                line=line_no,
+                field="play_audio",
+            )
+        unknown = set(raw_spec.keys()) - _PLAY_AUDIO_ALLOWED_KEYS
+        if unknown:
+            raise _err(
+                f"unknown play_audio: key(s): {sorted(unknown)}",
+                file=file,
+                line=line_no,
+                field="play_audio",
+            )
+        extra_siblings = set(raw_step.keys()) - {"play_audio", "trigger"}
+        if extra_siblings:
+            raise _err(
+                f"unknown play_audio: sibling key(s): {sorted(extra_siblings)}",
+                file=file,
+                line=line_no,
+                field="play_audio",
+            )
+        asset = raw_spec.get("asset")
+        if not isinstance(asset, str) or not asset.strip():
+            raise _err(
+                "play_audio.asset must be a non-empty asset ref",
+                file=file,
+                line=line_no,
+                field="play_audio.asset",
+            )
+        gain = raw_spec.get("gain", 1.0)
+        if not isinstance(gain, (int, float)) or not 0.0 <= float(gain) <= 1.0:
+            raise _err(
+                "play_audio.gain must be a number in [0.0, 1.0]",
+                file=file,
+                line=line_no,
+                field="play_audio.gain",
+            )
+        loop = raw_spec.get("loop", False)
+        if not isinstance(loop, bool):
+            raise _err(
+                "play_audio.loop must be a boolean",
+                file=file,
+                line=line_no,
+                field="play_audio.loop",
+            )
+        trigger = _parse_trigger(raw_step.get("trigger"), file=file, line=line_no)
+        return CallerAction(
+            kind="play_audio",
+            line_no=line_no,
+            audio_asset=asset.strip(),
+            audio_gain=float(gain),
+            audio_loop=loop,
+            trigger=trigger,
+        )
+    # end / silence / hangup: no payload validation needed beyond
     # being present; they carry no extra fields in this MVP DSL.
     return CallerAction(kind=kind, line_no=line_no)
 
@@ -376,6 +547,121 @@ def parse_steps(
     ]
 
 
+def _unparse_interaction(interaction: InteractionConfig | None) -> dict[str, Any] | None:
+    if interaction is None:
+        return None
+    out: dict[str, Any] = {}
+    if interaction.pace is not None:
+        out["pace"] = interaction.pace
+    if interaction.hesitation is not None:
+        out["hesitation"] = interaction.hesitation
+    if interaction.stumble is not None:
+        out["stumble"] = interaction.stumble
+    if interaction.pre_delay_ms is not None:
+        out["pre_delay_ms"] = interaction.pre_delay_ms
+    if interaction.backchannel is not None:
+        out["backchannel"] = interaction.backchannel
+    if interaction.barge_in is not None:
+        out["barge_in"] = interaction.barge_in
+    if interaction.interrupt_class is not None:
+        out["interrupt_class"] = interaction.interrupt_class
+    if interaction.interruption_rate is not None:
+        out["interruption_rate"] = interaction.interruption_rate
+    if interaction.interruption_interval_ms is not None:
+        out["interruption_interval_ms"] = interaction.interruption_interval_ms
+    if interaction.interruption_seed is not None:
+        out["interruption_seed"] = interaction.interruption_seed
+    return out or None
+
+
+def _unparse_trigger(trigger: TriggerConfig | None) -> dict[str, Any] | None:
+    if trigger is None:
+        return None
+    out: dict[str, Any] = {"kind": trigger.kind}
+    if trigger.delay_ms:
+        out["delay_ms"] = trigger.delay_ms
+    if trigger.kind == "agent_speaking" and trigger.min_agent_active_ms != 400:
+        out["min_agent_active_ms"] = trigger.min_agent_active_ms
+    elif trigger.kind != "agent_speaking" and trigger.min_agent_active_ms != 400:
+        # Non-default on a kind that ignores it: preserve (strict re-parse
+        # accepts it) rather than silently dropping author intent.
+        out["min_agent_active_ms"] = trigger.min_agent_active_ms
+    return out
+
+
+def unparse_action(action: CallerAction) -> dict[str, Any]:
+    """Rebuild the authored step dict for a parsed CallerAction.
+
+    Inverse of parse_step for the round-trip export path (scenario_to_dict).
+    Output re-parses to an equivalent action (same kind + semantic fields).
+    """
+    if action.kind == "say":
+        assert action.say_text is not None
+        step: dict[str, Any] = {"say": action.say_text}
+        interaction = _unparse_interaction(action.interaction)
+        if interaction is not None:
+            step["interaction"] = interaction
+        trigger = _unparse_trigger(action.trigger)
+        if trigger is not None:
+            step["trigger"] = trigger
+        if action.barge_in:
+            step["barge_in"] = True
+        return step
+    if action.kind == "do":
+        assert action.contract is not None
+        inner: dict[str, Any] = {"behavior": action.contract.behavior}
+        if action.contract.target is not None:
+            inner["target"] = action.contract.target
+        constraints = action.contract.constraints
+        cdict: dict[str, Any] = {}
+        if constraints.max_turns != 3:
+            cdict["max_turns"] = constraints.max_turns
+        if constraints.max_budget is not None:
+            cdict["max_budget"] = constraints.max_budget
+        if constraints.max_words is not None:
+            cdict["max_words"] = constraints.max_words
+        if constraints.max_duration_s is not None:
+            cdict["max_duration_s"] = constraints.max_duration_s
+        if constraints.forbidden_intents:
+            cdict["forbidden_intents"] = list(constraints.forbidden_intents)
+        if constraints.must_not:
+            cdict["must_not"] = list(constraints.must_not)
+        if cdict:
+            inner["constraints"] = cdict
+        interaction = _unparse_interaction(action.interaction)
+        if interaction is not None:
+            inner["interaction"] = interaction
+        return {"do": inner}
+    if action.kind == "wait":
+        return {"wait": action.wait_ms or 0}
+    if action.kind == "dtmf":
+        return {"dtmf": action.dtmf_digits or ""}
+    if action.kind == "interrupt":
+        step = {"interrupt": True}
+        interaction = _unparse_interaction(action.interaction)
+        if interaction is not None:
+            return {"interrupt": True, "interaction": interaction}
+        return step
+    if action.kind == "play_audio":
+        assert action.audio_asset is not None
+        spec: dict[str, Any] = {"asset": action.audio_asset}
+        if action.audio_gain != 1.0:
+            spec["gain"] = action.audio_gain
+        if action.audio_loop:
+            spec["loop"] = True
+        step = {"play_audio": spec}
+        trigger = _unparse_trigger(action.trigger)
+        if trigger is not None:
+            step["trigger"] = trigger
+        return step
+    return {action.kind: True}
+
+
+def unparse_steps(actions: list[CallerAction]) -> list[dict[str, Any]]:
+    """Rebuild authored caller_steps for a parsed CallerAction list."""
+    return [unparse_action(a) for a in actions]
+
+
 __all__ = [
     "DEFAULT_BEHAVIOR_CATALOG",
     "CallerAction",
@@ -384,4 +670,6 @@ __all__ = [
     "TriggerConfig",
     "parse_step",
     "parse_steps",
+    "unparse_action",
+    "unparse_steps",
 ]

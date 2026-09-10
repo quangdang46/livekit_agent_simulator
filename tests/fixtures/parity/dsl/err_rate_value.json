@@ -1,0 +1,14 @@
+{
+  "id": "err_rate_value",
+  "steps": [
+    {
+      "do": {
+        "behavior": "ask",
+        "interaction": {
+          "interruption_rate": "sometimes"
+        }
+      }
+    }
+  ],
+  "expect": "error"
+}

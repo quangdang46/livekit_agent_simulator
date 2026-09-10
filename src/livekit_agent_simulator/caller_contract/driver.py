@@ -32,7 +32,7 @@ from . import (
     ValidationResult,
 )
 from .dsl import CallerAction, TriggerConfig
-from .failures import RunFailure
+from .failures import RunFailure, TTSSynthesisError
 
 # Poll cadence for trigger condition waits (matches legacy ScriptRunner 50ms).
 _TRIGGER_POLL_S = 0.05
@@ -49,6 +49,21 @@ TRIGGER_WAIT_BUDGET_S = 30.0
 # the mixer-drain half already lives in the sink). Expiry falls through and
 # publishes anyway — a talkative agent must not wedge the caller forever.
 AGENT_SILENCE_WAIT_S = 6.0
+
+# Gap tolerance for speech/silence continuity tracking (mirrors the legacy
+# ScriptRunner 1200ms active-speaker gap tolerance): a signal dropout shorter
+# than this does not reset the continuity clock. Deliberately generous
+# relative to the 50ms poll cadence, deliberately smaller than any real
+# turn boundary. Deferred from Slice 4 (naive reset) — see _wait_trigger.
+TRIGGER_GAP_TOLERANCE_S = 1.2
+
+# Wall-clock floor per interruption rate when the DSL omits
+# interruption_interval_ms (legacy interval spirit: low 90s / medium 45s /
+# high 30s). Separate from the seeded per-turn coin flip (see
+# CallerInteractionPlanner.should_interrupt): the flip decides WHETHER this
+# turn interrupts, the floor decides whether enough time passed since the
+# last cut-in.
+_INTERVAL_MS_BY_RATE = {"low": 90_000, "medium": 45_000, "high": 30_000}
 from .interaction_planner import CallerInteractionPlanner, InteractionConfig
 from .language_adapter import (
     AILanguageAdapter,
@@ -129,6 +144,24 @@ class AgentTurnWait(Protocol):
         ...
 
 
+class AudioAssetPlayer(Protocol):
+    """Abstract background-bed playback (ambient/office noise).
+
+    Kept separate from ``PublishSink`` on purpose: speech PCM goes through
+    the staleness-checked, drain-awaited sink; noise beds ride the mixer's
+    parallel noise layer (never drain-awaited, never an utterance). The
+    driver reads it via ``getattr(player, "play_asset", None)`` — a run
+    without asset support fails the ``play_audio`` action with
+    TRANSPORT_ERROR rather than silently dropping the bed.
+    """
+
+    async def play_asset(
+        self, asset: str, *, gain: float, loop: bool, label: str
+    ) -> bool:
+        """Resolve + push an asset bed; True when accepted."""
+        ...
+
+
 @dataclass
 class DriverResult:
     ended_by: EndedBy
@@ -147,6 +180,14 @@ class ContractCallerDriver:
     planner: CallerInteractionPlanner = field(default_factory=CallerInteractionPlanner)
     synthesize: Any = None  # (text) -> pcm bytes; injected TTS fn
     max_retries: int = 2
+    # Scenario identity for the seeded interruption policy (set by live_wiring;
+    # empty in unit tests unless assigned). Part of the determinism key.
+    _scenario_id: str = ""
+    _last_interrupt_ms: float | None = None
+    # Optional record hook: called after EVERY validate() (pass or fail) so
+    # record-then-replay reproduces the identical verdict trail without AI.
+    # Set by live_wiring from --record; None in unit tests unless assigned.
+    recorder: Any = None
 
     async def run(
         self,
@@ -160,6 +201,9 @@ class ContractCallerDriver:
         first_speaker: str = "user",
         silent_mode: bool = False,
         greeting_timeout_s: float = 30.0,
+        assets: AudioAssetPlayer | None = None,
+        hold_timeout_s: float | None = None,
+        on_hold_timeout: Any = None,
     ) -> DriverResult:
         """Drive every action to completion (or STOP on violation/timeout).
 
@@ -211,6 +255,88 @@ class ContractCallerDriver:
             log.append(Turn(speaker="agent", text=greeting))
             _emit("contract.first_speaker_greeting", {"text": greeting})
 
+        hold_task: asyncio.Task | None = None
+        if hold_timeout_s is not None:
+            hold_task = asyncio.create_task(
+                self._hold_watchdog(
+                    agent, hold_timeout_s, _emit, on_hold_timeout=on_hold_timeout
+                )
+            )
+        try:
+            return await self._run_actions(
+                actions,
+                sink,
+                agent,
+                log=log,
+                facts=facts,
+                completed=0,
+                spoken=0,
+                silent_mode=silent_mode,
+                assets=assets,
+                _emit=_emit,
+            )
+        finally:
+            if hold_task is not None:
+                hold_task.cancel()
+                await asyncio.gather(hold_task, return_exceptions=True)
+
+    async def _hold_watchdog(
+        self,
+        agent: AgentTurnWait,
+        hold_timeout_s: float,
+        _emit: Any,
+        *,
+        on_hold_timeout: Any = None,
+    ) -> None:
+        """Agent dead-air watchdog (contract equivalent of the legacy hold
+        timeout): once the agent has spoken at least once, give up after
+        ``hold_timeout_s`` of agent silence. Fires ``on_hold_timeout`` (the
+        live wiring hangs up the bridge) and emits ``sim.hold_timeout`` with
+        the same event shape the legacy loop used.
+        """
+        import time as _time
+
+        while True:
+            await asyncio.sleep(0.25)
+            last_ms = None
+            probe = getattr(agent, "last_speech_at_ms", None)
+            if callable(probe):
+                try:
+                    last_ms = probe()
+                except Exception:  # noqa: BLE001 — best-effort probe
+                    last_ms = None
+            if last_ms is None:
+                continue  # not armed: agent never demonstrably spoke
+            idle_s = _time.monotonic() - last_ms / 1000.0
+            if idle_s >= hold_timeout_s:
+                _emit(
+                    "sim.hold_timeout",
+                    {
+                        "timeout_s": hold_timeout_s,
+                        "agent_idle_ms": int(idle_s * 1000),
+                        "note": "Caller gave up waiting on agent dead air (hold_music_timeout_s)",
+                    },
+                )
+                if on_hold_timeout is not None:
+                    result = on_hold_timeout()
+                    if asyncio.iscoroutine(result):
+                        await result
+                return
+
+    async def _run_actions(
+        self,
+        actions: list[CallerAction],
+        sink: PublishSink,
+        agent: AgentTurnWait,
+        *,
+        log: list[Turn],
+        facts: list[str],
+        completed: int,
+        spoken: int,
+        silent_mode: bool,
+        assets: AudioAssetPlayer | None,
+        _emit: Any,
+    ) -> DriverResult:
         for action in actions:
             if silent_mode and action.kind in ("say", "do"):
                 # Silent caller stays mute: skip AI/TTS/publish entirely,
@@ -265,7 +391,17 @@ class ContractCallerDriver:
                     await _wait_agent_silence(agent)
                 else:
                     _emit("contract.barge", {"line": action.line_no})
-                pcm = self._speak(text)
+                try:
+                    pcm = self._speak(text)
+                except TTSSynthesisError as exc:
+                    _emit("contract.tts_error", {"line": action.line_no, "error": str(exc)[:200]})
+                    return self._fail(
+                        FailureReason.TTS_ERROR,
+                        str(exc)[:300],
+                        EndedBy.ERROR,
+                        completed,
+                        spoken,
+                    )
                 identity = self.orchestrator.current_identity()
                 if self.orchestrator.is_stale(identity):
                     return self._fail(
@@ -312,6 +448,77 @@ class ContractCallerDriver:
                 _emit("contract.wait", {"ms": action.wait_ms or 0})
                 continue
 
+            if action.kind == "play_audio":
+                # Background bed (ambient/office noise): NOT an utterance.
+                # No TTS, no validator, no turn-log entry — it rides the
+                # mixer's parallel noise layer via AudioAssetPlayer. Optional
+                # trigger gates WHEN the bed starts (e.g. time 1500ms).
+                assert action.audio_asset is not None
+                if action.trigger is not None:
+                    _emit(
+                        "contract.trigger_armed",
+                        {
+                            "kind": action.trigger.kind,
+                            "line": action.line_no,
+                            "action": "play_audio",
+                        },
+                    )
+                    fired = await _wait_trigger(action.trigger, agent, emit=_emit)
+                    if not fired:
+                        _emit(
+                            "contract.behavior_violation",
+                            {"reason": "TRIGGER_TIMEOUT", "line": action.line_no},
+                        )
+                        return self._fail(
+                            FailureReason.BEHAVIOR_TIMEOUT,
+                            f"trigger {action.trigger.kind!r} never fired",
+                            EndedBy.TIMEOUT,
+                            completed,
+                            spoken,
+                        )
+                player = assets
+                if player is None or getattr(player, "play_asset", None) is None:
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        "play_audio requires an AudioAssetPlayer (no silent drop)",
+                        EndedBy.TRANSPORT,
+                        completed,
+                        spoken,
+                    )
+                try:
+                    accepted = await player.play_asset(
+                        action.audio_asset,
+                        gain=action.audio_gain,
+                        loop=action.audio_loop,
+                        label=f"play_audio:{action.line_no}",
+                    )
+                except Exception as exc:  # noqa: BLE001 — asset failure is transport, never a caller violation
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        f"play_audio failed for {action.audio_asset!r}: {exc}",
+                        EndedBy.TRANSPORT,
+                        completed,
+                        spoken,
+                    )
+                if not accepted:
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        f"play_audio refused for {action.audio_asset!r}",
+                        EndedBy.TRANSPORT,
+                        completed,
+                        spoken,
+                    )
+                _emit(
+                    "contract.audio_playing",
+                    {
+                        "asset": action.audio_asset,
+                        "gain": action.audio_gain,
+                        "loop": action.audio_loop,
+                        "line": action.line_no,
+                    },
+                )
+                continue
+
             if action.kind in ("end", "hangup"):
                 _emit("contract.end", {"kind": action.kind})
                 return DriverResult(
@@ -320,7 +527,53 @@ class ContractCallerDriver:
                     turns_spoken=spoken,
                 )
 
-            # dtmf / interrupt / silence: control actions, never AI/TTS.
+            if action.kind == "interrupt":
+                # Explicit caller interaction action (NOT a semantic behavior,
+                # NOT validator-gated): a short fixed cut-in line. Delivery
+                # policy identical to barge_in=True say: publish immediately
+                # without waiting for agent silence.
+                _emit(
+                    "contract.interrupt",
+                    {"line": action.line_no, "class": _interrupt_class(action)},
+                )
+                interrupt_text = _interrupt_text(action)
+                try:
+                    interrupt_pcm = self._speak(interrupt_text)
+                except TTSSynthesisError as exc:
+                    _emit("contract.tts_error", {"line": action.line_no, "error": str(exc)[:200]})
+                    return self._fail(
+                        FailureReason.TTS_ERROR,
+                        str(exc)[:300],
+                        EndedBy.ERROR,
+                        completed,
+                        spoken,
+                    )
+                identity = self.orchestrator.current_identity()
+                if self.orchestrator.is_stale(identity):
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        "interrupt identity went stale before publish",
+                        EndedBy.ERROR,
+                        completed,
+                        spoken,
+                    )
+                try:
+                    await sink.publish(
+                        interrupt_pcm, identity, label=f"interrupt:{action.line_no}"
+                    )
+                except PublishDrainTimeout as exc:
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        f"interrupt publish drain timed out: {exc}",
+                        EndedBy.TRANSPORT,
+                        completed,
+                        spoken,
+                    )
+                spoken += 1
+                log.append(Turn(speaker="caller", text=interrupt_text))
+                continue
+
+            # dtmf / silence: control actions, never AI/TTS.
             _emit("contract.control", {"kind": action.kind, "line": action.line_no})
 
         return DriverResult(
@@ -416,6 +669,18 @@ class ContractCallerDriver:
                 _attempt_verdicts.append(
                     (result_attempt.verdict.value, result_attempt.reason)
                 )
+                if self.recorder is not None:
+                    self.recorder.record_attempt(
+                        candidate_attempt, result_attempt, retry_index=attempts - 1
+                    )
+                # Replay mode: the backend served a recorded candidate, so the
+                # verdict MUST match the recording — divergence fails loudly
+                # (never silently produces a different run).
+                assert_verdict = getattr(
+                    self.adapter.backend, "assert_verdict", None
+                )
+                if assert_verdict is not None:
+                    assert_verdict(result_attempt.verdict)
                 if result_attempt.is_valid():
                     candidates.append(candidate_attempt)
                     break
@@ -492,7 +757,21 @@ class ContractCallerDriver:
             if plan.pre_delay_ms:
                 await asyncio.sleep(plan.pre_delay_ms / 1000.0)
             text = candidate.utterance
-            pcm = self._speak(text)
+            try:
+                pcm = self._speak(text)
+            except TTSSynthesisError as exc:
+                # Validated text, broken audio: TTS_ERROR (never a caller
+                # violation, never a regenerate-the-candidate loop). The
+                # validator already passed this exact string; retrying TTS
+                # happened inside _speak — exhaustion ends the behavior here.
+                _emit("contract.tts_error", {"behavior": contract.behavior, "error": str(exc)[:200]})
+                return self._fail(
+                    FailureReason.TTS_ERROR,
+                    str(exc)[:300],
+                    EndedBy.ERROR,
+                    0,
+                    turns,
+                )
             if self.orchestrator.is_stale(candidate.identity):
                 stalled_spins += 1  # superseded between validate and publish
                 if stalled_spins > max_stalled_spins:
@@ -537,6 +816,19 @@ class ContractCallerDriver:
                 "contract.turn_published",
                 {"behavior": contract.behavior, "turn": turns, "text": text},
             )
+            # Seeded interruption policy (contract equivalent of the legacy
+            # InterruptRateRunner, but per-agent-turn deterministic instead of
+            # wall-clock parallel): before waiting for the agent, decide
+            # whether to emit one fixed backchannel cut-in. Only while the
+            # agent is speaking, at most one per interval (time-gated here),
+            # fixed text "Mhm." (never AI, never validator).
+            policy_extra = await self._maybe_interrupt(
+                action, sink, agent, log, _emit
+            )
+            if isinstance(policy_extra, DriverResult):
+                policy_extra.turns_spoken = turns + policy_extra.turns_spoken
+                return policy_extra
+            turns += policy_extra
             # Settle the caller-audio onset latch BEFORE waiting for the
             # agent: the agent's audible answer must be attributable to THIS
             # caller turn. PublishSink.publish already drained the mixer
@@ -588,10 +880,103 @@ class ContractCallerDriver:
             turns,
         )
 
+    async def _maybe_interrupt(
+        self,
+        action: CallerAction,
+        sink: PublishSink,
+        agent: AgentTurnWait,
+        log: list[Turn],
+        _emit: Any,
+    ) -> int | DriverResult:
+        """Seeded per-turn interruption: 0 normally, 1 when a backchannel
+        cut-in was published, DriverResult on publish failure.
+
+        Gates (all must hold): the action's interaction enables
+        ``interruption_rate``; the agent is speaking NOW (never cut into
+        silence); the seeded coin flip for this agent-turn index says yes;
+        the wall-clock interval since the last cut-in has elapsed. Fixed
+        text ``Mhm.`` via the planner's backchannel (no AI, no validator).
+        """
+        interaction = action.interaction
+        if interaction is None or not interaction.interruption_rate:
+            return 0
+        speaking = getattr(agent, "is_agent_speaking_now", lambda: False)
+        if not speaking():
+            return 0
+        scenario_id = getattr(self, "_scenario_id", "")
+        turn_index = len([t for t in log if t.speaker == "agent"])
+        if not self.planner.should_interrupt(
+            interaction, scenario_id=scenario_id, agent_turn_index=turn_index
+        ):
+            return 0
+        interval_ms = interaction.interruption_interval_ms or _INTERVAL_MS_BY_RATE.get(
+            interaction.interruption_rate, 45_000
+        )
+        now_ms = asyncio.get_event_loop().time() * 1000.0
+        last_ms = getattr(self, "_last_interrupt_ms", None)
+        if last_ms is not None and now_ms - last_ms < interval_ms:
+            return 0
+        self._last_interrupt_ms = now_ms
+        outcome = self.planner.plan_backchannel()
+        text = " ".join(outcome.tokens) if outcome.tokens else "Mhm."
+        _emit("contract.policy_interrupt", {"text": text, "turn": turn_index})
+        try:
+            interrupt_pcm = self._speak(text)
+        except TTSSynthesisError as exc:
+            _emit("contract.tts_error", {"error": str(exc)[:200]})
+            return self._fail(
+                FailureReason.TTS_ERROR,
+                str(exc)[:300],
+                EndedBy.ERROR,
+                0,
+                0,
+            )
+        identity = self.orchestrator.current_identity()
+        if self.orchestrator.is_stale(identity):
+            return self._fail(
+                FailureReason.TRANSPORT_ERROR,
+                "policy interrupt identity went stale before publish",
+                EndedBy.ERROR,
+                0,
+                0,
+            )
+        try:
+            published = await sink.publish(
+                interrupt_pcm, identity, label="policy_interrupt"
+            )
+        except PublishDrainTimeout as exc:
+            return self._fail(
+                FailureReason.TRANSPORT_ERROR,
+                f"policy interrupt publish drain timed out: {exc}",
+                EndedBy.TRANSPORT,
+                0,
+                0,
+            )
+        if not published:
+            return 0  # sink refused without raising: no progress, no failure
+        log.append(Turn(speaker="caller", text=text))
+        return 1
+
     def _speak(self, text: str) -> bytes:
+        """Synthesize already-validated text to PCM, with TTS-only retry.
+
+        Uses TTSPublishState (failures.py): a synthesis failure retries the
+        SAME text (never re-invokes the AI adapter), bounded by
+        ``max_retries``; exhaustion is TTS_ERROR, never a caller violation
+        and never TRANSPORT (the wire was never touched).
+        """
         if self.synthesize is None:
             raise RuntimeError("ContractCallerDriver.synthesize TTS fn is not set")
-        return bytes(self.synthesize(text))
+        attempts = self.max_retries + 1
+        last_error: Exception | None = None
+        for _ in range(attempts):
+            try:
+                return bytes(self.synthesize(text))
+            except Exception as exc:  # noqa: BLE001 — TTS failure retries TTS only, then TTS_ERROR
+                last_error = exc
+        raise TTSSynthesisError(
+            f"TTS synthesis failed after {attempts} attempt(s): {last_error}"
+        )
 
     @staticmethod
     def _fail(
@@ -613,6 +998,30 @@ def _interaction(action: CallerAction) -> InteractionConfig | None:
     return action.interaction
 
 
+# Fixed cut-in lines per interrupt class. Author-fixed text (like ``say``):
+# never AI-generated, never validator-gated — but unlike ``say`` it always
+# publishes immediately (barge delivery), because an interrupt that waits
+# for silence is a contradiction. Classes mirror the legacy interrupt_class
+# vocabulary (correction|backchannel); unknown classes fall back to the
+# neutral correction line rather than failing the run.
+_INTERRUPT_LINES = {
+    "correction": "Wait — one second.",
+    "backchannel": "Mhm.",
+}
+
+
+def _interrupt_class(action: CallerAction) -> str:
+    raw = action.interaction
+    cls = getattr(raw, "interrupt_class", None) if raw is not None else None
+    if isinstance(cls, str) and cls.strip():
+        return cls.strip().lower()
+    return "correction"
+
+
+def _interrupt_text(action: CallerAction) -> str:
+    return _INTERRUPT_LINES.get(_interrupt_class(action), _INTERRUPT_LINES["correction"])
+
+
 async def _sleep_ms(ms: int) -> None:
     if ms > 0:
         await asyncio.sleep(ms / 1000.0)
@@ -627,45 +1036,69 @@ async def _wait_trigger(
     """Wait until a trigger condition fires. Returns True on fire, False on
     budget expiry (caller: fail BEHAVIOR_TIMEOUT).
 
-    Polls ``is_agent_speaking_now`` (via getattr: fakes without the Slice 4
-    method read as "agent silent") every ``_TRIGGER_POLL_S``. Naive
-    continuous-duration tracking with reset on every opposite sample — no
-    gap tolerance by design (known limitation, Slice 4b).
+    Polls ``is_agent_speaking_now`` (via getattr: fakes without the method
+    read as "agent silent") every ``_TRIGGER_POLL_S``. Continuity tracking
+    tolerates signal dropouts shorter than ``TRIGGER_GAP_TOLERANCE_S``
+    (legacy 1200ms parity) — only a longer opposite run resets the clock.
+
+    Cancellation/staleness: every sleep is a bare ``asyncio.sleep`` with no
+    shielding, so task cancellation propagates immediately; the orchestrator
+    staleness check before publish (call-site) drops anything armed by a
+    superseded run.
     """
     speaking = getattr(agent, "is_agent_speaking_now", lambda: False)
     if trigger.kind == "time":
         await _sleep_ms(trigger.delay_ms)
         return True
 
-    budget_deadline = asyncio.get_event_loop().time() + TRIGGER_WAIT_BUDGET_S
+    loop = asyncio.get_event_loop()
+    budget_deadline = loop.time() + TRIGGER_WAIT_BUDGET_S
+
+    def _continuous_ms(since: float | None, now: float) -> float:
+        return (now - since) * 1000.0 if since is not None else 0.0
+
     if trigger.kind == "agent_speaking":
         continuous_since: float | None = None
-        while asyncio.get_event_loop().time() < budget_deadline:
-            now = asyncio.get_event_loop().time()
+        gap_since: float | None = None
+        while loop.time() < budget_deadline:
+            now = loop.time()
             if speaking():
                 if continuous_since is None:
                     continuous_since = now
-                if (now - continuous_since) * 1000.0 >= trigger.min_agent_active_ms:
+                gap_since = None
+                if _continuous_ms(continuous_since, now) >= trigger.min_agent_active_ms:
                     emit("contract.trigger_fired", {"kind": "agent_speaking"})
                     await _sleep_ms(trigger.delay_ms)
                     return True
             else:
-                continuous_since = None
+                if continuous_since is not None:
+                    if gap_since is None:
+                        gap_since = now
+                    elif now - gap_since >= TRIGGER_GAP_TOLERANCE_S:
+                        continuous_since = None
+                        gap_since = None
             await asyncio.sleep(_TRIGGER_POLL_S)
         return False
 
     # kind == "silence": delay_ms IS the required continuous silence duration.
     silence_since: float | None = None
-    while asyncio.get_event_loop().time() < budget_deadline:
-        now = asyncio.get_event_loop().time()
+    gap_since: float | None = None
+    while loop.time() < budget_deadline:
+        now = loop.time()
         if not speaking():
             if silence_since is None:
                 silence_since = now
-            if (now - silence_since) * 1000.0 >= trigger.delay_ms:
+            gap_since = None
+            if _continuous_ms(silence_since, now) >= trigger.delay_ms:
                 emit("contract.trigger_fired", {"kind": "silence"})
                 return True
         else:
-            silence_since = None
+            if silence_since is not None:
+                if gap_since is None:
+                    gap_since = now
+                elif now - gap_since >= TRIGGER_GAP_TOLERANCE_S:
+                    silence_since = None
+                    gap_since = None
         await asyncio.sleep(_TRIGGER_POLL_S)
     return False
 

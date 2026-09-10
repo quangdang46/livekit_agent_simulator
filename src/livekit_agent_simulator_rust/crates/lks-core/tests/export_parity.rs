@@ -76,3 +76,44 @@ fn assert_section_normalized_with_prompt() {
     assert_eq!(oc["require_turn_samples"], json!(0));
     assert_eq!(oc["check_agent_transcript"], json!(false));
 }
+
+#[test]
+fn caller_steps_roundtrip_preserves_trigger_and_barge() {
+    // Slice parity: caller_steps parse -> export -> re-parse keeps every
+    // field (the pre-parity gap silently dropped trigger:/barge_in:).
+    let s = scenario_from_yaml(
+        "apiVersion: agent-sim/v1\nkind: Scenario\nmetadata:\n  id: t\npersona:\n  brief: b\ncaller_steps:\n  - say: \"Wait a second...\"\n    trigger:\n      kind: agent_speaking\n      min_agent_active_ms: 350\n      delay_ms: 350\n    barge_in: true\n  - play_audio:\n      asset: builtin:noise.ambient\n      gain: 0.3\n      loop: true\n    trigger:\n      kind: time\n      delay_ms: 1500\n  - interrupt: true\n  - wait: 100\n  - end: true\n",
+    );
+    assert_eq!(s.caller_actions.len(), 5);
+    assert_eq!(s.caller_actions[0].kind, "say");
+    assert_eq!(s.caller_actions[1].kind, "play_audio");
+    let d = scenario_to_dict(&s);
+    let steps = d["caller_steps"].as_array().expect("caller_steps exported");
+    assert_eq!(steps.len(), 5);
+    assert_eq!(steps[0]["trigger"]["kind"], json!("agent_speaking"));
+    assert_eq!(steps[0]["trigger"]["min_agent_active_ms"], json!(350));
+    assert_eq!(steps[0]["barge_in"], json!(true));
+    assert_eq!(steps[1]["play_audio"]["asset"], json!("builtin:noise.ambient"));
+    assert_eq!(steps[1]["trigger"]["kind"], json!("time"));
+    assert_eq!(steps[4].get("end"), Some(&json!(true)));
+}
+
+#[test]
+fn caller_steps_invalid_specs_fail_loudly() {
+    // Strictness parity: unknown trigger kind / sibling typo / bad gain
+    // are hard errors, never silent drops.
+    for bad in [
+        "apiVersion: agent-sim/v1\nkind: Scenario\nmetadata:\n  id: t\npersona:\n  brief: b\ncaller_steps:\n  - say: Hi\n    trigger:\n      kind: banana\n",
+        "apiVersion: agent-sim/v1\nkind: Scenario\nmetadata:\n  id: t\npersona:\n  brief: b\ncaller_steps:\n  - say: Hi\n    frobnicate: 1\n",
+        "apiVersion: agent-sim/v1\nkind: Scenario\nmetadata:\n  id: t\npersona:\n  brief: b\ncaller_steps:\n  - play_audio:\n      asset: x\n      gain: 2.0\n",
+    ] {
+        let dir = std::env::temp_dir().join("lks_export_parity");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("bad_{}.yaml", std::process::id()));
+        std::fs::write(&path, bad).unwrap();
+        assert!(
+            lks_core::scenario_yaml::load_scenario_yaml(&path).is_err(),
+            "expected hard error for: {bad:?}"
+        );
+    }
+}

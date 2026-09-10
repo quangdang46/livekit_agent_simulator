@@ -1,0 +1,20 @@
+{
+  "id": "play_audio",
+  "steps": [
+    {
+      "play_audio": {
+        "asset": "builtin:noise.ambient",
+        "gain": 0.3,
+        "loop": true
+      },
+      "trigger": {
+        "kind": "time",
+        "delay_ms": 1500
+      }
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "play_audio"
+  ]
+}

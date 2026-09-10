@@ -279,6 +279,64 @@ pub fn scenario_to_dict(s: &crate::scenario::Scenario) -> Map<String, Json> {
         }
         data.insert("script".into(), Json::Object(m));
     }
+    if !s.caller_actions.is_empty() {
+        // caller_steps export: rebuild the authored step dicts from the
+        // validated payloads (kind-keyed, same shape parse_steps accepts).
+        let mut steps = Vec::new();
+        for action in &s.caller_actions {
+            let mut step = Map::new();
+            match action.kind.as_str() {
+                "say" => {
+                    if let Some(v) = action.payload.get("say") {
+                        step.insert("say".into(), v.clone());
+                    }
+                    for key in ["interaction", "trigger", "barge_in"] {
+                        if let Some(v) = action.payload.get(key) {
+                            step.insert(key.into(), v.clone());
+                        }
+                    }
+                }
+                "do" => {
+                    let mut inner = Map::new();
+                    for key in ["behavior", "target", "constraints", "interaction"] {
+                        if let Some(v) = action.payload.get(key) {
+                            inner.insert(key.into(), v.clone());
+                        }
+                    }
+                    step.insert("do".into(), Json::Object(inner));
+                }
+                "wait" => {
+                    if let Some(v) = action.payload.get("wait") {
+                        step.insert("wait".into(), v.clone());
+                    }
+                }
+                "dtmf" => {
+                    if let Some(v) = action.payload.get("dtmf") {
+                        step.insert("dtmf".into(), v.clone());
+                    }
+                }
+                "interrupt" => {
+                    step.insert("interrupt".into(), Json::Bool(true));
+                    if let Some(v) = action.payload.get("interaction") {
+                        step.insert("interaction".into(), v.clone());
+                    }
+                }
+                "play_audio" => {
+                    if let Some(v) = action.payload.get("play_audio") {
+                        step.insert("play_audio".into(), v.clone());
+                    }
+                    if let Some(v) = action.payload.get("trigger") {
+                        step.insert("trigger".into(), v.clone());
+                    }
+                }
+                _ => {
+                    step.insert(action.kind.clone().into(), Json::Bool(true));
+                }
+            }
+            steps.push(Json::Object(step));
+        }
+        data.insert("caller_steps".into(), Json::Array(steps));
+    }
     if !s.plugin_modules.is_empty() {
         data.insert(
             "plugin_modules".into(),

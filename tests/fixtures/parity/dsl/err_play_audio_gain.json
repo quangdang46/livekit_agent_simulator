@@ -1,0 +1,12 @@
+{
+  "id": "err_play_audio_gain",
+  "steps": [
+    {
+      "play_audio": {
+        "asset": "x",
+        "gain": 2.0
+      }
+    }
+  ],
+  "expect": "error"
+}

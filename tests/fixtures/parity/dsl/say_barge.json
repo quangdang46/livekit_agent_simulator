@@ -1,0 +1,18 @@
+{
+  "id": "say_barge",
+  "steps": [
+    {
+      "say": "Stop.",
+      "trigger": {
+        "kind": "agent_speaking",
+        "min_agent_active_ms": 350,
+        "delay_ms": 100
+      },
+      "barge_in": true
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "say"
+  ]
+}

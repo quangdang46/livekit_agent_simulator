@@ -67,6 +67,16 @@ def record_tts_attempt(*, validation_passed: bool, tts_succeeded: bool) -> TTSPu
     return TTSPublishState(validation_passed=validation_passed, tts_failed=validation_passed and not tts_succeeded)
 
 
+class TTSSynthesisError(RuntimeError):
+    """TTS synthesis failed after bounded TTS-only retries.
+
+    Raised by the driver's ``_speak`` (never by the AI adapter, never by
+    the validator). Call-sites map it to ``FailureReason.TTS_ERROR`` — a
+    delivery failure on already-validated text, never a caller violation
+    and never transport (the wire was never touched).
+    """
+
+
 # ---------------------------------------------------------------------------
 # Mapping helpers: turn a validator/adapter/orchestrator outcome into the
 # canonical RunFailure a report/CLI/MCP surface can serialize.
@@ -122,6 +132,7 @@ def to_ended_by_report_dict(ended_by: EndedBy) -> dict[str, Any]:
 __all__ = [
     "RunFailure",
     "TTSPublishState",
+    "TTSSynthesisError",
     "failure_from_agent_timeout",
     "failure_from_behavior_timeout",
     "failure_from_language_generation_error",

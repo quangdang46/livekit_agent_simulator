@@ -1,0 +1,10 @@
+{
+  "id": "err_trigger_string",
+  "steps": [
+    {
+      "say": "Hi.",
+      "trigger": "time"
+    }
+  ],
+  "expect": "error"
+}

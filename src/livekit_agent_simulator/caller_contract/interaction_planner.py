@@ -26,10 +26,18 @@ Orchestrator (P0-4) — the planner never cancels audio directly.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 
 from .dsl import InteractionConfig
+
+# Per-turn interruption probability per rate (legacy interval spirit:
+# low ~= rarely, medium ~= sometimes, high ~= often — but expressed as a
+# deterministic per-turn coin flip, not a wall-clock timer, so replay and
+# unit tests are exact). The once-per-interval wall-clock gate lives in the
+# driver alongside the decision (see should_interrupt call-site).
+_INTERRUPTION_PROBABILITY = {"low": 0.15, "medium": 0.35, "high": 0.6}
 
 # The ONLY tokens this module is allowed to insert that are not already
 # present in the validated utterance. Anything else would be "generating
@@ -127,6 +135,32 @@ class CallerInteractionPlanner:
         the caller may resume is the Orchestrator's job, never this
         planner's (report: 'planner never cancels audio directly')."""
         return InteractionOutcome(kind=InteractionActionKind.BARGE_IN_TRIGGER)
+
+    def should_interrupt(
+        self,
+        interaction: InteractionConfig | None,
+        *,
+        scenario_id: str,
+        agent_turn_index: int,
+    ) -> bool:
+        """Seeded interruption policy: True iff the caller should emit a
+        fixed backchannel cut-in before this agent turn.
+
+        Deterministic in (scenario_id, seed, agent_turn_index): the same
+        scenario + seed + turn always decides the same way — the LLM never
+        decides whether to interrupt. ``None`` interaction or no
+        ``interruption_rate`` means never. At most one cut-in per interval
+        is enforced by the driver (it advances the turn index only after an
+        actual agent turn, and the interval gate lives there); this method
+        answers only the per-turn coin flip.
+        """
+        if interaction is None or not interaction.interruption_rate:
+            return False
+        seed = interaction.interruption_seed or 0
+        key = f"{scenario_id}:{seed}:{agent_turn_index}".encode()
+        digest = hashlib.sha256(key).digest()
+        roll = int.from_bytes(digest[:8], "big") / 2**64
+        return roll < _INTERRUPTION_PROBABILITY[interaction.interruption_rate]
 
 
 __all__ = [

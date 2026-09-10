@@ -1,0 +1,16 @@
+{
+  "id": "silence_hangup",
+  "steps": [
+    {
+      "silence": true
+    },
+    {
+      "hangup": true
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "silence",
+    "hangup"
+  ]
+}

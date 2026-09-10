@@ -169,6 +169,7 @@ pub fn parse_scenario_jsonl(path: &PathBuf) -> Result<Scenario, ScenarioError> {
         asserts: None,
         behavior_spec: None,
         caller_policy: None,
+        caller_actions: Vec::new(),
     };
 
     for (line_no, obj) in &records[1..] {
@@ -324,6 +325,25 @@ pub fn parse_scenario_jsonl(path: &PathBuf) -> Result<Scenario, ScenarioError> {
             "Assert" => {
                 // Full assert parse deferred to asserts module (P4); store raw.
                 scenario.asserts = Some(Json::Object(spec_obj.clone()));
+            }
+            "CallerSteps" => {
+                let steps = spec_obj
+                    .get("steps")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        ScenarioError(format!(
+                            "{}:{line_no}: CallerSteps.spec.steps must be an array",
+                            path.display()
+                        ))
+                    })?;
+                scenario.caller_actions =
+                    crate::caller_dsl::parse_steps(steps, &path.display().to_string())
+                        .map_err(|e| {
+                            ScenarioError(format!(
+                                "{}:{line_no}: {e}",
+                                path.display()
+                            ))
+                        })?;
             }
             _ => {
                 return Err(ScenarioError(format!(

@@ -29,6 +29,8 @@ failure-handling branch needed there.
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..audio.sapi_tts import TARGET_RATE, synthesize_pcm16_mono
@@ -97,8 +99,145 @@ def _build_semantic_verifier(cfg: Any) -> SemanticVerifierProtocol:
 
 
 def _synthesize(text: str) -> bytes:
+    """Contract-path TTS: sherpa-onnx offline engine first, OS TTS fallback.
+
+    Tries the pinned sherpa model (cached PCM per utterance via TtsCache);
+    any sherpa failure (not installed, no model, corrupt download, backend
+    unwired) falls back to ``synthesize_pcm16_mono`` (SAPI/say). The
+    fallback keeps the contract path audible on machines without the
+    ``tts-sherpa`` extra — determinism (same voice everywhere) is a
+    sherpa-installed property, not a hard run requirement.
+
+    Sherpa is attempted at most once per process: a failed attempt latches
+    ``_SHERPA_DEAD`` so no later utterance pays for another model download
+    attempt (and mocked-urllib tests that patch urlopen for the AI backend
+    never see sherpa traffic after the first fallback).
+    """
+    global _SHERPA_DEAD
+    if not _SHERPA_DEAD:
+        try:
+            from ..audio.tts_engine import TtsCache
+
+            engine, cache, voice, language = _sherpa_engine()
+            pcm, _hit = cache.synthesize_cached(
+                engine, text, voice=voice, language=language
+            )
+            if pcm:
+                return bytes(pcm)
+        except Exception:  # noqa: BLE001 — any sherpa failure falls back to OS TTS
+            pass
+        _SHERPA_DEAD = True
     pcm = synthesize_pcm16_mono(text, rate=TARGET_RATE)
     return pcm or b""
+
+
+_SHERPA_DEAD = False
+
+
+def _sherpa_engine():
+    """Build (or reuse) the pinned sherpa engine + utterance cache.
+
+    Raises on any problem (missing package, missing model, corrupt file) —
+    the caller (``_synthesize``) treats every raise as "fall back to SAPI".
+    Model registry lives in ``audio/sherpa_models.py`` (pinned URL + SHA).
+    """
+    from pathlib import Path
+
+    from ..audio.sherpa_models import default_model_spec, default_voice
+    from ..audio.sherpa_tts import SherpaOnnxTtsEngine, download_and_verify_model
+    from ..audio.tts_engine import TtsCache
+
+    spec = default_model_spec()
+    cache_dir = Path.home() / ".cache" / "lks" / "tts-models"
+    # Network fetch only when the pinned file is absent; tests inject a
+    # fake downloader via download_and_verify_model directly. Live runs use
+    # a minimal urllib downloader here (stdlib only, same as text_backends).
+    import urllib.request
+
+    def _download(url: str, dest: Path) -> None:
+        with urllib.request.urlopen(url, timeout=120) as resp, open(dest, "wb") as fh:
+            fh.write(resp.read())
+
+    model_path = download_and_verify_model(spec, cache_dir, downloader=_download)
+    utterance_cache = TtsCache(cache_dir=Path.home() / ".cache" / "lks" / "tts-pcm")
+    voice, language = default_voice()
+    engine = SherpaOnnxTtsEngine(
+        model_id=spec.model_id, model_path=model_path
+    )
+    return engine, utterance_cache, voice, language
+
+
+def _seed_from_id(scenario_id: str) -> int:
+    """Stable non-negative seed from a scenario id (migration bridge for
+    legacy persona interruption rates, which carry no seed)."""
+    import hashlib
+
+    digest = hashlib.sha256(str(scenario_id).encode()).digest()
+    return int.from_bytes(digest[:4], "big")
+
+
+@dataclass
+class BridgeAssetPlayer:
+    """Concrete AudioAssetPlayer: resolves asset refs and pushes beds onto
+    the bridge mixer's parallel noise layer (never the speech path).
+
+    Duck-typed bridge: uses ``_mixer.push_noise`` when present (both Gemini
+    and OpenAI bridges own a ParallelMicMixer with a noise layer), else
+    ``inject_cue(delivery="room_pcm")`` as fallback. Asset bytes come from
+    ``audio.pcm_cue.resolve_cue_asset`` (builtin: + target overrides).
+    """
+
+    bridge: Any
+    writer: Any = None
+    scenario_dir: Any = None
+
+    async def play_asset(
+        self, asset: str, *, gain: float, loop: bool, label: str
+    ) -> bool:
+        from ..audio.pcm_cue import load_wav_pcm, resolve_cue_asset
+
+        try:
+            wav_path = resolve_cue_asset(
+                asset,
+                scenario_dir=self.scenario_dir,
+            )
+            pcm, _rate, channels = load_wav_pcm(wav_path)
+        except Exception as exc:  # noqa: BLE001 — resolution failure is a refuse, surfaced by the driver
+            self._emit(
+                "contract.audio_refused",
+                {"asset": asset, "label": label, "error": f"{type(exc).__name__}: {exc}"},
+            )
+            return False
+        if channels != 1:
+            self._emit(
+                "contract.audio_refused",
+                {"asset": asset, "label": label, "error": "only mono assets supported"},
+            )
+            return False
+        mixer = getattr(self.bridge, "_mixer", None)
+        push_noise = getattr(mixer, "push_noise", None) if mixer is not None else None
+        if push_noise is not None:
+            push_noise(pcm, gain=gain, loop=loop)
+            return True
+        inject = getattr(self.bridge, "inject_cue", None)
+        if inject is not None:
+            result = inject(
+                "",
+                label=label,
+                delivery="room_pcm",
+                asset=asset,
+                scenario_dir=self.scenario_dir,
+                gain=gain,
+                loop=loop,
+            )
+            if asyncio.iscoroutine(result):
+                await result
+            return True
+        return False
+
+    def _emit(self, kind: str, spec: dict[str, Any]) -> None:
+        if self.writer is not None:
+            self.writer.emit(kind, spec=spec, source="sim.contract", include_dialogue=False)
 
 
 async def run_contract_driver_path(
@@ -110,6 +249,8 @@ async def run_contract_driver_path(
     cfg: Any,
     *,
     drain_timeout_s: float = DEFAULT_DRAIN_TIMEOUT_S,
+    record_path: Any = None,
+    replay_path: Any = None,
 ) -> str:
     """Drive ``scenario.caller_actions`` end to end. Returns the end_reason
     string on success; raises ``ContractDriverFailure`` on any failure.
@@ -118,17 +259,41 @@ async def run_contract_driver_path(
     caller audio to finish playing out before the driver advances to the
     next action — exposed (not hardcoded) so tests can exercise the
     stuck-mixer -> TRANSPORT_ERROR path without a slow real timeout.
+
+    ``record_path``: write a versioned RunRecord (every generate+validate
+    attempt) for later ``replay_path`` runs. ``replay_path``: serve recorded
+    candidates instead of calling the AI backend (no network) and fail
+    loudly on verdict divergence. Mutually exclusive.
     """
+    if record_path is not None and replay_path is not None:
+        raise ValueError("record_path and replay_path are mutually exclusive")
     _ = run  # reserved: max_turns/timeout_s already live on each contract
     orch = Orchestrator()
     validator = ContractValidator(semantic_verifier=_build_semantic_verifier(cfg))
-    adapter = AILanguageAdapter(backend=_build_text_backend(cfg))
+    if replay_path is not None:
+        from .record_replay import ReplayLanguageBackend, RunRecord
+
+        replay_backend = ReplayLanguageBackend(
+            RunRecord.read(replay_path)
+        )
+        adapter = AILanguageAdapter(backend=replay_backend)
+    else:
+        adapter = AILanguageAdapter(backend=_build_text_backend(cfg))
     driver = ContractCallerDriver(
         orchestrator=orch,
         validator=validator,
         adapter=adapter,
         synthesize=_synthesize,
     )
+    recorder = None
+    if record_path is not None:
+        from .record_replay import Recorder
+
+        recorder = Recorder(
+            scenario_id=str(getattr(scenario, "id", "")),
+            seed=_seed_from_id(str(getattr(scenario, "id", ""))),
+        )
+        driver.recorder = recorder
     sink = BridgePublishSink(
         bridge=bridge, orchestrator=orch, writer=writer, drain_timeout_s=drain_timeout_s
     )
@@ -137,13 +302,41 @@ async def run_contract_driver_path(
     def _emit(kind: str, spec: dict[str, Any] | None = None) -> None:
         writer.emit(kind, spec=spec or {}, source="sim.contract", include_dialogue=False)
 
-    from ..behavior_compile import silent_mode_enabled
+    from ..behavior_compile import silent_mode_enabled, speech_conditions_of
 
     # SimpleNamespace test doubles carry only caller_actions: default to the
     # immediate-start ("user") path with silent mode off.
     run_spec = getattr(scenario, "run_spec", None)
     first_speaker = getattr(run_spec, "first_speaker", "user") or "user"
     persona = getattr(scenario, "persona", None)
+
+    # Legacy speech_conditions.interruption_* bridge: a scenario that never
+    # authored interaction: still gets its persona rate policy on every do:.
+    # Explicit per-action interaction: wins. Same migration-bridge status as
+    # silent_mode below (persona-owned today, scenario-owned end-state).
+    persona_interrupt: dict[str, Any] = {}
+    sc = speech_conditions_of(persona or {})
+    legacy_rate = sc.get("interruption_rate", sc.get("interrupt_rate"))
+    if legacy_rate is not None:
+        persona_interrupt["interruption_rate"] = legacy_rate
+        if sc.get("interruption_interval_ms") is not None:
+            persona_interrupt["interruption_interval_ms"] = sc["interruption_interval_ms"]
+        persona_interrupt["interruption_seed"] = _seed_from_id(
+            getattr(scenario, "id", "")
+        )
+    if persona_interrupt:
+        from .dsl import _parse_interaction
+
+        for action in scenario.caller_actions:
+            if getattr(action, "kind", None) != "do" or action.interaction is not None:
+                continue
+            try:
+                action.interaction = _parse_interaction(
+                    persona_interrupt, file=None, line=getattr(action, "line_no", 0)
+                )
+            except Exception:  # noqa: BLE001 — invalid legacy rate fails at parse of persona, not here
+                pass
+    driver._scenario_id = str(getattr(scenario, "id", ""))
 
     # Greeting wait reuses the scenario's own timeout (run_spec.timeout_s):
     # no second timeout semantics — an agent that never greets fails the
@@ -154,6 +347,28 @@ async def run_contract_driver_path(
     # this stays a deliberate bridge, not a permanent persona dependency.
     greeting_timeout_s = float(getattr(run_spec, "timeout_s", 30.0) or 30.0)
 
+    assets = BridgeAssetPlayer(
+        bridge=bridge,
+        writer=writer,
+        scenario_dir=getattr(scenario, "path", None),
+    )
+
+    # Hold timeout (contract equivalent of the legacy hold_music_timeout_s
+    # loop): agent dead-air watchdog armed once the agent has spoken. Fires
+    # a real bridge hang-up (ended_by=sim downstream), like the legacy path.
+    hold_timeout_s = None
+    hold_probe = getattr(scenario, "hold_music_timeout_s", None)
+    if callable(hold_probe):
+        try:
+            hold_timeout_s = hold_probe()
+        except Exception:  # noqa: BLE001 — unparsable hold config means off
+            hold_timeout_s = None
+
+    def _on_hold_timeout() -> None:
+        hangup = getattr(bridge, "sim_hang_up", None)
+        if callable(hangup):
+            hangup()
+
     result = await driver.run(
         scenario.caller_actions,
         sink,
@@ -162,7 +377,14 @@ async def run_contract_driver_path(
         first_speaker=first_speaker,
         silent_mode=silent_mode_enabled(persona),
         greeting_timeout_s=greeting_timeout_s,
+        assets=assets,
+        hold_timeout_s=hold_timeout_s,
+        on_hold_timeout=_on_hold_timeout,
     )
+    if recorder is not None and record_path is not None:
+        recorder.finalize().write(record_path)
+        _emit("contract.record_written", {"path": str(record_path)})
+
     if result.failure is not None:
         raise ContractDriverFailure(result)
 

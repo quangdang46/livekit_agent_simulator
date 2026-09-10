@@ -1,0 +1,24 @@
+{
+  "id": "say_trigger_time",
+  "steps": [
+    {
+      "say": "Bye.",
+      "trigger": {
+        "kind": "time",
+        "delay_ms": 500
+      }
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "say"
+  ],
+  "expected_fields": {
+    "0": {
+      "trigger": {
+        "kind": "time",
+        "delay_ms": 500
+      }
+    }
+  }
+}

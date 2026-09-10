@@ -1,0 +1,12 @@
+{
+  "id": "do_shorthand",
+  "steps": [
+    {
+      "do": "ask"
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "do"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "err_constraints_key",
+  "steps": [
+    {
+      "do": {
+        "behavior": "ask",
+        "constraints": {
+          "bogus": 1
+        }
+      }
+    }
+  ],
+  "expect": "error"
+}

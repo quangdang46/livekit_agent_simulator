@@ -21,6 +21,18 @@ execute:
   max_turns: 4
   timeout_s: 100
   first_speaker: agent
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# Persona/assert/execute blocks below unchanged.
+caller_steps:
+  - say: "Hi, just checking on my status."
+  - do:
+      behavior: ask
+      target: status
+      constraints:
+        max_turns: 2
+  - say: "Thanks, bye."
+  - end: true
 assert:
   outcomes:
   - id: agent_spoke

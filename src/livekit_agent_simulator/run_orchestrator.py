@@ -14,18 +14,15 @@ End conditions (first one wins):
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import json
 import re
 import secrets
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .audio.local_recorder import DEFAULT_FILENAME, LocalConversationRecorder
-from .caller_nudge import nudge_caller_after_agent_greeting
 from .behavior_compile import silent_mode_enabled
 from .config import SimConfig, config_snapshot
 from .callers.base import CallerBridge
@@ -37,13 +34,12 @@ from .livekit.observer import Observer
 from .livekit.sim_leg import SimLegContext, SimLegError, SimLegHandle, sim_leg_factory
 from .logging.event_writer import EventWriter
 from .logging.sqlite_store import RunStore
-from .interrupt_rate import InterruptRateRunner, parse_interrupt_rate
 from .preflight import run_preflight
 from .plugins.loader import ensure_plugins_loaded
 from .plugins import registry as plugin_registry
 from .plugins.api import AfterRunContext, BeforeRunContext
 from .scenario import Scenario, SimulatorSpec, find_scenario, validate_telephony_for_mode
-from .script import ScriptRunner, build_caller_behavior_summary, evaluate_script_log
+from .script import build_caller_behavior_summary, evaluate_script_log
 
 
 _LEADING_SEQ = re.compile(r"^(\d+)-")
@@ -159,11 +155,18 @@ async def run_scenario(
     run_name: str | None = None,
     agent_name: str | None = None,
     caller_policy: Any = None,
+    record_path: Any = None,
+    replay_path: Any = None,
 ) -> dict[str, Any]:
     """Run one scenario by id from `.agent-sim/scenarios/`.
 
     ``caller_policy`` (optional) overrides the persona-prompt composer — the
     runtime seam for a saved ``lks optimize`` artifact.
+
+    ``record_path``/``replay_path`` thread the caller's record/replay flow
+    (see caller_contract.record_replay): record writes a versioned RunRecord
+    of every generate+validate attempt; replay serves it back with no AI
+    calls. Mutually exclusive.
     """
     preflight, _ = await run_preflight(cfg.project_root, connectivity=True)
     if not preflight.ok:
@@ -172,7 +175,10 @@ async def run_scenario(
     scenario = find_scenario(cfg.scenarios_dir, scenario_id)
     if caller_policy is not None:
         scenario.caller_policy = caller_policy
-    return await run_scenario_instance(cfg, scenario, run_name=run_name, agent_name=agent_name)
+    return await run_scenario_instance(
+        cfg, scenario, run_name=run_name, agent_name=agent_name,
+        record_path=record_path, replay_path=replay_path,
+    )
 
 
 async def run_scenario_instance(
@@ -181,6 +187,8 @@ async def run_scenario_instance(
     *,
     run_name: str | None = None,
     agent_name: str | None = None,
+    record_path: Any = None,
+    replay_path: Any = None,
 ) -> dict[str, Any]:
     """Run a parsed Scenario (file or in-memory). Returns {run_id, status, report_dir, summary}.
 
@@ -385,88 +393,39 @@ async def run_scenario_instance(
             else:
                 bridge.watch_agent_tracks(leg_handle.agent_identity)
 
-            # ── caller_contract single path ─────────────────────────────
-            # When the scenario supplies caller_actions (new `caller_steps:`
-            # DSL), the ENTIRE legacy path below (persona free-generation,
-            # ScriptRunner, interrupt-rate policy, nudge, bridge.run()'s
-            # Realtime session) is skipped — no dual execution path. Only
-            # bridge.publish_mic() (mixer/track plumbing) is shared.
-            if scenario.caller_actions:
-                from .caller_contract.live_wiring import run_contract_driver_path
+            # ── caller_contract single path (the ONLY caller path) ──
+            # Every scenario carries caller_actions (migration gate
+            # test_every_template_has_caller_steps enforces this): the
+            # legacy persona free-generation / ScriptRunner /
+            # interrupt-rate / nudge / bridge.run() Realtime session path
+            # is deleted, not branched. Only bridge.publish_mic()
+            # (mixer/track plumbing) is shared.
+            if not scenario.caller_actions:
+                raise RuntimeError(
+                    f"scenario {scenario.id!r} has no caller_steps: "
+                    "the legacy caller path is removed; add caller_steps "
+                    "to the scenario (see templates/scenario-scaffold.yaml)"
+                )
+            if record_path is not None and replay_path is not None:
+                raise ValueError(
+                    "record_path and replay_path are mutually exclusive"
+                )
+            from .caller_contract.live_wiring import run_contract_driver_path
 
-                await bridge.publish_mic()
-                try:
-                    end_reason = await run_contract_driver_path(
-                        scenario, run, observer, bridge, writer, cfg
-                    )
-                finally:
-                    bridge.stop()
-            else:
-                script_runner: ScriptRunner | None = None
-                script_task: asyncio.Task | None = None
-                if scenario.script_steps:
-                    scenario_dir = scenario.path.parent if scenario.path.parent.exists() else cfg.scenarios_dir
-                    script_runner = ScriptRunner(
-                        scenario.script_steps,
-                        observer,
-                        bridge,
-                        writer,
-                        scenario_dir=scenario_dir,
-                    )
-                    bridge.bind_script_pending(script_runner.has_pending_steps)
-                    script_task = asyncio.create_task(script_runner.run(), name="script-runner")
-
-                # Parallel interruption-rate policy (#25) — additive to authored Script.
-                rate_runner: InterruptRateRunner | None = None
-                rate_task: asyncio.Task | None = None
-                rate_spec = parse_interrupt_rate(scenario.persona)
-                if rate_spec is not None:
-                    rate_dir = scenario.path.parent if scenario.path.parent.exists() else cfg.scenarios_dir
-                    rate_runner = InterruptRateRunner(
-                        rate_spec,
-                        observer,
-                        bridge,
-                        writer,
-                        scenario_dir=rate_dir,
-                    )
-                    rate_task = asyncio.create_task(rate_runner.run(), name="interrupt-rate")
-
-                bridge_task = asyncio.create_task(bridge.run(), name="gemini-bridge")
-                nudge_task: asyncio.Task | None = None
-                if run.first_speaker == "agent" and not scenario.script_steps and not _silent:
-                    nudge_task = asyncio.create_task(
-                        nudge_caller_after_agent_greeting(
-                            observer,
-                            bridge,
-                            writer,
-                            first_speaker=run.first_speaker,
-                            silent_mode=_silent,
-                        ),
-                        name="agent-greeted-nudge",
-                    )
-                try:
-                    end_reason = await _conversation_loop(
-                        scenario, run, observer, bridge, writer, cfg.observe.silence_threshold_ms / 1000
-                    )
-                finally:
-                    if nudge_task is not None:
-                        nudge_task.cancel()
-                        await asyncio.gather(nudge_task, return_exceptions=True)
-                    if script_runner is not None:
-                        script_runner.stop()
-                    if script_task is not None:
-                        script_task.cancel()
-                        await asyncio.gather(script_task, return_exceptions=True)
-                    if rate_runner is not None:
-                        rate_runner.stop()
-                    if rate_task is not None:
-                        rate_task.cancel()
-                        await asyncio.gather(rate_task, return_exceptions=True)
-                    bridge.stop()
-                    # After a mid-call reconnect the pump may take up to ~15 s to
-                    # notice end_call (bounded receive). Give the bridge time to
-                    # settle instead of failing the run with a TimeoutError.
-                    await asyncio.wait_for(asyncio.shield(_settle(bridge_task)), timeout=60)
+            await bridge.publish_mic()
+            try:
+                end_reason = await run_contract_driver_path(
+                    scenario,
+                    run,
+                    observer,
+                    bridge,
+                    writer,
+                    cfg,
+                    record_path=record_path,
+                    replay_path=replay_path,
+                )
+            finally:
+                bridge.stop()
 
             writer.emit("run.end_condition", spec={"reason": end_reason}, include_dialogue=False)
             session_snapshot_attempted = True
@@ -753,105 +712,3 @@ async def run_scenario_instance(
         "report_dir": str(report_dir),
         "summary": summary,
     }
-
-
-async def _settle(task: asyncio.Task) -> None:
-    try:
-        await task
-    except (asyncio.CancelledError, Exception):
-        pass
-
-
-async def _conversation_loop(
-    scenario: Scenario,
-    run: SimulatorSpec,
-    observer: Observer,
-    bridge: CallerBridge,
-    writer: EventWriter,
-    cfg_silence_s: float,
-) -> str:
-    """Poll every 250 ms until one end condition fires. Returns the reason."""
-    deadline = time.monotonic() + run.timeout_s
-    silence_reported_at: float | None = None
-    # Hold / agent dead-air timeout (#29): caller gives up after N s of agent
-    # inactivity (agent must have spoken once). Timer resets on agent activity
-    # via observer.last_agent_activity_mono. Distinct from caller silent_mode
-    # (caller mute) and from the global dead_call_silence safety net below.
-    hold_timeout_s = scenario.hold_music_timeout_s()
-
-    while True:
-        if bridge.end_call.is_set():
-            if getattr(bridge, "transport_dropped", False):
-                return "gemini_socket_drop"
-            return "sim_end_call"
-        if observer.agent_disconnected.is_set():
-            # Short grace so late RemoteSession tool frames (room-teardown race) can land
-            # before we finalize / detach and cancel ingress tasks.
-            await observer.drain_session_ingress(timeout_s=1.5)
-            return "agent_disconnected"
-        if observer.turn >= run.max_turns and observer.agent_replied_this_turn:
-            return "max_turns"
-        if time.monotonic() > deadline:
-            return "timeout"
-
-        # During scripted user silence (+ grace), do not kill the call as dead_call.
-        # Real agents may wait while the "caller" is intentionally quiet for N seconds.
-        scripted_hold = False
-        if hasattr(bridge, "scripted_silence_active"):
-            try:
-                scripted_hold = bool(bridge.scripted_silence_active())
-            except Exception:  # noqa: BLE001
-                scripted_hold = False
-
-        # Dead-call net measures silence from the last ANY activity (caller or
-        # agent). Hold-timeout (agent dead air) still measures agent-only
-        # silence and arms only after the agent has spoken.
-        last_any = getattr(observer, "last_activity_mono", None)
-        if last_any is None:
-            last_any = observer.last_agent_activity_mono
-        silent_for = time.monotonic() - last_any
-        agent_idle_for = time.monotonic() - observer.last_agent_activity_mono
-
-        hold_armed = hold_timeout_s is not None and observer.agent_has_spoken
-        if hold_armed and agent_idle_for >= hold_timeout_s:
-            writer.emit(
-                "sim.hold_timeout",
-                spec={
-                    "timeout_s": hold_timeout_s,
-                    "agent_idle_ms": int(agent_idle_for * 1000),
-                    "note": "Caller gave up waiting on agent dead air (hold_music_timeout_s)",
-                },
-                source="sim",
-                include_dialogue=False,
-            )
-            # Real hang-up: clears noise bed, emits sim.hang_up (ended_by=sim).
-            bridge.sim_hang_up()
-            return "hold_music_timeout"
-
-        if silent_for >= cfg_silence_s:
-            if silence_reported_at is None or (time.monotonic() - silence_reported_at) >= cfg_silence_s:
-                writer.emit(
-                    "silence.detected",
-                    spec={
-                        "duration_ms": int(silent_for * 1000),
-                        "scripted_user_silence": scripted_hold,
-                    },
-                    source="observer",
-                )
-                silence_reported_at = time.monotonic()
-            # When the author set a hold timeout and it is armed, the dead-call
-            # net must not preempt it (a longer hold timeout stays authoritative).
-            # Also: only arm after the first activity — before the caller's
-            # first turn the "silence" is just the caller booting (realtime
-            # models can take ~20 s to produce the opening line).
-            if (
-                silent_for >= cfg_silence_s * 3
-                and not scripted_hold
-                and not hold_armed
-                and observer.any_activity_occurred()
-            ):
-                return "dead_call_silence"
-        else:
-            silence_reported_at = None
-
-        await asyncio.sleep(0.25)

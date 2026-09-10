@@ -215,3 +215,160 @@ def test_replay_exhausted_raises_clear_error() -> None:
     backend = ReplayLanguageBackend(record)
     with pytest.raises(RuntimeError, match="replay exhausted"):
         backend.generate({})
+
+
+@pytest.mark.asyncio
+async def test_driver_records_every_attempt_and_replays_without_ai(tmp_path):
+    """Driver-level record->replay: reject + pass both recorded; replay
+    makes zero backend calls and reaches the same outcome."""
+    from livekit_agent_simulator.caller_contract.driver import ContractCallerDriver
+    from livekit_agent_simulator.caller_contract.dsl import parse_steps
+    from livekit_agent_simulator.caller_contract.language_adapter import AILanguageAdapter
+    from livekit_agent_simulator.caller_contract.orchestrator import Orchestrator
+    from livekit_agent_simulator.caller_contract.semantic import RuleBasedSemanticVerifier
+    from livekit_agent_simulator.caller_contract.validator import ContractValidator
+
+    from livekit_agent_simulator.caller_contract.record_replay import (
+        Recorder,
+        ReplayLanguageBackend,
+        RunRecord,
+    )
+
+    class _LiveBackend:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, context):
+            self.calls += 1
+            behavior = context["current_behavior"]
+            if self.calls == 1:
+                return {
+                    "act": "negotiate",
+                    "target": "price",
+                    "slots": {},
+                    "utterance": "Do you offer financing options?",
+                }
+            return {
+                "act": behavior["act"],
+                "target": behavior["target"],
+                "slots": {},
+                "utterance": "Would you come down to $30,000?",
+            }
+
+    class _Sink:
+        def __init__(self, orch):
+            self.orch = orch
+
+        async def publish(self, pcm, identity, *, label, gain=1.0):
+            return True
+
+    class _Agent:
+        async def wait_agent_turn(self, *, timeout_s: float = 30.0):
+            return "Sure, I can do $30,000."
+
+        def is_agent_speaking_now(self) -> bool:
+            return False
+
+    def _make(backend):
+        orch = Orchestrator()
+        return (
+            ContractCallerDriver(
+                orchestrator=orch,
+                validator=ContractValidator(
+                    semantic_verifier=RuleBasedSemanticVerifier()
+                ),
+                adapter=AILanguageAdapter(backend=backend),
+                synthesize=lambda text: b"\x00\x01" * 10,
+            ),
+            orch,
+        )
+
+    actions = parse_steps(
+        [
+            {
+                "do": {
+                    "behavior": "negotiate",
+                    "target": "price",
+                    "constraints": {
+                        "max_turns": 2,
+                        "forbidden_intents": ["financing"],
+                    },
+                }
+            }
+        ],
+        file="t",
+    )
+    live = _LiveBackend()
+    driver, orch = _make(live)
+    recorder = Recorder(scenario_id="s", seed=1)
+    driver.recorder = recorder
+    result = await driver.run(actions, _Sink(orch), _Agent())
+    assert result.failure is None
+    assert live.calls == 2  # reject + pass
+    record = recorder.finalize()
+    assert [a.verdict for a in record.attempts] == ["INVALID", "VALID"]
+
+    path = tmp_path / "run.json"
+    record.write(path)
+    replay_backend = ReplayLanguageBackend(RunRecord.read(path))
+    driver2, orch2 = _make(replay_backend)
+    result2 = await driver2.run(actions, _Sink(orch2), _Agent())
+    assert result2.failure is None
+    assert live.calls == 2  # replay made zero AI calls
+
+
+@pytest.mark.asyncio
+async def test_replay_verdict_divergence_fails_loudly(tmp_path):
+    """A replayed candidate that validates differently than recorded raises
+    ReplayMismatchError (never silently diverges)."""
+    from livekit_agent_simulator.caller_contract import Verdict
+    from livekit_agent_simulator.caller_contract.language_adapter import AILanguageAdapter
+    from livekit_agent_simulator.caller_contract.semantic import RuleBasedSemanticVerifier
+    from livekit_agent_simulator.caller_contract.validator import ContractValidator
+
+    from livekit_agent_simulator.caller_contract.record_replay import (
+        ReplayLanguageBackend,
+        ReplayMismatchError,
+        RunRecord,
+    )
+
+    record = RunRecord(
+        scenario_id="s",
+        seed=1,
+        attempts=[
+            __import__("livekit_agent_simulator.caller_contract.record_replay", fromlist=["RecordedAttempt"]).RecordedAttempt(
+                candidate={
+                    "act": "ask",
+                    "target": None,
+                    "slots": {},
+                    "utterance": "Could you tell me more?",
+                    "identity": {
+                        "behavior_id": "b1",
+                        "turn_id": 0,
+                        "generation_id": 1,
+                        "context_version": 0,
+                    },
+                },
+                verdict="VALID",
+                reason=None,
+                retry_index=0,
+            )
+        ],
+    )
+    backend = ReplayLanguageBackend(record)
+    candidate_dict = backend.generate({})
+    # Validate against a DIFFERENT contract so the verdict diverges.
+    from livekit_agent_simulator.caller_contract import BehaviorContract
+    from livekit_agent_simulator.caller_contract.language_adapter import (
+        _parse_backend_response,
+    )
+    from livekit_agent_simulator.caller_contract import GenerationIdentity
+
+    candidate = _parse_backend_response(
+        candidate_dict, GenerationIdentity(behavior_id="b", turn_id=0, generation_id=0)
+    )
+    validator = ContractValidator(semantic_verifier=RuleBasedSemanticVerifier())
+    result = validator.validate(candidate, BehaviorContract(behavior="negotiate"))
+    assert result.verdict != Verdict.VALID
+    with pytest.raises(ReplayMismatchError):
+        backend.assert_verdict(result.verdict)

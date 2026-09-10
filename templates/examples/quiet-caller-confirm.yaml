@@ -24,6 +24,18 @@ execute:
   timeout_s: 90
   first_speaker: agent
 
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# Persona/assert/execute blocks below unchanged.
+caller_steps:
+  - say: "Hi, what are your hours?"
+  - do:
+      behavior: ask
+      target: hours
+      constraints:
+        max_turns: 3
+  - say: "Thanks, bye."
+  - end: true
 assert:
   outcomes:
   - id: agent_spoke

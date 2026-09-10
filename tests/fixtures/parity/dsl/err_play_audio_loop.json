@@ -1,0 +1,12 @@
+{
+  "id": "err_play_audio_loop",
+  "steps": [
+    {
+      "play_audio": {
+        "asset": "x",
+        "loop": "yes"
+      }
+    }
+  ],
+  "expect": "error"
+}

@@ -1,0 +1,26 @@
+{
+  "id": "do_full",
+  "steps": [
+    {
+      "do": {
+        "behavior": "negotiate",
+        "target": "price",
+        "constraints": {
+          "max_turns": 3,
+          "max_budget": 30000,
+          "forbidden_intents": [
+            "financing"
+          ]
+        },
+        "interaction": {
+          "interruption_rate": "medium",
+          "interruption_seed": 7
+        }
+      }
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "do"
+  ]
+}
