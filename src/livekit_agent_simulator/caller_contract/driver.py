@@ -234,7 +234,15 @@ class ContractCallerDriver:
         facts: list[str],
         _emit: Any,
     ) -> tuple[int, str] | DriverResult:
-        """Loop one behavior up to max_turns; returns (turns, last agent text)."""
+        """Drive one behavior to SATISFIED or to the single canonical
+        BEHAVIOR_TIMEOUT. Returns (turns, last agent text) on satisfaction,
+        DriverResult on any failure. The ONLY turn-budget owner is
+        Orchestrator.check_max_turns() gating the while loop (advance via
+        advance_behavior_turn() after each published turn); the loop has no
+        independent range bound. Covers the target independently of act:
+        a contract with a target is only satisfied by evidence grounded in
+        the agent's ACTUAL reply text (evaluate_behavior), never by the
+        caller's own claimed target."""
         if not should_invoke_adapter(action.bypasses_ai_and_validator):
             return self._fail(
                 FailureReason.VALIDATION_ERROR,
@@ -248,7 +256,21 @@ class ContractCallerDriver:
         # start_behavior() (called by run() before entering here) already
         # reset the per-behavior turn count to zero; the loop below advances
         # it once per published caller turn via advance_behavior_turn().
-        for _ in range(contract.constraints.max_turns):
+        #
+        # The turn budget has exactly ONE owner: Orchestrator.check_max_turns()
+        # gating this while loop. There is deliberately no independent `for
+        # range(max_turns)` bound alongside it -- a Python range plus an
+        # Orchestrator counter was two parallel sources of truth for the same
+        # budget ("half-owned" progression). The only non-satisfied exit is
+        # the gate below, funnelling into the one canonical BEHAVIOR_TIMEOUT
+        # failure. stalled_spins is a liveness guard (not a budget): stale
+        # identities and refused publishes advance neither the budget nor the
+        # turn count, so consecutive non-progress spins are capped to keep a
+        # stuck sink from spinning forever; hitting the cap is
+        # TRANSPORT_ERROR, never a caller violation.
+        stalled_spins = 0
+        max_stalled_spins = self.max_retries + 1
+        while self.orchestrator.check_max_turns(contract) == BehaviorOutcome.CONTINUE:
             context = build_context(
                 contract=contract,
                 turn=turns,
@@ -345,6 +367,15 @@ class ContractCallerDriver:
             candidate = retry.candidate
             assert candidate is not None
             if self.orchestrator.is_stale(candidate.identity):
+                stalled_spins += 1  # superseded mid-generation; next turn re-generates
+                if stalled_spins > max_stalled_spins:
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        "behavior stalled: repeated stale identities, no forward progress",
+                        EndedBy.TRANSPORT,
+                        0,
+                        turns,
+                    )
                 continue  # superseded mid-generation; next turn re-generates
             # do: the candidate ALREADY passed the validator on its exact
             # utterance string. Synthesize that exact string (never a
@@ -358,6 +389,15 @@ class ContractCallerDriver:
             text = candidate.utterance
             pcm = self._speak(text)
             if self.orchestrator.is_stale(candidate.identity):
+                stalled_spins += 1  # superseded between validate and publish
+                if stalled_spins > max_stalled_spins:
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        "behavior stalled: repeated stale identities, no forward progress",
+                        EndedBy.TRANSPORT,
+                        0,
+                        turns,
+                    )
                 continue
             try:
                 published = await sink.publish(
@@ -372,7 +412,19 @@ class ContractCallerDriver:
                     turns,
                 )
             if not published:
+                # Sink refused (stale re-check or mixer not ready) without
+                # raising: no forward progress was made, count the spin.
+                stalled_spins += 1
+                if stalled_spins > max_stalled_spins:
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        "behavior stalled: sink repeatedly refused publish",
+                        EndedBy.TRANSPORT,
+                        0,
+                        turns,
+                    )
                 continue
+            stalled_spins = 0  # forward progress resets the liveness guard
             turns += 1
             self.orchestrator.advance_behavior_turn()
             log.append(Turn(speaker="caller", text=text))
@@ -411,22 +463,21 @@ class ContractCallerDriver:
             verdict = self.orchestrator.evaluate_behavior(contract, agent_text)
             if verdict == EvaluatorVerdict.SATISFIED:
                 return turns, agent_text
-            if self.orchestrator.check_max_turns(contract) == BehaviorOutcome.FAILED_MAX_TURNS:
-                _emit(
-                    "contract.behavior_violation",
-                    {"behavior": contract.behavior, "reason": "FAILED_MAX_TURNS"},
-                )
-                return self._fail(
-                    FailureReason.BEHAVIOR_TIMEOUT,
-                    f"behavior {contract.behavior!r} unsatisfied after max_turns",
-                    EndedBy.TIMEOUT,
-                    0,
-                    turns,
-                )
-        # Loop above always returns via SATISFIED / FAILED_MAX_TURNS / violation.
+            # Not satisfied: loop back to the single owner gate at the top
+            # (check_max_turns -> CONTINUE means "another caller turn",
+            # FAILED means fall out of the loop into the one canonical
+            # BEHAVIOR_TIMEOUT below). No inline failure construction here --
+            # that keeps exactly ONE exit shape for budget exhaustion.
+        # The gate above is the single owner: reaching here means
+        # check_max_turns() returned FAILED_MAX_TURNS -- the budget ran out
+        # without the agent satisfying the behavior.
+        _emit(
+            "contract.behavior_violation",
+            {"behavior": contract.behavior, "reason": "FAILED_MAX_TURNS"},
+        )
         return self._fail(
             FailureReason.BEHAVIOR_TIMEOUT,
-            f"behavior {contract.behavior!r} exhausted without verdict",
+            f"behavior {contract.behavior!r} unsatisfied after max_turns",
             EndedBy.TIMEOUT,
             0,
             turns,

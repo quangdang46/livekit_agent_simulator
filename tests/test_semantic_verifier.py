@@ -113,6 +113,38 @@ def test_classifier_never_trusts_candidate_only_utterance_text() -> None:
     assert param_names == ["self", "utterance", "contract"]
 
 
+def test_rule_baseline_never_fabricates_target_evidence() -> None:
+    """MEDIUM review finding: the rule-based tier has keyword evidence for
+    act but NO independent evidence for target, so it must return
+    observed.target=None rather than echoing contract.target. An echoed
+    target would masquerade as positive confirmation of something never
+    checked (e.g. negotiate/price contract vs "changing the delivery
+    date" utterance). A real tier-(2)/(3) backend populates this field
+    from utterance evidence; this baseline leaves it empty by design."""
+    verifier = RuleBasedSemanticVerifier()
+    contract = _negotiate_contract()  # negotiate / price
+    observed = verifier.classify(
+        "Could you meet me at $30,000, a little closer to my number?", contract
+    )
+    assert observed.act == "negotiate"
+    assert observed.confidence >= SEMANTIC_CONFIDENCE_THRESHOLD
+    assert observed.target is None, (
+        "rule baseline must not echo contract.target as observed evidence"
+    )
+
+
+def test_no_match_path_also_leaves_target_empty() -> None:
+    """The ambiguous/no-match path must not smuggle contract.target in
+    either — same fabrication concern as the matched path above."""
+    verifier = RuleBasedSemanticVerifier()
+    contract = _negotiate_contract()
+    observed = verifier.classify(
+        "Well, that's an interesting thought about the weather today.", contract
+    )
+    assert observed.confidence < SEMANTIC_CONFIDENCE_THRESHOLD
+    assert observed.target is None
+
+
 # ---------------------------------------------------------------------------
 # End-to-end through ContractValidator (integration with P0-2a)
 # ---------------------------------------------------------------------------

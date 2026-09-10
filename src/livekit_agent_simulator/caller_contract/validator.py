@@ -213,6 +213,27 @@ class ContractValidator:
                     details={"expected": contract.behavior, "observed": observed.act},
                 )
 
+            # Target cross-check (only when the backend supplies INDEPENDENT
+            # target evidence): a verifier that actually derived a target
+            # from the utterance (observed.target is not None) and disagrees
+            # with the contract's pinned target rejects the candidate. The
+            # rule-based baseline always returns target=None (it has no
+            # independent target evidence — see semantic.py), so this branch
+            # is a no-op for it by design: target enforcement for that tier
+            # stays on the deterministic claim check in step 3 above. A
+            # future tier-(2)/(3) backend populates observed.target and this
+            # same branch enforces it with zero validator changes.
+            if (
+                contract.target is not None
+                and observed.target is not None
+                and observed.target != contract.target
+            ):
+                return ValidationResult(
+                    verdict=Verdict.INVALID,
+                    reason="SEMANTIC_TARGET_MISMATCH",
+                    details={"expected_target": contract.target, "observed_target": observed.target},
+                )
+
         return ValidationResult(verdict=Verdict.VALID)
 
 

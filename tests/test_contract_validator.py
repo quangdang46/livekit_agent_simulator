@@ -270,16 +270,29 @@ def test_retry_succeeds_on_second_attempt() -> None:
 
 
 class _FakeSemanticVerifier:
-    """Minimal stand-in for the P0-2b backend used to test the seam."""
+    """Minimal stand-in for the P0-2b backend used to test the seam.
 
-    def __init__(self, observed_act: str, confidence: float = 0.9) -> None:
+    Mirrors the real tier contract: observed.target=None means "no
+    independent target evidence" (what the rule baseline always returns);
+    pass observed_target explicitly to simulate a tier-(2)/(3) backend that
+    actually derived a target from the utterance.
+    """
+
+    def __init__(
+        self,
+        observed_act: str,
+        confidence: float = 0.9,
+        observed_target: str | None = "__unset__",  # type: ignore[assignment]
+    ) -> None:
         self._observed_act = observed_act
         self._confidence = confidence
+        self._observed_target = observed_target
 
     def classify(self, utterance, contract):  # noqa: ANN001 — test double
         from livekit_agent_simulator.caller_contract import ObservedAct
 
-        return ObservedAct(act=self._observed_act, target=contract.target, confidence=self._confidence)
+        target = contract.target if self._observed_target == "__unset__" else self._observed_target
+        return ObservedAct(act=self._observed_act, target=target, confidence=self._confidence)
 
 
 def test_semantic_verifier_seam_can_reject_when_lexical_check_misses() -> None:
@@ -317,3 +330,46 @@ def test_semantic_verifier_failure_yields_error_not_valid() -> None:
     result = validator.validate(candidate, contract)
     assert result.verdict == Verdict.ERROR
     assert not result.is_valid()
+
+
+def test_semantic_target_mismatch_rejects_when_backend_supplies_evidence() -> None:
+    """A tier-(2)/(3) verifier that actually derived a target from the
+    utterance (observed.target set, disagreeing with the contract) must
+    reject with SEMANTIC_TARGET_MISMATCH -- the branch the rule baseline
+    never triggers because it always returns target=None."""
+    validator = ContractValidator(
+        semantic_verifier=_FakeSemanticVerifier(observed_act="negotiate", observed_target="delivery_date")
+    )
+    contract = _negotiate_contract()  # negotiate / price
+    candidate = CandidateUtterance(
+        act="negotiate",
+        target="price",
+        slots={},
+        utterance="Would you consider changing the delivery date?",
+        identity=_identity(),
+    )
+    result = validator.validate(candidate, contract)
+    assert result.verdict == Verdict.INVALID
+    assert result.reason == "SEMANTIC_TARGET_MISMATCH"
+    assert result.details["expected_target"] == "price"
+    assert result.details["observed_target"] == "delivery_date"
+
+
+def test_rule_baseline_none_target_never_triggers_target_mismatch() -> None:
+    """The rule baseline returns observed.target=None (no independent target
+    evidence), so the SEMANTIC_TARGET_MISMATCH branch must stay a no-op for
+    it -- target enforcement for that tier rests on the deterministic claim
+    check (step 3), which still applies."""
+    validator = ContractValidator(
+        semantic_verifier=_FakeSemanticVerifier(observed_act="negotiate", observed_target=None)
+    )
+    contract = _negotiate_contract()
+    candidate = CandidateUtterance(
+        act="negotiate",
+        target="price",
+        slots={"max_budget": 30000},
+        utterance="Could you do $30,000?",
+        identity=_identity(),
+    )
+    result = validator.validate(candidate, contract)
+    assert result.is_valid(), result.details

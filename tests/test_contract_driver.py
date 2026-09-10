@@ -227,6 +227,32 @@ async def test_full_say_do_end_lifecycle():
 
 
 @pytest.mark.asyncio
+async def test_behavior_budget_owned_by_orchestrator_gate_not_range():
+    """HIGH review finding: the turn budget must have exactly ONE owner --
+    Orchestrator.check_max_turns() gating the driver loop. A behavior with
+    max_turns=2 must publish exactly 2 caller turns against a never-satisfied
+    evaluator (no early exit, no extra turn), then fail BEHAVIOR_TIMEOUT
+    through the single canonical exit."""
+    driver, orch = _driver()
+    actions = parse_steps(
+        [{"do": {"behavior": "ask", "constraints": {"max_turns": 2}}}],
+        file="t",
+    )
+    sink = FakeSink(orch)
+    agent = FakeAgent(replies=["Hmm.", "Hmm."])  # never satisfies
+    events: list[tuple[str, dict]] = []
+    result = await driver.run(
+        actions, sink, agent, emit=lambda kind, spec=None: events.append((kind, spec or {}))
+    )
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.BEHAVIOR_TIMEOUT
+    assert result.turns_spoken == 2, "budget owner must allow exactly max_turns turns"
+    assert len(sink.published) == 2
+    violations = [spec for kind, spec in events if kind == "contract.behavior_violation"]
+    assert len(violations) == 1 and violations[0]["reason"] == "FAILED_MAX_TURNS"
+
+
+@pytest.mark.asyncio
 async def test_stale_identity_dropped_never_published():
     driver, orch = _driver()
     actions = parse_steps([{"say": "Hello."}], file="t")

@@ -145,9 +145,11 @@ class RuleBasedSemanticVerifier:
             # No act pattern matched at all: genuinely ambiguous. Do not
             # guess the contract's own behavior just to look confident —
             # return low confidence and let the validator reject it.
+            # target=None for the same reason as the matched path below:
+            # no independent target evidence exists in this tier.
             return ObservedAct(
                 act=contract.behavior,
-                target=contract.target,
+                target=None,
                 confidence=_NO_MATCH_CONFIDENCE,
                 all_acts=detected_intent_tags or [contract.behavior],
             )
@@ -164,9 +166,28 @@ class RuleBasedSemanticVerifier:
 
         all_acts = list(dict.fromkeys([best_act, *overall_hits.keys(), *detected_intent_tags]))
 
+        # TARGET EVIDENCE (explicit limitation of this rule-based tier):
+        # this baseline has INDEPENDENT keyword evidence for act, but NO
+        # independent evidence for target — it cannot tell "lowering the
+        # PRICE" from "changing the DELIVERY DATE" beyond the act match.
+        # So when best_act == contract.behavior it returns observed.target
+        # as None (unknown), NEVER echoing contract.target as if it had
+        # derived it from the utterance. Fabricating target evidence would
+        # be strictly worse than admitting ignorance: downstream, a None
+        # target is unambiguous "not verified", while an echoed target
+        # looks like positive confirmation of something never checked.
+        #
+        # Validator contract for this tier: TARGET mismatch enforcement for
+        # rule-based verification rests on the DETERMINISTIC layer above
+        # (validator.py step 3 compares the generator's CLAIMED
+        # candidate.target against contract.target) plus the semantic ACT
+        # match here. A real tier-(2)/(3) backend MUST populate
+        # observed.target from utterance evidence (e.g. NLI-grounded span
+        # extraction) — the SemanticVerifierProtocol field already exists
+        # for it; only this baseline leaves it empty by design.
         return ObservedAct(
             act=best_act,
-            target=contract.target if best_act == contract.behavior else None,
+            target=None,
             confidence=_confidence_for(primary_hits),
             all_acts=all_acts,
         )
