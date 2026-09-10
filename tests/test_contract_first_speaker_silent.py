@@ -128,6 +128,35 @@ async def test_first_speaker_agent_silence_is_agent_timeout_not_violation():
 
 
 @pytest.mark.asyncio
+async def test_first_speaker_invalid_value_raises():
+    driver, orch = _driver()
+    actions = parse_steps([{"say": "Hi."}], file="t")
+    sink = FakeSink(orch)
+    agent = FakeAgent(replies=["Hello."])
+    with pytest.raises(ValueError, match="first_speaker"):
+        await driver.run(actions, sink, agent, first_speaker="banana")
+
+
+@pytest.mark.asyncio
+async def test_greeting_timeout_is_passed_to_agent_wait():
+    driver, orch = _driver()
+    actions = parse_steps([{"say": "Hi."}], file="t")
+    sink = FakeSink(orch)
+
+    seen: dict[str, float] = {}
+
+    class _RecordingAgent(FakeAgent):
+        async def wait_agent_turn(self, *, timeout_s: float = 30.0):
+            seen["timeout_s"] = timeout_s
+            return await super().wait_agent_turn(timeout_s=timeout_s)
+
+    agent = _RecordingAgent(replies=["Hello."])
+    result = await driver.run(actions, sink, agent, first_speaker="agent", greeting_timeout_s=7.5)
+    assert result.failure is None
+    assert seen["timeout_s"] == 7.5
+
+
+@pytest.mark.asyncio
 async def test_first_speaker_user_starts_immediately():
     driver, orch = _driver()
     actions = parse_steps([{"say": "Hi, I'm calling about the car."}], file="t")

@@ -145,6 +145,15 @@ async def run_contract_driver_path(
     first_speaker = getattr(run_spec, "first_speaker", "user") or "user"
     persona = getattr(scenario, "persona", None)
 
+    # Greeting wait reuses the scenario's own timeout (run_spec.timeout_s):
+    # no second timeout semantics — an agent that never greets fails the
+    # same way a run that never progresses does.
+    # NOTE (migration bridge): silent_mode is still read from the legacy
+    # persona speech_conditions via behavior_compile. The contract-native
+    # end-state is a scenario/execution-level property; until that exists
+    # this stays a deliberate bridge, not a permanent persona dependency.
+    greeting_timeout_s = float(getattr(run_spec, "timeout_s", 30.0) or 30.0)
+
     result = await driver.run(
         scenario.caller_actions,
         sink,
@@ -152,6 +161,7 @@ async def run_contract_driver_path(
         emit=_emit,
         first_speaker=first_speaker,
         silent_mode=silent_mode_enabled(persona),
+        greeting_timeout_s=greeting_timeout_s,
     )
     if result.failure is not None:
         raise ContractDriverFailure(result)

@@ -133,6 +133,7 @@ class ContractCallerDriver:
         relevant_facts: list[str] | None = None,
         first_speaker: str = "user",
         silent_mode: bool = False,
+        greeting_timeout_s: float = 30.0,
     ) -> DriverResult:
         """Drive every action to completion (or STOP on violation/timeout).
 
@@ -142,12 +143,21 @@ class ContractCallerDriver:
         until the agent has demonstrably spoken). Agent silence here is
         AGENT_TIMEOUT, never a caller violation. ``"user"`` (default)
         starts immediately, preserving the pre-first-speaker behavior.
+        Any other value is a hard ValueError — never silently treated
+        as "user".
+
+        ``greeting_timeout_s`` bounds the greeting wait; live_wiring passes
+        the scenario's own timeout so no second timeout semantics exists.
 
         ``silent_mode=True`` drops ``say``/``do`` actions (no AI, no TTS,
         no publish — the caller stays mute) while control actions
         (wait/end/hangup/…) still run. Mirrors the legacy silent-mode
         compile (explicit speak steps dropped, wait/hang_up kept).
         """
+        if first_speaker not in ("user", "agent"):
+            raise ValueError(
+                f"first_speaker must be 'user'|'agent', got {first_speaker!r}"
+            )
         log: list[Turn] = list(recent_turns or [])
         facts: list[str] = list(relevant_facts or [])
         completed = 0
@@ -158,8 +168,11 @@ class ContractCallerDriver:
                 emit(kind, spec=spec)
 
         if first_speaker == "agent":
-            _emit("contract.first_speaker_wait", {"expected_speaker": "agent"})
-            greeting = await agent.wait_agent_turn(timeout_s=30.0)
+            _emit(
+                "contract.first_speaker_wait",
+                {"expected_speaker": "agent", "timeout_s": greeting_timeout_s},
+            )
+            greeting = await agent.wait_agent_turn(timeout_s=greeting_timeout_s)
             if greeting is None:
                 _emit("contract.agent_timeout", {"phase": "first_speaker_greeting"})
                 return self._fail(
