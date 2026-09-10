@@ -131,8 +131,23 @@ class ContractCallerDriver:
         emit: Any = None,
         recent_turns: list[Turn] | None = None,
         relevant_facts: list[str] | None = None,
+        first_speaker: str = "user",
+        silent_mode: bool = False,
     ) -> DriverResult:
-        """Drive every action to completion (or STOP on violation/timeout)."""
+        """Drive every action to completion (or STOP on violation/timeout).
+
+        ``first_speaker="agent"`` waits for the agent greeting BEFORE the
+        first caller action (the contract equivalent of the legacy
+        nudge_caller_after_agent_greeting: no caller audio is generated
+        until the agent has demonstrably spoken). Agent silence here is
+        AGENT_TIMEOUT, never a caller violation. ``"user"`` (default)
+        starts immediately, preserving the pre-first-speaker behavior.
+
+        ``silent_mode=True`` drops ``say``/``do`` actions (no AI, no TTS,
+        no publish — the caller stays mute) while control actions
+        (wait/end/hangup/…) still run. Mirrors the legacy silent-mode
+        compile (explicit speak steps dropped, wait/hang_up kept).
+        """
         log: list[Turn] = list(recent_turns or [])
         facts: list[str] = list(relevant_facts or [])
         completed = 0
@@ -142,7 +157,27 @@ class ContractCallerDriver:
             if emit is not None:
                 emit(kind, spec=spec)
 
+        if first_speaker == "agent":
+            _emit("contract.first_speaker_wait", {"expected_speaker": "agent"})
+            greeting = await agent.wait_agent_turn(timeout_s=30.0)
+            if greeting is None:
+                _emit("contract.agent_timeout", {"phase": "first_speaker_greeting"})
+                return self._fail(
+                    FailureReason.AGENT_TIMEOUT,
+                    "agent did not speak first within timeout",
+                    EndedBy.TIMEOUT,
+                    0,
+                    0,
+                )
+            log.append(Turn(speaker="agent", text=greeting))
+            _emit("contract.first_speaker_greeting", {"text": greeting})
+
         for action in actions:
+            if silent_mode and action.kind in ("say", "do"):
+                # Silent caller stays mute: skip AI/TTS/publish entirely,
+                # but keep the action visible in the event trail.
+                _emit("contract.silent_skip", {"kind": action.kind, "line": action.line_no})
+                continue
             # Every action — including say — crosses the Orchestrator turn gate.
             self.orchestrator.advance_caller_turn()
 

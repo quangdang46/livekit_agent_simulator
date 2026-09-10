@@ -137,7 +137,22 @@ async def run_contract_driver_path(
     def _emit(kind: str, spec: dict[str, Any] | None = None) -> None:
         writer.emit(kind, spec=spec or {}, source="sim.contract", include_dialogue=False)
 
-    result = await driver.run(scenario.caller_actions, sink, agent, emit=_emit)
+    from ..behavior_compile import silent_mode_enabled
+
+    # SimpleNamespace test doubles carry only caller_actions: default to the
+    # immediate-start ("user") path with silent mode off.
+    run_spec = getattr(scenario, "run_spec", None)
+    first_speaker = getattr(run_spec, "first_speaker", "user") or "user"
+    persona = getattr(scenario, "persona", None)
+
+    result = await driver.run(
+        scenario.caller_actions,
+        sink,
+        agent,
+        emit=_emit,
+        first_speaker=first_speaker,
+        silent_mode=silent_mode_enabled(persona),
+    )
     if result.failure is not None:
         raise ContractDriverFailure(result)
 
