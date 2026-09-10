@@ -69,10 +69,13 @@ present, paraphrased or not, whether or not the contract forbids them.
 - all_acts contains the primary act plus every other surface act AND every \
 detected deal-related intent from the list above.
 - target is the utterance's ACTUAL topic as a snake_case noun (price, \
-delivery_date, ...). When the utterance concerns the same deal term as the \
-contract's target, use the contract target's EXACT string (e.g. financing \
-talk under a price contract keeps target price). When the contract's target \
-is null, return null. When no clear topic exists, return null; never guess.
+delivery_date, financing, ...), derived ONLY from what the utterance itself \
+is about. The contract's target is given for context ONLY — it is what the \
+caller was SUPPOSED to talk about, not what this utterance IS about. Never \
+copy the contract's target string onto the utterance's real topic; if the \
+utterance drifted to a different topic (e.g. financing instead of price), \
+report THAT topic so a mismatch can be detected downstream. Return null only \
+when the utterance truly has no identifiable topic.
 - confidence >= 0.5 only when the evidence quote appears verbatim in the \
 utterance. Ambiguous filler or off-topic chatter gets confidence <= 0.3."""
 
@@ -160,7 +163,10 @@ class LLMSemanticVerifier:
     """Tier-3 judge behind SemanticVerifierProtocol (text-only, stateless).
 
     provider="openai" uses an OpenAI-compatible chat-completions endpoint;
-    provider="gemini" uses generateContent. Both are one HTTP round trip.
+    provider="anthropic" uses a Messages-API-compatible endpoint (same wire
+    format as evals/backends/http_anthropic.py, reused so live_wiring.py can
+    mirror whatever endpoint_type the target's judge: block already uses);
+    provider="gemini" uses generateContent. All three are one HTTP round trip.
     """
 
     api_key: str
@@ -176,10 +182,16 @@ class LLMSemanticVerifier:
     _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
     def __post_init__(self) -> None:
-        if not self.base_url:
-            self.base_url = (
-                self._GEMINI_BASE if self.provider == "gemini" else self._OPENAI_BASE
-            )
+        if self.base_url:
+            return
+        if self.provider == "gemini":
+            self.base_url = self._GEMINI_BASE
+        elif self.provider == "openai":
+            self.base_url = self._OPENAI_BASE
+        # provider="anthropic" has no public default endpoint (unlike OpenAI/
+        # Gemini's hosted APIs) — same as http_anthropic.py, base_url is
+        # mandatory and left empty here to fail loudly in classify() rather
+        # than silently guessing a wrong host.
 
     def _openai_endpoint(self) -> str:
         base = self.base_url.rstrip("/")
@@ -189,6 +201,12 @@ class LLMSemanticVerifier:
 
     def _gemini_endpoint(self) -> str:
         return f"{self.base_url.rstrip('/')}/models/{self.model}:generateContent?key={self.api_key}"
+
+    def _anthropic_endpoint(self) -> str:
+        base = self.base_url.rstrip("/")
+        if base.endswith("/messages"):
+            return base
+        return f"{base}/messages"
 
     def _judge_request(self, utterance: str, contract: BehaviorContract) -> dict[str, Any]:
         user_prompt = _build_user_prompt(utterance, contract)
@@ -202,8 +220,29 @@ class LLMSemanticVerifier:
                     "generationConfig": {"temperature": self.temperature, "responseMimeType": "application/json"},
                 },
             }
+        if self.provider == "anthropic":
+            if not self.base_url:
+                raise SemanticJudgeError("provider='anthropic' requires an explicit base_url (no public default)")
+            return {
+                "url": self._anthropic_endpoint(),
+                "headers": {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                "body": {
+                    "model": self.model,
+                    "max_tokens": 512,
+                    "temperature": self.temperature,
+                    "stream": False,
+                    "system": _JUDGE_SYSTEM_PROMPT,
+                    "messages": [{"role": "user", "content": user_prompt}],
+                },
+            }
         if self.provider != "openai":
-            raise SemanticJudgeError(f"unknown provider {self.provider!r} (expected 'openai'|'gemini')")
+            raise SemanticJudgeError(f"unknown provider {self.provider!r} (expected 'openai'|'anthropic'|'gemini')")
         return {
             "url": self._openai_endpoint(),
             "headers": {
@@ -230,6 +269,18 @@ class LLMSemanticVerifier:
                 raise SemanticJudgeError(f"judge empty candidates: {str(payload)[:300]}")
             parts = ((candidates[0].get("content") or {}).get("parts")) or []
             text = "".join(str(p.get("text") or "") for p in parts if isinstance(p, dict))
+        elif self.provider == "anthropic":
+            content = payload.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = "".join(
+                    str(part.get("text") or "")
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") in (None, "text")
+                )
+            else:
+                raise SemanticJudgeError(f"judge empty content: {str(payload)[:300]}")
         else:
             choices = payload.get("choices") or []
             if not choices:

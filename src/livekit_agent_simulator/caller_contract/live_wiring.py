@@ -10,6 +10,17 @@ Text backend selection mirrors ``cfg.simulator.provider`` (google|openai) so
 the same config key already used for the legacy bridge selects the do:
 generation backend too — no new config surface for this slice.
 
+Semantic verifier selection (PLAN-20260910 slice 3): reuses the EXISTING
+``judge:`` config block (already used by PassCriteria/asserts LLM judging,
+see evals/resolve.py) as the opt-in fallback flag — no new config surface.
+When ``cfg.judge`` resolves to a ready backend, ``LLMSemanticVerifier``
+(Tier-3) is wired in; otherwise ``ContractValidator`` falls back to its own
+default (``RuleBasedSemanticVerifier``, Tier-1) with zero behavior change for
+targets that never configured a judge. Swapping the backend touches ONLY
+this function — driver.py/orchestrator.py/validator.py/publish_sink.py are
+unchanged (validator.py already had the honest-target contract in place
+since ``02553c3``).
+
 Raises ``ContractDriverFailure`` (never returns normally) when the driver
 reports a failure, so run_scenario_instance's existing ``except Exception``
 handler marks the run failed exactly like any other hard error — no separate
@@ -21,6 +32,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..audio.sapi_tts import TARGET_RATE, synthesize_pcm16_mono
+from ..evals.resolve import resolve_judge
 from . import EndedBy
 from .agent_wait import ObserverAgentWait
 from .driver import ContractCallerDriver, DriverResult
@@ -28,8 +40,9 @@ from .language_adapter import AILanguageAdapter
 from .orchestrator import Orchestrator
 from .publish_sink import DEFAULT_DRAIN_TIMEOUT_S, BridgePublishSink
 from .semantic import RuleBasedSemanticVerifier
+from .semantic_llm import LLMSemanticVerifier
 from .text_backends import GeminiTextBackend, OpenAITextBackend
-from .validator import ContractValidator
+from .validator import ContractValidator, SemanticVerifierProtocol
 
 if TYPE_CHECKING:
     from ..callers.base import CallerBridge
@@ -58,6 +71,31 @@ def _build_text_backend(cfg: Any) -> Any:
     return OpenAITextBackend(api_key=api_key)
 
 
+def _build_semantic_verifier(cfg: Any) -> SemanticVerifierProtocol:
+    """Tier-3 (LLM judge) when ``judge:`` is configured and ready; otherwise
+    the Tier-1 rule-based baseline — see module docstring."""
+    sim_api_key = getattr(cfg.simulator, "api_key", None)
+    resolved = resolve_judge(getattr(cfg, "judge", None), sim_api_key=sim_api_key)
+    if not resolved.ready:
+        return RuleBasedSemanticVerifier()
+    if resolved.mode == "http":
+        assert resolved.base_url and resolved.api_key
+        return LLMSemanticVerifier(
+            api_key=resolved.api_key,
+            provider=resolved.endpoint_type,
+            model=resolved.model,
+            base_url=resolved.base_url,
+            temperature=resolved.temperature,
+        )
+    assert resolved.sim_api_key
+    return LLMSemanticVerifier(
+        api_key=resolved.sim_api_key,
+        provider="gemini",
+        model=resolved.model,
+        temperature=resolved.temperature,
+    )
+
+
 def _synthesize(text: str) -> bytes:
     pcm = synthesize_pcm16_mono(text, rate=TARGET_RATE)
     return pcm or b""
@@ -83,7 +121,7 @@ async def run_contract_driver_path(
     """
     _ = run  # reserved: max_turns/timeout_s already live on each contract
     orch = Orchestrator()
-    validator = ContractValidator(semantic_verifier=RuleBasedSemanticVerifier())
+    validator = ContractValidator(semantic_verifier=_build_semantic_verifier(cfg))
     adapter = AILanguageAdapter(backend=_build_text_backend(cfg))
     driver = ContractCallerDriver(
         orchestrator=orch,
