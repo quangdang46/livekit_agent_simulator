@@ -45,15 +45,22 @@ _END_CALL_PHRASES = (
     "have a good day",
 )
 
-# Default lexical intent lexicon used when no SemanticVerifier is injected.
-# Deliberately small and conservative — this is the "obvious lexical drift"
-# rule tier (report §17.1 row "obvious lexical drift"), not a replacement
-# for the semantic classifier in P0-2b.
-_DEFAULT_INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
+# Default lexical intent lexicon used when no SemanticVerifier is injected,
+# and shared with the P0-2b RuleBasedSemanticVerifier (single source of
+# truth for the baseline keyword tier). Deliberately small and conservative
+# — this is the "obvious lexical drift" rule tier (report §17.1 row "obvious
+# lexical drift"), not a replacement for a real semantic classifier.
+DEFAULT_INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "financing": ("financing", "finance option", "loan", "payment plan"),
     "trade_in": ("trade in", "trade-in", "trade my"),
     "vehicle_change": ("different car", "another vehicle", "looking for a toyota", "instead"),
 }
+
+# Below this confidence, the semantic verifier's classification is treated
+# as ambiguous and MUST be rejected — never treated as a match just because
+# observed.act happens to equal contract.behavior (report §14.1/§17.4:
+# unknown/ambiguous is never valid).
+SEMANTIC_CONFIDENCE_THRESHOLD = 0.5
 
 
 def ends_call_allowed(contract: BehaviorContract) -> bool:
@@ -77,7 +84,7 @@ def _lexical_forbidden_intent_hit(utterance: str, forbidden_intents: list[str]) 
     """
     text = utterance.lower()
     for intent in forbidden_intents:
-        keywords = _DEFAULT_INTENT_KEYWORDS.get(intent, (intent.replace("_", " "),))
+        keywords = DEFAULT_INTENT_KEYWORDS.get(intent, (intent.replace("_", " "),))
         if any(kw in text for kw in keywords):
             return intent
     return None
@@ -172,6 +179,16 @@ class ContractValidator:
             except Exception as exc:  # noqa: BLE001 — verifier failure must never look like PASS
                 return ValidationResult(verdict=Verdict.ERROR, reason=f"VERIFIER_UNAVAILABLE: {exc}")
 
+            # Ambiguous/low-confidence classification is ALWAYS a reject,
+            # regardless of whether observed.act happens to equal
+            # contract.behavior — confidence gates correctness, not just act.
+            if observed.confidence < SEMANTIC_CONFIDENCE_THRESHOLD:
+                return ValidationResult(
+                    verdict=Verdict.UNKNOWN,
+                    reason="LOW_CONFIDENCE",
+                    details={"confidence": observed.confidence, "threshold": SEMANTIC_CONFIDENCE_THRESHOLD},
+                )
+
             all_acts = observed.all_acts or [observed.act]
             for act in all_acts:
                 if act != contract.behavior and _matches_forbidden(act, constraints.forbidden_intents):
@@ -183,7 +200,7 @@ class ContractValidator:
 
             if observed.act != contract.behavior:
                 return ValidationResult(
-                    verdict=Verdict.UNKNOWN if observed.confidence < 0.5 else Verdict.INVALID,
+                    verdict=Verdict.INVALID,
                     reason="SEMANTIC_ACT_MISMATCH",
                     details={"expected": contract.behavior, "observed": observed.act},
                 )
