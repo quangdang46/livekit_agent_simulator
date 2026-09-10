@@ -265,11 +265,12 @@
         "target": "price"
       },
       "utterance": "Could I pay this off over several months rather than all at once?",
+      "_target_note": "target=financing, NOT the contract's price: this utterance's real topic is a payment-plan proposal, and ObservedAct.target must be derived purely from utterance evidence, never copied from contract.target (a backend that echoed contract.target here would be masking the exact topic drift FORBIDDEN_INTENT_DETECTED is supposed to catch).",
       "expected": {
         "verdict": "reject",
         "reason": "FORBIDDEN_INTENT_DETECTED",
         "act": "negotiate",
-        "target": "price",
+        "target": "financing",
         "all_acts_contains": [
           "financing"
         ]

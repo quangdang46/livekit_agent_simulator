@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "src"))
 _KEY_VAR = "LKS_SEMANTIC_JUDGE_API_KEY"
 _PROVIDER_VAR = "LKS_SEMANTIC_JUDGE_PROVIDER"
 _MODEL_VAR = "LKS_SEMANTIC_JUDGE_MODEL"
+_BASE_URL_VAR = "LKS_SEMANTIC_JUDGE_BASE_URL"
 
 
 def _load_dotenv(path: Path) -> None:
@@ -53,6 +54,31 @@ def _judge_api_key() -> str:
     return key
 
 
+class _CachingVerifier:
+    """Wraps a SemanticVerifierProtocol so this script's own inspection of
+    ObservedAct and ``ContractValidator.validate()``'s internal call (when it
+    reaches the semantic step at all) share ONE network round trip per case.
+
+    Scoped to exactly one case per instance, so memoization is unconditional:
+    the first ``classify()`` call hits the network, every subsequent call on
+    this instance returns the cached ObservedAct. Benchmark-only concern
+    (never used in live_wiring/production) — without it, calling
+    ``classify()`` once directly to inspect fields PLUS letting
+    ``validate()`` call it again internally doubles every case's LLM
+    cost/latency in the measurement."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.last_observed = None
+        self.calls = 0
+
+    def classify(self, utterance, contract):
+        if self.calls == 0:
+            self.calls += 1
+            self.last_observed = self._inner.classify(utterance, contract)
+        return self.last_observed
+
+
 def main() -> None:
     from livekit_agent_simulator.caller_contract import (
         BehaviorContract,
@@ -72,9 +98,12 @@ def main() -> None:
     }
     if os.environ.get(_MODEL_VAR):
         kwargs["model"] = os.environ[_MODEL_VAR]
+    if os.environ.get(_BASE_URL_VAR):
+        kwargs["base_url"] = os.environ[_BASE_URL_VAR]
     verifier = LLMSemanticVerifier(**kwargs)
 
     rows = []
+    total_calls = 0
     for case in fixture:
         spec = case["contract"]
         c = spec.get("constraints", {})
@@ -92,14 +121,21 @@ def main() -> None:
             utterance=case["utterance"],
             identity=GenerationIdentity(behavior_id="bench", turn_id=1, generation_id=1),
         )
+        cached = _CachingVerifier(verifier)
         t0 = time.monotonic()
         try:
-            result = ContractValidator(semantic_verifier=verifier).validate(candidate, contract)
-            observed = verifier.classify(case["utterance"], contract)
+            # Always classify once directly so ObservedAct is inspectable
+            # even when the deterministic layer short-circuits validate()
+            # before reaching the semantic step (e.g. a lexical forbidden-
+            # intent hit). ContractValidator reuses this same cached result
+            # if it does call classify() internally — never a second call.
+            observed = cached.classify(case["utterance"], contract)
+            result = ContractValidator(semantic_verifier=cached).validate(candidate, contract)
             err = None
         except Exception as exc:  # noqa: BLE001 — evidence report
             result, observed, err = None, None, f"{type(exc).__name__}: {exc}"[:160]
         dt_ms = (time.monotonic() - t0) * 1000
+        total_calls += cached.calls
 
         exp = case["expected"]
         if err is not None:
@@ -130,7 +166,11 @@ def main() -> None:
     passed = sum(1 for r in rows if r[2] == "PASS")
     for cid, dt, match in rows:
         print(f"{cid:<{width}}  {dt:>7}  {match}")
-    print(f"\n{passed}/{len(rows)} golden cases pass on Tier-3 gemini judge")
+    print(
+        f"\n{passed}/{len(rows)} golden cases pass on Tier-3 "
+        f"{kwargs['provider']}:{verifier.model} judge "
+        f"({total_calls} LLM call(s) for {len(rows)} case(s))"
+    )
 
 
 if __name__ == "__main__":
