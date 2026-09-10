@@ -9,6 +9,11 @@ timeline — proving ``template -> caller_steps -> trigger-wait -> publish``.
 - interrupt-correction: silence-gated open, barge correction
   (agent_speaking + barge_in), silence-gated bye, end. first_speaker=user
   starts immediately.
+- people-pleaser-refuse-card: barge refusal (agent_speaking + barge_in),
+  silence-gated close, end. first_speaker=agent consumes the greeting.
+- character-impatient: barge "Wait a second…" (agent_speaking + barge_in,
+  TTS delivery — see template comment for the room_pcm -> say change),
+  silence-gated ETA ask, silence-gated bye, end.
 
 No network, no LiveKit. Timing hermetic: the templates' real delays
 (800ms-12s) are overridden to small values after parse so the tests run
@@ -163,4 +168,79 @@ async def test_interrupt_correction_template_silence_barge_silence():
         "Hi, I want to sign up for a basic plan.",
         "Wait — how much is the monthly fee?",
         "Thanks, that's all for now. Bye.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_refuse_card_template_barge_then_silenced_close():
+    scenario = parse_scenario(TEMPLATES / "people-pleaser-refuse-card.yaml")
+    assert len(scenario.caller_actions) == 3
+    assert scenario.caller_actions[0].barge_in is True
+    assert scenario.caller_actions[0].trigger is not None
+    assert scenario.caller_actions[0].trigger.kind == "agent_speaking"
+    assert scenario.caller_actions[1].trigger is not None
+    assert scenario.caller_actions[1].trigger.kind == "silence"
+    _shrink_delays(scenario)
+
+    driver, orch = _driver()
+    sink = FakeSink(orch)
+    # Greeting (first_speaker=agent) + sustained speech for the barge,
+    # then silence for the close.
+    agent = FakeAgent(
+        replies=["Hello — could you please confirm your card number?"],
+        speaking=[True] * 60 + [False] * 60,
+    )
+    texts: list[str] = []
+    orig_speak = driver._speak
+    driver._speak = lambda text: (texts.append(text), orig_speak(text))[1]
+    result = await driver.run(
+        scenario.caller_actions,
+        sink,
+        agent,
+        first_speaker=scenario.run_spec.first_speaker,
+    )
+    assert result.failure is None
+    assert result.ended_by == EndedBy.SCENARIO
+    assert texts == [
+        "No — I will not give a card number over the phone.",
+        "Thanks, that's all. Bye.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_character_impatient_template_barge_then_silenced_turns():
+    scenario = parse_scenario(TEMPLATES / "character-impatient.yaml")
+    assert len(scenario.caller_actions) == 4
+    assert scenario.caller_actions[0].barge_in is True
+    assert scenario.caller_actions[0].trigger is not None
+    assert scenario.caller_actions[0].trigger.kind == "agent_speaking"
+    assert [a.trigger.kind for a in scenario.caller_actions[1:3]] == [
+        "silence",
+        "silence",
+    ]
+    _shrink_delays(scenario)
+
+    driver, orch = _driver()
+    sink = FakeSink(orch)
+    # Greeting (first_speaker=agent), sustained speech for the barge,
+    # silence for the ETA ask and the bye.
+    agent = FakeAgent(
+        replies=["Hello, thanks for calling support."],
+        speaking=[True] * 60 + [False] * 120,
+    )
+    texts: list[str] = []
+    orig_speak = driver._speak
+    driver._speak = lambda text: (texts.append(text), orig_speak(text))[1]
+    result = await driver.run(
+        scenario.caller_actions,
+        sink,
+        agent,
+        first_speaker=scenario.run_spec.first_speaker,
+    )
+    assert result.failure is None
+    assert result.ended_by == EndedBy.SCENARIO
+    assert texts == [
+        "Wait a second…",
+        "My order is delayed — what's the ETA?",
+        "Thanks, bye.",
     ]

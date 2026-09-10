@@ -33,6 +33,33 @@ execute:
   max_turns: 6
   timeout_s: 150
   first_speaker: agent
+# Contract path (caller_contract single path): this step drives
+# ContractCallerDriver instead of the legacy ScriptRunner.
+#
+# DELIVERY CHANGE (documented): the legacy cue played
+# delivery: room_pcm asset: builtin:voice.barge_short (pre-recorded WAV
+# "Wait a second…"). The contract path has no audio-asset primitive yet
+# (Slice 4 non-goal), so this migrates as a TTS-synthesized say: with the
+# asset's own transcript ("Wait a second…"). Same words, same barge timing
+# (agent_speaking 350ms + barge_in); different voice (SAPI TTS vs recorded
+# WAV). Revisit when the ambient/asset primitive lands.
+# Legacy speech_conditions:/script: blocks below unchanged.
+caller_steps:
+  - say: "Wait a second…"
+    trigger:
+      kind: agent_speaking
+      min_agent_active_ms: 350
+      delay_ms: 350
+    barge_in: true
+  - say: "My order is delayed — what's the ETA?"
+    trigger:
+      kind: silence
+      delay_ms: 1500
+  - say: "Thanks, bye."
+    trigger:
+      kind: silence
+      delay_ms: 1500
+  - end: true
 script:
   steps:
   - id: auto-barge-1
