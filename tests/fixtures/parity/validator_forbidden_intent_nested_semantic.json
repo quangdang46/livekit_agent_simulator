@@ -1,0 +1,26 @@
+{
+  "id": "validator_forbidden_intent_nested_semantic",
+  "description": "Multi-act utterance / nested forbidden intent (report §28.3(10)/(11)): primary intent is still negotiate(price), but 'financing' is nested and must still be rejected. Also exercised via the semantic verifier's multi-label all_acts, not just the lexical guard.",
+  "use_semantic_verifier": true,
+  "contract": {
+    "behavior": "negotiate",
+    "target": "price",
+    "constraints": {
+      "max_turns": 3,
+      "max_budget": 30000,
+      "max_words": null,
+      "max_duration_s": null,
+      "forbidden_intents": ["financing", "trade_in", "vehicle_change"],
+      "must_not": ["invent_facts", "end_call"]
+    }
+  },
+  "candidate": {
+    "act": "negotiate",
+    "target": "price",
+    "slots": {"max_budget": 30000},
+    "utterance": "$30,000 is really my limit, although I could consider financing.",
+    "identity": {"behavior_id": "b2", "turn_id": 1, "generation_id": 1, "context_version": 0}
+  },
+  "expected_verdict": "INVALID",
+  "expected_reason": "FORBIDDEN_INTENT_DETECTED"
+}

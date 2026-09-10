@@ -1,0 +1,30 @@
+{
+  "id": "staleness_drop",
+  "description": "is_current(identity, current) must be false the moment ANY of behavior_id/turn_id/generation_id differs; context_version must NEVER affect the result.",
+  "cases": [
+    {
+      "name": "turn_id_changed_after_advance",
+      "identity": {"behavior_id": "b1", "turn_id": 1, "generation_id": 1, "context_version": 0},
+      "current": {"behavior_id": "b1", "turn_id": 2, "generation_id": 0, "context_version": 0},
+      "expected_is_current": false
+    },
+    {
+      "name": "behavior_id_changed_mid_tts",
+      "identity": {"behavior_id": "b2", "turn_id": 0, "generation_id": 0, "context_version": 0},
+      "current": {"behavior_id": "b3", "turn_id": 0, "generation_id": 0, "context_version": 0},
+      "expected_is_current": false
+    },
+    {
+      "name": "exact_match_is_current",
+      "identity": {"behavior_id": "b1", "turn_id": 1, "generation_id": 2, "context_version": 0},
+      "current": {"behavior_id": "b1", "turn_id": 1, "generation_id": 2, "context_version": 0},
+      "expected_is_current": true
+    },
+    {
+      "name": "context_version_does_not_affect_staleness",
+      "identity": {"behavior_id": "b1", "turn_id": 1, "generation_id": 2, "context_version": 0},
+      "current": {"behavior_id": "b1", "turn_id": 1, "generation_id": 2, "context_version": 99},
+      "expected_is_current": true
+    }
+  ]
+}

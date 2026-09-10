@@ -18,6 +18,7 @@ pub mod asserts;
 pub mod authoring;
 pub mod authoring_warnings;
 pub mod behavior_compile;
+pub mod caller_contract;
 pub mod caller_policy;
 pub mod evals;
 pub mod interrupt_rate;

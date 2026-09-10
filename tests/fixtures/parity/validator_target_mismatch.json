@@ -1,0 +1,25 @@
+{
+  "id": "validator_target_mismatch",
+  "use_semantic_verifier": false,
+  "contract": {
+    "behavior": "negotiate",
+    "target": "price",
+    "constraints": {
+      "max_turns": 3,
+      "max_budget": 30000,
+      "max_words": null,
+      "max_duration_s": null,
+      "forbidden_intents": ["financing", "trade_in", "vehicle_change"],
+      "must_not": ["invent_facts", "end_call"]
+    }
+  },
+  "candidate": {
+    "act": "negotiate",
+    "target": "mileage",
+    "slots": {},
+    "utterance": "Can you come down on the mileage?",
+    "identity": {"behavior_id": "b2", "turn_id": 1, "generation_id": 1, "context_version": 0}
+  },
+  "expected_verdict": "INVALID",
+  "expected_reason": "TARGET_MISMATCH"
+}
