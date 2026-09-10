@@ -92,6 +92,43 @@ class InteractionConfig:
 
 
 @dataclass
+class TriggerConfig:
+    """WHEN a ``say`` action may fire (Slice 4: minimal trigger/delay).
+
+    Mirrors the legacy ScriptRunner trigger vocabulary (see script/models.py)
+    minus everything deferred: no ``caller_turn`` (never existed in legacy),
+    no ``once``/``loop`` (the driver walks the action list once: sequential
+    order IS once), no hangup-defer/open-question gating.
+
+    Semantics per kind:
+    - ``time``: fire ``delay_ms`` after the action is armed. ``min_agent_active_ms``
+      is accepted but ignored.
+    - ``agent_speaking``: fire once the agent has spoken continuously for
+      ``min_agent_active_ms``, then wait ``delay_ms`` unconditionally.
+    - ``silence``: fire once the agent has been silent continuously for
+      ``delay_ms`` — here ``delay_ms`` IS the required silence duration.
+
+    ``delay_ms`` never aliases ``interaction.pre_delay_ms``: pre-delay is
+    unconditional pacing applied first; trigger delay applies after the
+    condition fires. Total delay = pre_delay + trigger delay.
+    """
+
+    kind: str  # "time" | "agent_speaking" | "silence"
+    delay_ms: int = 0
+    min_agent_active_ms: int = 400  # legacy default; only meaningful for agent_speaking
+
+
+_TRIGGER_KINDS = frozenset({"time", "agent_speaking", "silence"})
+
+_TRIGGER_ALLOWED_KEYS = frozenset({"kind", "delay_ms", "min_agent_active_ms"})
+
+# Sibling keys allowed next to the action verb (e.g. ``{say: ..., trigger: ...}``).
+# Anything else is a hard DSLError — without this, a typo'd ``trigger:`` would
+# be silently dropped and the action would fire immediately (see parse_step).
+_SAY_SIBLING_KEYS = frozenset({"say", "interaction", "trigger", "barge_in"})
+
+
+@dataclass
 class CallerAction:
     """One parsed scenario step, ready for the Orchestrator (P0-4).
 
@@ -99,6 +136,10 @@ class CallerAction:
     AI Language Adapter and the Caller Contract Validator) must still pass
     through the Orchestrator's caller-turn gate before publishing audio —
     see report §28.5(17) / bead notes.
+
+    ``trigger`` gates WHEN a ``say`` fires (None = immediately, legacy
+    ``say`` behavior). ``barge_in`` only matters on ``say``: True skips the
+    wait-for-agent-silence gate so the caller can interrupt mid-sentence.
     """
 
     kind: str  # one of _KNOWN_ACTION_KINDS
@@ -106,6 +147,8 @@ class CallerAction:
     say_text: str | None = None
     contract: BehaviorContract | None = None
     interaction: InteractionConfig | None = None
+    trigger: TriggerConfig | None = None
+    barge_in: bool = False
     dtmf_digits: str | None = None
     wait_ms: int | None = None
     requires_turn_gate: bool = True
@@ -151,6 +194,39 @@ def _parse_interaction(raw: dict[str, Any] | None, *, file: str | None, line: in
         backchannel=raw.get("backchannel"),
         barge_in=raw.get("barge_in"),
     )
+
+
+def _parse_trigger(raw: Any, *, file: str | None, line: int) -> TriggerConfig | None:
+    """Parse an optional ``trigger:`` sibling mapping on a ``say`` step."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise _err("trigger: must be a mapping with a 'kind' key", file=file, line=line, field="trigger")
+    unknown = set(raw.keys()) - _TRIGGER_ALLOWED_KEYS
+    if unknown:
+        raise _err(f"unknown trigger: key(s): {sorted(unknown)}", file=file, line=line, field="trigger")
+    if "kind" not in raw:
+        raise _err("trigger: mapping requires a 'kind' key", file=file, line=line, field="trigger.kind")
+    kind = raw["kind"]
+    if kind not in _TRIGGER_KINDS:
+        raise _err(
+            f"unknown trigger kind {kind!r}; expected one of {sorted(_TRIGGER_KINDS)}",
+            file=file,
+            line=line,
+            field="trigger.kind",
+        )
+    delay_ms = raw.get("delay_ms", 0)
+    if not isinstance(delay_ms, int) or delay_ms < 0:
+        raise _err("trigger.delay_ms must be a non-negative integer (milliseconds)", file=file, line=line, field="trigger.delay_ms")
+    min_active = raw.get("min_agent_active_ms", 400)
+    if not isinstance(min_active, int) or min_active < 0:
+        raise _err(
+            "trigger.min_agent_active_ms must be a non-negative integer (milliseconds)",
+            file=file,
+            line=line,
+            field="trigger.min_agent_active_ms",
+        )
+    return TriggerConfig(kind=kind, delay_ms=delay_ms, min_agent_active_ms=min_active)
 
 
 def _parse_do(
@@ -225,23 +301,63 @@ def parse_step(
             raise _err("say: must be a plain string, not a mapping", file=file, line=line_no, field="say")
         if not value.strip():
             raise _err("say: must not be empty", file=file, line=line_no, field="say")
-        return CallerAction(kind="say", line_no=line_no, say_text=value)
+        unknown_siblings = set(raw_step.keys()) - _SAY_SIBLING_KEYS
+        if unknown_siblings:
+            raise _err(
+                f"unknown say: sibling key(s): {sorted(unknown_siblings)}",
+                file=file,
+                line=line_no,
+                field="say",
+            )
+        interaction = _parse_interaction(raw_step.get("interaction"), file=file, line=line_no)
+        trigger = _parse_trigger(raw_step.get("trigger"), file=file, line=line_no)
+        barge_in = raw_step.get("barge_in", False)
+        if not isinstance(barge_in, bool):
+            raise _err("barge_in: must be a boolean", file=file, line=line_no, field="barge_in")
+        return CallerAction(
+            kind="say",
+            line_no=line_no,
+            say_text=value,
+            interaction=interaction,
+            trigger=trigger,
+            barge_in=barge_in,
+        )
 
     if kind == "do":
+        if "trigger" in raw_step or "barge_in" in raw_step:
+            raise _err(
+                "trigger:/barge_in: are only supported on say: steps in this slice",
+                file=file,
+                line=line_no,
+                field="do",
+            )
         return _parse_do(raw_step["do"], file=file, line=line_no, known_behaviors=known_behaviors)
 
-    if kind == "dtmf":
-        digits = raw_step["dtmf"]
-        if not isinstance(digits, str) or not digits:
-            raise _err("dtmf: must be a non-empty digit string", file=file, line=line_no, field="dtmf")
-        return CallerAction(kind="dtmf", line_no=line_no, dtmf_digits=digits)
-
-    if kind == "wait":
+    if kind in ("dtmf", "wait"):
+        if "trigger" in raw_step or "barge_in" in raw_step:
+            raise _err(
+                "trigger:/barge_in: are only supported on say: steps in this slice",
+                file=file,
+                line=line_no,
+                field=kind,
+            )
+        if kind == "dtmf":
+            digits = raw_step["dtmf"]
+            if not isinstance(digits, str) or not digits:
+                raise _err("dtmf: must be a non-empty digit string", file=file, line=line_no, field="dtmf")
+            return CallerAction(kind="dtmf", line_no=line_no, dtmf_digits=digits)
         ms = raw_step["wait"]
         if not isinstance(ms, int) or ms < 0:
             raise _err("wait: must be a non-negative integer (milliseconds)", file=file, line=line_no, field="wait")
         return CallerAction(kind="wait", line_no=line_no, wait_ms=ms)
 
+    if "trigger" in raw_step or "barge_in" in raw_step:
+        raise _err(
+            "trigger:/barge_in: are only supported on say: steps in this slice",
+            file=file,
+            line=line_no,
+            field=kind,
+        )
     # interrupt / end / silence / hangup: no payload validation needed beyond
     # being present; they carry no extra fields in this MVP DSL.
     return CallerAction(kind=kind, line_no=line_no)
@@ -265,6 +381,7 @@ __all__ = [
     "CallerAction",
     "DSLError",
     "InteractionConfig",
+    "TriggerConfig",
     "parse_step",
     "parse_steps",
 ]

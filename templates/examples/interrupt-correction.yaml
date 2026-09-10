@@ -29,6 +29,27 @@ execute:
   first_speaker: user
 dispatch:
   metadata: '{"yourProjectKey":"REPLACE_ME"}'
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy ScriptRunner. The open fires
+# after initial silence, the correction barges mid-answer (agent_speaking +
+# barge_in), the bye fires after closing silence. Legacy script:/persona
+# blocks below unchanged.
+caller_steps:
+  - say: "Hi, I want to sign up for a basic plan."
+    trigger:
+      kind: silence
+      delay_ms: 700
+  - say: "Wait — how much is the monthly fee?"
+    trigger:
+      kind: agent_speaking
+      min_agent_active_ms: 400
+      delay_ms: 800
+    barge_in: true
+  - say: "Thanks, that's all for now. Bye."
+    trigger:
+      kind: silence
+      delay_ms: 2200
+  - end: true
 script:
   steps:
   - id: open

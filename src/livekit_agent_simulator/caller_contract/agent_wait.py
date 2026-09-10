@@ -51,6 +51,16 @@ class ObserverAgentWait:
     snapshot_fraction: float = 0.5
     _snapshot_attempted: bool = field(default=False, repr=False)
 
+    def is_agent_speaking_now(self) -> bool:
+        """Realtime agent-speech signal for trigger gating (Slice 4).
+
+        One-line delegate to the Observer's active-speaker flag — no new
+        thread, no new subscription. Used by the driver's trigger-wait
+        helpers (agent_speaking/silence), never by the blocking
+        ``wait_agent_turn`` path.
+        """
+        return bool(getattr(self.observer, "agent_is_active_speaker", False))
+
     async def wait_agent_turn(self, *, timeout_s: float) -> str | None:
         deadline = time.monotonic() + timeout_s
         seen_at_start = getattr(self.observer, "last_agent_final_mono", None)

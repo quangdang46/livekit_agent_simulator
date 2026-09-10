@@ -31,8 +31,24 @@ from . import (
     GenerationIdentity,
     ValidationResult,
 )
-from .dsl import CallerAction
+from .dsl import CallerAction, TriggerConfig
 from .failures import RunFailure
+
+# Poll cadence for trigger condition waits (matches legacy ScriptRunner 50ms).
+_TRIGGER_POLL_S = 0.05
+
+# Budget for a condition trigger (agent_speaking/silence) that never fires.
+# Expiry is BEHAVIOR_TIMEOUT (caller choreography could not proceed) — never
+# AGENT_TIMEOUT (reserved for the greeting wait) nor TRANSPORT. ``time``
+# triggers never hit this budget (their deadline always arrives).
+# Not exposed in the DSL: one less tuning knob until Slice 4b proves it needed.
+TRIGGER_WAIT_BUDGET_S = 30.0
+
+# How long a non-barge ``say`` waits for the agent to go silent before
+# publishing (contract equivalent of the legacy non-barge turn-taking gate;
+# the mixer-drain half already lives in the sink). Expiry falls through and
+# publishes anyway — a talkative agent must not wedge the caller forever.
+AGENT_SILENCE_WAIT_S = 6.0
 from .interaction_planner import CallerInteractionPlanner, InteractionConfig
 from .language_adapter import (
     AILanguageAdapter,
@@ -100,6 +116,16 @@ class AgentTurnWait(Protocol):
 
     async def wait_agent_turn(self, *, timeout_s: float) -> str | None:
         """Block until the agent finishes a turn; None on timeout."""
+        ...
+
+    def is_agent_speaking_now(self) -> bool:
+        """Realtime agent-speech signal for trigger gating (Slice 4).
+
+        Polled (never blocking): True while the agent is actively speaking.
+        The driver reads it via ``getattr(agent, "is_agent_speaking_now",
+        lambda: False)`` so older fakes without this method behave as
+        "agent silent" — preserving pre-trigger behavior.
+        """
         ...
 
 
@@ -208,6 +234,37 @@ class ContractCallerDriver:
                 pre_delay_ms = (action.interaction.pre_delay_ms or 0) if action.interaction else 0
                 if pre_delay_ms:
                     await asyncio.sleep(pre_delay_ms / 1000.0)
+                # Trigger gate (Slice 4): wait for the WHEN condition before
+                # the non-barge silence gate. Expiry is BEHAVIOR_TIMEOUT —
+                # the choreography could not proceed (never AGENT_TIMEOUT,
+                # which is reserved for the greeting wait, nor TRANSPORT).
+                if action.trigger is not None:
+                    _emit(
+                        "contract.trigger_armed",
+                        {"kind": action.trigger.kind, "line": action.line_no},
+                    )
+                    fired = await _wait_trigger(action.trigger, agent, emit=_emit)
+                    if not fired:
+                        _emit(
+                            "contract.behavior_violation",
+                            {"reason": "TRIGGER_TIMEOUT", "line": action.line_no},
+                        )
+                        return self._fail(
+                            FailureReason.BEHAVIOR_TIMEOUT,
+                            f"trigger {action.trigger.kind!r} never fired",
+                            EndedBy.TIMEOUT,
+                            completed,
+                            spoken,
+                        )
+                if not action.barge_in:
+                    # Non-barge: never talk over the agent (legacy
+                    # wait_agent_idle equivalent; mixer-drain half lives in
+                    # the sink). Bounded: a talkative agent must not wedge
+                    # the caller — expiry falls through and publishes anyway.
+                    # Barge skips this gate entirely by design.
+                    await _wait_agent_silence(agent)
+                else:
+                    _emit("contract.barge", {"line": action.line_no})
                 pcm = self._speak(text)
                 identity = self.orchestrator.current_identity()
                 if self.orchestrator.is_stale(identity):
@@ -554,6 +611,78 @@ class ContractCallerDriver:
 
 def _interaction(action: CallerAction) -> InteractionConfig | None:
     return action.interaction
+
+
+async def _sleep_ms(ms: int) -> None:
+    if ms > 0:
+        await asyncio.sleep(ms / 1000.0)
+
+
+async def _wait_trigger(
+    trigger: TriggerConfig,
+    agent: AgentTurnWait,
+    *,
+    emit: Any,
+) -> bool:
+    """Wait until a trigger condition fires. Returns True on fire, False on
+    budget expiry (caller: fail BEHAVIOR_TIMEOUT).
+
+    Polls ``is_agent_speaking_now`` (via getattr: fakes without the Slice 4
+    method read as "agent silent") every ``_TRIGGER_POLL_S``. Naive
+    continuous-duration tracking with reset on every opposite sample — no
+    gap tolerance by design (known limitation, Slice 4b).
+    """
+    speaking = getattr(agent, "is_agent_speaking_now", lambda: False)
+    if trigger.kind == "time":
+        await _sleep_ms(trigger.delay_ms)
+        return True
+
+    budget_deadline = asyncio.get_event_loop().time() + TRIGGER_WAIT_BUDGET_S
+    if trigger.kind == "agent_speaking":
+        continuous_since: float | None = None
+        while asyncio.get_event_loop().time() < budget_deadline:
+            now = asyncio.get_event_loop().time()
+            if speaking():
+                if continuous_since is None:
+                    continuous_since = now
+                if (now - continuous_since) * 1000.0 >= trigger.min_agent_active_ms:
+                    emit("contract.trigger_fired", {"kind": "agent_speaking"})
+                    await _sleep_ms(trigger.delay_ms)
+                    return True
+            else:
+                continuous_since = None
+            await asyncio.sleep(_TRIGGER_POLL_S)
+        return False
+
+    # kind == "silence": delay_ms IS the required continuous silence duration.
+    silence_since: float | None = None
+    while asyncio.get_event_loop().time() < budget_deadline:
+        now = asyncio.get_event_loop().time()
+        if not speaking():
+            if silence_since is None:
+                silence_since = now
+            if (now - silence_since) * 1000.0 >= trigger.delay_ms:
+                emit("contract.trigger_fired", {"kind": "silence"})
+                return True
+        else:
+            silence_since = None
+        await asyncio.sleep(_TRIGGER_POLL_S)
+    return False
+
+
+async def _wait_agent_silence(agent: AgentTurnWait) -> None:
+    """Non-barge ``say`` gate: wait until the agent stops speaking (or the
+    bounded wait expires, in which case fall through and publish anyway).
+
+    Uses the same getattr fallback as _wait_trigger so pre-Slice-4 fakes
+    (no is_agent_speaking_now) read as "already silent" and fire immediately.
+    """
+    speaking = getattr(agent, "is_agent_speaking_now", lambda: False)
+    deadline = asyncio.get_event_loop().time() + AGENT_SILENCE_WAIT_S
+    while speaking():
+        if asyncio.get_event_loop().time() >= deadline:
+            return
+        await asyncio.sleep(_TRIGGER_POLL_S)
 
 
 __all__ = [
