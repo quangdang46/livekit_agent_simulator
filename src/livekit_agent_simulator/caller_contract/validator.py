@@ -97,11 +97,19 @@ def _word_count(text: str) -> int:
 class ContractValidator:
     """Deterministic Caller Contract Validator.
 
-    Optionally wraps a SemanticVerifierProtocol (P0-2b); when absent, falls
-    back to the lexical forbidden-intent check only (still deterministic).
+    Semantic verification is MANDATORY in every runtime path: when no
+    explicit verifier is passed, the rule-based baseline (P0-2b) is used
+    automatically. Passing ``semantic_verifier=None`` explicitly is only
+    allowed for unit-testing the deterministic layer in isolation and must
+    never be used on a real call path — an unvalidated utterance must never
+    reach LiveKit (epic invariant 1).
     """
 
     def __init__(self, semantic_verifier: SemanticVerifierProtocol | None = None) -> None:
+        if semantic_verifier is None:
+            from .semantic import RuleBasedSemanticVerifier
+
+            semantic_verifier = RuleBasedSemanticVerifier()
         self._semantic_verifier = semantic_verifier
 
     def validate(

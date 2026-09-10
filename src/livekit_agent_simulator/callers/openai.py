@@ -47,6 +47,7 @@ from .end_call import (
     strip_farewell_signal,
 )
 from .gemini import (
+    _inject_matches_say,
     _is_voice_cue_asset,
     pcm16_mono_rms,
     script_speak_directive,
@@ -729,17 +730,96 @@ class OpenAICallerBridge:
                 include_dialogue=False,
             )
             deadline = time.monotonic() + 2.8
+            mismatch = False
+            saw_ms = 0
             while time.monotonic() < deadline:
                 if self.end_call.is_set():
+                    break
+                # Say-match first: off-script STT rejects even when audio is
+                # already queued (the mixer callback may feed heard text while
+                # reporting queued ms in the same poll).
+                heard = " ".join(self._inject_heard_text.split())
+                if len(heard.split()) >= 5 and not _inject_matches_say(heard, text):
+                    mismatch = True
                     break
                 if self._mixer is not None:
                     queued = self._mixer.speech_queued_ms()
                     if asyncio.iscoroutine(queued):
                         queued = await queued
-                    if (queued or 0) > 0:
-                        return True
+                    saw_ms = int(queued or 0)
+                    if saw_ms > 0:
+                        break
                 await asyncio.sleep(0.05)
-            return False
+            if mismatch:
+                if self._mixer is not None:
+                    self._mixer.clear_speech()
+                self.writer.emit(
+                    "sim.script.error",
+                    spec={
+                        "step_id": label,
+                        "label": label,
+                        "delivery": delivery,
+                        "error": "openai_text inject role/say mismatch; aborting for sapi_fallback",
+                        "heard": self._inject_heard_text[:240],
+                        "expected": text[:240],
+                    },
+                    source="sim.script",
+                    include_dialogue=False,
+                )
+                return False
+            if saw_ms <= 0:
+                return False
+            # Drain while watching STT — abort early if the model role-flips
+            # mid-utterance (Gemini parity: gemini.py drain loop).
+            drain_deadline = time.monotonic() + 8.0
+            while time.monotonic() < drain_deadline:
+                if self.end_call.is_set():
+                    break
+                heard_mid = " ".join(self._inject_heard_text.split())
+                if len(heard_mid.split()) >= 5 and not _inject_matches_say(heard_mid, text):
+                    if self._mixer is not None:
+                        self._mixer.clear_speech()
+                    self.writer.emit(
+                        "sim.script.error",
+                        spec={
+                            "step_id": label,
+                            "label": label,
+                            "delivery": delivery,
+                            "error": "openai_text inject mid-utterance off-script; sapi_fallback",
+                            "heard": heard_mid[:240],
+                            "expected": text[:240],
+                        },
+                        source="sim.script",
+                        include_dialogue=False,
+                    )
+                    return False
+                if self._mixer is not None:
+                    drained = self._mixer.speech_queued_ms()
+                    if asyncio.iscoroutine(drained):
+                        drained = await drained
+                    if (drained or 0) <= 0:
+                        break
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.15)
+            heard_final = " ".join(self._inject_heard_text.split())
+            if heard_final and not _inject_matches_say(heard_final, text):
+                if self._mixer is not None:
+                    self._mixer.clear_speech()
+                self.writer.emit(
+                    "sim.script.error",
+                    spec={
+                        "step_id": label,
+                        "label": label,
+                        "delivery": delivery,
+                        "error": "openai_text inject final STT off-script; sapi_fallback",
+                        "heard": heard_final[:240],
+                        "expected": text[:240],
+                    },
+                    source="sim.script",
+                    include_dialogue=False,
+                )
+                return False
+            return True
         finally:
             self._agent_audio_paused = False
             self._inject_turn_active = False
