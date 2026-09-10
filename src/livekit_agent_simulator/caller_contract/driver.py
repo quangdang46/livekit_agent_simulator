@@ -18,6 +18,7 @@ adapter (bridge mixer) is wired in a later slice.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -41,7 +42,17 @@ from .language_adapter import (
     should_invoke_adapter,
 )
 from .orchestrator import BehaviorOutcome, Orchestrator
-from .validator import ContractValidator, validate_with_retry
+from .validator import ContractValidator
+
+
+class PublishDrainTimeout(RuntimeError):
+    """Raised by a PublishSink when audio was accepted for publish but did
+    not finish draining within the sink's own bounded timeout.
+
+    This is an EXECUTION/TRANSPORT failure, never a caller-content problem —
+    the driver maps it to ``FailureReason.TRANSPORT_ERROR``, specifically
+    NOT ``CALLER_BEHAVIOR_VIOLATION`` (a stuck mixer is not the caller
+    saying something wrong)."""
 
 
 class PublishSink(Protocol):
@@ -50,9 +61,16 @@ class PublishSink(Protocol):
     MUST drop stale identities (``orchestrator.is_stale``) instead of
     publishing them — the driver checks before calling, the sink re-checks
     at publish time (defense in depth against TOCTOU races).
+
+    Invariant: ``publish()`` only returns once the action's audio has been
+    accepted AND fully drained from the mixer — the driver never advances to
+    the next action (including ``end``) while the previous action's caller
+    audio is still playing. A sink that cannot confirm drain within its own
+    bounded timeout MUST raise ``PublishDrainTimeout`` rather than returning
+    early or hanging forever.
     """
 
-    def publish(
+    async def publish(
         self,
         pcm: bytes,
         identity: GenerationIdentity,
@@ -60,15 +78,28 @@ class PublishSink(Protocol):
         label: str,
         gain: float = 1.0,
     ) -> bool:
-        """Publish PCM; returns False when dropped (stale) or failed."""
+        """Publish PCM, wait for drain, then return.
+
+        Returns False when dropped (stale) or the mixer rejected the PCM
+        (e.g. not ready). Raises PublishDrainTimeout when publish succeeded
+        but drain could not be confirmed within the sink's timeout.
+        """
         ...
 
 
 class AgentTurnWait(Protocol):
-    """Abstract agent-side observation: wait for the agent turn, then report."""
+    """Abstract agent-side observation: wait for the agent turn, then report.
 
-    async def wait_agent_turn(self, *, timeout_s: float) -> str:
-        """Block until the agent finishes a turn; returns the agent text."""
+    Returns ``None`` on timeout (agent never replied) — this is DELIBERATELY
+    not an exception: an agent that is merely slow is not a caller-behavior
+    violation (report: "agent slow != caller violation"). The driver maps a
+    ``None`` to ``FailureReason.AGENT_TIMEOUT`` / ``EndedBy.TIMEOUT``, never
+    to ``CALLER_BEHAVIOR_VIOLATION`` — that reason is reserved for the
+    validator rejecting a candidate, a fully separate failure class.
+    """
+
+    async def wait_agent_turn(self, *, timeout_s: float) -> str | None:
+        """Block until the agent finishes a turn; None on timeout."""
         ...
 
 
@@ -118,12 +149,17 @@ class ContractCallerDriver:
             if action.kind == "say":
                 self.orchestrator.gate_say(has_crossed_turn_gate=True)
                 assert action.say_text is not None
-                plan = self.planner.plan_speak(action.say_text, _interaction(action))
-                text = " ".join(plan.tokens)
-                if plan.pre_delay_ms:
-                    import asyncio as _asyncio
-
-                    await _asyncio.sleep(plan.pre_delay_ms / 1000.0)
+                # Say text is author-fixed (never AI-generated): synthesize the
+                # EXACT authored line. Delivery shaping (hesitation/stumble)
+                # inserts modelable tokens that a strict downstream
+                # transcript-match (e.g. _mostly_script_say on the agent side)
+                # could read as drift, so the single path keeps say PCM
+                # byte-faithful to the scenario text. InteractionConfig on a
+                # say step is reserved for timing (pre_delay/pace) only.
+                text = action.say_text
+                pre_delay_ms = (action.interaction.pre_delay_ms or 0) if action.interaction else 0
+                if pre_delay_ms:
+                    await asyncio.sleep(pre_delay_ms / 1000.0)
                 pcm = self._speak(text)
                 identity = self.orchestrator.current_identity()
                 if self.orchestrator.is_stale(identity):
@@ -134,7 +170,16 @@ class ContractCallerDriver:
                         completed,
                         spoken,
                     )
-                sink.publish(pcm, identity, label=f"say:{action.line_no}")
+                try:
+                    await sink.publish(pcm, identity, label=f"say:{action.line_no}")
+                except PublishDrainTimeout as exc:
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        f"say publish drain timed out: {exc}",
+                        EndedBy.TRANSPORT,
+                        completed,
+                        spoken,
+                    )
                 spoken += 1
                 log.append(Turn(speaker="caller", text=text))
                 _emit("contract.say_published", {"line": action.line_no, "text": text})
@@ -158,9 +203,7 @@ class ContractCallerDriver:
                 continue
 
             if action.kind == "wait":
-                import asyncio as _asyncio
-
-                await _asyncio.sleep((action.wait_ms or 0) / 1000.0)
+                await asyncio.sleep((action.wait_ms or 0) / 1000.0)
                 _emit("contract.wait", {"ms": action.wait_ms or 0})
                 continue
 
@@ -202,6 +245,9 @@ class ContractCallerDriver:
             )
         turns = 0
         agent_text = ""
+        # start_behavior() (called by run() before entering here) already
+        # reset the per-behavior turn count to zero; the loop below advances
+        # it once per published caller turn via advance_behavior_turn().
         for _ in range(contract.constraints.max_turns):
             context = build_context(
                 contract=contract,
@@ -215,17 +261,70 @@ class ContractCallerDriver:
                 identity = self.orchestrator.new_generation()
                 return self.adapter.generate_candidate(contract, context, identity)
 
-            try:
-                retry = validate_with_retry(
-                    self.validator, contract, _generate, max_retries=self.max_retries
+            # validate_with_retry is SYNCHRONOUS over a sync generate() fn:
+            # per-attempt backend/network failures surface as
+            # LanguageGenerationError (never VALID, never a candidate), so
+            # they must NOT consume the validator's retry budget or be
+            # conflated with a semantic INVALID verdict. Only validator
+            # verdicts count toward max_retries; transport failures fail
+            # the behavior immediately as LANGUAGE_GENERATION_ERROR.
+            candidates: list[CandidateUtterance] = []
+            last_verdict: ValidationResult | None = None
+            attempts = 0
+            transport_error: LanguageGenerationError | None = None
+            # Diagnostic verdict trail (emitted below): one entry per
+            # validator attempt, in order. _attempt_verdicts is ALWAYS
+            # defined here (before the loop) so the emit below can never
+            # hit a NameError regardless of which exit path runs.
+            _attempt_verdicts: list[tuple[str, str | None]] = []
+            for _ in range(self.max_retries + 1):
+                attempts += 1
+                try:
+                    candidate_attempt = _generate()
+                except LanguageGenerationError as exc:
+                    transport_error = exc
+                    break
+                result_attempt = self.validator.validate(candidate_attempt, contract)
+                last_verdict = result_attempt
+                _attempt_verdicts.append(
+                    (result_attempt.verdict.value, result_attempt.reason)
                 )
-            except LanguageGenerationError as exc:
+                if result_attempt.is_valid():
+                    candidates.append(candidate_attempt)
+                    break
+            # Diagnostic: record every attempt's verdict so a live
+            # behavior_violation names the ACTUAL failing verdicts instead of
+            # only the last one (run 013-015 class: which attempt failed how).
+            for _v in _attempt_verdicts:
+                _emit(
+                    "contract.attempt_verdict",
+                    {
+                        "behavior": contract.behavior,
+                        "verdict": _v[0],
+                        "reason": _v[1],
+                    },
+                )
+            if transport_error is not None and not candidates:
                 return self._fail(
                     FailureReason.LANGUAGE_GENERATION_ERROR,
-                    str(exc),
+                    str(transport_error),
                     EndedBy.ERROR,
                     0,
                     turns,
+                )
+            from .validator import RetryOutcome
+
+            if not candidates:
+                # Every attempt produced an INVALID/UNKNOWN/ERROR verdict:
+                # surface the LAST verdict (bounded retry exhausted) exactly
+                # like validate_with_retry did -- no candidate to publish.
+                assert last_verdict is not None, "loop ran zero attempts"
+                retry = RetryOutcome(
+                    result=last_verdict, candidate=None, attempts=attempts
+                )
+            else:
+                retry = RetryOutcome(
+                    result=last_verdict, candidate=candidates[0], attempts=attempts
                 )
             if not retry.result.is_valid():
                 _emit(
@@ -247,23 +346,67 @@ class ContractCallerDriver:
             assert candidate is not None
             if self.orchestrator.is_stale(candidate.identity):
                 continue  # superseded mid-generation; next turn re-generates
+            # do: the candidate ALREADY passed the validator on its exact
+            # utterance string. Synthesize that exact string (never a
+            # planner-reshaped variant) so the TTS input is byte-identical to
+            # what was validated -- the security boundary and the audio stay
+            # on the same text. Delivery timing (pre_delay) still applies via
+            # the planner's outcome metadata without touching the words.
             plan = self.planner.plan_speak(candidate.utterance, _interaction(action))
-            text = " ".join(plan.tokens)
+            if plan.pre_delay_ms:
+                await asyncio.sleep(plan.pre_delay_ms / 1000.0)
+            text = candidate.utterance
             pcm = self._speak(text)
             if self.orchestrator.is_stale(candidate.identity):
                 continue
-            published = sink.publish(
-                pcm, candidate.identity, label=f"do:{contract.behavior}"
-            )
+            try:
+                published = await sink.publish(
+                    pcm, candidate.identity, label=f"do:{contract.behavior}"
+                )
+            except PublishDrainTimeout as exc:
+                return self._fail(
+                    FailureReason.TRANSPORT_ERROR,
+                    f"do publish drain timed out: {exc}",
+                    EndedBy.TRANSPORT,
+                    0,
+                    turns,
+                )
             if not published:
                 continue
             turns += 1
+            self.orchestrator.advance_behavior_turn()
             log.append(Turn(speaker="caller", text=text))
             _emit(
                 "contract.turn_published",
                 {"behavior": contract.behavior, "turn": turns, "text": text},
             )
+            # Settle the caller-audio onset latch BEFORE waiting for the
+            # agent: the agent's audible answer must be attributable to THIS
+            # caller turn. PublishSink.publish already drained the mixer
+            # queue; this extra settle covers the LiveKit track-propagation
+            # tail (remote subscribes + first audio frame) so
+            # wait_agent_turn's "seen_at_start" baseline is taken after our
+            # speech is fully on the wire. Bounded (1s) and OUTSIDE the agent
+            # timeout budget -- a slow network here must not be misread as a
+            # slow agent.
+            await asyncio.sleep(1.0)
             agent_text = await agent.wait_agent_turn(timeout_s=30.0)
+            if agent_text is None:
+                # Agent silence, NOT a caller violation — a separate failure
+                # class (see AgentTurnWait docstring). The caller's turn was
+                # already validly spoken and published; only the agent side
+                # timed out.
+                _emit(
+                    "contract.agent_timeout",
+                    {"behavior": contract.behavior, "turn": turns},
+                )
+                return self._fail(
+                    FailureReason.AGENT_TIMEOUT,
+                    f"agent did not reply to behavior {contract.behavior!r} within timeout",
+                    EndedBy.TIMEOUT,
+                    0,
+                    turns,
+                )
             log.append(Turn(speaker="agent", text=agent_text))
             verdict = self.orchestrator.evaluate_behavior(contract, agent_text)
             if verdict == EvaluatorVerdict.SATISFIED:
@@ -318,5 +461,6 @@ __all__ = [
     "AgentTurnWait",
     "ContractCallerDriver",
     "DriverResult",
+    "PublishDrainTimeout",
     "PublishSink",
 ]

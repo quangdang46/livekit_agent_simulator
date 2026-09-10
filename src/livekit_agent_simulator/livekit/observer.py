@@ -558,7 +558,19 @@ class Observer:
             self._finalized_roles.add("user")
             self.writer.emit("transcript.user.final", spec=spec, source=source)
         else:
+            # A caller_contract single-path run (first_speaker=user) speaks
+            # its opening `say:` via PublishSink directly into the mixer —
+            # never through on_transcript(role=user) — so _user_has_spoken is
+            # still False when the agent audibly answers that opening line.
+            # The OLD behavior tagged it transcript.agent.preamble and
+            # returned WITHOUT setting last_agent_final_*, which made
+            # ObserverAgentWait blind to a real answer (run 011: AGENT_TIMEOUT
+            # despite audible agent speech). A preamble event is still
+            # emitted for turn-accounting, but the final-text fields are
+            # ALWAYS recorded so agent evidence is never dropped.
             if self.turn == 0 and self.first_speaker == "user" and not self._user_has_spoken:
+                self._last_agent_final_mono = time.monotonic()
+                self._last_agent_final_text = text
                 self.writer.emit(
                     "transcript.agent.preamble",
                     spec={**spec, "note": "agent spoke before user; not counted as a turn"},

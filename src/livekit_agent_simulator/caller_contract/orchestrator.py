@@ -256,11 +256,26 @@ class Orchestrator:
         through: parser output alone is never enough to publish audio
         (report §28.5(17)); crossing this gate is what it means to be
         "the caller's turn" in the Orchestrator's eyes.
+
+        NOTE: this deliberately does NOT touch _behavior_turn_count. The
+        behavior turn budget (check_max_turns) counts only turns published
+        INSIDE the current behavior, advanced explicitly via
+        advance_behavior_turn() — never the say:/action-level gate, which
+        would otherwise let an opening say: steal one turn from the first
+        behavior's budget (run 016-017 class).
         """
         self._turn_id += 1
         self._generation_id = 0
-        self._behavior_turn_count += 1
         self.turn_detector.begin_caller_turn()
+
+    def advance_behavior_turn(self) -> None:
+        """Record one published caller turn inside the current behavior.
+
+        Called by ContractCallerDriver once per actually-published do: turn
+        (after sink.publish confirms). start_behavior() resets the count to
+        zero, so each behavior owns its full max_turns budget.
+        """
+        self._behavior_turn_count += 1
 
     def gate_say(self, has_crossed_turn_gate: bool) -> None:
         """Explicit assertion helper: `say` must still go through

@@ -236,9 +236,15 @@ def test_max_turns_reached_fails_run_by_default() -> None:
         behavior="negotiate", target="price", constraints=ContractConstraints(max_turns=3)
     )
 
+    # The behavior budget counts only advance_behavior_turn() (published do:
+    # turns inside the behavior) -- never the say:/action-level
+    # advance_caller_turn() gate. An opening say: must not steal a turn.
+    orch.advance_caller_turn()  # say: gate -- must NOT consume behavior budget
+    assert orch.check_max_turns(contract) == BehaviorOutcome.CONTINUE
+
     outcomes = []
     for _ in range(3):
-        orch.advance_caller_turn()
+        orch.advance_behavior_turn()
         outcomes.append(orch.check_max_turns(contract))
 
     assert outcomes[-1] == BehaviorOutcome.FAILED_MAX_TURNS, (
@@ -253,8 +259,27 @@ def test_behavior_satisfied_before_max_turns_is_not_a_failure() -> None:
     contract = BehaviorContract(
         behavior="negotiate", target="price", constraints=ContractConstraints(max_turns=3)
     )
-    orch.advance_caller_turn()
+    orch.advance_behavior_turn()
     assert orch.check_max_turns(contract) == BehaviorOutcome.CONTINUE
+
+
+def test_say_gate_does_not_consume_behavior_budget() -> None:
+    """Run 016-017 regression: an opening say: (action-level gate) must not
+    steal a turn from the first behavior's max_turns budget. A behavior with
+    max_turns=2 still gets its FULL two turns even after any number of say:
+    gates crossed beforehand."""
+    orch = Orchestrator()
+    orch.start_behavior()
+    contract = BehaviorContract(
+        behavior="ask", target=None, constraints=ContractConstraints(max_turns=2)
+    )
+    for _ in range(5):
+        orch.advance_caller_turn()  # say: gates -- budget must not move
+    assert orch.check_max_turns(contract) == BehaviorOutcome.CONTINUE
+    orch.advance_behavior_turn()  # first published do: turn
+    assert orch.check_max_turns(contract) == BehaviorOutcome.CONTINUE
+    orch.advance_behavior_turn()  # second published do: turn
+    assert orch.check_max_turns(contract) == BehaviorOutcome.FAILED_MAX_TURNS
 
 
 # ---------------------------------------------------------------------------

@@ -357,7 +357,7 @@ def test_edge13_behavior_never_satisfied_fails_run_by_default() -> None:
     contract = _contract()
     outcome = BehaviorOutcome.CONTINUE
     for _ in range(contract.constraints.max_turns):
-        orch.advance_caller_turn()
+        orch.advance_behavior_turn()
         outcome = orch.check_max_turns(contract)
     assert outcome == BehaviorOutcome.FAILED_MAX_TURNS
 

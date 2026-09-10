@@ -1359,6 +1359,20 @@ class OpenAICallerBridge:
         """Arm the latch for the next caller utterance."""
         self._user_audio_source_emitted = False
 
+    # -- caller_contract single-path publish --------------------------------
+    def publish_validated_pcm(self, pcm: bytes, *, gain: float = 1.0) -> bool:
+        """Push already-VALIDATED PCM straight to the mixer — no Realtime
+        session, no free generation. The only publish path used by
+        ContractCallerDriver (say and do both funnel through this)."""
+        if self._mixer is None or not pcm:
+            return False
+        speech_gain = max(0.0, min(1.0, float(gain) * self._voice_gain))
+        self._reset_user_audio_source_latch()
+        self._emit_user_audio_source_start(gain=speech_gain, via="contract_validated")
+        self._mixer.push_speech(pcm, gain=speech_gain)
+        self._mixer.end_speech_turn()
+        return True
+
 
 def _is_transport_error(e: Exception) -> bool:
     """True when a websockets exception looks like a transport drop (retryable)."""

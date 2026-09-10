@@ -158,6 +158,12 @@ def scenario_to_dict(scenario: Scenario) -> dict[str, Any]:
         data["telephony"] = _as_plain(scenario.telephony)
     if scenario.behavior_spec:
         data["behavior"] = dict(scenario.behavior_spec)
+    # NOTE: caller_steps (caller_contract) round-trip export intentionally
+    # NOT implemented yet — CallerAction is a parsed representation (kind/
+    # line_no/BehaviorContract), not the authored say/do dict shape, so a
+    # naive dataclass dump would not re-parse correctly. Scenario.export_dict
+    # exposes only a count (see below) until a proper CallerAction->dict
+    # unparse is written alongside the run_orchestrator wiring slice.
     if scenario.script_steps:
         script: dict[str, Any] = {
             "steps": [_as_plain(s) for s in scenario.script_steps],

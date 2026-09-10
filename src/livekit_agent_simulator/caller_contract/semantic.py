@@ -37,7 +37,38 @@ from .validator import DEFAULT_INTENT_KEYWORDS
 # behavior match preferred, to avoid unnecessary false rejects on the
 # caller's actual intended act when phrasing is ambiguous between two verbs).
 ACT_PATTERNS: dict[str, tuple[str, ...]] = {
-    "ask": ("what's", "what is", "how much", "could you tell me", "what are you asking", "do you offer"),
+    # First-person question/intent markers observed in real adaptive `ask`
+    # output ("What information are you looking for?" triggered the gap:
+    # valid ask with zero act patterns -> LOW_CONFIDENCE false reject in a
+    # live run). Keep generic auxiliaries narrowly scoped so multi-act
+    # sentences still let the competing act win its own primary on count:
+    # e.g. "Could you lower the price, and by the way do you offer
+    # financing?" scores negotiate=1 ("lower the price") vs ask=1 ("do you
+    # offer") and the contract-behavior tie-break keeps negotiate primary.
+    "ask": (
+        "what's",
+        "what is",
+        "what are",
+        "what information",
+        "what can",
+        "what do",
+        "what would",
+        "how much",
+        "how does",
+        "how do",
+        "could you tell me",
+        "can you tell me",
+        "could you let me know",
+        "can you let me know",
+        "i was wondering",
+        "i wanted to ask",
+        "i'd like to know",
+        "i'd like to ask",
+        "i have a question",
+        "what are you asking",
+        "are you looking for",
+        "looking for",
+    ),
     "negotiate": (
         "come down",
         "lower the price",

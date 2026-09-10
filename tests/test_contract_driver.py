@@ -54,7 +54,7 @@ class FakeSink:
         self.published: list[tuple[bytes, str]] = []
         self.dropped = 0
 
-    def publish(self, pcm, identity, *, label, gain=1.0):
+    async def publish(self, pcm, identity, *, label, gain=1.0):
         if self.orch.is_stale(identity):
             self.dropped += 1
             return False
@@ -163,6 +163,35 @@ async def test_do_invalid_exhaustion_stops_with_violation():
 
 
 @pytest.mark.asyncio
+async def test_synthesized_text_is_byte_identical_to_validated_text():
+    """TTS input must be byte-identical to what the validator approved:
+    say synthesizes the EXACT authored line, do synthesizes the EXACT
+    validated candidate utterance (never a planner-reshaped variant).
+    The planner still runs (timing metadata), but its word tokens must not
+    leak into the audio path."""
+    driver, orch = _driver()
+    actions = parse_steps(
+        [
+            {'say': 'Hi there.'},
+            {'do': {'behavior': 'negotiate', 'target': 'price',
+                    'constraints': {'max_turns': 1, 'max_budget': 30000}}},
+        ],
+        file='t',
+    )
+    spoken_texts: list[str] = []
+    def _capture(text: str) -> bytes:
+        spoken_texts.append(text)
+        return bytes([0, 1]) * 100
+    driver._speak = _capture
+    sink = FakeSink(orch)
+    agent = FakeAgent(replies=['Sure, I can do $30,000.'])
+    result = await driver.run(actions, sink, agent)
+    assert result.failure is None
+    assert spoken_texts[0] == 'Hi there.'
+    assert spoken_texts[1] == 'Would you be able to come down to $30,000?'
+
+
+@pytest.mark.asyncio
 async def test_full_say_do_end_lifecycle():
     driver, orch = _driver()
     actions = parse_steps(
@@ -204,7 +233,7 @@ async def test_stale_identity_dropped_never_published():
     sink = FakeSink(orch)
 
     stale = GenerationIdentity(behavior_id="stale", turn_id=0, generation_id=0)
-    assert sink.publish(b"\x00" * 10, stale, label="stale") is False
+    assert await sink.publish(b"\x00" * 10, stale, label="stale") is False
     assert sink.dropped == 1
 
     agent = FakeAgent()

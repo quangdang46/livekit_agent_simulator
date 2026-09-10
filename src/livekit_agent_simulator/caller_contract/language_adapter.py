@@ -133,6 +133,11 @@ class AILanguageAdapter:
             try:
                 raw = self.backend.generate(context)
                 return _parse_backend_response(raw, identity)
+            except LanguageGenerationError:
+                # Already the terminal wrapper (re-raised retry-exhaustion
+                # from a nested adapter call) — never wrap it again, and
+                # never retry a retry-exhaustion as if it were transient.
+                raise
             except Exception as exc:  # noqa: BLE001 — any backend failure is bounded-retried, then wrapped
                 last_error = exc
                 continue

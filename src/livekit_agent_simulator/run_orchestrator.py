@@ -252,6 +252,12 @@ async def run_scenario_instance(
     observer: Observer | None = None
     session_snapshot_attempted = False
     leg_handle: SimLegHandle | None = None
+    # Pre-declared: an exception raised anywhere in the try block below (SimLeg
+    # connect failure, ContractDriverFailure, etc.) must never leave this
+    # UnboundLocalError'd — the post-run summary code reads end_reason
+    # unconditionally regardless of whether the run reached the point where
+    # it would normally be assigned.
+    end_reason: str | None = None
     caller_mode = scenario.effective_caller_mode()
     meta["caller_mode"] = caller_mode
 
@@ -379,71 +385,88 @@ async def run_scenario_instance(
             else:
                 bridge.watch_agent_tracks(leg_handle.agent_identity)
 
-            script_runner: ScriptRunner | None = None
-            script_task: asyncio.Task | None = None
-            if scenario.script_steps:
-                scenario_dir = scenario.path.parent if scenario.path.parent.exists() else cfg.scenarios_dir
-                script_runner = ScriptRunner(
-                    scenario.script_steps,
-                    observer,
-                    bridge,
-                    writer,
-                    scenario_dir=scenario_dir,
-                )
-                bridge.bind_script_pending(script_runner.has_pending_steps)
-                script_task = asyncio.create_task(script_runner.run(), name="script-runner")
+            # ── caller_contract single path ─────────────────────────────
+            # When the scenario supplies caller_actions (new `caller_steps:`
+            # DSL), the ENTIRE legacy path below (persona free-generation,
+            # ScriptRunner, interrupt-rate policy, nudge, bridge.run()'s
+            # Realtime session) is skipped — no dual execution path. Only
+            # bridge.publish_mic() (mixer/track plumbing) is shared.
+            if scenario.caller_actions:
+                from .caller_contract.live_wiring import run_contract_driver_path
 
-            # Parallel interruption-rate policy (#25) — additive to authored Script.
-            rate_runner: InterruptRateRunner | None = None
-            rate_task: asyncio.Task | None = None
-            rate_spec = parse_interrupt_rate(scenario.persona)
-            if rate_spec is not None:
-                rate_dir = scenario.path.parent if scenario.path.parent.exists() else cfg.scenarios_dir
-                rate_runner = InterruptRateRunner(
-                    rate_spec,
-                    observer,
-                    bridge,
-                    writer,
-                    scenario_dir=rate_dir,
-                )
-                rate_task = asyncio.create_task(rate_runner.run(), name="interrupt-rate")
-
-            bridge_task = asyncio.create_task(bridge.run(), name="gemini-bridge")
-            nudge_task: asyncio.Task | None = None
-            if run.first_speaker == "agent" and not scenario.script_steps and not _silent:
-                nudge_task = asyncio.create_task(
-                    nudge_caller_after_agent_greeting(
+                await bridge.publish_mic()
+                try:
+                    end_reason = await run_contract_driver_path(
+                        scenario, run, observer, bridge, writer, cfg
+                    )
+                finally:
+                    bridge.stop()
+            else:
+                script_runner: ScriptRunner | None = None
+                script_task: asyncio.Task | None = None
+                if scenario.script_steps:
+                    scenario_dir = scenario.path.parent if scenario.path.parent.exists() else cfg.scenarios_dir
+                    script_runner = ScriptRunner(
+                        scenario.script_steps,
                         observer,
                         bridge,
                         writer,
-                        first_speaker=run.first_speaker,
-                        silent_mode=_silent,
-                    ),
-                    name="agent-greeted-nudge",
-                )
-            try:
-                end_reason = await _conversation_loop(
-                    scenario, run, observer, bridge, writer, cfg.observe.silence_threshold_ms / 1000
-                )
-            finally:
-                if nudge_task is not None:
-                    nudge_task.cancel()
-                    await asyncio.gather(nudge_task, return_exceptions=True)
-                if script_runner is not None:
-                    script_runner.stop()
-                if script_task is not None:
-                    script_task.cancel()
-                    await asyncio.gather(script_task, return_exceptions=True)
-                if rate_runner is not None:
-                    rate_runner.stop()
-                if rate_task is not None:
-                    rate_task.cancel()
-                    await asyncio.gather(rate_task, return_exceptions=True)
-                bridge.stop()
-                # After a mid-call reconnect the pump may take up to ~15 s to
-                # notice end_call (bounded receive). Give the bridge time to
-                # settle instead of failing the run with a TimeoutError.
-                await asyncio.wait_for(asyncio.shield(_settle(bridge_task)), timeout=60)
+                        scenario_dir=scenario_dir,
+                    )
+                    bridge.bind_script_pending(script_runner.has_pending_steps)
+                    script_task = asyncio.create_task(script_runner.run(), name="script-runner")
+
+                # Parallel interruption-rate policy (#25) — additive to authored Script.
+                rate_runner: InterruptRateRunner | None = None
+                rate_task: asyncio.Task | None = None
+                rate_spec = parse_interrupt_rate(scenario.persona)
+                if rate_spec is not None:
+                    rate_dir = scenario.path.parent if scenario.path.parent.exists() else cfg.scenarios_dir
+                    rate_runner = InterruptRateRunner(
+                        rate_spec,
+                        observer,
+                        bridge,
+                        writer,
+                        scenario_dir=rate_dir,
+                    )
+                    rate_task = asyncio.create_task(rate_runner.run(), name="interrupt-rate")
+
+                bridge_task = asyncio.create_task(bridge.run(), name="gemini-bridge")
+                nudge_task: asyncio.Task | None = None
+                if run.first_speaker == "agent" and not scenario.script_steps and not _silent:
+                    nudge_task = asyncio.create_task(
+                        nudge_caller_after_agent_greeting(
+                            observer,
+                            bridge,
+                            writer,
+                            first_speaker=run.first_speaker,
+                            silent_mode=_silent,
+                        ),
+                        name="agent-greeted-nudge",
+                    )
+                try:
+                    end_reason = await _conversation_loop(
+                        scenario, run, observer, bridge, writer, cfg.observe.silence_threshold_ms / 1000
+                    )
+                finally:
+                    if nudge_task is not None:
+                        nudge_task.cancel()
+                        await asyncio.gather(nudge_task, return_exceptions=True)
+                    if script_runner is not None:
+                        script_runner.stop()
+                    if script_task is not None:
+                        script_task.cancel()
+                        await asyncio.gather(script_task, return_exceptions=True)
+                    if rate_runner is not None:
+                        rate_runner.stop()
+                    if rate_task is not None:
+                        rate_task.cancel()
+                        await asyncio.gather(rate_task, return_exceptions=True)
+                    bridge.stop()
+                    # After a mid-call reconnect the pump may take up to ~15 s to
+                    # notice end_call (bounded receive). Give the bridge time to
+                    # settle instead of failing the run with a TimeoutError.
+                    await asyncio.wait_for(asyncio.shield(_settle(bridge_task)), timeout=60)
 
             writer.emit("run.end_condition", spec={"reason": end_reason}, include_dialogue=False)
             session_snapshot_attempted = True
