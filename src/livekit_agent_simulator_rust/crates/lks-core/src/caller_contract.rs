@@ -261,6 +261,12 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 "meet me at",
                 "my limit",
                 "my budget",
+                // Run 016 (Phase D): "Is there any flexibility on the price?"
+                // failed closed at 0.2 — same grounding comment as Python
+                // semantic.py; every entry here traces to a witnessed run.
+                "flexib",
+                "willing to",
+                "go lower",
             ],
         ),
         (
@@ -285,7 +291,25 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
         ("provide", &["i'm calling about", "i want", "i'd like to"]),
         (
             "arrange_visit",
-            &["come by", "hold it until", "schedule a time", "book a time"],
+            // Runs 017-018 (Phase D): visit-phrased arrangement intent failed
+            // closed at 0.2 — same grounding comment as Python semantic.py.
+            // NOT added: bare "saturday" (would hijack the negotiate golden
+            // case "Could you deliver it next Saturday?").
+            &[
+                "come by",
+                "hold it until",
+                "schedule a time",
+                "book a time",
+                "visit",
+                "stop by",
+                "take a look",
+                "come and look",
+                "come to look",
+                "come and see",
+                "come to see",
+                "see the car",
+                "look at the",
+            ],
         ),
         (
             "end",
@@ -1932,46 +1956,69 @@ mod parity_tests {
         }
     }
 
+    fn check_lexicon_cases(data: &Value) {
+        for case in data["cases"].as_array().unwrap() {
+            assert!(
+                case.get("source").and_then(|s| s.as_str()).is_some(),
+                "every lexicon case must name its source: {:?}",
+                case
+            );
+            check_one_lexicon_case(case);
+        }
+    }
+
+    fn check_one_lexicon_case(case: &Value) {
+        let contract = super::BehaviorContract {
+            behavior: case["behavior"].as_str().unwrap().to_string(),
+            target: case["target"].as_str().map(|s| s.to_string()),
+            constraints: super::ContractConstraints {
+                max_turns: 3,
+                max_budget: None,
+                max_words: None,
+                max_duration_s: None,
+                forbidden_intents: vec![],
+                must_not: vec![],
+            },
+        };
+        let verifier = super::RuleBasedSemanticVerifier;
+        let observed = verifier.classify_inherent(case["utterance"].as_str().unwrap(), &contract);
+        let exp = &case["expected"];
+        assert_eq!(observed.act, exp["act"].as_str().unwrap(), "{:?}", case);
+        assert_eq!(
+            observed.confidence,
+            exp["confidence"].as_f64().unwrap(),
+            "{:?}",
+            case
+        );
+        assert_eq!(
+            observed.target.as_deref(),
+            exp["target"].as_str(),
+            "{:?}",
+            case
+        );
+        let expected_acts: Vec<String> = exp["all_acts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(observed.all_acts, expected_acts, "{:?}", case);
+    }
+
     #[test]
     fn semantic_lexicon_vector_matches_rust_classifier() {
         let data = load("semantic_lexicon.json");
-        let mut verifier = super::RuleBasedSemanticVerifier;
-        for case in data["cases"].as_array().unwrap() {
-            let contract = super::BehaviorContract {
-                behavior: case["behavior"].as_str().unwrap().to_string(),
-                target: case["target"].as_str().map(|s| s.to_string()),
-                constraints: super::ContractConstraints {
-                    max_turns: 3,
-                    max_budget: None,
-                    max_words: None,
-                    max_duration_s: None,
-                    forbidden_intents: vec![],
-                    must_not: vec![],
-                },
-            };
-            let observed = verifier.classify(case["utterance"].as_str().unwrap(), &contract);
-            let exp = &case["expected"];
-            assert_eq!(observed.act, exp["act"].as_str().unwrap(), "{:?}", case);
-            assert_eq!(
-                observed.confidence,
-                exp["confidence"].as_f64().unwrap(),
-                "{:?}",
-                case
-            );
-            assert_eq!(
-                observed.target.as_deref(),
-                exp["target"].as_str(),
-                "{:?}",
-                case
-            );
-            let expected_acts: Vec<String> = exp["all_acts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_str().unwrap().to_string())
-                .collect();
-            assert_eq!(observed.all_acts, expected_acts, "{:?}", case);
-        }
+        check_lexicon_cases(&data);
+    }
+
+    #[test]
+    fn semantic_lexicon_run_failures_match_rust_classifier() {
+        // Every case traces to a witnessed Phase D run failure (016-018) or a
+        // probed neighbor of one — see the `source` field, enforced above.
+        // No pattern was added without a run that needed it.
+        let data = load("semantic_lexicon_run_failures.json");
+        assert!(!data["cases"].as_array().unwrap().is_empty());
+        check_lexicon_cases(&data);
     }
 
     #[test]

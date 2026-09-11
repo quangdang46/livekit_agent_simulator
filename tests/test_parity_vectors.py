@@ -223,32 +223,52 @@ def test_semantic_lexicon_vector_matches_required_shape() -> None:
         assert {"act", "confidence", "target", "all_acts"} <= set(case["expected"].keys())
 
 
-def test_semantic_lexicon_vector_matches_python_classifier() -> None:
+def _check_lexicon_cases(data, *, source: str) -> None:
     from livekit_agent_simulator.caller_contract import ContractConstraints
 
-    data = _load("semantic_lexicon.json")
     verifier = RuleBasedSemanticVerifier()
     for case in data["cases"]:
-        contract = _build_contract(
-            {
-                "behavior": case["behavior"],
-                "target": case["target"],
-                "constraints": {
-                    "max_turns": 3,
-                    "max_budget": None,
-                    "max_words": None,
-                    "max_duration_s": None,
-                    "forbidden_intents": [],
-                    "must_not": [],
-                },
-            }
-        )
-        observed = verifier.classify(case["utterance"], contract)
-        exp = case["expected"]
-        assert observed.act == exp["act"], case
-        assert observed.confidence == exp["confidence"], case
-        assert observed.target == exp["target"], case
-        assert observed.all_acts == exp["all_acts"], case
+        assert case.get("source", source), case
+        _check_one_lexicon_case(verifier, case)
+
+
+def _check_one_lexicon_case(verifier, case) -> None:
+    from livekit_agent_simulator.caller_contract import ContractConstraints
+
+    contract = _build_contract(
+        {
+            "behavior": case["behavior"],
+            "target": case["target"],
+            "constraints": {
+                "max_turns": 3,
+                "max_budget": None,
+                "max_words": None,
+                "max_duration_s": None,
+                "forbidden_intents": [],
+                "must_not": [],
+            },
+        }
+    )
+    observed = verifier.classify(case["utterance"], contract)
+    exp = case["expected"]
+    assert observed.act == exp["act"], case
+    assert observed.confidence == exp["confidence"], case
+    assert observed.target == exp["target"], case
+    assert observed.all_acts == exp["all_acts"], case
+
+
+def test_semantic_lexicon_vector_matches_python_classifier() -> None:
+    data = _load("semantic_lexicon.json")
+    _check_lexicon_cases(data, source="authored")
+
+
+def test_semantic_lexicon_run_failures_match_python_classifier() -> None:
+    """Every case traces to a witnessed Phase D run failure (016-018) or a
+    probed neighbor of one — see the `source` field. No pattern was added
+    without a run that needed it."""
+    data = _load("semantic_lexicon_run_failures.json")
+    assert len(data["cases"]) > 0
+    _check_lexicon_cases(data, source="run")
 
 
 def test_orchestrator_evaluator_vector_matches_python_logic() -> None:

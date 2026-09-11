@@ -116,6 +116,13 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         "are you looking for",
         "looking for",
     ),
+    # Run 016 (Phase D): "Is there any flexibility on the price?" failed
+    # closed at 0.2 — no pattern matched a plain flexibility ask, the most
+    # natural negotiate phrasing a stateless generator produces. "flexib"
+    # covers flexibility/flexible; "willing to" + "go lower" cover the
+    # proposal neighbors ("would you be willing to go lower?"). All three
+    # are proposal-shaped, never pure fact-seeking, so they cannot hijack
+    # ask: ask patterns need a question word + information target.
     "negotiate": (
         "come down",
         "lower the price",
@@ -126,13 +133,26 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         "meet me at",
         "my limit",
         "my budget",
+        "flexib",
+        "willing to",
+        "go lower",
     ),
     "confirm": ("so it's", "just to confirm", "is that right", "to confirm"),
     "deny": ("no thanks", "i don't think so", "that won't work"),
     "accept": ("sounds good", "that works", "i'll take it", "works for me", "okay, that's"),
     "reject": ("not interested", "no, i'd rather", "i'll pass"),
     "provide": ("i'm calling about", "i want", "i'd like to"),
-    "arrange_visit": ("come by", "hold it until", "schedule a time", "book a time"),
+    # Runs 017-018 (Phase D): "When would be a good time to visit and see the
+    # car in person?" failed closed at 0.2 — arrangement intent phrased as a
+    # visit, which none of the four original patterns cover. "visit",
+    # "stop by", "take a look" and "come ... to ..." (two-token window)
+    # cover the natural visit phrasings. NOT added: bare "saturday" — golden
+    # case target-delivery-date-vs-price-mismatch ("Could you deliver it next
+    # Saturday?") is negotiate/delivery_date, and a day-name alone must never
+    # decide the act.
+    "arrange_visit": ("come by", "hold it until", "schedule a time", "book a time",
+                      "visit", "stop by", "take a look", "come and look", "come to look",
+                      "come and see", "come to see", "see the car", "look at the"),
     "end": ("goodbye", "bye", "thanks, that's all", "have a good day"),
 }
 

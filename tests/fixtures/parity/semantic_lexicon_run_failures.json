@@ -1,0 +1,118 @@
+{
+  "id": "semantic_lexicon_run_failures",
+  "description": "Phase D run evidence (016-018): utterances a stateless generator really produced that the Tier-1 baseline failed closed on BEFORE the lexicon fix. Every new act pattern in semantic.py must trace to one of these cases. Confidence/act/target/all_acts are asserted on BOTH sides.",
+  "cases": [
+    {
+      "utterance": "Is there any flexibility on the price?",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "negotiate"
+        ]
+      },
+      "source": "run 016 behavior_violation"
+    },
+    {
+      "utterance": "Is there any room for flexibility in the price?",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "negotiate"
+        ]
+      },
+      "source": "neighbor probe of run-016 failure"
+    },
+    {
+      "utterance": "Are you flexible on the price at all?",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "negotiate"
+        ]
+      },
+      "source": "neighbor probe of run-016 failure"
+    },
+    {
+      "utterance": "Would you be willing to go lower?",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.85,
+        "target": null,
+        "all_acts": [
+          "negotiate"
+        ]
+      },
+      "source": "neighbor probe of run-016 failure"
+    },
+    {
+      "utterance": "When would be a good time to visit and see the car in person?",
+      "behavior": "arrange_visit",
+      "target": null,
+      "expected": {
+        "act": "arrange_visit",
+        "confidence": 0.85,
+        "target": null,
+        "all_acts": [
+          "arrange_visit"
+        ]
+      },
+      "source": "runs 017-018 behavior_violation"
+    },
+    {
+      "utterance": "I would like to visit the dealership this weekend.",
+      "behavior": "arrange_visit",
+      "target": null,
+      "expected": {
+        "act": "arrange_visit",
+        "confidence": 0.75,
+        "target": null,
+        "all_acts": [
+          "arrange_visit"
+        ]
+      },
+      "source": "neighbor probe of run-017/018 failure"
+    },
+    {
+      "utterance": "Can I stop by tomorrow to take a look?",
+      "behavior": "arrange_visit",
+      "target": null,
+      "expected": {
+        "act": "arrange_visit",
+        "confidence": 0.85,
+        "target": null,
+        "all_acts": [
+          "arrange_visit"
+        ]
+      },
+      "source": "neighbor probe of run-017/018 failure"
+    },
+    {
+      "utterance": "Could I come by this Saturday to have a look?",
+      "behavior": "arrange_visit",
+      "target": null,
+      "expected": {
+        "act": "arrange_visit",
+        "confidence": 0.75,
+        "target": null,
+        "all_acts": [
+          "arrange_visit"
+        ]
+      },
+      "source": "neighbor probe of run-017/018 failure"
+    }
+  ]
+}

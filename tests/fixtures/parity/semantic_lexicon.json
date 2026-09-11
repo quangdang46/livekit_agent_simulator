@@ -6,55 +6,129 @@
       "utterance": "What information are you looking for?",
       "behavior": "ask",
       "target": null,
-      "expected": {"act": "ask", "confidence": 0.92, "target": null, "all_acts": ["ask"]}
+      "expected": {
+        "act": "ask",
+        "confidence": 0.92,
+        "target": null,
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "authored"
     },
     {
       "utterance": "I was wondering about the price",
       "behavior": "negotiate",
       "target": "price",
-      "expected": {"act": "ask", "confidence": 0.75, "target": "price", "all_acts": ["ask"]}
+      "expected": {
+        "act": "ask",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "authored"
     },
     {
       "utterance": "How do I get there?",
       "behavior": "ask",
       "target": null,
-      "expected": {"act": "ask", "confidence": 0.75, "target": null, "all_acts": ["ask"]}
+      "expected": {
+        "act": "ask",
+        "confidence": 0.75,
+        "target": null,
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "authored"
     },
     {
       "utterance": "Could you tell me the price, and would you consider $30,000?",
       "behavior": "negotiate",
       "target": "price",
-      "expected": {"act": "negotiate", "confidence": 0.75, "target": "price", "all_acts": ["negotiate", "ask"]}
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "negotiate",
+          "ask"
+        ]
+      },
+      "source": "authored"
     },
     {
       "utterance": "Could you lower the price, and by the way do you offer financing?",
       "behavior": "negotiate",
       "target": "price",
-      "expected": {"act": "negotiate", "confidence": 0.75, "target": "price", "all_acts": ["negotiate", "financing"]}
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "negotiate",
+          "financing"
+        ]
+      },
+      "source": "authored"
     },
     {
       "utterance": "Could you do $30,000? Would you consider it, it is my limit and my budget?",
       "behavior": "negotiate",
       "target": "price",
-      "expected": {"act": "negotiate", "confidence": 0.92, "target": "price", "all_acts": ["negotiate"]}
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.92,
+        "target": "price",
+        "all_acts": [
+          "negotiate"
+        ]
+      },
+      "source": "authored"
     },
     {
       "utterance": "Sounds good, that works for me!",
       "behavior": "accept",
       "target": null,
-      "expected": {"act": "accept", "confidence": 0.92, "target": null, "all_acts": ["accept"]}
+      "expected": {
+        "act": "accept",
+        "confidence": 0.92,
+        "target": null,
+        "all_acts": [
+          "accept"
+        ]
+      },
+      "source": "authored"
     },
     {
       "utterance": "Goodbye, have a good day.",
       "behavior": "end",
       "target": null,
-      "expected": {"act": "end", "confidence": 0.92, "target": null, "all_acts": ["end"]}
+      "expected": {
+        "act": "end",
+        "confidence": 0.92,
+        "target": null,
+        "all_acts": [
+          "end"
+        ]
+      },
+      "source": "authored"
     },
     {
       "utterance": "Well, that's an interesting thought about the weather today.",
       "behavior": "negotiate",
       "target": "price",
-      "expected": {"act": "negotiate", "confidence": 0.2, "target": null, "all_acts": ["negotiate"]}
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.2,
+        "target": null,
+        "all_acts": [
+          "negotiate"
+        ]
+      },
+      "source": "authored"
     }
   ]
 }
