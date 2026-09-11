@@ -247,6 +247,13 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 "what are you asking",
                 "are you looking for",
                 "looking for",
+                // Run 020 (Phase D): the generator rephrases ask as first-person
+                // declaration — same grounding comment as Python semantic.py.
+                "i'm asking",
+                "i am asking",
+                "asking about",
+                "provide the price",
+                "provide its price",
             ],
         ),
         (

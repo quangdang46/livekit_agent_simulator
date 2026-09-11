@@ -113,6 +113,62 @@
         ]
       },
       "source": "neighbor probe of run-017/018 failure"
+    },
+    {
+      "utterance": "I'm asking about the price of the 2022 Honda CR-V.",
+      "behavior": "ask",
+      "target": "price",
+      "expected": {
+        "act": "ask",
+        "confidence": 0.85,
+        "target": "price",
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "run 020 behavior_violation"
+    },
+    {
+      "utterance": "I just mentioned I'm interested in the 2022 Honda CR-V, could you provide the price for that?",
+      "behavior": "ask",
+      "target": "price",
+      "expected": {
+        "act": "ask",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "run 020 behavior_violation"
+    },
+    {
+      "utterance": "I already mentioned the 2022 Honda CR-V, so could you please provide its price?",
+      "behavior": "ask",
+      "target": "price",
+      "expected": {
+        "act": "ask",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "run 020 behavior_violation"
+    },
+    {
+      "utterance": "I'm specifically asking about the price of the 2022 Honda CR-V.",
+      "behavior": "ask",
+      "target": "price",
+      "expected": {
+        "act": "ask",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "neighbor probe of run-020 failure"
     }
   ]
 }

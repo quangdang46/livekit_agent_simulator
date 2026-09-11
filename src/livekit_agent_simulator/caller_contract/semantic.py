@@ -115,6 +115,18 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         "what are you asking",
         "are you looking for",
         "looking for",
+        # Run 020 (Phase D): the generator rephrases ask as first-person
+        # declaration ("I'm asking about the price...") instead of a question.
+        # "i'm asking"/"i am asking"/"asking about" mark information-seeking
+        # intent; "provide ... price" marks the price-information target.
+        # Scoped narrowly (all contain an ask verb or the price target) so
+        # they cannot hijack negotiate: a proposal ("could you do $X",
+        # "flexib...") still outscores on its own patterns.
+        "i'm asking",
+        "i am asking",
+        "asking about",
+        "provide the price",
+        "provide its price",
     ),
     # Run 016 (Phase D): "Is there any flexibility on the price?" failed
     # closed at 0.2 — no pattern matched a plain flexibility ask, the most
