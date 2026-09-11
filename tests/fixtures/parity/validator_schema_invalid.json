@@ -1,0 +1,25 @@
+{
+  "id": "validator_schema_invalid",
+  "use_semantic_verifier": false,
+  "contract": {
+    "behavior": "negotiate",
+    "target": "price",
+    "constraints": {
+      "max_turns": 3,
+      "max_budget": null,
+      "max_words": null,
+      "max_duration_s": null,
+      "forbidden_intents": [],
+      "must_not": []
+    }
+  },
+  "candidate": {
+    "act": "negotiate",
+    "target": "price",
+    "slots": {},
+    "utterance": "   ",
+    "identity": {"behavior_id": "b2", "turn_id": 1, "generation_id": 1, "context_version": 0}
+  },
+  "expected_verdict": "INVALID",
+  "expected_reason": "SCHEMA_INVALID"
+}

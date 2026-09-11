@@ -1,0 +1,62 @@
+{
+  "id": "record_replay",
+  "description": "Record/replay + bounded-retry parity (record_replay.py, validator.validate_with_retry): RunRecord v1/v2 schema, version gate, ReplayMismatchError semantics, v1 RecordedSemanticVerifier neutral fallback, replay exhaustion, retry attempt counting (max_retries+1 attempts, candidate None on exhaustion).",
+  "format_version": 2,
+  "v1_legacy_version": 1,
+  "rejected_versions": [0, 3, 99],
+  "v1_record": {
+    "format_version": 1,
+    "scenario_id": "s",
+    "seed": 0,
+    "attempts": [
+      {
+        "candidate": {
+          "act": "negotiate",
+          "target": null,
+          "slots": {},
+          "utterance": "Would you consider $28,000?",
+          "identity": {"behavior_id": "b1", "turn_id": 1, "generation_id": 1, "context_version": 0}
+        },
+        "verdict": "VALID",
+        "reason": null,
+        "retry_index": 0
+      }
+    ]
+  },
+  "v1_expected": {
+    "observed_is_null": true,
+    "fallback_observed": {"act": "", "target": null, "confidence": 0.0, "all_acts": []},
+    "second_classify_error_prefix": "VERIFIER_UNAVAILABLE"
+  },
+  "v2_record": {
+    "format_version": 2,
+    "scenario_id": "s",
+    "seed": 7,
+    "attempts": [
+      {
+        "candidate": {
+          "act": "negotiate",
+          "target": null,
+          "slots": {},
+          "utterance": "Would you consider $28,000?",
+          "identity": {"behavior_id": "b1", "turn_id": 1, "generation_id": 2, "context_version": 0}
+        },
+        "verdict": "VALID",
+        "reason": null,
+        "retry_index": 0,
+        "observed": {"act": "negotiate", "target": null, "slots": {}, "confidence": 0.75, "all_acts": ["negotiate"]},
+        "outcome_failure": null,
+        "outcome_ended_by": "scenario"
+      }
+    ]
+  },
+  "v2_expected": {
+    "replayed_utterance": "Would you consider $28,000?",
+    "rebuilt_identity": {"behavior_id": "b1", "turn_id": 1, "generation_id": 2, "context_version": 0}
+  },
+  "retry_cases": [
+    {"max_retries": 2, "always_invalid": true, "expected_attempts": 3, "expected_candidate_null": true, "expected_verdict": "INVALID"},
+    {"max_retries": 0, "always_invalid": true, "expected_attempts": 1, "expected_candidate_null": true, "expected_verdict": "INVALID"},
+    {"max_retries": 2, "always_invalid": false, "expected_attempts": 1, "expected_candidate_null": false, "expected_verdict": "VALID"}
+  ]
+}

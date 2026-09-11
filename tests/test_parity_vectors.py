@@ -39,6 +39,8 @@ _VALIDATOR_VECTOR_FILES = [
     "validator_act_mismatch.json",
     "validator_target_mismatch.json",
     "validator_slot_violation.json",
+    "validator_slot_string_coercion.json",
+    "validator_schema_invalid.json",
     "validator_utterance_too_long.json",
     "validator_end_call_not_allowed.json",
     "validator_forbidden_intent_lexical.json",
@@ -144,7 +146,15 @@ def test_validator_vector_produces_expected_verdict_in_python(filename: str) -> 
         f"{data['id']}: expected {data['expected_verdict']}, got {result.verdict.value} ({result.details})"
     )
     if data["expected_reason"] is not None:
-        assert result.reason == data["expected_reason"], f"{data['id']}: reason mismatch: {result.reason!r}"
+        # SCHEMA_INVALID carries a ": <detail>" suffix in Python (the
+        # ValueError message); parity asserts the PREFIX only — the Rust
+        # side returns the bare code. Verdict equality above is exact.
+        if data["expected_reason"] == "SCHEMA_INVALID":
+            assert (result.reason or "").startswith("SCHEMA_INVALID"), (
+                f"{data['id']}: reason mismatch: {result.reason!r}"
+            )
+        else:
+            assert result.reason == data["expected_reason"], f"{data['id']}: reason mismatch: {result.reason!r}"
 
 
 def test_turn_debounce_vector_matches_python_formula() -> None:
@@ -203,3 +213,260 @@ def test_should_interrupt_vector_matches_python_policy() -> None:
         assert planner.should_interrupt(
             ic, scenario_id=case["scenario_id"], agent_turn_index=case["turn"]
         ) is case["expected"], case
+
+
+def test_semantic_lexicon_vector_matches_required_shape() -> None:
+    data = _load("semantic_lexicon.json")
+    assert len(data["cases"]) > 0
+    for case in data["cases"]:
+        assert {"utterance", "behavior", "target", "expected"} <= set(case.keys())
+        assert {"act", "confidence", "target", "all_acts"} <= set(case["expected"].keys())
+
+
+def test_semantic_lexicon_vector_matches_python_classifier() -> None:
+    from livekit_agent_simulator.caller_contract import ContractConstraints
+
+    data = _load("semantic_lexicon.json")
+    verifier = RuleBasedSemanticVerifier()
+    for case in data["cases"]:
+        contract = _build_contract(
+            {
+                "behavior": case["behavior"],
+                "target": case["target"],
+                "constraints": {
+                    "max_turns": 3,
+                    "max_budget": None,
+                    "max_words": None,
+                    "max_duration_s": None,
+                    "forbidden_intents": [],
+                    "must_not": [],
+                },
+            }
+        )
+        observed = verifier.classify(case["utterance"], contract)
+        exp = case["expected"]
+        assert observed.act == exp["act"], case
+        assert observed.confidence == exp["confidence"], case
+        assert observed.target == exp["target"], case
+        assert observed.all_acts == exp["all_acts"], case
+
+
+def test_orchestrator_evaluator_vector_matches_python_logic() -> None:
+    from livekit_agent_simulator.caller_contract import BehaviorContract, ContractConstraints
+    from livekit_agent_simulator.caller_contract.orchestrator import (
+        BehaviorEvaluator,
+        Orchestrator,
+        TurnDetector,
+        classify_agent_silence,
+    )
+
+    data = _load("orchestrator_evaluator.json")
+
+    evaluator = BehaviorEvaluator()
+    for case in data["evaluator_cases"]:
+        contract = BehaviorContract(
+            behavior="negotiate",
+            target=case["contract_target"],
+            constraints=ContractConstraints(),
+        )
+        assert evaluator.evaluate(contract, case["text"]).value == case["expected"], case
+
+    for case in data["silence_cases"]:
+        outcome = classify_agent_silence(
+            elapsed_ms=case["elapsed_ms"],
+            turn_timeout_ms=case["turn_timeout_ms"],
+            agent_hung_up=case["agent_hung_up"],
+            transport_lost=case["transport_lost"],
+        )
+        assert outcome.value == case["expected"], case
+
+    script = data["turn_detector_script"]
+    detector = TurnDetector(silence_debounce_ms=script["silence_debounce_ms"])
+    for step in script["steps"]:
+        op = step["op"]
+        if op == "poll":
+            assert detector.poll(now_ms=step["at_ms"]).value == step["expected_state"], step
+        elif op == "started":
+            detector.on_agent_audio_started(now_ms=step["at_ms"])
+        elif op == "stopped":
+            detector.on_agent_audio_stopped(now_ms=step["at_ms"])
+        elif op == "begin_caller_turn":
+            detector.begin_caller_turn()
+        elif op == "reset":
+            detector.reset_for_next_agent_turn()
+        else:  # pragma: no cover - fixture typo guard
+            raise AssertionError(f"unknown turn-detector op {op!r}")
+
+    script = data["orchestrator_script"]
+    orch = Orchestrator()
+    for step in script["steps"]:
+        op = step["op"]
+        if op == "identity":
+            ident = orch.current_identity()
+            assert ident.behavior_id == step["expected"]["behavior_id"], step
+            assert ident.turn_id == step["expected"]["turn_id"], step
+            assert ident.generation_id == step["expected"]["generation_id"], step
+        elif op == "advance_caller_turn":
+            orch.advance_caller_turn()
+        elif op == "advance_behavior_turn":
+            orch.advance_behavior_turn()
+        elif op == "new_generation":
+            orch.new_generation()
+        elif op == "start_behavior":
+            orch.start_behavior()
+        elif op == "check_max_turns":
+            contract = BehaviorContract(
+                behavior="x", constraints=ContractConstraints(max_turns=step["max_turns"])
+            )
+            assert orch.check_max_turns(contract).value == step["expected"], step
+        else:  # pragma: no cover - fixture typo guard
+            raise AssertionError(f"unknown orchestrator op {op!r}")
+
+
+def test_interaction_planner_vector_matches_python_delivery() -> None:
+    from livekit_agent_simulator.caller_contract.dsl import InteractionConfig
+    from livekit_agent_simulator.caller_contract.interaction_planner import (
+        HESITATION_TOKEN_ALLOWLIST,
+        CallerInteractionPlanner,
+        verify_semantic_preserving,
+    )
+
+    data = _load("interaction_planner.json")
+
+    assert set(HESITATION_TOKEN_ALLOWLIST) == set(data["hesitation_allowlist"])
+
+    planner = CallerInteractionPlanner()
+    for case in data["speak_cases"]:
+        raw_ic = case["interaction"]
+        ic = InteractionConfig(**raw_ic) if raw_ic is not None else None
+        outcome = planner.plan_speak(case["utterance"], ic)
+        exp = case["expected"]
+        assert outcome.tokens == exp["tokens"], case
+        assert outcome.pre_delay_ms == exp["pre_delay_ms"], case
+        assert outcome.pace == exp["pace"], case
+        assert verify_semantic_preserving(case["utterance"], outcome.tokens), case
+
+    for case in data["preserving_cases"]:
+        assert verify_semantic_preserving(case["utterance"], case["tokens"]) is case["expected"], case
+
+    for case in data["action_cases"]:
+        op = case["op"]
+        if op == "dtmf":
+            outcome = planner.plan_dtmf(case["digits"])
+        elif op == "silence":
+            outcome = planner.plan_silence()
+        elif op == "hangup":
+            outcome = planner.plan_hangup()
+        elif op == "backchannel_default":
+            outcome = planner.plan_backchannel()
+            assert outcome.tokens == case["expected_tokens"], case
+        elif op == "barge_in":
+            outcome = planner.trigger_barge_in()
+        else:  # pragma: no cover - fixture typo guard
+            raise AssertionError(f"unknown planner action op {op!r}")
+        assert outcome.kind.value == case["expected_kind"], case
+
+
+def test_record_replay_vector_matches_python_primitives() -> None:
+    import json
+
+    from livekit_agent_simulator.caller_contract import (
+        CandidateUtterance,
+        GenerationIdentity,
+        Verdict,
+    )
+    from livekit_agent_simulator.caller_contract.record_replay import (
+        RECORD_FORMAT_V1,
+        RECORD_FORMAT_VERSION,
+        RecordedSemanticVerifier,
+        ReplayLanguageBackend,
+        ReplayMismatchError,
+        RunRecord,
+        rebuild_identity_from_candidate,
+    )
+    from livekit_agent_simulator.caller_contract.validator import (
+        ContractValidator,
+        validate_with_retry,
+    )
+
+    data = _load("record_replay.json")
+
+    assert RECORD_FORMAT_VERSION == data["format_version"]
+    assert RECORD_FORMAT_V1 == data["v1_legacy_version"]
+    for bad in data["rejected_versions"]:
+        with __import__("pytest").raises(ValueError):
+            RunRecord.from_dict(
+                {"format_version": bad, "scenario_id": "x", "seed": 0, "attempts": []}
+            )
+
+    # v1 legacy: reads, observed None, neutral fallback once, then exhaustion.
+    v1 = RunRecord.from_dict(data["v1_record"])
+    assert v1.format_version == 1
+    assert v1.attempts[0].observed is None
+    verifier = RecordedSemanticVerifier(v1)
+    fallback = verifier.classify("anything", None)
+    exp_fallback = data["v1_expected"]["fallback_observed"]
+    assert fallback.act == exp_fallback["act"]
+    assert fallback.confidence == exp_fallback["confidence"]
+    with __import__("pytest").raises(RuntimeError):
+        verifier.classify("anything", None)
+
+    # v2: round-trip, verbatim replay, identity rebuild, loud divergence.
+    raw_v2 = data["v2_record"]
+    v2 = RunRecord.from_dict(raw_v2)
+    v2_rt = RunRecord.from_json(v2.to_json())
+    assert (v2_rt.scenario_id, v2_rt.seed) == (v2.scenario_id, v2.seed)
+    assert len(v2_rt.attempts) == 1
+    backend = ReplayLanguageBackend(v2_rt)
+    candidate = backend.generate({})
+    assert candidate["utterance"] == data["v2_expected"]["replayed_utterance"]
+    rebuilt = rebuild_identity_from_candidate(candidate)
+    exp_ident = data["v2_expected"]["rebuilt_identity"]
+    assert (rebuilt.behavior_id, rebuilt.turn_id, rebuilt.generation_id) == (
+        exp_ident["behavior_id"],
+        exp_ident["turn_id"],
+        exp_ident["generation_id"],
+    )
+    backend.assert_verdict(Verdict.VALID)
+    backend.assert_outcome(failure_reason=None, ended_by="scenario")
+    with __import__("pytest").raises(ReplayMismatchError):
+        backend.assert_verdict(Verdict.INVALID)
+    with __import__("pytest").raises(ReplayMismatchError):
+        backend.assert_outcome(failure_reason="CALLER_BEHAVIOR_VIOLATION", ended_by="scenario")
+    with __import__("pytest").raises(ReplayMismatchError):
+        backend.assert_outcome(failure_reason=None, ended_by="timeout")
+    with __import__("pytest").raises(RuntimeError):
+        backend.generate({})
+
+    # Bounded retry: early exit on first VALID; exhaustion is max_retries+1
+    # with candidate None.
+    from livekit_agent_simulator.caller_contract import BehaviorContract, ContractConstraints
+
+    contract = BehaviorContract(behavior="negotiate", constraints=ContractConstraints())
+    validator = ContractValidator()
+    for case in data["retry_cases"]:
+        if case["always_invalid"]:
+            def gen_bad() -> CandidateUtterance:
+                return CandidateUtterance(
+                    act="wrong",
+                    target=None,
+                    slots={},
+                    utterance="x y",
+                    identity=GenerationIdentity(behavior_id="b1", turn_id=1, generation_id=1),
+                )
+
+            out = validate_with_retry(validator, contract, gen_bad, max_retries=case["max_retries"])
+        else:
+            def gen_good() -> CandidateUtterance:
+                return CandidateUtterance(
+                    act="negotiate",
+                    target=None,
+                    slots={},
+                    utterance="Would you consider $28,000?",
+                    identity=GenerationIdentity(behavior_id="b1", turn_id=1, generation_id=1),
+                )
+
+            out = validate_with_retry(validator, contract, gen_good, max_retries=case["max_retries"])
+        assert out.attempts == case["expected_attempts"], case
+        assert (out.candidate is None) == case["expected_candidate_null"], case
+        assert out.result.verdict.value == case["expected_verdict"], case

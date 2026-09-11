@@ -1,0 +1,60 @@
+{
+  "id": "semantic_lexicon",
+  "description": "Rule-based semantic verifier lexicon parity (P0-2b tier): classify() over (utterance, behavior, target) must return the same act/confidence/target/all_acts on both sides. Confidence bands: 0.2 no hit, 0.75 one hit, 0.85 two hits, 0.92 three+. Tie-break prefers the contract behavior. all_acts order: primary, then remaining acts in lexicon order, then intent tags in lexicon order. NOTE: 'do you offer' is deliberately NOT an ask pattern (Slice 2 decision: deal-term questions are negotiate, not ask).",
+  "cases": [
+    {
+      "utterance": "What information are you looking for?",
+      "behavior": "ask",
+      "target": null,
+      "expected": {"act": "ask", "confidence": 0.92, "target": null, "all_acts": ["ask"]}
+    },
+    {
+      "utterance": "I was wondering about the price",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {"act": "ask", "confidence": 0.75, "target": "price", "all_acts": ["ask"]}
+    },
+    {
+      "utterance": "How do I get there?",
+      "behavior": "ask",
+      "target": null,
+      "expected": {"act": "ask", "confidence": 0.75, "target": null, "all_acts": ["ask"]}
+    },
+    {
+      "utterance": "Could you tell me the price, and would you consider $30,000?",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {"act": "negotiate", "confidence": 0.75, "target": "price", "all_acts": ["negotiate", "ask"]}
+    },
+    {
+      "utterance": "Could you lower the price, and by the way do you offer financing?",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {"act": "negotiate", "confidence": 0.75, "target": "price", "all_acts": ["negotiate", "financing"]}
+    },
+    {
+      "utterance": "Could you do $30,000? Would you consider it, it is my limit and my budget?",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {"act": "negotiate", "confidence": 0.92, "target": "price", "all_acts": ["negotiate"]}
+    },
+    {
+      "utterance": "Sounds good, that works for me!",
+      "behavior": "accept",
+      "target": null,
+      "expected": {"act": "accept", "confidence": 0.92, "target": null, "all_acts": ["accept"]}
+    },
+    {
+      "utterance": "Goodbye, have a good day.",
+      "behavior": "end",
+      "target": null,
+      "expected": {"act": "end", "confidence": 0.92, "target": null, "all_acts": ["end"]}
+    },
+    {
+      "utterance": "Well, that's an interesting thought about the weather today.",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {"act": "negotiate", "confidence": 0.2, "target": null, "all_acts": ["negotiate"]}
+    }
+  ]
+}
