@@ -959,8 +959,27 @@ const EVALUATOR_PARTIAL_PATTERNS: [&str; 6] = [
     "not sure",
 ];
 
+// Run 021 (Phase D): price-statement verbs the agent uses when answering in
+// words ("listed at $25,800" appeared verbatim in run 019's transcript).
+// Scoped to target=="price" at the call site — same comment as Python
+// orchestrator.py; a price statement must not satisfy an unrelated behavior.
+const EVALUATOR_PRICE_STATEMENT_PATTERNS: [&str; 5] = [
+    "listed at",
+    "priced at",
+    "asking price is",
+    "price is",
+    "costs",
+];
+
 pub fn evaluate_behavior(contract_target: Option<&str>, agent_text: &str) -> EvaluatorVerdict {
     let text = agent_text.to_lowercase();
+    if contract_target == Some("price")
+        && EVALUATOR_PRICE_STATEMENT_PATTERNS
+            .iter()
+            .any(|p| text.contains(p))
+    {
+        return EvaluatorVerdict::Satisfied;
+    }
     if EVALUATOR_SATISFIED_PATTERNS
         .iter()
         .any(|p| text.contains(p))

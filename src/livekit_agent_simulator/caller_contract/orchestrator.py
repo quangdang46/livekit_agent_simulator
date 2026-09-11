@@ -156,6 +156,19 @@ _SATISFIED_PATTERNS = (
     "i can do",
     "we can do",
 )
+# Run 021 (Phase D): the agent answered in words ("listed at $25,800"
+# appeared verbatim in run 019's transcript) and the evaluator had no
+# price-stating verb — only a literal `$\d` quote matched. Scoped to
+# target=="price" at the call site: a price statement must not satisfy an
+# unrelated behavior (parity fixture: "The price is $30,000" under a null
+# target stays NOT_SATISFIED).
+_PRICE_STATEMENT_PATTERNS = (
+    "listed at",
+    "priced at",
+    "asking price is",
+    "price is",
+    "costs",
+)
 _PARTIAL_PATTERNS = (
     "probably",
     "might work",
@@ -175,6 +188,12 @@ class BehaviorEvaluator:
 
     def evaluate(self, contract: BehaviorContract, agent_text: str) -> EvaluatorVerdict:
         text = agent_text.lower()
+        # Price-statement verbs only count when the contract is ABOUT price:
+        # "the price is right" must not satisfy a delivery_date behavior.
+        # (Run 021: the price verbs were added for ask/price; this scoping
+        # keeps them from leaking into unrelated targets.)
+        if contract.target == "price" and any(p in text for p in _PRICE_STATEMENT_PATTERNS):
+            return EvaluatorVerdict.SATISFIED
         if any(p in text for p in _SATISFIED_PATTERNS):
             return EvaluatorVerdict.SATISFIED
         if any(p in text for p in _PARTIAL_PATTERNS):
