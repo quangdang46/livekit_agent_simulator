@@ -190,6 +190,8 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
     ttfw_ms: int | None = None
     first_agent_kind: str | None = None
 
+    from .script.models import is_interruption_event  # hoisted: used per event
+
     for e in events:
         kind = str(e.get("kind") or "")
         spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
@@ -222,14 +224,18 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
             tool_starts += 1
         elif kind == "tool.error":
             tool_errors += 1
-        elif kind == "interruption":
-            interruptions += 1
         elif kind == "silence.detected":
             silence_events += 1
         elif kind == "sim.caller.audio_source_start":
             user_audio_source_ms.append(mono)
         elif kind == "sim.agent.audio_onset":
             agent_audio_onset_ms.append(mono)
+
+        # Interruptions count BOTH vocabularies (legacy `interruption` and the
+        # contract cut-in kinds) — matching asserts.evaluate_asserts, so the
+        # report and the assert can never disagree on how many cut-ins occurred.
+        if is_interruption_event(e):
+            interruptions += 1
 
         if _is_barge_event(e):
             barge_ms.append(mono)

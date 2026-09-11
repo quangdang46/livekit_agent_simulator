@@ -791,7 +791,15 @@ def _eval_audio_latency_outcome(
 
 
 def _eval_ended_by_outcome(oc: OutcomeExpect, events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Assert that the call ended by the expected side (sim | agent | detect)."""
+    """Assert that the call ended by the expected side (sim | agent | detect).
+
+    Reads BOTH the legacy and the contract end-of-call vocabulary — see
+    ``script.models.end_side_from_reason``. Knowing only the legacy spelling
+    reported "detect" for every contract run, failing any ``type: ended_by``
+    assert that names a side.
+    """
+    from .script.models import end_side_from_reason
+
     sim_hangup = [e for e in events if e.get("kind") in ("sim.hang_up", "sim.script.hang_up")]
     end_cond = [e for e in events if e.get("kind") == "run.end_condition"]
 
@@ -804,14 +812,14 @@ def _eval_ended_by_outcome(oc: OutcomeExpect, events: list[dict[str, Any]]) -> d
     elif end_cond:
         er = end_cond[-1].get("spec", {}).get("reason", "")
         er_s = str(er) if er else ""
-        if "sim_end_call" in er_s:
-            who = "sim"
+        side = end_side_from_reason(er_s)
+        if side is not None:
+            who = side
             reason_parts.append(f"end_reason: {er_s}")
-        elif er_s in ("agent_disconnected", "dead_call_silence"):
-            who = "agent"
-            reason_parts.append(f"end_reason: {er_s}")
-        elif er_s in ("max_turns", "timeout"):
+        elif er_s in ("max_turns", "timeout", "contract_timeout"):
             reason_parts.append(f"end_reason: {er_s} (no hang-up side)")
+        else:
+            reason_parts.append(f"end_reason: {er_s} (unrecognized)")
     else:
         for e in events:
             if e.get("kind") == "sim.end_call_token":

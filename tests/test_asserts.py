@@ -546,3 +546,51 @@ def test_legacy_spelling_still_counts() -> None:
         *_agent_finals(2000),
     ]
     assert evaluate_asserts(events, _recovery_spec())["pass"] is True
+
+
+# ---------------------------------------------------------------------------
+# ended_by attribution across the caller-path vocabularies.
+#
+# run.end_condition.reason is written by whichever caller engine ran. The
+# contract path writes contract_* reasons (live_wiring.py's EndedBy map); the
+# legacy engine wrote sim_end_call / agent_disconnected. A reader that knew
+# only the legacy spellings reported "detect" for every contract run, failing
+# any `type: ended_by` assert that named a side — 2 shipped templates set
+# `ended_by: sim`.
+# ---------------------------------------------------------------------------
+
+
+def _ended_by_spec(expected: str):
+    return parse_assert_spec(
+        {"outcomes": [{"id": "who", "type": "ended_by", "ended_by": expected}]}
+    )
+
+
+def _end_events(reason: str) -> list[dict]:
+    return [{"kind": "run.end_condition", "ts_mono_ms": 1, "spec": {"reason": reason}}]
+
+
+def test_ended_by_understands_contract_reasons():
+    assert evaluate_asserts(_end_events("contract_scenario_end"), _ended_by_spec("sim"))["pass"] is True
+    assert evaluate_asserts(_end_events("contract_caller_end"), _ended_by_spec("sim"))["pass"] is True
+    assert evaluate_asserts(_end_events("contract_agent_end"), _ended_by_spec("agent"))["pass"] is True
+
+
+def test_ended_by_still_understands_legacy_reasons():
+    assert evaluate_asserts(_end_events("sim_end_call"), _ended_by_spec("sim"))["pass"] is True
+    assert evaluate_asserts(_end_events("agent_disconnected"), _ended_by_spec("agent"))["pass"] is True
+    assert evaluate_asserts(_end_events("dead_call_silence"), _ended_by_spec("agent"))["pass"] is True
+
+
+def test_ended_by_still_detects_the_wrong_side():
+    """Negative control: the widened vocabulary must not make every side match."""
+    r = evaluate_asserts(_end_events("contract_agent_end"), _ended_by_spec("sim"))
+    assert r["pass"] is False
+    assert r["checks"][0]["actual"] == "agent"
+
+
+def test_ended_by_no_side_reasons_report_detect():
+    """timeout/max_turns carry no side: detect passes, a named side fails."""
+    for reason in ("contract_timeout", "max_turns", "timeout"):
+        assert evaluate_asserts(_end_events(reason), _ended_by_spec("detect"))["pass"] is True
+        assert evaluate_asserts(_end_events(reason), _ended_by_spec("sim"))["pass"] is False
