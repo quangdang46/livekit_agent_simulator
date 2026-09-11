@@ -156,3 +156,17 @@ def test_text_backend_wired_through_adapter_and_validator_end_to_end():
     validator = ContractValidator(semantic_verifier=RuleBasedSemanticVerifier())
     result = validator.validate(candidate, contract)
     assert result.is_valid()
+
+
+def test_system_prompt_requires_naming_the_target_topic():
+    """Run-025 regression: the generator dropped the topic word entirely
+    ("I'm asking about the 2022 Honda CR-V." for target=price) and the
+    validator correctly failed it closed as TARGET_UNVERIFIED. The prompt
+    must tell the model the target has to be LEXICALLY present — shaping
+    generation, not loosening validation."""
+    from livekit_agent_simulator.caller_contract.text_backends import _SYSTEM_PROMPT
+
+    assert "current_behavior.target" in _SYSTEM_PROMPT
+    assert "MUST name that topic" in _SYSTEM_PROMPT
+    # The constraint is lexical presence, not just staying "on-topic".
+    assert "paraphrase the topic away" in _SYSTEM_PROMPT

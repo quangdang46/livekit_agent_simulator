@@ -40,7 +40,18 @@ _SYSTEM_PROMPT = (
     "The utterance must stay strictly on-topic for current_behavior and must "
     "never mention anything in forbidden context, never ask about unrelated "
     "topics, and never say goodbye/end the call unless current_behavior.act "
-    "itself is an end/hangup behavior."
+    "itself is an end/hangup behavior. "
+    # Run 025 (Phase D): the model paraphrased ask/price into "I'm asking
+    # about the 2022 Honda CR-V." — no price word at all — and the validator
+    # correctly failed it closed as TARGET_UNVERIFIED (the utterance is about
+    # the car, not the price). The context already carries
+    # current_behavior.target, but nothing told the model the target must be
+    # LEXICALLY present. So: when current_behavior.target is set, the
+    # utterance MUST contain a word for that topic (e.g. for target price:
+    # "price", "cost", or "$"). A paraphrase that drops the topic word is not
+    # a valid phrasing of the behavior, however natural it sounds.
+    "When current_behavior.target is set, the utterance MUST name that topic "
+    "in words — do not paraphrase the topic away."
 )
 
 
