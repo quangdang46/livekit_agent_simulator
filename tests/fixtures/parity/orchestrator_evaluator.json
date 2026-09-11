@@ -5,85 +5,149 @@
     {
       "text": "Sure, that works for me",
       "contract_target": "price",
-      "expected": "SATISFIED"
+      "expected": "SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "We can do Tuesday",
       "contract_target": "price",
-      "expected": "SATISFIED"
+      "expected": "SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "The price is $30,000",
       "contract_target": "price",
-      "expected": "SATISFIED"
+      "expected": "SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "The price is $30,000",
       "contract_target": null,
-      "expected": "NOT_SATISFIED"
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "Let me check and get back",
       "contract_target": "price",
-      "expected": "PARTIAL"
+      "expected": "PARTIAL",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "Probably might work",
       "contract_target": "price",
-      "expected": "PARTIAL"
+      "expected": "PARTIAL",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "Possibly next week",
       "contract_target": "price",
-      "expected": "PARTIAL"
+      "expected": "PARTIAL",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "I will try my best",
       "contract_target": "price",
-      "expected": "NOT_SATISFIED"
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "Yes, that is fine",
       "contract_target": "price",
-      "expected": "NOT_SATISFIED"
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "Okay, that is great",
       "contract_target": "price",
-      "expected": "NOT_SATISFIED"
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "I can do that for you",
       "contract_target": null,
-      "expected": "SATISFIED"
+      "expected": "SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "Hello there",
       "contract_target": null,
-      "expected": "NOT_SATISFIED"
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "The mileage is high",
       "contract_target": "price",
-      "expected": "NOT_SATISFIED"
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
     },
     {
       "text": "Yep, the 2022 Honda CR-V is listed at $25,800.",
       "contract_target": "price",
       "expected": "SATISFIED",
-      "source": "run 019 agent transcript verbatim"
+      "source": "run 019 agent transcript verbatim",
+      "contract_behavior": "negotiate"
     },
     {
       "text": "The car is priced at twenty five thousand.",
       "contract_target": "price",
       "expected": "SATISFIED",
-      "source": "neighbor probe of run-021 gap"
+      "source": "neighbor probe of run-021 gap",
+      "contract_behavior": "negotiate"
     },
     {
       "text": "The price is $25,800 drive-away.",
       "contract_target": "price",
       "expected": "SATISFIED",
-      "source": "neighbor probe of run-021 gap"
+      "source": "neighbor probe of run-021 gap",
+      "contract_behavior": "negotiate"
+    },
+    {
+      "text": "I hear you, mate. But we've already brought that one down as far as we can, and it's basically",
+      "contract_behavior": "negotiate",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "source": "run 030 agent transcript verbatim"
+    },
+    {
+      "text": "We've already brought that CR-V down to a very competitive, basically private sale level.",
+      "contract_behavior": "negotiate",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "source": "run 030 agent transcript verbatim"
+    },
+    {
+      "text": "We can't go lower than $25,800, that's our best price.",
+      "contract_behavior": "negotiate",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "source": "neighbor probe of run-030 gap"
+    },
+    {
+      "text": "We've already brought that one down as far as we can.",
+      "contract_behavior": "ask",
+      "contract_target": "price",
+      "expected": "NOT_SATISFIED",
+      "source": "scope guard: refusal needs behavior==negotiate"
+    },
+    {
+      "text": "Which make and model were you looking at?",
+      "contract_behavior": "negotiate",
+      "contract_target": "price",
+      "expected": "NOT_SATISFIED",
+      "source": "deflection still not satisfied (run 029)"
     }
   ],
   "silence_cases": [

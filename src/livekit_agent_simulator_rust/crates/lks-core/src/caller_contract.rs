@@ -986,10 +986,38 @@ const EVALUATOR_PRICE_STATEMENT_PATTERNS: [&str; 5] = [
     "costs",
 ];
 
-pub fn evaluate_behavior(contract_target: Option<&str>, agent_text: &str) -> EvaluatorVerdict {
+// Run 030 (Phase D): a reasoned refusal answers a negotiate behavior —
+// same grounding comment as Python orchestrator.py. Scoped to
+// behavior=="negotiate" at the call site.
+const EVALUATOR_NEGOTIATION_REFUSAL_PATTERNS: [&str; 11] = [
+    "brought that one down as far as we can",
+    "brought that price down as much as we can",
+    "brought down as much as we can",
+    "already brought",
+    "can't go lower",
+    "cannot go lower",
+    "best price",
+    "firm on the price",
+    "price is firm",
+    "no room",
+    "no further discount",
+];
+
+pub fn evaluate_behavior(
+    contract_behavior: &str,
+    contract_target: Option<&str>,
+    agent_text: &str,
+) -> EvaluatorVerdict {
     let text = agent_text.to_lowercase();
     if contract_target == Some("price")
         && EVALUATOR_PRICE_STATEMENT_PATTERNS
+            .iter()
+            .any(|p| text.contains(p))
+    {
+        return EvaluatorVerdict::Satisfied;
+    }
+    if contract_behavior == "negotiate"
+        && EVALUATOR_NEGOTIATION_REFUSAL_PATTERNS
             .iter()
             .any(|p| text.contains(p))
     {
@@ -2068,8 +2096,15 @@ mod parity_tests {
 
         for case in data["evaluator_cases"].as_array().unwrap() {
             let target = case["contract_target"].as_str().map(|s| s.to_string());
-            let actual =
-                super::evaluate_behavior(target.as_deref(), case["text"].as_str().unwrap());
+            let behavior = case
+                .get("contract_behavior")
+                .and_then(|b| b.as_str())
+                .unwrap_or("negotiate");
+            let actual = super::evaluate_behavior(
+                behavior,
+                target.as_deref(),
+                case["text"].as_str().unwrap(),
+            );
             assert_eq!(
                 actual.as_str(),
                 case["expected"].as_str().unwrap(),

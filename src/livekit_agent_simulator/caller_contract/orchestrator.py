@@ -177,6 +177,29 @@ _PARTIAL_PATTERNS = (
     "possibly",
     "not sure",
 )
+# Run 030 (Phase D): the agent refused the negotiation WITH reasons
+# ("we've already brought that one down as far as we can, and it's
+# basically [private sale]" / "already brought ... to a very competitive,
+# basically private sale level"), twice, and the evaluator scored both
+# NOT_SATISFIED — so a correctly-handled negotiation looped its whole
+# budget and died FAILED_MAX_TURNS. A reasoned refusal IS an answer to a
+# negotiate behavior: the negotiation concluded (price stands), unlike a
+# deflection ("Which car were you looking at?") which answers nothing.
+# Scoped to behavior=="negotiate" at the call site: a refusal must not
+# satisfy ask (which needs the price stated) or any other behavior.
+_NEGOTIATION_REFUSAL_PATTERNS = (
+    "brought that one down as far as we can",
+    "brought that price down as much as we can",
+    "brought down as much as we can",
+    "already brought",
+    "can't go lower",
+    "cannot go lower",
+    "best price",
+    "firm on the price",
+    "price is firm",
+    "no room",
+    "no further discount",
+)
 
 
 class BehaviorEvaluator:
@@ -193,6 +216,11 @@ class BehaviorEvaluator:
         # (Run 021: the price verbs were added for ask/price; this scoping
         # keeps them from leaking into unrelated targets.)
         if contract.target == "price" and any(p in text for p in _PRICE_STATEMENT_PATTERNS):
+            return EvaluatorVerdict.SATISFIED
+        # A reasoned refusal answers a negotiate behavior (the negotiation
+        # concluded with the price standing); a deflection does not. Scoped
+        # to behavior=="negotiate" so it cannot satisfy ask or anything else.
+        if contract.behavior == "negotiate" and any(p in text for p in _NEGOTIATION_REFUSAL_PATTERNS):
             return EvaluatorVerdict.SATISFIED
         if any(p in text for p in _SATISFIED_PATTERNS):
             return EvaluatorVerdict.SATISFIED

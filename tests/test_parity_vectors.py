@@ -285,7 +285,7 @@ def test_orchestrator_evaluator_vector_matches_python_logic() -> None:
     evaluator = BehaviorEvaluator()
     for case in data["evaluator_cases"]:
         contract = BehaviorContract(
-            behavior="negotiate",
+            behavior=case.get("contract_behavior", "negotiate"),
             target=case["contract_target"],
             constraints=ContractConstraints(),
         )
