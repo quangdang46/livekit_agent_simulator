@@ -35,7 +35,7 @@ Paste into Claude Code, Cursor, Codex, AmpCode, Windsurf, or any coding agent **
 Install and configure livekit-agent-simulator (CLI: lks) for this project by following the instructions here:
 https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/docs/guide/installation.md
 
-Target project root is this workspace. Use absolute --root paths. Install the portable CLI if missing, run lks init, help fill .agent-sim/config.yaml from my local env or ask me for LiveKit + active caller provider key (Gemini Live or OpenAI Realtime) + agent_name, ensure .agent-sim is gitignored, run preflight, and stop before execute if the voice agent worker is not running. Do not edit agent application source outside .agent-sim/.
+Target project root is this workspace. Use absolute --root paths. Install the portable CLI if missing, run lks init, help fill .agent-sim/config.yaml from my local env or ask me for LiveKit + active text-backend key (Gemini or OpenAI) + agent_name, ensure .agent-sim is gitignored, run preflight, and stop before execute if the voice agent worker is not running. Do not edit agent application source outside .agent-sim/.
 ```
 
 Same idea, one line:
@@ -61,7 +61,7 @@ Voice agents fail in ways unit tests never see:
 
 ### The Solution
 
-**livekit-agent-simulator** drives an AI simulated caller — Gemini Live or OpenAI Realtime (per `simulator.provider`) — from scenario JSONL over one of three transport modes (`Caller.mode`), observes transcripts / tools / flow / room events, and writes a timestamped report you can play back.
+**livekit-agent-simulator** drives an AI simulated caller — text generation per `simulator.provider` (Gemini / OpenAI), validated by the caller contract, spoken via TTS — from scenario YAML over one of three transport modes (`Caller.mode`), observes transcripts / tools / flow / room events, and writes a timestamped report you can play back.
 
 | Surface | What you get |
 |---------|--------------|
@@ -128,7 +128,7 @@ lks web --root /path/to/target          # Ctrl+C to stop
 ```text
 1. Read <target>/.agent-sim/config.yaml
 2. Pick SimLeg from scenario Caller.mode (webrtc_sim | inbound_sip | outbound_human_pickup | outbound_sim_callee | agent_dials)
-3. Connect leg → LiveKit room(s) / SIP hairpin as needed; the active caller provider (Gemini Live / OpenAI Realtime) stays WebRTC in the sim room
+3. Connect leg → LiveKit room(s) / SIP hairpin as needed; the caller contract path drives speech (see below)
 4. Bridge audio; observe transcripts, tools, timing, interruptions
 5. Write reports/<run-id>/ + runs.sqlite
 6. Optional LLM judge vs PassCriteria
@@ -145,10 +145,9 @@ lks web --root /path/to/target          # Ctrl+C to stop
                  └────────────────┼────────────────┼───────────────────┘
                                   ▼
                     ┌──────────────────────────┐
-                    │  Sim caller persona      │
-                    │  (Gemini Live / OpenAI   │
-                    │   Realtime) + LiveKit    │
-                    │   agent (black box)      │
+                    │  Contract caller path    │
+                    │  (scenario caller_steps  │
+                    │   → LiveKit agent)       │
                     └────────────┬─────────────┘
                                  │ observe
                                  ▼
@@ -156,6 +155,57 @@ lks web --root /path/to/target          # Ctrl+C to stop
 ```
 
 Mode details and config: [docs/telephony.md](docs/telephony.md). Templates: `inbound-caller-sim`, `outbound-human-pickup`, `outbound-callee-sim`.
+
+### The caller contract path (the only caller execution path)
+
+Every scenario carries `caller_steps:` — the legacy persona free-generation path is
+removed, not branched. The AI generates language only; it never decides WHAT happens
+next, and nothing it produces reaches the agent without passing validation:
+
+```text
+Scenario
+  │  caller_steps: say / do / wait / dtmf / interrupt / end
+  ▼
+Behavior Contract ── WHAT is locked (act · target · slots · constraints)
+  │
+  │  Orchestrator ── WHEN is locked (turn gate · timeouts · staleness · max_turns)
+  ▼
+AI Language Adapter ── HOW is adaptive (text-only LLM call, no audio session)
+  │
+  │  Contract Validator ── HARD GATE (claim ≠ evidence: act/target re-derived
+  │                         from utterance text; lexical + semantic tiers)
+  ▼
+VALID ──► wait agent silence ──► TTS (sherpa-onnx, OS fallback) ──► PCM
+  │                                                        │
+  │                                          BridgePublishSink ──► LiveKit mixer
+  │                                                        │        (speech layer;
+  │                                                        │         authored beds
+  │                                                        ▼         go to noise)
+  │                                                      Agent
+  │
+INVALID ──► retry (bounded, max_retries + 1 attempts)
+  │
+  └── exhausted ──► CALLER_BEHAVIOR_VIOLATION ──► FAIL (no fallback speech)
+```
+
+Invariants the suite pins (not aspirations — each has a regression test):
+
+- **No unvalidated utterance reaches the agent** — `test_contract_e2e_hard_boundary.py`;
+  mutation-checked (`test_contract_live_wiring.py`, Audit B).
+- **Rejected candidates never reach TTS/PCM/mixer** — synthesis happens only
+  after VALID.
+- **Authored audio never touches the speech layer** — `play_audio:` beds go to
+  the mixer's noise layer; a mixer without one is refused (`TRANSPORT_ERROR`),
+  never rerouted.
+- **The caller never talks over the agent** — both `say:` and `do:` wait for
+  agent silence (bounded 6 s) before publishing.
+- **`script.verify` / recovery asserts / `ended_by` understand both event
+  vocabularies** — legacy `sim.script.*` and contract `contract.*`.
+
+Details: [docs/contract-caller-wiring.md](docs/contract-caller-wiring.md) (design),
+[docs/caller-runtime-audit.md](docs/caller-runtime-audit.md) (reachability + audio
+invariant evidence), [docs/caller-phase-d-acceptance.md](docs/caller-phase-d-acceptance.md)
+(live-run acceptance checklist).
 
 ---
 
@@ -166,7 +216,7 @@ Mode details and config: [docs/telephony.md](docs/telephony.md). Templates: `inb
 | Manual phone QA | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Unit / mock STT | ❌ | ❌ | Partial | ❌ | ❌ |
 | In-repo agent tests | ⚠️ | ⚠️ | Varies | ❌ | Often coupled |
-| **lks** | ✅ LiveKit | ✅ Gemini Live / OpenAI Realtime | ✅ Full | ✅ | ✅ |
+| **lks** | ✅ LiveKit | ✅ contract-validated (Gemini / OpenAI text) | ✅ Full | ✅ | ✅ |
 
 **When to use lks:**
 - Regression suites for LiveKit voice agents
@@ -175,7 +225,7 @@ Mode details and config: [docs/telephony.md](docs/telephony.md). Templates: `inb
 
 **When it might not be ideal:**
 - Pure text chatbots with no LiveKit room
-- Offline environments without LiveKit + an active caller provider API (Gemini Live or OpenAI Realtime)
+- Offline environments without LiveKit + an active text-backend API key (Gemini or OpenAI)
 
 ---
 
@@ -314,8 +364,8 @@ Target-only data lives under `<target>/.agent-sim/` (**gitignored**). Created by
 | `livekit.api_key` / `api_secret` | yes | Server API credentials |
 | `livekit.agent_name` | yes | Must match worker dispatch name |
 | `livekit.dispatch_metadata` | no | Default opaque JSON **string** for all runs |
-| `simulator.api_key` | yes | Key of the **active** caller provider (`google` → Gemini, `openai` → OpenAI) |
-| `simulator.provider` / `mode` | no | Caller brain: `google` (default) or `openai`; `realtime` mode (cascade reserved) |
+| `simulator.api_key` | yes | Key of the **active** text backend (`google` → Gemini, `openai` → OpenAI) |
+| `simulator.provider` / `mode` | no | Caller language backend: `google` (default) or `openai`; `realtime` mode (cascade reserved) |
 | `simulator.voice.model` / `voice` / `language` | no | Provider-neutral voice bag; defaults flash-live, Puck, `en-US` |
 | `simulator.profiles` | no | **Named caller profiles** — switch provider without editing the file |
 | `judge.model` | no | If set + PassCriteria → post-run LLM judge |
@@ -355,8 +405,8 @@ simulator:
 
 ```bash
 lks execute smoke-hello                    # `gemini` (marked default: true)
-lks execute smoke-hello --profile gemini   # Gemini Live caller
-lks execute smoke-hello --profile openai   # OpenAI Realtime caller
+lks execute smoke-hello --profile gemini   # Gemini text backend
+lks execute smoke-hello --profile openai   # OpenAI text backend
 ```
 
 **Selection** (`--profile` absent): if **exactly one** profile has
@@ -488,7 +538,8 @@ src/livekit_agent_simulator/
 ├── config.py                  # .agent-sim/config.yaml
 ├── preflight.py
 ├── asserts.py / suite.py      # CI gates
-├── callers/                   # Live caller (gemini / openai)
+├── caller_contract/           # the caller: driver · validator · adapter · planner · DSL
+├── callers/                   # LiveKit mic/mixer plumbing (gemini / openai bridges)
 ├── livekit/                   # room, dispatch, observe
 ├── audio/ · script/ · plugins/
 └── web/                       # report player server
@@ -499,7 +550,8 @@ src/livekit_agent_simulator/
 | Target `.agent-sim/` | Config, scenarios, reports, local plugins/cues |
 | Package `templates/` | Scaffold defaults + built-in cues |
 | LiveKit | Room, dispatch, data topics, transcription |
-| Caller provider (Gemini Live / OpenAI Realtime) | Simulated caller voice (+ optional judge) |
+| Text backend (per `simulator.provider`: Gemini / OpenAI) | Caller language generation — text-only, no audio session |
+| TTS (sherpa-onnx, OS fallback) | Validated text → PCM |
 
 ---
 
@@ -575,7 +627,7 @@ lks scenario-init my-case --root /path/to/target   # fresh scaffold with // guid
 ### What lks Doesn't Do (Yet)
 
 - **Not an agent framework** — it tests agents; it does not implement business tools
-- **Not offline-first** — needs LiveKit + an active caller-provider API (Gemini Live or OpenAI Realtime)
+- **Not offline-first** — needs LiveKit + an active text-backend API key (Gemini or OpenAI)
 - **Not a load generator** — one simulated caller per run (batch via `execute-all`)
 
 ### Known Limitations
@@ -584,7 +636,7 @@ lks scenario-init my-case --root /path/to/target   # fresh scaffold with // guid
 |------------|---------------|-------|
 | Black-box dispatch | ✅ | Opaque metadata only |
 | Multi-caller rooms | ❌ | Single sim participant |
-| Caller backends | ✅ | Gemini Live and OpenAI Realtime are supported paths (per `simulator.provider`) |
+| Caller backends | ✅ | Gemini and OpenAI text backends (per `simulator.provider`); speech via TTS, not Realtime audio |
 | Pixel-perfect ASR scoring | ❌ | Use PassCriteria + judge / asserts |
 | Secrets in config | ⚠️ Paste in gitignored YAML | Do not commit `.agent-sim/` |
 
