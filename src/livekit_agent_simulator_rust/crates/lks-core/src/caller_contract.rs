@@ -478,8 +478,17 @@ impl RuleBasedSemanticVerifier {
             // Pair markers (mirrors Python _PAIR_PATTERNS): two substrings
             // that only count together. Bare "confirm" would hijack genuine
             // confirm turns, so the ask marker is the pair, not one literal.
+            // Same for "adjustments": bare "adjustments" alone is too vague
+            // to claim, but "adjustments"/"adjustment" + "price" together
+            // marks a price-concession proposal (run 042).
             if act == "ask" && lowered.contains("confirm") && lowered.contains("price") {
                 count += 1;
+            }
+            if act == "negotiate"
+                && (lowered.contains("adjustments") || lowered.contains("adjustment"))
+                && lowered.contains("price")
+            {
+                count += 2;
             }
             if count > 0 {
                 hits.insert(act, count);

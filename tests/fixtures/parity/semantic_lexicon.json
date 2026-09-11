@@ -143,6 +143,35 @@
         ]
       },
       "source": "run-040"
+    },
+    {
+      "utterance": "Can you let me know what kind of adjustments might be possible on the price for the 2022 Honda CR-V?",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.85,
+        "target": "price",
+        "all_acts": [
+          "negotiate",
+          "ask"
+        ]
+      },
+      "source": "run-042"
+    },
+    {
+      "utterance": "Can you let me know the price of the 2022 Honda CR-V?",
+      "behavior": "ask",
+      "target": "price",
+      "expected": {
+        "act": "ask",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "run-042 guard: bare adjustments absent stays ask"
     }
   ]
 }

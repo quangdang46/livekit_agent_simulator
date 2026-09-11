@@ -177,6 +177,12 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         "flexib",
         "willing to",
         "go lower",
+        # Run 042 (Phase D): "Can you let me know what kind of adjustments
+        # might be possible on the price...?" failed closed as ask — "could/
+        # can you let me know" is an ask marker, but the ASK is about a price
+        # ADJUSTMENT (a concession), not a fact. "adjustments ... price"
+        # marks the proposal shape. Scoped as a PAIR below (both substrings
+        # required) so a plain "let me know the price" still scores ask.
     ),
     "confirm": ("so it's", "just to confirm", "is that right", "to confirm"),
     "deny": ("no thanks", "i don't think so", "that won't work"),
@@ -215,9 +221,13 @@ def _split_clauses(utterance: str) -> list[str]:
 # present). Used where either half alone would hijack another tier — e.g.
 # bare "confirm" would steal genuine confirm turns ("just to confirm, the
 # price is $25,800?"), but "confirm" + "price" together marks an ask about
-# the price. Format: act -> tuple of required-substring tuples.
+# the price. Same for "adjustments": bare "adjustments" alone is too vague
+# to claim, but "adjustments" + "price" together marks a price-concession
+# proposal (negotiate), beating the "let me know" ask marker on count
+# (run 042). Format: act -> tuple of required-substring tuples.
 _PAIR_PATTERNS: dict[str, tuple[tuple[str, ...], ...]] = {
     "ask": (("confirm", "price"),),
+    "negotiate": (("adjustments", "price"), ("adjustment", "price")),
 }
 
 
