@@ -338,12 +338,12 @@ async def run_contract_driver_path(
     first_speaker = getattr(run_spec, "first_speaker", "user") or "user"
     persona = getattr(scenario, "persona", None)
 
-    # Compatibility bridge (DEPRECATED, removal gate: all templates must
-    # author interaction: explicitly — see interrupt-rate-medium.yaml):
+    # Compatibility bridge (DEPRECATED, removal gate: no caller_actions
+    # scenario may rely on it silently — every use emits contract.compat_bridge
+    # so remaining users are visible in reports; delete once zero runs emit it):
     # persona speech_conditions.interruption_* still fills a missing
     # per-action interaction on do: steps. Explicit interaction wins.
-    # Warns once per run (contract.compat_bridge) so remaining users are
-    # visible in reports. silent_mode below has the same status.
+    # silent_mode below has the same status.
     persona_interrupt: dict[str, Any] = {}
     sc = (persona or {}).get("speech_conditions") or {}
     if isinstance(sc, dict):
