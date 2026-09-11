@@ -134,7 +134,7 @@
       "target": "price",
       "expected": {
         "act": "ask",
-        "confidence": 0.75,
+        "confidence": 0.85,
         "target": "price",
         "all_acts": [
           "ask"
@@ -169,6 +169,20 @@
         ]
       },
       "source": "neighbor probe of run-020 failure"
+    },
+    {
+      "utterance": "I'm specifically interested in the price for the 2022 Honda CR-V.",
+      "behavior": "ask",
+      "target": "price",
+      "expected": {
+        "act": "ask",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "run 022 behavior_violation"
     }
   ]
 }

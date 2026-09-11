@@ -254,6 +254,9 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 "asking about",
                 "provide the price",
                 "provide its price",
+                // Run 022 (Phase D): "I'm specifically interested in the
+                // price..." — interest + price topic, no question word.
+                "interested in",
             ],
         ),
         (

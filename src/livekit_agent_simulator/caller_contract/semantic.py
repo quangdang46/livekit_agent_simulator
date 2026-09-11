@@ -127,6 +127,13 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         "asking about",
         "provide the price",
         "provide its price",
+        # Run 022 (Phase D): "I'm specifically interested in the price..."
+        # failed closed at 0.2 — interest + price topic with no question
+        # word and no other ask marker. "interested in" marks
+        # information-seeking intent. Narrow: a bare "interested in" without
+        # a topic match still scores only this one hit (0.75, not 0.92), and
+        # the target gate independently requires price evidence.
+        "interested in",
     ),
     # Run 016 (Phase D): "Is there any flexibility on the price?" failed
     # closed at 0.2 — no pattern matched a plain flexibility ask, the most
