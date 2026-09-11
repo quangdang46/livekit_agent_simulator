@@ -506,3 +506,66 @@ def test_record_replay_vector_matches_python_primitives() -> None:
         assert out.attempts == case["expected_attempts"], case
         assert (out.candidate is None) == case["expected_candidate_null"], case
         assert out.result.verdict.value == case["expected_verdict"], case
+
+
+def test_observer_transcript_vector_matches_python_logic(tmp_path: Path) -> None:
+    """Observer.on_transcript dedupe/backchannel/preamble parity vector.
+
+    Same fixture as the Rust side's `lks-core::observer::parity_tests`
+    (crates/lks-core/src/observer.rs) — replayed here against the REAL
+    `Observer` class (mirrors tests/test_observer.py's `_observer` helper,
+    but driven from the shared JSON fixture instead of inline literals).
+    """
+    from unittest.mock import MagicMock
+
+    from livekit_agent_simulator.config import ObserveConfig
+    from livekit_agent_simulator.livekit.observer import Observer
+    from livekit_agent_simulator.logging.event_writer import EventWriter
+
+    data = json.loads((FIXTURES_DIR / "observer_transcript.json").read_text(encoding="utf-8"))
+
+    for case in data["cases"]:
+        cfg = case["config"]
+        observe = ObserveConfig(
+            transcript_dedupe_window_ms=cfg.get("transcript_dedupe_window_ms", 15000)
+        )
+        report_dir = tmp_path / "reports" / case["name"]
+        writer = EventWriter(f"r-{case['name']}", report_dir, timezone_name="UTC")
+        obs = Observer(
+            MagicMock(),
+            writer,
+            observe,
+            agent_identity=cfg.get("agent_identity", "agent-1"),
+            sim_identity=cfg.get("sim_identity", "sim-1"),
+            first_speaker=cfg.get("first_speaker", "agent"),
+        )
+
+        for step in case["steps"]:
+            obs.on_transcript(
+                step["role"],
+                step["text"],
+                final=step.get("final", True),
+                segment_id=step.get("segment_id"),
+                source=step["source"],
+            )
+
+        for expected in case.get("expect_events", []):
+            kind = expected["kind"]
+            matches = [e for e in writer._events if e["kind"] == kind]
+            assert matches, f"case {case['name']}: expected at least one {kind} event, found none"
+            spec_contains = expected.get("spec_contains")
+            if spec_contains:
+                found = any(
+                    all(m["spec"].get(k) == v for k, v in spec_contains.items())
+                    for m in matches
+                )
+                assert found, f"case {case['name']}: no {kind} event matched {spec_contains}"
+
+        for kind, expected_count in case.get("expect_event_counts", {}).items():
+            actual = len([e for e in writer._events if e["kind"] == kind])
+            assert actual == expected_count, (
+                f"case {case['name']}: expected {expected_count} {kind} event(s), found {actual}"
+            )
+
+        if "expect_final_turn" in case:
+            assert obs.turn == case["expect_final_turn"], f"case {case['name']}: final turn mismatch"

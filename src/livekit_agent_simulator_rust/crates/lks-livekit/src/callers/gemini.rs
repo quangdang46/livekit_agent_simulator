@@ -103,7 +103,12 @@ impl GeminiCallerBridge {
             &self.identity,
             &self.room_name,
         )?;
-        let (room, room_events) = connect_room(&livekit_cfg.url, &token, &self.room_name).await?;
+        let observe_gate = crate::room::RoomObserveGate {
+            lk_transcription: self.observe.lk_transcription,
+            lk_agent_session: self.observe.lk_agent_session,
+        };
+        let (room, room_events) =
+            connect_room(&livekit_cfg.url, &token, &self.room_name, observe_gate).await?;
         let source = super::openai::publish_mic_shared(&room)?;
         let source = Arc::new(source);
 
@@ -210,9 +215,26 @@ impl GeminiCallerBridge {
             mic_effects,
         ));
 
+        // Shared Observer (lks-core::observer) — the single chokepoint for
+        // every transcript source, matching Python's Observer.on_transcript.
+        // GeminiCallerBridge has no tracked agent identity or first_speaker
+        // today (pre-existing gap, not introduced here) — role is inferred
+        // by exclusion elsewhere (see the room-events loop below), and
+        // first_speaker defaults to "agent".
+        let observer_cfg = lks_core::observer::ObserverConfig {
+            agent_identity: String::new(),
+            sim_identity: self.identity.clone(),
+            transcript_dedupe_window_ms: self.observe.transcript_dedupe_window_ms,
+            ..Default::default()
+        };
+        let observer = std::sync::Arc::new(tokio::sync::Mutex::new(
+            lks_core::observer::Observer::new(observer_cfg),
+        ));
+
         // Gemini events → mic + transcripts.
         let writer = self.writer.clone();
         let session_rx = session.clone();
+        let observer_gemini = observer.clone();
         let gemini_task = tokio::spawn(async move {
             let mut agent_text = String::new();
             let mut caller_text = String::new();
@@ -247,23 +269,26 @@ impl GeminiCallerBridge {
                         }
                     }
                     ServerEvent::TurnComplete => {
+                        // Phase 3: converge onto the shared Observer, matching
+                        // Python's Observer.on_transcript (see
+                        // docs/plans/PLAN-20260813-rust-full-port.md Appendix F).
+                        // NOTE: gemini.rs has no caller-final path today (no
+                        // InputTranscription finalization/turn advance) — a
+                        // pre-existing gap, not introduced by this migration;
+                        // only the existing agent-final path is ported here.
                         let t = agent_text.trim().to_string();
                         if !t.is_empty() {
+                            let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
                             let mut w = writer.lock().await;
-                            w.update_dialogue("agent", &t, true, None);
-                            w.emit(
-                                "transcript.agent.final",
-                                Some(
-                                    &serde_json::json!({"text": t})
-                                        .as_object()
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                ),
+                            observer_gemini.lock().await.on_transcript(
+                                &mut w,
+                                "agent",
+                                &t,
+                                true,
+                                None,
                                 "sim.gemini",
-                                None,
-                                None,
-                                false,
-                                None,
+                                std::time::Instant::now(),
+                                now_wall_ms,
                             );
                         }
                         agent_text.clear();
@@ -321,6 +346,9 @@ impl GeminiCallerBridge {
         data_router.on_transcript = Some(Box::new(|_role, _text, _source| {
             // Consumed per Python; model-session transcript pipeline drives
             // turn tracking in this build.
+            // TODO(follow-up): route through the shared `observer`
+            // (constructed above, before `gemini_task`) once this closure
+            // becomes async-lock-aware — same open item as openai.rs.
         }));
         let writer_obs = self.writer.clone();
         loop {
@@ -395,6 +423,42 @@ impl GeminiCallerBridge {
                                 let mut w = writer_obs.lock().await;
                                 data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
                             }
+                        }
+                        Ok(SimRoomEvent::TextStream { participant_identity, text, final_, segment_id, .. }) => {
+                            // lk.transcription path through the shared Observer
+                            // (dedup/backchannel/preamble ported from observer.py,
+                            // see lks-core::observer). gemini.rs has no tracked
+                            // agent_identity today, so infer role by exclusion
+                            // (the sim's own identity is the only non-agent
+                            // participant).
+                            if !text.trim().is_empty() {
+                                let role = if participant_identity == self.identity { "user" } else { "agent" };
+                                let mut w = writer_obs.lock().await;
+                                let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                observer.lock().await.on_transcript(
+                                    &mut w,
+                                    role,
+                                    &text,
+                                    final_,
+                                    segment_id.as_deref(),
+                                    "lk.transcription",
+                                    std::time::Instant::now(),
+                                    now_wall_ms,
+                                );
+                            }
+                        }
+                        Ok(SimRoomEvent::ByteStream { data, .. }) => {
+                            // Pure wiring into the already-correct decoder/dispatcher
+                            // (SessionObserver::handle_event via handle_session_bytes).
+                            let mut w = writer_obs.lock().await;
+                            crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                        }
+                        Ok(SimRoomEvent::StreamError { topic, error }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("where".into(), serde_json::Value::String(topic.clone()));
+                            spec_m.insert("error".into(), serde_json::Value::String(error));
+                            w.emit("observer.error", Some(&spec_m), &topic, None, None, false, None);
                         }
                         _ => {}
                     }

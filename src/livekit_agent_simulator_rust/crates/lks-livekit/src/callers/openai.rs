@@ -134,59 +134,63 @@ impl OpenAiCallerBridge {
     pub const SIM_IDENTITY: &str = "lks-caller";
     pub const SIM_NAME: &str = "Agent Simulator Caller";
 
-    /// Port of Python observer on_transcript user arm: each caller final
-    /// advances the turn counter BEFORE it is emitted (observer.py:521
-    /// `self.turn += 1; self.writer.begin_turn(self.turn)`). This is what
-    /// drives the max_turns end condition — the turn count is the number of
-    /// caller turns, not agent replies.
-    async fn begin_user_turn(writer: &Arc<tokio::sync::Mutex<EventWriter>>) {
+    /// Phase 3: caller finals (sim.openai) now converge onto the shared
+    /// `lks-core::observer::Observer` chokepoint instead of a private
+    /// begin_turn/turn_taking_ms tracker — matching Python, where
+    /// `Observer.on_transcript` is the SAME entry point for provider-native
+    /// deltas and `lk.transcription`, so cross-source dedup priority
+    /// actually functions (see docs/plans/PLAN-20260813-rust-full-port.md
+    /// Appendix F, `_accept_final`). `on_transcript` performs the dialogue
+    /// update, turn framing/advance, and `transcript.user.final` emission
+    /// that `begin_user_turn` + a manual emit previously duplicated.
+    async fn emit_user_final(
+        writer: &Arc<tokio::sync::Mutex<EventWriter>>,
+        observer: &Arc<tokio::sync::Mutex<lks_core::observer::Observer>>,
+        text: &str,
+    ) {
+        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
         let mut w = writer.lock().await;
-        let next = w.current_turn() + 1;
-        w.begin_turn(next);
+        observer.lock().await.on_transcript(
+            &mut w,
+            "user",
+            text,
+            true,
+            None,
+            "sim.openai",
+            std::time::Instant::now(),
+            now_wall_ms,
+        );
     }
 
-    /// Port of Python observer on_transcript turn framing: an agent final that
-    /// follows a caller final carries `turn_taking_ms` (monotonic gap), and
-    /// `begin_turn` advances the turn counter. Without it the report shows
-    /// turn_taking_ms nulls/0 and turns never advance.
+    /// Phase 3: same convergence for agent finals — `on_transcript` performs
+    /// the dialogue update, turn framing (opens turn 1 if needed,
+    /// `turn_taking_ms` when this is the first reply of the turn), and
+    /// `transcript.agent.final` emission that `emit_agent_final`'s manual
+    /// logic previously duplicated. The `sim.heard_agent` mirror + activity
+    /// timestamp are openai-bridge-specific side effects, kept here.
     async fn emit_agent_final(
         writer: &Arc<tokio::sync::Mutex<EventWriter>>,
+        observer: &Arc<tokio::sync::Mutex<lks_core::observer::Observer>>,
         text: &str,
-        last_user_final_mono: &mut Option<std::time::Instant>,
-        agent_replied_this_turn: &mut bool,
     ) {
         let t = text.trim().to_string();
         if t.is_empty() {
             return;
         }
-        let mut w = writer.lock().await;
-        // Observer turn framing: the first agent final after a caller turn
-        // opens turn 1 and advances the counter (port of observer.py
-        // on_transcript agent arm — begin_turn(turn)). All events must carry
-        // a real turn, or the web player groups transcripts under turn 0 and
-        // the agent lines never show.
-        let turn = w.current_turn();
-        if turn == 0 {
-            w.begin_turn(1);
+        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+        {
+            let mut w = writer.lock().await;
+            observer.lock().await.on_transcript(
+                &mut w,
+                "agent",
+                &t,
+                true,
+                None,
+                "sim.openai",
+                std::time::Instant::now(),
+                now_wall_ms,
+            );
         }
-        let mut spec_m = serde_json::Map::new();
-        spec_m.insert("text".into(), json!(t));
-        if let Some(lu) = *last_user_final_mono {
-            if !*agent_replied_this_turn {
-                let ttm = lu.elapsed().as_millis() as i64;
-                spec_m.insert("turn_taking_ms".into(), json!(ttm));
-            }
-        }
-        w.update_dialogue("agent", &t, true, None);
-        w.emit(
-            "transcript.agent.final",
-            Some(&spec_m),
-            "sim.openai",
-            None,
-            None,
-            false,
-            None,
-        );
         crate::callers::openai::LAST_ANY_ACTIVITY_MS.store(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -194,7 +198,6 @@ impl OpenAiCallerBridge {
                 .unwrap_or(0),
             std::sync::atomic::Ordering::SeqCst,
         );
-        drop(w);
         // sim.heard_agent (port of openai.py:1202).
         let mut w = writer.lock().await;
         w.emit(
@@ -211,7 +214,6 @@ impl OpenAiCallerBridge {
             false,
             None,
         );
-        *agent_replied_this_turn = true;
     }
     pub fn with_shared_mic(mut self, shared: crate::script::SharedMicSource) -> Self {
         self.shared_mic = Some(shared);
@@ -276,7 +278,12 @@ impl OpenAiCallerBridge {
             &self.identity,
             &self.room_name,
         )?;
-        let (room, room_events) = connect_room(&livekit_cfg.url, &token, &self.room_name).await?;
+        let observe_gate = crate::room::RoomObserveGate {
+            lk_transcription: self.observe.lk_transcription,
+            lk_agent_session: self.observe.lk_agent_session,
+        };
+        let (room, room_events) =
+            connect_room(&livekit_cfg.url, &token, &self.room_name, observe_gate).await?;
         // sim.connected (port of webrtc.py sim_leg connect).
         {
             let mut w = self.writer.lock().await;
@@ -390,6 +397,22 @@ impl OpenAiCallerBridge {
         // AgentJoinTimeout on deadline).
         let agent_identity =
             crate::dispatch::wait_for_agent_join(&api_host, livekit_cfg, &self.room_name).await?;
+        // Shared Observer (lks-core::observer) — the single chokepoint for
+        // every transcript source (sim.openai deltas AND lk.transcription),
+        // matching Python's Observer.on_transcript. Constructed here (agent
+        // identity known) so it can be threaded into both pump_openai_events
+        // (sim.openai turns) and the room-events select loop below
+        // (lk.transcription turns).
+        let observer_cfg = lks_core::observer::ObserverConfig {
+            agent_identity: agent_identity.clone(),
+            sim_identity: self.identity.clone(),
+            first_speaker: self.first_speaker.clone(),
+            transcript_dedupe_window_ms: self.observe.transcript_dedupe_window_ms,
+            ..Default::default()
+        };
+        let observer = std::sync::Arc::new(tokio::sync::Mutex::new(
+            lks_core::observer::Observer::new(observer_cfg),
+        ));
         {
             let mut w = self.writer.lock().await;
             let mut spec_m = serde_json::Map::new();
@@ -555,6 +578,7 @@ impl OpenAiCallerBridge {
             out_tx.clone(),
             ws_msg_tx.clone(),
             self.writer.clone(),
+            observer.clone(),
             end_rx.resubscribe(),
             response_in_flight.clone(),
             end_tx.clone(),
@@ -586,6 +610,8 @@ impl OpenAiCallerBridge {
             // Transcript payloads published on data topics are consumed (not
             // data.message) per Python; the model-session transcript pipeline
             // already drives turn tracking in this build.
+            // TODO(follow-up): route through the shared `observer` —
+            // needs the DataRouter callback to become async-lock-aware first.
         }));
         let writer_obs = self.writer.clone();
         let mut disconnect_rx = end_rx.resubscribe();
@@ -773,6 +799,41 @@ impl OpenAiCallerBridge {
                                 let mut w = writer_obs.lock().await;
                                 data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
                             }
+                        }
+                        Ok(SimRoomEvent::TextStream { participant_identity, text, final_, segment_id, .. }) => {
+                            // lk.transcription path through the shared Observer
+                            // (dedup/backchannel/preamble ported from observer.py,
+                            // see lks-core::observer). sim.openai-sourced turns
+                            // converge onto the same instance (Phase 3), so
+                            // cross-source dedup priority functions as designed.
+                            if !text.trim().is_empty() {
+                                let role = if participant_identity == agent_identity { "agent" } else { "user" };
+                                let mut w = writer_obs.lock().await;
+                                let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                observer.lock().await.on_transcript(
+                                    &mut w,
+                                    role,
+                                    &text,
+                                    final_,
+                                    segment_id.as_deref(),
+                                    "lk.transcription",
+                                    std::time::Instant::now(),
+                                    now_wall_ms,
+                                );
+                            }
+                        }
+                        Ok(SimRoomEvent::ByteStream { data, .. }) => {
+                            // Pure wiring into the already-correct decoder/dispatcher
+                            // (SessionObserver::handle_event via handle_session_bytes).
+                            let mut w = writer_obs.lock().await;
+                            crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                        }
+                        Ok(SimRoomEvent::StreamError { topic, error }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("where".into(), json!(topic));
+                            spec_m.insert("error".into(), json!(error));
+                            w.emit("observer.error", Some(&spec_m), &topic, None, None, false, None);
                         }
                         _ => {}
                     }
@@ -1060,15 +1121,13 @@ async fn pump_openai_events(
     out_tx: mpsc::Sender<Vec<i16>>,
     ws_tx: mpsc::Sender<Message>,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
+    observer: Arc<tokio::sync::Mutex<lks_core::observer::Observer>>,
     _end_call: broadcast::Receiver<()>,
     response_in_flight: Arc<AtomicBool>,
     end_tx: broadcast::Sender<()>,
     max_turns: i64,
 ) {
     let mut agent_text = String::new();
-    // Observer turn framing state (port of observer.py on_transcript).
-    let mut last_user_final_mono: Option<std::time::Instant> = None;
-    let mut agent_replied_this_turn = false;
     let mut caller_text = String::new();
     let end_tx = end_tx.clone();
     loop {
@@ -1137,24 +1196,12 @@ async fn pump_openai_events(
                         let farewell = end_call::contains_farewell_signal(&caller_text);
                         let clean = end_call::strip_end_call_signal(&t);
                         if !clean.is_empty() {
-                            last_user_final_mono = Some(std::time::Instant::now());
-                            agent_replied_this_turn = false;
-                            OpenAiCallerBridge::begin_user_turn(&writer).await;
-                            let mut w = writer.lock().await;
-                            w.update_dialogue("user", &clean, true, None);
-                            w.emit(
-                                "transcript.user.final",
-                                spec(serde_json::json!({"text": clean})).as_ref(),
-                                "sim.openai",
-                                None,
-                                None,
-                                false,
-                                None,
-                            );
+                            OpenAiCallerBridge::emit_user_final(&writer, &observer, &clean).await;
                             crate::callers::openai::LAST_ANY_ACTIVITY_MS.store(
                                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
                                 std::sync::atomic::Ordering::SeqCst,
                             );
+                            let mut w = writer.lock().await;
                             let mut src = serde_json::Map::new();
                             src.insert("provider".into(), json!("openai"));
                             src.insert("voice_gain".into(), json!(1.0));
@@ -1214,27 +1261,13 @@ async fn pump_openai_events(
                         // uses strip_end_call_signal when not script-pending).
                         let clean = end_call::strip_end_call_signal(&t);
                         if !clean.is_empty() {
-                            // Observer turn framing: a caller final opens a new
-                            // turn (port of observer.py on_transcript user arm).
-                            last_user_final_mono = Some(std::time::Instant::now());
-                            agent_replied_this_turn = false;
-                            OpenAiCallerBridge::begin_user_turn(&writer).await;
-                            let mut w = writer.lock().await;
-                            w.update_dialogue("user", &clean, true, None);
-                            w.emit(
-                                "transcript.user.final",
-                                spec(serde_json::json!({"text": clean})).as_ref(),
-                                "sim.openai",
-                                None,
-                                None,
-                                false,
-                                None,
-                            );
+                            OpenAiCallerBridge::emit_user_final(&writer, &observer, &clean).await;
                             crate::callers::openai::LAST_ANY_ACTIVITY_MS.store(
                                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
                                 std::sync::atomic::Ordering::SeqCst,
                             );
                             // sim.caller.audio_source_start once per utterance.
+                            let mut w = writer.lock().await;
                             let mut src = serde_json::Map::new();
                             src.insert("provider".into(), json!("openai"));
                             src.insert("voice_gain".into(), json!(1.0));
@@ -1304,13 +1337,7 @@ async fn pump_openai_events(
                         // (port of openai.py _on_agent_transcript_done).
                         let t = (event.get("transcript").and_then(|v| v.as_str()).unwrap_or("")).trim().to_string();
                         if !t.is_empty() {
-                            OpenAiCallerBridge::emit_agent_final(
-                                &writer,
-                                &t,
-                                &mut last_user_final_mono,
-                                &mut agent_replied_this_turn,
-                            )
-                            .await;
+                            OpenAiCallerBridge::emit_agent_final(&writer, &observer, &t).await;
                             // max_turns reached after the agent replied — end the
                             // run (port of run_orchestrator.py:769 "max_turns").
                             if max_turns > 0 {
@@ -1347,13 +1374,7 @@ async fn pump_openai_events(
                         // final transcript (port of openai.py _on_response_done
                         // flush — without this a caller-final utterance whose
                         // `.done` never arrived would strand un-finalized).
-                        OpenAiCallerBridge::emit_agent_final(
-                            &writer,
-                            &agent_text,
-                            &mut last_user_final_mono,
-                            &mut agent_replied_this_turn,
-                        )
-                        .await;
+                        OpenAiCallerBridge::emit_agent_final(&writer, &observer, &agent_text).await;
                         // max_turns reached after the agent replied — end the
                         // run (port of run_orchestrator.py:769 "max_turns").
                         if max_turns > 0 {

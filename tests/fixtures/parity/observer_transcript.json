@@ -1,0 +1,118 @@
+{
+  "_comment": "Observer.on_transcript parity vectors — replayed identically by tests/test_parity_vectors.py (Python, against the real Observer class) and crates/lks-core/src/observer.rs's parity_tests module (Rust). Cases 1-6 mirror tests/test_observer.py's dedupe/backchannel/preamble scenarios (excludes the unrelated RMS audio-onset test, out of scope for this port).",
+  "cases": [
+    {
+      "name": "dedupe_prefers_sim_over_lk_user",
+      "source_test": "tests/test_observer.py::test_dedupe_user_final_prefers_sim_gemini_over_lk",
+      "config": {
+        "agent_identity": "agent-1",
+        "sim_identity": "sim-1",
+        "first_speaker": "user",
+        "transcript_dedupe_window_ms": 5000
+      },
+      "steps": [
+        {"role": "user", "text": "hello there this is a test", "final": true, "source": "sim.gemini", "at_mono_ms": 0},
+        {"role": "user", "text": "hello there this is a test", "final": true, "source": "lk.transcription", "at_mono_ms": 200}
+      ],
+      "expect_events": [
+        {"kind": "transcript.user.final", "spec_contains": {"text": "hello there this is a test"}}
+      ],
+      "expect_event_counts": {"transcript.user.final": 1},
+      "expect_final_turn": 1
+    },
+    {
+      "name": "dedupe_prefers_data_over_lk_agent",
+      "source_test": "tests/test_observer.py::test_dedupe_agent_final_prefers_data_topic_over_lk",
+      "config": {
+        "agent_identity": "agent-1",
+        "sim_identity": "sim-1",
+        "first_speaker": "agent",
+        "transcript_dedupe_window_ms": 5000
+      },
+      "steps": [
+        {"role": "user", "text": "hello", "final": true, "source": "sim.gemini", "at_mono_ms": 0},
+        {"role": "agent", "text": "hello, how can I help you", "final": true, "source": "app.transcript", "at_mono_ms": 100},
+        {"role": "agent", "text": "hello, how can I help you", "final": true, "source": "lk.transcription", "at_mono_ms": 300}
+      ],
+      "expect_events": [
+        {"kind": "transcript.agent.final", "spec_contains": {"text": "hello, how can I help you"}}
+      ],
+      "expect_event_counts": {"transcript.agent.final": 1},
+      "expect_final_turn": 1
+    },
+    {
+      "name": "agent_preamble_not_counted",
+      "source_test": "tests/test_observer.py::test_agent_preamble_not_counted_when_user_speaks_first",
+      "config": {
+        "agent_identity": "agent-1",
+        "sim_identity": "sim-1",
+        "first_speaker": "user",
+        "transcript_dedupe_window_ms": 5000
+      },
+      "steps": [
+        {"role": "agent", "text": "System UI artifact", "final": true, "source": "lk.transcription", "at_mono_ms": 0},
+        {"role": "user", "text": "hello is anyone there", "final": true, "source": "sim.gemini", "at_mono_ms": 200}
+      ],
+      "expect_events": [
+        {"kind": "transcript.agent.preamble", "spec_contains": {"text": "System UI artifact"}},
+        {"kind": "transcript.user.final", "spec_contains": {"text": "hello is anyone there"}}
+      ],
+      "expect_event_counts": {"transcript.agent.preamble": 1, "transcript.user.final": 1},
+      "expect_final_turn": 1
+    },
+    {
+      "name": "late_user_echo_not_new_turn",
+      "source_test": "tests/test_observer.py::test_late_user_echo_after_agent_reply_not_new_turn",
+      "config": {
+        "agent_identity": "agent-1",
+        "sim_identity": "sim-1",
+        "first_speaker": "user",
+        "transcript_dedupe_window_ms": 5000
+      },
+      "steps": [
+        {"role": "user", "text": "hello there", "final": true, "source": "sim.gemini", "at_mono_ms": 0},
+        {"role": "agent", "text": "yes go ahead", "final": true, "source": "app.transcript", "at_mono_ms": 100},
+        {"role": "user", "text": "hello  there", "final": true, "source": "lk.transcription", "at_mono_ms": 300}
+      ],
+      "expect_event_counts": {"transcript.user.final": 1},
+      "expect_final_turn": 1
+    },
+    {
+      "name": "split_utterance_short_interjection_same_turn",
+      "source_test": "tests/test_observer.py::test_split_utterance_with_short_agent_interjection_stays_same_turn",
+      "config": {
+        "agent_identity": "agent-1",
+        "sim_identity": "sim-1",
+        "first_speaker": "user",
+        "transcript_dedupe_window_ms": 5000
+      },
+      "steps": [
+        {"role": "user", "text": "My name is Jane", "final": true, "source": "lk.transcription", "at_mono_ms": 0},
+        {"role": "agent", "text": "Got it", "final": true, "source": "app.transcript", "at_mono_ms": 100},
+        {"role": "user", "text": "and the company is Acme", "final": true, "source": "lk.transcription", "at_mono_ms": 300}
+      ],
+      "expect_events": [
+        {"kind": "transcript.user.final", "spec_contains": {"same_turn": true}}
+      ],
+      "expect_event_counts": {"transcript.user.final": 2},
+      "expect_final_turn": 1
+    },
+    {
+      "name": "new_turn_after_real_answer",
+      "source_test": "tests/test_observer.py::test_new_turn_starts_after_a_real_agent_answer",
+      "config": {
+        "agent_identity": "agent-1",
+        "sim_identity": "sim-1",
+        "first_speaker": "user",
+        "transcript_dedupe_window_ms": 5000
+      },
+      "steps": [
+        {"role": "user", "text": "My name is Jane", "final": true, "source": "lk.transcription", "at_mono_ms": 0},
+        {"role": "agent", "text": "Thanks Jane, could you tell me your company name as well, please?", "final": true, "source": "app.transcript", "at_mono_ms": 200},
+        {"role": "user", "text": "Acme Corp", "final": true, "source": "lk.transcription", "at_mono_ms": 400}
+      ],
+      "expect_event_counts": {"transcript.user.final": 2},
+      "expect_final_turn": 2
+    }
+  ]
+}

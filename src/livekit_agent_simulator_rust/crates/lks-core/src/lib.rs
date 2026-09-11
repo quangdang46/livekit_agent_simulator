@@ -27,6 +27,7 @@ pub mod judge;
 pub mod logging;
 pub mod metrics;
 pub mod ops;
+pub mod observer;
 pub mod optimize;
 pub mod persona_traits;
 pub mod plugin_bridge;
