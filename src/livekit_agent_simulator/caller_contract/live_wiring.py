@@ -10,14 +10,9 @@ Text backend selection mirrors ``cfg.simulator.provider`` (google|openai) so
 the same config key already used for the legacy bridge selects the do:
 generation backend too — no new config surface for this slice.
 
-Semantic verifier selection (PLAN-20260910 slice 3): reuses the EXISTING
-``judge:`` config block (already used by PassCriteria/asserts LLM judging,
-see evals/resolve.py) as the opt-in fallback flag — no new config surface.
-When ``cfg.judge`` resolves to a ready backend, ``LLMSemanticVerifier``
-(Tier-3) is wired in; otherwise ``ContractValidator`` falls back to its own
-default (``RuleBasedSemanticVerifier``, Tier-1) with zero behavior change for
-targets that never configured a judge. Swapping the backend touches ONLY
-this function — driver.py/orchestrator.py/validator.py/publish_sink.py are
+Semantic verifier selection (run 015, Phase D): Tier-1 rule-based baseline,
+unconditionally — see ``_build_semantic_verifier`` below for the live
+evidence — driver.py/orchestrator.py/validator.py/publish_sink.py are
 unchanged (validator.py already had the honest-target contract in place
 since ``02553c3``).
 
@@ -34,7 +29,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..audio.sapi_tts import TARGET_RATE, synthesize_pcm16_mono
-from ..evals.resolve import resolve_judge
 from . import EndedBy
 from .agent_wait import ObserverAgentWait
 from .driver import ContractCallerDriver, DriverResult
@@ -42,7 +36,6 @@ from .language_adapter import AILanguageAdapter
 from .orchestrator import Orchestrator
 from .publish_sink import DEFAULT_DRAIN_TIMEOUT_S, BridgePublishSink
 from .semantic import RuleBasedSemanticVerifier
-from .semantic_llm import LLMSemanticVerifier
 from .text_backends import GeminiTextBackend, OpenAITextBackend
 from .validator import ContractValidator, SemanticVerifierProtocol
 
@@ -74,44 +67,35 @@ def _build_text_backend(cfg: Any) -> Any:
 
 
 def _build_semantic_verifier(cfg: Any) -> SemanticVerifierProtocol:
-    """Tier-3 (LLM judge) when a working judge credential exists; otherwise
-    the Tier-1 rule-based baseline — see module docstring.
+    """Semantic-verifier selection for run 015 (Phase D):
+    **Tier-1 rule-based baseline, unconditionally.**
 
-    Provider-aware: the ``judge:`` HTTP block serves PassCriteria/asserts
-    judging and may point at a proxy that cannot serve the synchronous
-    classify() path (run 010: HTTP 200 with empty content on every call).
-    When the simulator provider is google, the Gemini key already in hand
-    (same key the Live caller bridge uses) drives the judge directly via
-    generateContent — no dependency on the asserts-judge proxy. The HTTP
-    path is used only when the simulator provider is NOT google.
+    History: the original selection was provider-aware Tier-3 (an LLM judge).
+    Live evidence killed that design on the RUN path (distinct from the offline
+    CI path, see below):
+
+    - Runs 010–013 + the abandoned bridge commit: the asserts-judge HTTP proxy
+      (``judge:`` block) returns HTTP 200 with EMPTY content on every
+      synchronous classify() call — every attempt ended
+      ``VERIFIER_UNAVAILABLE``.
+    - Run 015 (Phase D): same failure through the public HTTP path.
+    - LiveKit-behavioral cost: a live turn cannot wait 2–4s per classify for a
+      non-authoritative paraphrase opinion that fails closed anyway.
+
+    Boundary made explicit: the Tier-3 LLM judge remains available for OFFLINE
+    use only — ``scripts/benchmark_semantic_judge.py`` (10/10 golden PASS) and
+    ``test_semantic_llm.py`` (mocked). On the run path we intentionally use
+    the Tier-1 rule-based baseline, which is also the tier the cross-language
+    parity vectors lock on both sides.
+
+    Also note the asymmetry this fixes: the TEXT generator on this path is the
+    simulator provider's own model (the ``simulator:`` block used for
+    ``_build_text_backend``). Selection here is pinned to rule-based
+    regardless of provider, endpoint_type, or the asserts-judge ``judge:``
+    block — those concern PassCriteria/asserts judging, not semantic
+    verification.
     """
-    sim_api_key = getattr(cfg.simulator, "api_key", None)
-    sim_provider = getattr(cfg.simulator, "provider", "openai")
-    if sim_provider == "google" and (sim_api_key or "").strip():
-        return LLMSemanticVerifier(
-            api_key=sim_api_key.strip(),
-            provider="gemini",
-            model="gemini-flash-latest",
-        )
-    resolved = resolve_judge(getattr(cfg, "judge", None), sim_api_key=sim_api_key)
-    if not resolved.ready:
-        return RuleBasedSemanticVerifier()
-    if resolved.mode == "http":
-        assert resolved.base_url and resolved.api_key
-        return LLMSemanticVerifier(
-            api_key=resolved.api_key,
-            provider=resolved.endpoint_type,
-            model=resolved.model,
-            base_url=resolved.base_url,
-            temperature=resolved.temperature,
-        )
-    assert resolved.sim_api_key
-    return LLMSemanticVerifier(
-        api_key=resolved.sim_api_key,
-        provider="gemini",
-        model=resolved.model,
-        temperature=resolved.temperature,
-    )
+    return RuleBasedSemanticVerifier()
 
 
 def _synthesize(text: str) -> bytes:

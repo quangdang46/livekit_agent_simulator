@@ -1,13 +1,12 @@
-"""Slice 3 acceptance: semantic verifier backend selection in live_wiring.py.
+"""Live-wiring acceptance: the run path uses the Tier-1 rule-based baseline.
 
-No network, no LiveKit — pure unit test of `_build_semantic_verifier`'s
-decision logic (PLAN-20260910 slice 3, provider-aware fix from run 010):
-the google simulator key drives the judge directly via generateContent
-(production evidence: the asserts-judge HTTP proxy returned empty content
-on every classify() call, failing all 3 attempts as VERIFIER_UNAVAILABLE).
-The HTTP `judge:` block is used only when the simulator provider is NOT
-google; absent/unresolvable credentials fall back to RuleBasedSemanticVerifier
-(zero regression, never skip validation).
+Run 015 (Phase D) pinned this: live evidence (runs 010-015) proved the
+synchronous Tier-3 classify() path unusable on runs — the asserts-judge HTTP
+proxy returns HTTP 200 with EMPTY content, so every attempt ended
+``VERIFIER_UNAVAILABLE``. The Tier-3 LLM judge remains for OFFLINE use only
+(``scripts/benchmark_semantic_judge.py``).
+
+No network, no LiveKit — pure unit tests of ``_build_semantic_verifier``.
 """
 
 from __future__ import annotations
@@ -16,97 +15,54 @@ from types import SimpleNamespace
 
 from livekit_agent_simulator.caller_contract.live_wiring import _build_semantic_verifier
 from livekit_agent_simulator.caller_contract.semantic import RuleBasedSemanticVerifier
-from livekit_agent_simulator.caller_contract.semantic_llm import LLMSemanticVerifier
 
 
-def _cfg(*, judge=None, sim_provider="google", sim_api_key="sim-key"):
+def _cfg(*, judge=None, sim_provider="openai", sim_api_key="sim-key"):
     return SimpleNamespace(
         simulator=SimpleNamespace(provider=sim_provider, api_key=sim_api_key),
         judge=judge,
     )
 
 
-def test_google_provider_uses_sim_key_directly_ignoring_broken_http_judge():
-    """Run-010 regression: simulator provider google + judge: HTTP proxy
-    that cannot serve classify() -> Gemini direct, never the proxy."""
+def test_run_path_ignores_a_ready_http_judge():
+    """Even a fully-resolved HTTP judge must NOT be selected on the run path.
+
+    This is the run-010/run-015 regression in reverse: previously these tests
+    asserted an LLMSemanticVerifier here, and every live run paid for it with
+    3x VERIFIER_UNAVAILABLE per turn. The ``judge:`` block now serves only
+    PassCriteria/asserts judging (evals/resolve.py), never semantic
+    verification.
+    """
     from livekit_agent_simulator.config import JudgeConfig
 
     judge = JudgeConfig(
         base_url="http://localhost:20128/v1",
-        api_key="sk-test",
-        model="wwwww",
-        endpoint_type="openai",
-        temperature=0.0,
-    )
-    verifier = _build_semantic_verifier(_cfg(judge=judge))
-    assert isinstance(verifier, LLMSemanticVerifier)
-    assert verifier.provider == "gemini"
-    assert verifier.api_key == "sim-key"
-    assert verifier.model == "gemini-flash-latest"
-
-
-def test_google_provider_without_judge_block_still_uses_sim_key():
-    verifier = _build_semantic_verifier(_cfg(judge=None))
-    assert isinstance(verifier, LLMSemanticVerifier)
-    assert verifier.provider == "gemini"
-
-
-def test_google_provider_without_any_key_falls_back_to_rule_based():
-    verifier = _build_semantic_verifier(_cfg(judge=None, sim_api_key=""))
-    assert isinstance(verifier, RuleBasedSemanticVerifier)
-
-
-def test_judge_missing_from_cfg_attr_does_not_crash():
-    """cfg objects without a `judge` attribute at all (older Config shape,
-    or a bare test double) must not crash `getattr(cfg, "judge", None)`."""
-    verifier = _build_semantic_verifier(SimpleNamespace(simulator=SimpleNamespace(provider="google", api_key="k")))
-    assert isinstance(verifier, LLMSemanticVerifier)
-    assert verifier.provider == "gemini"
-
-
-def test_openai_provider_http_judge_selects_llm_verifier_with_resolved_fields():
-    from livekit_agent_simulator.config import JudgeConfig
-
-    judge = JudgeConfig(
-        base_url="http://localhost:20128/v1",
-        api_key="sk-test",
-        model="wwwww",
-        endpoint_type="openai",
-        temperature=0.0,
-    )
-    verifier = _build_semantic_verifier(_cfg(judge=judge, sim_provider="openai"))
-    assert isinstance(verifier, LLMSemanticVerifier)
-    assert verifier.provider == "openai"
-    assert verifier.model == "wwwww"
-    assert verifier.base_url == "http://localhost:20128/v1"
-    assert verifier.api_key == "sk-test"
-
-
-def test_openai_provider_http_anthropic_judge_selects_anthropic_provider():
-    from livekit_agent_simulator.config import JudgeConfig
-
-    judge = JudgeConfig(
-        base_url="https://gateway.example/v1",
         api_key="sk-test",
         model="claude-x",
-        endpoint_type="anthropic",
+        endpoint_type="openai",
+        temperature=0.0,
     )
-    verifier = _build_semantic_verifier(_cfg(judge=judge, sim_provider="openai"))
-    assert isinstance(verifier, LLMSemanticVerifier)
-    assert verifier.provider == "anthropic"
+    for sim_provider in ("openai", "google"):
+        verifier = _build_semantic_verifier(_cfg(judge=judge, sim_provider=sim_provider))
+        assert isinstance(verifier, RuleBasedSemanticVerifier), sim_provider
 
 
-def test_openai_provider_no_judge_falls_back_to_rule_based():
-    verifier = _build_semantic_verifier(_cfg(judge=None, sim_provider="openai"))
+def test_run_path_uses_the_baseline_with_no_judge_configured():
+    for sim_provider in ("openai", "google"):
+        verifier = _build_semantic_verifier(_cfg(judge=None, sim_provider=sim_provider))
+        assert isinstance(verifier, RuleBasedSemanticVerifier), sim_provider
+
+
+def test_run_path_never_skips_validation():
+    """The baseline is fail-closed by construction: an unvalidated utterance
+    must never reach LiveKit, regardless of config shape."""
+    # cfg without a judge attribute at all (older Config shape, bare doubles)
+    verifier = _build_semantic_verifier(
+        SimpleNamespace(simulator=SimpleNamespace(provider="openai", api_key="k"))
+    )
     assert isinstance(verifier, RuleBasedSemanticVerifier)
-
-
-def test_openai_provider_judge_not_ready_falls_back_to_rule_based():
-    """base_url set without api_key -> resolve_judge.ready is False; must
-    fail SAFE to the baseline, never raise and never silently skip
-    validation (an unvalidated utterance must never reach LiveKit)."""
-    from livekit_agent_simulator.config import JudgeConfig
-
-    judge = JudgeConfig(base_url="http://localhost:20128/v1", api_key=None)
-    verifier = _build_semantic_verifier(_cfg(judge=judge, sim_provider="openai"))
+    # cfg without a simulator key either — nothing to resolve, still safe
+    verifier = _build_semantic_verifier(
+        SimpleNamespace(simulator=SimpleNamespace(provider="", api_key=""))
+    )
     assert isinstance(verifier, RuleBasedSemanticVerifier)
