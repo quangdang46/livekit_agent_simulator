@@ -394,10 +394,17 @@ def test_record_replay_vector_matches_python_primitives() -> None:
     assert RECORD_FORMAT_VERSION == data["format_version"]
     assert RECORD_FORMAT_V1 == data["v1_legacy_version"]
     for bad in data["rejected_versions"]:
-        with __import__("pytest").raises(ValueError):
+        with pytest.raises(ValueError):
             RunRecord.from_dict(
                 {"format_version": bad, "scenario_id": "x", "seed": 0, "attempts": []}
             )
+
+    # Malformed input reports its REAL cause: broken JSON is a parse error,
+    # wrong-shaped JSON is a shape error — never a generic "empty record".
+    with pytest.raises(json.JSONDecodeError):
+        RunRecord.from_json("{not json")
+    with pytest.raises(KeyError):
+        RunRecord.from_dict({"format_version": 2, "scenario_id": "s", "seed": 0})
 
     # v1 legacy: reads, observed None, neutral fallback once, then exhaustion.
     v1 = RunRecord.from_dict(data["v1_record"])
@@ -408,7 +415,7 @@ def test_record_replay_vector_matches_python_primitives() -> None:
     exp_fallback = data["v1_expected"]["fallback_observed"]
     assert fallback.act == exp_fallback["act"]
     assert fallback.confidence == exp_fallback["confidence"]
-    with __import__("pytest").raises(RuntimeError):
+    with pytest.raises(RuntimeError):
         verifier.classify("anything", None)
 
     # v2: round-trip, verbatim replay, identity rebuild, loud divergence.
@@ -427,15 +434,24 @@ def test_record_replay_vector_matches_python_primitives() -> None:
         exp_ident["turn_id"],
         exp_ident["generation_id"],
     )
-    backend.assert_verdict(Verdict.VALID)
-    backend.assert_outcome(failure_reason=None, ended_by="scenario")
-    with __import__("pytest").raises(ReplayMismatchError):
+    # Evidence fidelity: the recorded slot must survive the round trip —
+    # dropping it would lose the data a forensic replay needs to explain a
+    # slot verdict.
+    exp_slots = data["v2_expected"]["observed_slots_survive_roundtrip"]
+    assert v2_rt.attempts[0].observed["slots"] == exp_slots
+
+    backend.assert_verdict(Verdict(data["v2_expected"]["replayed_verdict"]))
+    exp_outcome = data["v2_expected"]["replayed_outcome"]
+    backend.assert_outcome(
+        failure_reason=exp_outcome["failure_reason"], ended_by=exp_outcome["ended_by"]
+    )
+    with pytest.raises(ReplayMismatchError):
         backend.assert_verdict(Verdict.INVALID)
-    with __import__("pytest").raises(ReplayMismatchError):
+    with pytest.raises(ReplayMismatchError):
         backend.assert_outcome(failure_reason="CALLER_BEHAVIOR_VIOLATION", ended_by="scenario")
-    with __import__("pytest").raises(ReplayMismatchError):
+    with pytest.raises(ReplayMismatchError):
         backend.assert_outcome(failure_reason=None, ended_by="timeout")
-    with __import__("pytest").raises(RuntimeError):
+    with pytest.raises(RuntimeError):
         backend.generate({})
 
     # Bounded retry: early exit on first VALID; exhaustion is max_retries+1

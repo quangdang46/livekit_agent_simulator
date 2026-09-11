@@ -44,7 +44,7 @@
         "verdict": "VALID",
         "reason": null,
         "retry_index": 0,
-        "observed": {"act": "negotiate", "target": null, "slots": {}, "confidence": 0.75, "all_acts": ["negotiate"]},
+        "observed": {"act": "negotiate", "target": "price", "slots": {"max_budget": 28000}, "confidence": 0.75, "all_acts": ["negotiate"]},
         "outcome_failure": null,
         "outcome_ended_by": "scenario"
       }
@@ -52,7 +52,11 @@
   },
   "v2_expected": {
     "replayed_utterance": "Would you consider $28,000?",
-    "rebuilt_identity": {"behavior_id": "b1", "turn_id": 1, "generation_id": 2, "context_version": 0}
+    "rebuilt_identity": {"behavior_id": "b1", "turn_id": 1, "generation_id": 2, "context_version": 0},
+    "replayed_verdict": "VALID",
+    "replayed_outcome": {"failure_reason": null, "ended_by": "scenario"},
+    "observed_slots_survive_roundtrip": {"max_budget": 28000},
+    "exhausted_classify_error_prefix": "VERIFIER_UNAVAILABLE"
   },
   "retry_cases": [
     {"max_retries": 2, "always_invalid": true, "expected_attempts": 3, "expected_candidate_null": true, "expected_verdict": "INVALID"},

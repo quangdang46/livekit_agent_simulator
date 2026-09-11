@@ -153,10 +153,27 @@ pub struct CandidateUtterance {
 #[derive(Debug, Clone)]
 pub struct ObservedAct {
     pub act: String,
-    #[allow(dead_code)]
     pub target: Option<String>,
+    /// Slot evidence re-derived from the utterance (mirrors Python's
+    /// ObservedAct.slots). The tier-1 rule backend never populates these;
+    /// a stronger backend and the replay path do.
+    pub slots: HashMap<String, Value>,
     pub confidence: f64,
     pub all_acts: Vec<String>,
+}
+
+impl ObservedAct {
+    /// Snapshot form used by the record path (mirrors Python's
+    /// `to_dict(observed)` capture).
+    pub fn to_snapshot(&self) -> ObservedActSnapshot {
+        ObservedActSnapshot {
+            act: self.act.clone(),
+            target: self.target.clone(),
+            slots: self.slots.clone(),
+            confidence: self.confidence,
+            all_acts: self.all_acts.clone(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -347,10 +364,69 @@ fn confidence_for(hit_count: usize) -> f64 {
     }
 }
 
+/// Semantic verification backend (mirrors Python's
+/// SemanticVerifierProtocol). `classify` re-derives the observed
+/// act/target/slots from the utterance text ALONE — it must never trust
+/// the candidate's claimed act/target/slots. Implemented by
+/// `RuleBasedSemanticVerifier` (tier 1) and `RecordedSemanticVerifier`
+/// (zero-AI replay), so the validator's enforcement boundary is the same
+/// object for both.
+pub trait SemanticVerifierProtocol {
+    fn classify(&mut self, utterance: &str, contract: &BehaviorContract) -> ObservedAct;
+
+    /// Evidence from the most recent `classify()`, as a recordable
+    /// snapshot. `None` when the backend keeps no meaningful evidence
+    /// (the stateless rule baseline) — mirrors Python's `record_observed`
+    /// capture, which is only populated by backends that carry evidence.
+    fn take_last_observed(&mut self) -> Option<ObservedActSnapshot> {
+        None
+    }
+
+    /// Error from the most recent `classify()`, if the backend failed to
+    /// produce evidence at all (as opposed to producing low-confidence
+    /// evidence). The validator maps this to
+    /// `Verdict::Error` / `VERIFIER_UNAVAILABLE`.
+    fn take_last_failure(&mut self) -> Option<String> {
+        None
+    }
+}
+
+/// Look up forbidden intents by name (shared by the validator's two
+/// signals so they can never drift apart).
+fn lexical_forbidden_intent_hit(utterance: &str, forbidden_intents: &[String]) -> Option<String> {
+    let lowered = utterance.to_lowercase();
+    let lexicon = default_intent_keywords();
+    for intent in forbidden_intents {
+        let keywords: Vec<&str> = lexicon
+            .iter()
+            .find(|(name, _)| *name == intent)
+            .map(|(_, kws)| kws.to_vec())
+            .unwrap_or_else(|| vec![]);
+        let hit = if keywords.is_empty() {
+            lowered.contains(&intent.replace('_', " "))
+        } else {
+            keywords.iter().any(|kw| lowered.contains(kw))
+        };
+        if hit {
+            return Some(intent.clone());
+        }
+    }
+    None
+}
+
 pub struct RuleBasedSemanticVerifier;
 
+impl SemanticVerifierProtocol for RuleBasedSemanticVerifier {
+    fn classify(&mut self, utterance: &str, contract: &BehaviorContract) -> ObservedAct {
+        self.classify_inherent(utterance, contract)
+    }
+}
+
 impl RuleBasedSemanticVerifier {
-    pub fn classify(&self, utterance: &str, contract: &BehaviorContract) -> ObservedAct {
+    /// Stateless classification (the tier-1 baseline keeps no cursor, so
+    /// this is the whole implementation; the trait impl just admits it
+    /// into the swappable-backend slot).
+    pub fn classify_inherent(&self, utterance: &str, contract: &BehaviorContract) -> ObservedAct {
         let lowered = utterance.to_lowercase();
 
         let mut hits: HashMap<&str, usize> = HashMap::new();
@@ -375,6 +451,7 @@ impl RuleBasedSemanticVerifier {
             return ObservedAct {
                 act: contract.behavior.clone(),
                 target: target_evidence(utterance, &contract.target),
+                slots: HashMap::new(),
                 confidence: NO_MATCH_CONFIDENCE,
                 all_acts,
             };
@@ -420,6 +497,7 @@ impl RuleBasedSemanticVerifier {
         ObservedAct {
             act: best_act,
             target,
+            slots: HashMap::new(),
             confidence: confidence_for(primary_hits),
             all_acts,
         }
@@ -461,38 +539,64 @@ fn slot_as_f64(value: Option<&Value>) -> Option<f64> {
     }
 }
 
-fn lexical_forbidden_intent_hit(utterance: &str, forbidden_intents: &[String]) -> Option<String> {
-    let lowered = utterance.to_lowercase();
-    let lexicon = default_intent_keywords();
-    for intent in forbidden_intents {
-        let keywords: Vec<&str> = lexicon
-            .iter()
-            .find(|(name, _)| *name == intent)
-            .map(|(_, kws)| kws.to_vec())
-            .unwrap_or_else(|| vec![]);
-        let hit = if keywords.is_empty() {
-            lowered.contains(&intent.replace('_', " "))
-        } else {
-            keywords.iter().any(|kw| lowered.contains(kw))
-        };
-        if hit {
-            return Some(intent.clone());
-        }
-    }
-    None
-}
-
 pub struct ContractValidator {
-    semantic_verifier: Option<RuleBasedSemanticVerifier>,
+    semantic_verifier: Option<Box<dyn SemanticVerifierProtocol>>,
+    /// Verifier failure from the most recent validate() (see
+    /// `take_verifier_failure`). Reset at the start of every validate.
+    recorded_failure: Option<String>,
 }
 
 impl ContractValidator {
-    pub fn new(semantic_verifier: Option<RuleBasedSemanticVerifier>) -> Self {
-        Self { semantic_verifier }
+    /// Build a validator around a swappable semantic backend. Passing
+    /// `None` constructs the tier-1 rule baseline automatically — mirrors
+    /// Python, where semantic verification is MANDATORY in every runtime
+    /// path and `None` is only for isolating the deterministic layer.
+    pub fn new(semantic_verifier: Option<Box<dyn SemanticVerifierProtocol>>) -> Self {
+        Self {
+            semantic_verifier: Some(
+                semantic_verifier.unwrap_or_else(|| Box::new(RuleBasedSemanticVerifier)),
+            ),
+            recorded_failure: None,
+        }
     }
 
+    /// Validator whose semantic step is fully disabled. Only for testing
+    /// the deterministic layer in isolation — never a runtime path
+    /// (epic invariant 1: an unvalidated utterance must never reach
+    /// LiveKit).
+    pub fn without_semantic_verifier() -> Self {
+        Self {
+            semantic_verifier: None,
+            recorded_failure: None,
+        }
+    }
+
+    /// Evidence from the most recent `validate()`, for the record path
+    /// (mirrors Python's `record_observed` list). Take (and clear) —
+    /// one call per validate, so the retry loop's trail can never
+    /// attribute one attempt's evidence to another.
+    pub fn take_last_observed(&mut self) -> Option<ObservedActSnapshot> {
+        self.semantic_verifier
+            .as_mut()
+            .and_then(|v| v.take_last_observed())
+    }
+
+    /// Error recorded by the semantic backend during the most recent
+    /// `validate()` (e.g. `RecordedSemanticVerifier` running out of
+    /// recorded evidence). Mirrors Python's validator mapping a verifier
+    /// exception to `Verdict::Error` / `VERIFIER_UNAVAILABLE` — a
+    /// backend failure must never look like PASS or like a plain
+    /// low-confidence UNKNOWN.
+    pub fn take_verifier_failure(&mut self) -> Option<String> {
+        self.recorded_failure.take()
+    }
+
+    /// `&mut self` (not `&self`): the semantic step may be a stateful
+    /// backend — `RecordedSemanticVerifier` advances a cursor through
+    /// recorded evidence, and mutating through a shared reference is what
+    /// kept it off the validator's trait slot before.
     pub fn validate(
-        &self,
+        &mut self,
         candidate: &CandidateUtterance,
         contract: &BehaviorContract,
     ) -> ValidationResult {
@@ -601,10 +705,33 @@ impl ContractValidator {
             };
         }
 
-        // 8. Optional semantic verifier.
-        if let Some(verifier) = &self.semantic_verifier {
-            let observed = verifier.classify(&candidate.utterance, contract);
+        // 8. Semantic verifier (mandatory in every runtime path; only
+        // `without_semantic_verifier()` skips it).
+        self.recorded_failure = None;
+        // Scoped to one call: `observed` + the backend's failure (if any)
+        // are lifted out here so the borrow on `self.semantic_verifier`
+        // ends before the verdict ladder below.
+        let (observed, verifier_failure) = match self.semantic_verifier.as_mut() {
+            None => (None, None),
+            Some(verifier) => {
+                let observed = verifier.classify(&candidate.utterance, contract);
+                let failure = verifier.take_last_failure();
+                (Some(observed), failure)
+            }
+        };
 
+        // A backend failure must never look like a plain low-confidence
+        // UNKNOWN: mirrors Python's validator catching the verifier
+        // exception and returning VERIFIER_UNAVAILABLE/ERROR.
+        if let Some(err) = verifier_failure {
+            self.recorded_failure = Some(err.clone());
+            return ValidationResult {
+                verdict: Verdict::Error,
+                reason: Some(format!("VERIFIER_UNAVAILABLE: {err}")),
+            };
+        }
+
+        if let Some(observed) = observed {
             if observed.confidence < SEMANTIC_CONFIDENCE_THRESHOLD {
                 return ValidationResult {
                     verdict: Verdict::Unknown,
@@ -657,6 +784,100 @@ impl ContractValidator {
             reason: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------
+// Bounded retry (mirrors validator.py::validate_with_retry): the runtime
+// safety mechanism, not just parity arithmetic. generate -> validate ->
+// retry up to max_retries times; stop at the FIRST VALID result. On
+// exhaustion the last (non-VALID) result is returned with candidate None,
+// and callers MUST map that to CALLER_BEHAVIOR_VIOLATION and stop — never
+// publish the rejected candidate.
+// ---------------------------------------------------------------------
+
+/// One entry of the attempt trail (mirrors Python's record_observed
+/// capture site: evidence is kept per attempt so a failed run can be
+/// replayed to the identical failure).
+#[derive(Debug, Clone)]
+pub struct AttemptRecord {
+    pub candidate: CandidateUtterance,
+    pub result: ValidationResult,
+    pub retry_index: u32,
+    pub observed: Option<ObservedActSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RetryOutcome {
+    pub result: ValidationResult,
+    /// `Some` only when the loop ended on a VALID result — mirrors
+    /// Python, where an exhausted retry returns candidate=None so a
+    /// caller cannot accidentally publish the rejected text.
+    pub candidate: Option<CandidateUtterance>,
+    pub attempts: u32,
+    /// Every generate+validate attempt in order, success or not
+    /// (mirrors the Recorder's "record rejections too" contract).
+    pub trail: Vec<AttemptRecord>,
+}
+
+/// Run the bounded retry loop. `capture_observed` mirrors Python's
+/// `record_observed` parameter: when true, each attempt that reached the
+/// semantic step stores its ObservedAct snapshot in the trail.
+pub fn validate_with_retry<F>(
+    validator: &mut ContractValidator,
+    contract: &BehaviorContract,
+    mut generate_candidate: F,
+    max_retries: u32,
+    capture_observed: bool,
+) -> RetryOutcome
+where
+    F: FnMut(u32) -> CandidateUtterance,
+{
+    let mut trail: Vec<AttemptRecord> = Vec::new();
+    let mut last_result = ValidationResult {
+        verdict: Verdict::Error,
+        reason: Some("VALIDATION_ERROR: retry loop ran zero attempts".to_string()),
+    };
+    let mut last_candidate: Option<CandidateUtterance> = None;
+
+    for attempt in 0..=max_retries {
+        let candidate = generate_candidate(attempt);
+        let result = validator.validate(&candidate, contract);
+        let observed = if capture_observed {
+            validator.take_last_observed()
+        } else {
+            None
+        };
+        trail.push(AttemptRecord {
+            candidate: candidate.clone(),
+            result: result.clone(),
+            retry_index: attempt,
+            observed,
+        });
+        if result.is_valid() {
+            return RetryOutcome {
+                result,
+                candidate: Some(candidate),
+                attempts: attempt + 1,
+                trail,
+            };
+        }
+        last_result = result;
+        last_candidate = Some(candidate);
+    }
+    let _ = last_candidate;
+    RetryOutcome {
+        result: last_result,
+        candidate: None,
+        attempts: max_retries + 1,
+        trail,
+    }
+}
+
+/// Bounded-retry attempt count for an always-failing generator (mirrors
+/// validate_with_retry's loop bound: max_retries+1 total attempts).
+/// A generator that eventually passes exits earlier — see RetryOutcome.attempts.
+pub fn retry_attempt_count(max_retries: u32) -> u32 {
+    max_retries + 1
 }
 
 // ---------------------------------------------------------------------
@@ -1184,12 +1405,15 @@ pub struct RecordedAttempt {
 }
 
 /// Serializable snapshot of verifier evidence (mirrors the `observed`
-/// dict on RecordedAttempt — act/target/confidence/all_acts as classified
-/// at record time).
+/// dict on RecordedAttempt — act/target/slots/confidence/all_acts as
+/// classified at record time). `slots` is carried for forensic fidelity:
+/// dropping it would lose the evidence a replay needs to explain a slot
+/// verdict (e.g. a claimed max_budget above the contract ceiling).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObservedActSnapshot {
     pub act: String,
     pub target: Option<String>,
+    pub slots: HashMap<String, Value>,
     pub confidence: f64,
     pub all_acts: Vec<String>,
 }
@@ -1204,13 +1428,21 @@ pub struct RunRecord {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecordError {
+    /// Malformed JSON — the input never parsed. Distinct from a shape
+    /// error (valid JSON, wrong structure), which surfaces as
+    /// `RecordError::Malformed`.
+    InvalidJson(String),
+    /// Valid JSON that is not a readable record: missing/empty attempts,
+    /// a bad candidate shape, or a missing required field.
+    Malformed(String),
     UnsupportedVersion(i32),
-    Empty,
 }
 
 impl std::fmt::Display for RecordError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            RecordError::InvalidJson(e) => write!(f, "record is not valid JSON: {}", e),
+            RecordError::Malformed(e) => write!(f, "record is malformed: {}", e),
             RecordError::UnsupportedVersion(v) => {
                 write!(
                     f,
@@ -1218,14 +1450,16 @@ impl std::fmt::Display for RecordError {
                     v
                 )
             }
-            RecordError::Empty => write!(f, "record has no attempts"),
         }
     }
 }
 
 impl RunRecord {
+    /// True when this record format version can be read (current or the
+    /// legacy v1). Mirrors Python's
+    /// `version in (RECORD_FORMAT_V1, RECORD_FORMAT_VERSION)` gate.
     pub fn version_supported(version: i32) -> bool {
-        version != RECORD_FORMAT_VERSION && version != RECORD_FORMAT_V1
+        version == RECORD_FORMAT_VERSION || version == RECORD_FORMAT_V1
     }
 
     fn attempt_from_value(raw: &Value) -> Result<RecordedAttempt, String> {
@@ -1236,6 +1470,10 @@ impl RunRecord {
             v if v.is_object() => Some(ObservedActSnapshot {
                 act: v["act"].as_str().unwrap_or("").to_string(),
                 target: v["target"].as_str().map(|s| s.to_string()),
+                slots: v["slots"]
+                    .as_object()
+                    .map(|m| m.iter().map(|(k, val)| (k.clone(), val.clone())).collect())
+                    .unwrap_or_default(),
                 confidence: v["confidence"].as_f64().unwrap_or(0.0),
                 all_acts: v["all_acts"]
                     .as_array()
@@ -1264,6 +1502,16 @@ impl RunRecord {
         if version != RECORD_FORMAT_VERSION && version != RECORD_FORMAT_V1 {
             return Err(RecordError::UnsupportedVersion(version));
         }
+        if !raw.is_object() {
+            return Err(RecordError::Malformed(
+                "record must be a JSON object".to_string(),
+            ));
+        }
+        if !raw["attempts"].is_array() {
+            return Err(RecordError::Malformed(
+                "record has no 'attempts' array".to_string(),
+            ));
+        }
         let attempts = raw["attempts"]
             .as_array()
             .cloned()
@@ -1271,7 +1519,7 @@ impl RunRecord {
             .iter()
             .map(Self::attempt_from_value)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| RecordError::Empty)?;
+            .map_err(RecordError::Malformed)?;
         Ok(Self {
             scenario_id: raw["scenario_id"].as_str().unwrap_or("").to_string(),
             seed: raw["seed"].as_i64().unwrap_or(0),
@@ -1281,7 +1529,8 @@ impl RunRecord {
     }
 
     pub fn from_json(raw: &str) -> Result<Self, RecordError> {
-        let value: Value = serde_json::from_str(raw).map_err(|_| RecordError::Empty)?;
+        let value: Value =
+            serde_json::from_str(raw).map_err(|e| RecordError::InvalidJson(e.to_string()))?;
         Self::from_value(&value)
     }
 
@@ -1309,6 +1558,7 @@ impl RunRecord {
                     "observed": a.observed.as_ref().map(|o| serde_json::json!({
                         "act": o.act,
                         "target": o.target,
+                        "slots": o.slots,
                         "confidence": o.confidence,
                         "all_acts": o.all_acts,
                     })),
@@ -1334,6 +1584,13 @@ impl RunRecord {
 pub struct RecordedSemanticVerifier {
     observed: Vec<Option<ObservedActSnapshot>>,
     cursor: usize,
+    /// Set when `classify()` hit exhausted evidence. Mirrors Python's
+    /// `VERIFIER_UNAVAILABLE` ERROR: the validator consumes this via
+    /// `take_last_failure()` and returns ERROR, never the low-confidence
+    /// UNKNOWN the neutral observation would otherwise produce.
+    failure: Option<String>,
+    /// Evidence from the most recent classify(), for the record path.
+    last: Option<ObservedActSnapshot>,
 }
 
 impl RecordedSemanticVerifier {
@@ -1341,6 +1598,8 @@ impl RecordedSemanticVerifier {
         Self {
             observed: record.attempts.iter().map(|a| a.observed.clone()).collect(),
             cursor: 0,
+            failure: None,
+            last: None,
         }
     }
 
@@ -1356,12 +1615,65 @@ impl RecordedSemanticVerifier {
         }
         let slot = self.observed[self.cursor].clone();
         self.cursor += 1;
-        Ok(slot.unwrap_or(ObservedActSnapshot {
+        Ok(slot.unwrap_or_else(Self::neutral_observation))
+    }
+
+    /// Neutral low-confidence observation (forces UNKNOWN downstream,
+    /// never a false PASS) — the v1 / never-reached-semantic fallback.
+    fn neutral_observation() -> ObservedActSnapshot {
+        ObservedActSnapshot {
             act: String::new(),
             target: None,
+            slots: HashMap::new(),
             confidence: 0.0,
             all_acts: vec![],
-        }))
+        }
+    }
+
+    /// Take (and clear) the last classify() failure, if any.
+    pub fn take_failure(&mut self) -> Option<String> {
+        self.failure.take()
+    }
+}
+
+impl SemanticVerifierProtocol for RecordedSemanticVerifier {
+    /// Same signature the validator calls on any backend. On exhausted
+    /// evidence this records the failure and returns a neutral
+    /// zero-confidence observation — the validator consumes it via
+    /// `take_last_failure()` and returns ERROR, exactly like Python's
+    /// validator catching the exception from `classify()`.
+    fn classify(&mut self, _utterance: &str, _contract: &BehaviorContract) -> ObservedAct {
+        match self.classify_next() {
+            Ok(snapshot) => {
+                self.last = Some(snapshot.clone());
+                ObservedAct {
+                    act: snapshot.act,
+                    target: snapshot.target,
+                    slots: snapshot.slots,
+                    confidence: snapshot.confidence,
+                    all_acts: snapshot.all_acts,
+                }
+            }
+            Err(err) => {
+                self.last = None;
+                self.failure = Some(err);
+                ObservedAct {
+                    act: String::new(),
+                    target: None,
+                    slots: HashMap::new(),
+                    confidence: 0.0,
+                    all_acts: vec![],
+                }
+            }
+        }
+    }
+
+    fn take_last_observed(&mut self) -> Option<ObservedActSnapshot> {
+        self.last.take()
+    }
+
+    fn take_last_failure(&mut self) -> Option<String> {
+        self.failure.take()
     }
 }
 
@@ -1426,12 +1738,6 @@ impl ReplayLanguageBackend {
         }
         Ok(())
     }
-}
-
-/// Bounded-retry attempt count (mirrors validate_with_retry's loop:
-/// max_retries+1 total generate→validate attempts).
-pub fn retry_attempt_count(max_retries: u32) -> u32 {
-    max_retries + 1
 }
 
 pub fn interruption_roll(scenario_id: &str, seed: u64, agent_turn_index: u64) -> f64 {
@@ -1522,7 +1828,7 @@ mod parity_tests {
             // explicit None still constructs the rule baseline). The flag
             // only records which tier the vector was authored against.
             let _use_semantic = data["use_semantic_verifier"].as_bool().unwrap_or(false);
-            let validator = ContractValidator::new(Some(RuleBasedSemanticVerifier));
+            let mut validator = ContractValidator::new(None);
 
             let result = validator.validate(&candidate, &contract);
 
@@ -1629,7 +1935,7 @@ mod parity_tests {
     #[test]
     fn semantic_lexicon_vector_matches_rust_classifier() {
         let data = load("semantic_lexicon.json");
-        let verifier = super::RuleBasedSemanticVerifier;
+        let mut verifier = super::RuleBasedSemanticVerifier;
         for case in data["cases"].as_array().unwrap() {
             let contract = super::BehaviorContract {
                 behavior: case["behavior"].as_str().unwrap().to_string(),
@@ -1914,11 +2220,43 @@ mod parity_tests {
             super::RECORD_FORMAT_V1,
             data["v1_legacy_version"].as_i64().unwrap() as i32
         );
+        // Version gate: only v1/v2 are readable; every other version must
+        // be REJECTED (before this fix the predicate was inverted, so the
+        // test passed while asserting the opposite of its own name).
+        assert!(super::RunRecord::version_supported(super::RECORD_FORMAT_V1));
+        assert!(super::RunRecord::version_supported(
+            super::RECORD_FORMAT_VERSION
+        ));
         for bad in data["rejected_versions"].as_array().unwrap() {
-            assert!(super::RunRecord::version_supported(
-                bad.as_i64().unwrap() as i32
+            let version = bad.as_i64().unwrap() as i32;
+            assert!(
+                !super::RunRecord::version_supported(version),
+                "version {} must not be readable",
+                version
+            );
+            assert!(matches!(
+                super::RunRecord::from_value(&serde_json::json!({
+                    "format_version": version,
+                    "scenario_id": "s",
+                    "seed": 0,
+                    "attempts": [],
+                })),
+                Err(super::RecordError::UnsupportedVersion(_))
             ));
         }
+
+        // Malformed input reports its REAL cause — never a generic empty
+        // record: broken JSON and wrong-shaped JSON are distinguishable.
+        assert!(matches!(
+            super::RunRecord::from_json("{not json"),
+            Err(super::RecordError::InvalidJson(_))
+        ));
+        assert!(matches!(
+            super::RunRecord::from_value(&serde_json::json!({
+                "format_version": 2, "scenario_id": "s", "seed": 0,
+            })),
+            Err(super::RecordError::Malformed(_))
+        ));
 
         // v1 legacy record: reads, observed is None, RecordedSemanticVerifier
         // falls back to the neutral low-confidence observation on the FIRST
@@ -1991,32 +2329,165 @@ mod parity_tests {
             "exhausted replay must fail loudly"
         );
 
-        // Bounded retry (mirrors validate_with_retry's early exit): the run
-        // stops at the FIRST VALID result, so a passing generator uses 1
-        // attempt regardless of max_retries; an always-invalid generator
-        // exhausts all max_retries+1 attempts with candidate None.
+        // Bounded retry — the REAL loop, not just arithmetic: the run stops
+        // at the FIRST VALID result, so a passing generator uses 1 attempt
+        // regardless of max_retries; an always-invalid generator exhausts
+        // all max_retries+1 attempts and returns candidate=None so a caller
+        // cannot publish the rejected text.
+        let contract = super::BehaviorContract {
+            behavior: "negotiate".to_string(),
+            target: None,
+            constraints: super::ContractConstraints {
+                max_turns: 3,
+                max_budget: None,
+                max_words: None,
+                max_duration_s: None,
+                forbidden_intents: vec![],
+                must_not: vec![],
+            },
+        };
         for case in data["retry_cases"].as_array().unwrap() {
             let max_retries = case["max_retries"].as_i64().unwrap() as u32;
             let exhausted = case["always_invalid"].as_bool().unwrap();
-            let attempts = if exhausted {
-                retry_attempt_count(max_retries)
-            } else {
-                1
-            };
-            let expected_attempts = case["expected_attempts"].as_i64().unwrap() as u32;
-            assert_eq!(attempts, expected_attempts, "{:?}", case);
+            let mut validator = super::ContractValidator::new(None);
+            let outcome = super::validate_with_retry(
+                &mut validator,
+                &contract,
+                |attempt| super::CandidateUtterance {
+                    act: if exhausted {
+                        "wrong".to_string()
+                    } else {
+                        "negotiate".to_string()
+                    },
+                    target: None,
+                    slots: std::collections::HashMap::new(),
+                    utterance: format!("Would you consider $28,000? (attempt {attempt})"),
+                    identity: super::GenerationIdentity {
+                        behavior_id: "b1".to_string(),
+                        turn_id: 1,
+                        generation_id: attempt as i64 + 1,
+                        context_version: 0,
+                    },
+                },
+                max_retries,
+                false,
+            );
+
             assert_eq!(
-                !exhausted,
-                !case["expected_candidate_null"].as_bool().unwrap(),
+                outcome.attempts,
+                case["expected_attempts"].as_i64().unwrap() as u32,
                 "{:?}",
                 case
             );
             assert_eq!(
-                if exhausted { "INVALID" } else { "VALID" },
+                outcome.candidate.is_none(),
+                case["expected_candidate_null"].as_bool().unwrap(),
+                "{:?}",
+                case
+            );
+            assert_eq!(
+                outcome.result.verdict.as_str(),
                 case["expected_verdict"].as_str().unwrap(),
                 "{:?}",
                 case
             );
+            // The trail records EVERY attempt, rejections included.
+            assert_eq!(outcome.trail.len(), outcome.attempts as usize, "{:?}", case);
+            assert_eq!(
+                retry_attempt_count(max_retries),
+                if exhausted {
+                    outcome.attempts
+                } else {
+                    max_retries + 1
+                },
+                "{:?}",
+                case
+            );
         }
+    }
+
+    #[test]
+    fn recorded_evidence_drives_validator_and_replay_exhaustion_errors() {
+        // Gap 3 + the replay-failure path: a recorded run's own evidence
+        // must drive the validator to the SAME verdict, and running past
+        // the recorded evidence must surface VERIFIER_UNAVAILABLE/ERROR —
+        // never a silent PASS and never a plain LOW_CONFIDENCE UNKNOWN.
+        let data = load("record_replay.json");
+        let record = super::RunRecord::from_value(&data["v2_record"]).expect("v2 record must read");
+
+        // Slots survive the round trip and reach the verifier's evidence —
+        // asserted against the SHARED fixture (the same slot vector the
+        // Python side checks), so a dropped field fails both languages.
+        let rt = super::RunRecord::from_json(&serde_json::to_string(&record.to_value()).unwrap())
+            .expect("round trip");
+        let exp_slots = &data["v2_expected"]["observed_slots_survive_roundtrip"];
+        let recorded_slot = rt.attempts[0]
+            .observed
+            .as_ref()
+            .and_then(|o| o.slots.get("max_budget"))
+            .cloned();
+        assert_eq!(
+            recorded_slot,
+            exp_slots.get("max_budget").cloned(),
+            "recorded slot must survive the round trip"
+        );
+
+        let contract = super::BehaviorContract {
+            behavior: "negotiate".to_string(),
+            target: Some("price".to_string()),
+            constraints: super::ContractConstraints {
+                max_turns: 3,
+                max_budget: None,
+                max_words: None,
+                max_duration_s: None,
+                forbidden_intents: vec![],
+                must_not: vec![],
+            },
+        };
+        let candidate = super::CandidateUtterance {
+            act: "negotiate".to_string(),
+            target: Some("price".to_string()),
+            slots: std::collections::HashMap::new(),
+            utterance: "Would you consider $28,000?".to_string(),
+            identity: super::GenerationIdentity {
+                behavior_id: "b1".to_string(),
+                turn_id: 1,
+                generation_id: 2,
+                context_version: 0,
+            },
+        };
+
+        let mut validator = super::ContractValidator::new(Some(Box::new(
+            super::RecordedSemanticVerifier::new(&rt),
+        )));
+        let result = validator.validate(&candidate, &contract);
+        assert_eq!(
+            result.verdict.as_str(),
+            "VALID",
+            "reason={:?}",
+            result.reason
+        );
+        let captured = validator
+            .take_last_observed()
+            .expect("recorded evidence must be capturable for the record path");
+        assert_eq!(
+            captured.slots.get("max_budget"),
+            exp_slots.get("max_budget"),
+            "captured evidence must carry the recorded slot"
+        );
+
+        // Second validate: the single recorded attempt is spent, so the
+        // backend fails — ERROR, never UNKNOWN and never VALID.
+        let result = validator.validate(&candidate, &contract);
+        assert_eq!(result.verdict.as_str(), "ERROR");
+        assert!(
+            result
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.starts_with("VERIFIER_UNAVAILABLE")),
+            "reason={:?}",
+            result.reason
+        );
+        assert!(validator.take_verifier_failure().is_some());
     }
 }
