@@ -17,10 +17,6 @@ persona:
   - End politely
   traits:
   - impatient
-  speech_conditions:
-    interruption_rate: medium
-    interruption_interval_ms: 12000
-    interruption_say: Sorry — quick question —
 execute:
   max_turns: 10
   timeout_s: 120
@@ -28,11 +24,15 @@ execute:
 # Contract path (caller_contract single path): these steps drive
 # ContractCallerDriver instead of the legacy persona free-generation bridge.
 # Persona/assert/execute blocks below unchanged.
-# Seeded interruption policy (contract equivalent of the legacy
-# InterruptRateRunner, deterministic per agent-turn instead of wall-clock):
-# while the ask behavior runs, the driver may emit a fixed "Mhm." cut-in
-# when the agent is speaking. The explicit interrupt: below stays as the
-# authored cut-in. speech_conditions: above unchanged (legacy bridge).
+#
+# No persona speech_conditions: block — the legacy interruption keys are
+# gone from this template (removal-gate condition "no template authoring
+# legacy keys"). The rate policy is authored entirely on the do: step
+# below, which is what the persona bridge used to fill in: the driver
+# would have derived exactly this seed from the scenario id
+# (_seed_from_id("interrupt-rate-medium") == 910336205) and applied the
+# same rate/interval, so removing the persona block is behavior-preserving.
+# The explicit interrupt: below stays as the authored cut-in.
 caller_steps:
   - say: "Hi, what are your hours?"
   - do:
@@ -43,7 +43,7 @@ caller_steps:
       interaction:
         interruption_rate: medium
         interruption_interval_ms: 12000
-        interruption_seed: 7
+        interruption_seed: 910336205
   - interrupt: true
   - say: "Sorry — quick question — what are your hours?"
   - say: "Thanks, bye."

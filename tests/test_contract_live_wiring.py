@@ -52,6 +52,8 @@ import json
 
 import time
 
+from pathlib import Path
+
 from types import SimpleNamespace
 
 from unittest.mock import patch
@@ -887,4 +889,109 @@ async def test_stuck_mixer_drain_fails_transport_not_caller_violation():
     assert exc_info.value.result.failure.reason != FailureReason.CALLER_BEHAVIOR_VIOLATION
 
     assert exc_info.value.result.ended_by == EndedBy.TRANSPORT
+
+
+# ---------------------------------------------------------------------------
+# Legacy compatibility bridge: the removal gate is "zero runs emit it", which
+# only works if something actually proves it still fires when a scenario
+# relies on it. Before these tests nothing asserted the event at all.
+# ---------------------------------------------------------------------------
+
+
+def _bridged_scenario(**speech_conditions):
+    """Scenario whose do: step has NO interaction:, so the persona-level
+    legacy keys are what the bridge has to fill in."""
+    return SimpleNamespace(
+        id="bridge-probe",
+        caller_actions=parse_steps(
+            [
+                {
+                    "do": {
+                        "behavior": "ask",
+                        "target": "hours",
+                        "constraints": {"max_turns": 1},
+                    }
+                }
+            ],
+            file="t",
+        ),
+        persona={"speech_conditions": dict(speech_conditions)},
+        run_spec=SimpleNamespace(first_speaker="agent", timeout_s=1.0),
+    )
+
+
+@pytest.mark.asyncio
+async def test_persona_interruption_rate_bridge_fires_and_is_visible():
+    """A scenario that still relies on persona speech_conditions gets the
+    interaction filled in AND a contract.compat_bridge event naming it —
+    that event is the removal gate's only signal."""
+    scenario = _bridged_scenario(interruption_rate="medium")
+
+    observer = FakeObserver(replies=["We open at nine."])
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = _mock_openai_reply(
+            {"act": "ask", "target": "hours", "slots": {}, "utterance": "What are your hours?"}
+        )
+        with patch(
+            "livekit_agent_simulator.caller_contract.live_wiring.ObserverAgentWait",
+            return_value=ScriptedAgentWait(observer),
+        ):
+            writer = FakeWriter()
+            try:
+                await run_contract_driver_path(
+                    scenario, None, observer, FakeBridge(), writer, _fake_cfg()
+                )
+            except ContractDriverFailure:
+                # The bridge fires BEFORE dispatch, so a downstream
+                # behavior verdict is irrelevant here: this test is about
+                # the migration event, not about satisfying the agent.
+                pass
+
+    bridges = [spec for kind, spec in writer.events if kind == "contract.compat_bridge"]
+    assert [b["bridge"] for b in bridges] == ["persona.interruption_rate"]
+    assert bridges[0]["actions"] == 1
+    # The bridge is functional, not just an alarm: the do: step now carries
+    # the interaction the persona block asked for.
+    assert scenario.caller_actions[0].interaction is not None
+    assert scenario.caller_actions[0].interaction.interruption_rate == "medium"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_rate_medium_template_needs_no_bridge():
+    """Regression for the migrated template: now that it authors
+    interaction: on the do: step, the legacy bridge must stay SILENT — a
+    bridge event here would mean the migration silently regressed."""
+    from livekit_agent_simulator.scenario import parse_scenario
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "templates" / "examples" / "interrupt-rate-medium.yaml"
+    )
+    scenario = parse_scenario(path)
+    # The persona no longer authors the legacy keys at all (removal-gate
+    # condition "zero templates authoring legacy keys").
+    assert (scenario.persona.get("speech_conditions") or {}) == {}
+
+    observer = FakeObserver(replies=["We open at nine."])
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = _mock_openai_reply(
+            {"act": "ask", "target": "hours", "slots": {}, "utterance": "What are your hours?"}
+        )
+        with patch(
+            "livekit_agent_simulator.caller_contract.live_wiring.ObserverAgentWait",
+            return_value=ScriptedAgentWait(observer),
+        ):
+            writer = FakeWriter()
+            try:
+                await run_contract_driver_path(
+                    scenario, None, observer, FakeBridge(), writer, _fake_cfg()
+                )
+            except ContractDriverFailure:
+                # Downstream outcome is out of scope: the assertion below
+                # is about the bridge staying silent, and the bridge
+                # decision happens before any dispatch.
+                pass
+
+    assert [spec for kind, spec in writer.events if kind == "contract.compat_bridge"] == []
+
 

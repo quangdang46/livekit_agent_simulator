@@ -344,6 +344,14 @@ async def run_contract_driver_path(
     # persona speech_conditions.interruption_* still fills a missing
     # per-action interaction on do: steps. Explicit interaction wins.
     # silent_mode below has the same status.
+    #
+    # Gate status (2026-09-11): the last shipped template authoring the
+    # legacy interruption keys (interrupt-rate-medium.yaml) now authors
+    # interaction: on its do: step instead — verified by
+    # test_interrupt_rate_medium_template_needs_no_bridge, which asserts the
+    # bridge stays silent for it. So this half of the gate is closed on the
+    # "no template authors it" condition; it still waits on the
+    # "zero production runs emit it" condition.
     persona_interrupt: dict[str, Any] = {}
     sc = (persona or {}).get("speech_conditions") or {}
     if isinstance(sc, dict):
@@ -390,6 +398,17 @@ async def run_contract_driver_path(
     # Removal gate: no template may rely on it silently — the compat event
     # below makes every use visible; delete the bridge once templates
     # author wait/end-only caller_steps without persona silent_mode.
+    #
+    # Gate status (2026-09-11): NOT closable by migration alone. The
+    # silent-caller scenario is wait/end-only, so its persona silent_mode is
+    # a no-op at the action level (future `say:` steps would otherwise be
+    # auto-dropped). Holding the bridge is the deliberately conservative
+    # choice: dropping the persona key without a scenario-level equivalent
+    # would silently change behavior for hold-timeout-agent-stall.yaml and
+    # silent-caller-dead-air.yaml the moment either gains a speak step.
+    # Closing this half needs a scenario-level silent flag (DSL surface),
+    # which is new architecture — deferred until a real template or run
+    # proves it necessary.
     greeting_timeout_s = float(getattr(run_spec, "timeout_s", 30.0) or 30.0)
     _silent = silent_mode_enabled(persona)
     if _silent:
