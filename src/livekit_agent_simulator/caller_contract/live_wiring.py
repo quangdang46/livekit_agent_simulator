@@ -196,12 +196,28 @@ def _seed_from_id(scenario_id: str) -> int:
 @dataclass
 class BridgeAssetPlayer:
     """Concrete AudioAssetPlayer: resolves asset refs and pushes beds onto
-    the bridge mixer's parallel noise layer (never the speech path).
+    the bridge mixer's parallel noise layer (NEVER the speech path).
 
-    Duck-typed bridge: uses ``_mixer.push_noise`` when present (both Gemini
-    and OpenAI bridges own a ParallelMicMixer with a noise layer), else
-    ``inject_cue(delivery="room_pcm")`` as fallback. Asset bytes come from
-    ``audio.pcm_cue.resolve_cue_asset`` (builtin: + target overrides).
+    ``play_audio:`` steps are authored ambient/sound beds, not caller
+    utterances — they belong on the mixer's parallel noise layer so they can
+    ride under persona speech. They must never reach the SPEECH layer:
+    speaker audio is the validated-utterance channel, and its only writer is
+    ``publish_validated_pcm`` (via ``BridgePublishSink``, which owns the
+    staleness re-check and the drain gate). An asset pushed straight to the
+    speech layer would bypass both.
+
+    This previously fell back to ``bridge.inject_cue(delivery="room_pcm")``
+    when the mixer had no ``push_noise``. That fallback is removed: for a
+    ``voice.*`` asset ``inject_cue`` calls ``push_speech`` directly, i.e. it
+    was a latent route onto the speech layer with no validator, no sink and
+    no staleness check — reachable for any future mixer that implements
+    ``push_speech`` without ``push_noise``. Refusing instead keeps the
+    property true BY CONSTRUCTION rather than by "the two shipped mixers
+    happen to have a noise layer".
+
+    Duck-typed bridge: uses ``_mixer.push_noise`` when present (both the
+    Gemini and OpenAI bridges own a ``ParallelMicMixer``, which has one).
+    Asset bytes come from ``audio.pcm_cue.resolve_cue_asset``.
     """
 
     bridge: Any
@@ -233,24 +249,23 @@ class BridgeAssetPlayer:
             return False
         mixer = getattr(self.bridge, "_mixer", None)
         push_noise = getattr(mixer, "push_noise", None) if mixer is not None else None
-        if push_noise is not None:
-            push_noise(pcm, gain=gain, loop=loop)
-            return True
-        inject = getattr(self.bridge, "inject_cue", None)
-        if inject is not None:
-            result = inject(
-                "",
-                label=label,
-                delivery="room_pcm",
-                asset=asset,
-                scenario_dir=self.scenario_dir,
-                gain=gain,
-                loop=loop,
+        if push_noise is None:
+            # Refuse rather than fall back to a speech-layer route — see the
+            # class docstring. The driver turns a refusal into TRANSPORT_ERROR
+            # (never a silent drop, never a caller violation).
+            self._emit(
+                "contract.audio_refused",
+                {
+                    "asset": asset,
+                    "label": label,
+                    "error": "bridge mixer has no noise layer (push_noise); "
+                    "refusing rather than pushing authored audio onto the "
+                    "validated-speech channel",
+                },
             )
-            if asyncio.iscoroutine(result):
-                await result
-            return True
-        return False
+            return False
+        push_noise(pcm, gain=gain, loop=loop)
+        return True
 
     def _emit(self, kind: str, spec: dict[str, Any]) -> None:
         if self.writer is not None:

@@ -1143,3 +1143,144 @@ async def test_valid_candidate_reaches_mixer_through_the_real_sink():
     assert result.failure is None, result.failure
     assert synthesized == [backend.UTTERANCE], synthesized
     assert len(bridge._mixer.pushed) == 1
+
+
+# ---------------------------------------------------------------------------
+# play_audio assets must never reach the SPEECH layer.
+#
+# The speech layer is the validated-utterance channel: its only writer is
+# publish_validated_pcm, called through BridgePublishSink (which owns the
+# staleness re-check and the drain gate). Authored ambient beds belong on the
+# mixer's parallel noise layer. BridgeAssetPlayer used to fall back to
+# bridge.inject_cue(delivery="room_pcm") when the mixer had no push_noise —
+# and for a voice.* asset inject_cue calls push_speech directly, i.e. a
+# speech-layer route with no validator, no sink and no staleness check.
+# ---------------------------------------------------------------------------
+
+
+class _NoiseMixer:
+    """Duck-typed mixer with the noise layer (the shape both shipped bridges
+    actually construct: ParallelMicMixer has push_speech AND push_noise)."""
+
+    def __init__(self):
+        self.noise: list[tuple[bytes, float, bool]] = []
+        self.speech: list[bytes] = []
+
+    def push_noise(self, pcm, *, gain=1.0, loop=False):
+        self.noise.append((pcm, gain, loop))
+
+    def push_speech(self, pcm, *, gain=1.0):
+        self.speech.append(pcm)
+
+
+class _SpeechOnlyMixer:
+    """A mixer with the speech layer but NO noise layer — the only shape that
+    could ever have reached the removed fallback."""
+
+    def __init__(self):
+        self.speech: list[bytes] = []
+
+    def push_speech(self, pcm, *, gain=1.0):
+        self.speech.append(pcm)
+
+
+class _BridgeWith:
+    def __init__(self, mixer):
+        self._mixer = mixer
+        self.inject_cue_calls: list[dict] = []
+
+    async def inject_cue(self, text, **kw):
+        self.inject_cue_calls.append({"text": text, **kw})
+
+
+def _write_voice_asset(tmp_path) -> str:
+    """Minimal mono 24kHz WAV so resolve_cue_asset/load_wav_pcm succeed."""
+    import struct
+    import wave
+
+    path = tmp_path / "barge_short.wav"
+    frames = struct.pack("<" + "h" * 240, *([1200] * 240))  # 10 ms @ 24kHz
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(frames)
+    return str(path)
+
+
+@pytest.mark.asyncio
+async def test_play_asset_uses_noise_layer_never_speech(tmp_path):
+    """The shipped shape: bed goes to the noise layer, speech layer untouched."""
+    from livekit_agent_simulator.caller_contract.live_wiring import BridgeAssetPlayer
+    from livekit_agent_simulator.audio import pcm_cue
+
+    wav = _write_voice_asset(tmp_path)
+    monkey = pcm_cue.resolve_cue_asset
+    pcm_cue.resolve_cue_asset = lambda asset, **kw: wav  # noqa: ARG005
+    try:
+        mixer = _NoiseMixer()
+        player = BridgeAssetPlayer(bridge=_BridgeWith(mixer))
+        ok = await player.play_asset("builtin:voice.barge_short", gain=0.5, loop=False, label="l")
+    finally:
+        pcm_cue.resolve_cue_asset = monkey
+
+    assert ok is True
+    assert len(mixer.noise) == 1
+    assert mixer.noise[0][1] == 0.5 and mixer.noise[0][2] is False
+    assert mixer.speech == [], "authored bed must never land on the speech layer"
+
+
+@pytest.mark.asyncio
+async def test_play_asset_refuses_rather_than_reaching_speech(tmp_path):
+    """Regression pin: with a mixer that has no noise layer, the asset player
+    must REFUSE — not reroute authored audio onto the validated-speech
+    channel via inject_cue."""
+    from livekit_agent_simulator.caller_contract.live_wiring import BridgeAssetPlayer
+    from livekit_agent_simulator.audio import pcm_cue
+
+    wav = _write_voice_asset(tmp_path)
+    monkey = pcm_cue.resolve_cue_asset
+    pcm_cue.resolve_cue_asset = lambda asset, **kw: wav  # noqa: ARG005
+    try:
+        mixer = _SpeechOnlyMixer()
+        bridge = _BridgeWith(mixer)
+        writer = FakeWriter()
+        player = BridgeAssetPlayer(bridge=bridge, writer=writer)
+        ok = await player.play_asset("builtin:voice.barge_short", gain=1.0, loop=False, label="l")
+    finally:
+        pcm_cue.resolve_cue_asset = monkey
+
+    assert ok is False
+    assert mixer.speech == [], "must not push authored audio onto the speech layer"
+    assert bridge.inject_cue_calls == [], "the inject_cue fallback is removed"
+    kinds = [k for k, _ in writer.events]
+    assert "contract.audio_refused" in kinds
+
+
+@pytest.mark.asyncio
+async def test_play_asset_refusal_fails_the_run_as_transport_not_caller_violation():
+    """A refused bed is an execution failure, never a caller violation."""
+    from livekit_agent_simulator.caller_contract.driver import ContractCallerDriver
+
+    class _RefusingPlayer:
+        async def play_asset(self, asset, *, gain, loop, label):
+            return False
+
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps([{"play_audio": {"asset": "builtin:noise.ambient"}}], file="t")
+    )
+    driver = ContractCallerDriver(
+        orchestrator=Orchestrator(),
+        validator=ContractValidator(semantic_verifier=RuleBasedSemanticVerifier()),
+        adapter=AILanguageAdapter(backend=_AlwaysDriftingBackend()),
+        synthesize=lambda text: b"\x00\x01" * 8,
+    )
+    result = await driver.run(
+        scenario.caller_actions,
+        BridgePublishSink(bridge=FakeBridge(), orchestrator=driver.orchestrator),
+        ScriptedAgentWait(FakeObserver()),
+        assets=_RefusingPlayer(),
+    )
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.TRANSPORT_ERROR
+    assert result.failure.reason != FailureReason.CALLER_BEHAVIOR_VIOLATION
