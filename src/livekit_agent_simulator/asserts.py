@@ -419,33 +419,16 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
         )
 
     pending_llm: list[dict[str, Any]] = []
-    from .script.models import counts_for_recovery_barge
+    from .script.models import is_interruption_event, is_recovery_barge_event
 
     barge_ms: list[int] = []
     for e in events:
-        kind = str(e.get("kind") or "")
-        spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
+        if not is_recovery_barge_event(e):
+            continue
         try:
-            mono = int(e.get("ts_mono_ms") or 0)
+            barge_ms.append(int(e.get("ts_mono_ms") or 0))
         except (TypeError, ValueError):
-            mono = 0
-        cls = spec.get("class") or spec.get("interrupt_class")
-        cls_s = str(cls) if cls else None
-        if kind == "sim.script.cue" and counts_for_recovery_barge(
-            barge_in=bool(spec.get("barge_in")), interrupt_class=cls_s
-        ):
-            barge_ms.append(mono)
-        if kind == "interruption" and (
-            spec.get("barge_in") or str(spec.get("by") or "") == "sim"
-        ):
-            if str(spec.get("class") or "") in ("noise", "backchannel", "dtmf", "silence"):
-                continue
-            if spec.get("false_positive"):
-                continue
-            if counts_for_recovery_barge(
-                barge_in=True, interrupt_class=cls_s or "correction"
-            ):
-                barge_ms.append(mono)
+            barge_ms.append(0)
     barge_ms = sorted(set(barge_ms))
     agent_final_ms: list[int] = []
     for e in events:
@@ -455,7 +438,7 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
             agent_final_ms.append(int(e.get("ts_mono_ms") or 0))
         except (TypeError, ValueError):
             continue
-    interruptions = [e for e in events if e.get("kind") == "interruption"]
+    interruptions = [e for e in events if is_interruption_event(e)]
 
     for oc in asserts.outcomes:
         if oc.type == "transcript_contains":

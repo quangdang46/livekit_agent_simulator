@@ -510,10 +510,35 @@ async def run_scenario_instance(
     # ── Phase: post-run hard verify + report digests ─────────────────────
     summary_extra: dict[str, Any] = {}
 
-    has_script_verify = scenario.script_verify is not None and (
-        scenario.script_steps or bool(scenario.script_verify.plugins)
+    # script.verify reads the LEGACY scripted-caller event vocabulary
+    # (sim.script.cue / dtmf / wait / hang_up) — the only kinds
+    # evaluate_script_log matches step_ids against. The contract path emits
+    # contract.* instead, so on a contract scenario every step would report
+    # "script step not fired" and script_verify would land in the suite's
+    # HARD gate (suite.py) — failing CI for a caller that actually ran fine.
+    # There is nothing to verify here: the mechanism checks an execution
+    # engine (ScriptRunner) that is no longer instantiated.
+    #
+    # Skipped EXPLICITLY (not omitted) so a report reader can tell "not
+    # applicable to this caller path" from "verify did not run".
+    contract_caller_path = bool(scenario.caller_actions)
+    has_script_verify = (
+        not contract_caller_path
+        and scenario.script_verify is not None
+        and (scenario.script_steps or bool(scenario.script_verify.plugins))
     )
-    if status == "done" and has_script_verify:
+    if status == "done" and contract_caller_path and scenario.script_steps:
+        script_verify = {
+            "skipped": True,
+            "reason": (
+                "caller_steps drives the contract path; script.verify checks the "
+                "legacy sim.script.cue vocabulary that this path never emits"
+            ),
+            "steps_not_applicable": [s.id for s in scenario.script_steps],
+        }
+        writer.emit("script.verify", spec=script_verify, include_dialogue=False)
+        summary_extra["script_verify"] = script_verify
+    elif status == "done" and has_script_verify:
         script_verify = evaluate_script_log(
             writer.events,
             scenario.script_steps,

@@ -390,7 +390,14 @@ class ContractCallerDriver:
                     # Barge skips this gate entirely by design.
                     await _wait_agent_silence(agent)
                 else:
-                    _emit("contract.barge", {"line": action.line_no})
+                    # `class` is load-bearing, not decoration: recovery
+                    # asserts / barge_recovery_rate count only correction and
+                    # escalate cut-ins, and read the class off this event
+                    # (same vocabulary the legacy sim.script.cue used).
+                    _emit(
+                        "contract.barge",
+                        {"line": action.line_no, "class": _interrupt_class(action)},
+                    )
                 try:
                     pcm = self._speak(text)
                 except TTSSynthesisError as exc:

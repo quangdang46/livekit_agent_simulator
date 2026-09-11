@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 SUPPORTED_TRIGGERS = frozenset({"agent_speaking", "silence", "time"})
 SUPPORTED_ACTIONS = frozenset({"speak", "wait", "hang_up", "dtmf"})
@@ -65,6 +65,83 @@ def counts_for_recovery_barge(
         return False
     cls = interrupt_class or "correction"
     return cls in RECOVERY_BARGE_CLASSES
+
+
+# --- Event-vocabulary bridge (caller_contract migration) --------------------
+#
+# The caller log has TWO vocabularies for the same caller action:
+#
+#   legacy  : sim.script.cue{barge_in, interrupt_class}  /  interruption{by=sim}
+#   contract: contract.barge{class}  /  contract.interrupt{class}
+#
+# Only the legacy emitters (ScriptRunner, InterruptRateRunner, the Realtime
+# session pump) ever wrote the legacy kinds, and none of them is instantiated
+# on the contract path — so a reader that only understands the legacy spelling
+# counts ZERO barges for a contract run. That silently fails every
+# ``type: recovery`` outcome whose ``min_agent_finals_after_barge_in`` is set,
+# and reports barge_count=0 / recovery_rate=None in metrics.
+#
+# These helpers are the single place that knows both spellings, so asserts,
+# metrics and authoring can never drift apart again.
+
+# Contract kinds that represent the caller talking over the agent.
+CONTRACT_BARGE_KINDS = frozenset({"contract.barge", "contract.interrupt"})
+
+# Classes that are never a *recovery* barge even though they are cut-ins.
+_NON_RECOVERY_CUTIN_CLASSES = frozenset({"noise", "backchannel", "dtmf", "silence"})
+
+
+def _spec_of(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    spec = event.get("spec")
+    return spec if isinstance(spec, Mapping) else {}
+
+
+def is_recovery_barge_event(event: Mapping[str, Any]) -> bool:
+    """True when this log event is a recovery-relevant caller barge.
+
+    Understands both the legacy and the contract event vocabulary — see the
+    module note above. ``contract.policy_interrupt`` (the seeded backchannel
+    cut-in) is deliberately NOT a recovery barge: it is a backchannel, and
+    ``RECOVERY_BARGE_CLASSES`` excludes those.
+    """
+    kind = str(event.get("kind") or "")
+    spec = _spec_of(event)
+
+    if kind == "sim.script.cue":
+        return counts_for_recovery_barge(
+            barge_in=bool(spec.get("barge_in")),
+            interrupt_class=_class_of(spec),
+        )
+    if kind == "interruption":
+        if not (spec.get("barge_in") or str(spec.get("by") or "") == "sim"):
+            return False
+        if spec.get("false_positive"):
+            return False
+        return counts_for_recovery_barge(
+            barge_in=True, interrupt_class=_class_of(spec)
+        )
+    if kind in CONTRACT_BARGE_KINDS:
+        return counts_for_recovery_barge(
+            barge_in=True, interrupt_class=_class_of(spec)
+        )
+    return False
+
+
+def is_interruption_event(event: Mapping[str, Any]) -> bool:
+    """True when this log event counts as a caller interruption.
+
+    Covers the legacy ``interruption`` kind and the contract cut-in kinds, so
+    ``min_interruptions`` means the same thing on both paths.
+    """
+    kind = str(event.get("kind") or "")
+    if kind == "interruption":
+        return True
+    return kind in CONTRACT_BARGE_KINDS
+
+
+def _class_of(spec: Mapping[str, Any]) -> str | None:
+    cls = spec.get("class") or spec.get("interrupt_class")
+    return str(cls) if cls else None
 
 
 @dataclass(frozen=True)
