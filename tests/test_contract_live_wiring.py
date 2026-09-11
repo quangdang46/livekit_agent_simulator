@@ -76,6 +76,18 @@ from livekit_agent_simulator.caller_contract.live_wiring import (
 
 from livekit_agent_simulator.caller_contract.dsl import parse_steps
 
+from livekit_agent_simulator.caller_contract.driver import ContractCallerDriver
+
+from livekit_agent_simulator.caller_contract.language_adapter import AILanguageAdapter
+
+from livekit_agent_simulator.caller_contract.orchestrator import Orchestrator
+
+from livekit_agent_simulator.caller_contract.publish_sink import BridgePublishSink
+
+from livekit_agent_simulator.caller_contract.semantic import RuleBasedSemanticVerifier
+
+from livekit_agent_simulator.caller_contract.validator import ContractValidator
+
 
 
 
@@ -995,3 +1007,139 @@ async def test_interrupt_rate_medium_template_needs_no_bridge():
     assert [spec for kind, spec in writer.events if kind == "contract.compat_bridge"] == []
 
 
+
+
+# ---------------------------------------------------------------------------
+# Audit B — the audio-side invariant: INVALID never reaches TTS / PCM / mixer.
+#
+# The E2E hard-boundary test asserts nothing is PUBLISHED. That is necessary
+# but not sufficient: TTS synthesis is the first irreversible side effect, and
+# it happens BEFORE publish. If a rejected candidate were ever synthesized,
+# the run would burn TTS cost and could leak audio through any later path even
+# though the sink refused the publish. So this test spies on the synthesize
+# callable itself.
+# ---------------------------------------------------------------------------
+
+
+class _AlwaysDriftingBackend:
+    """Language backend that always returns an out-of-contract utterance."""
+
+    DRIFT = "Could I spread this over a couple of years and pay it down gradually?"
+
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, context):
+        self.calls += 1
+        return {
+            "act": context["current_behavior"]["act"],
+            "target": context["current_behavior"]["target"],
+            "slots": {},
+            "utterance": self.DRIFT,
+        }
+
+
+@pytest.mark.asyncio
+async def test_invalid_candidate_never_reaches_tts_pcm_or_mixer():
+    """INVALID -> retry -> INVALID -> NO TTS, NO PCM, NO publish.
+
+    Uses the REAL BridgePublishSink + FakeMixer (so the publish path under
+    test is the shipping one, not a stub) and a counting TTS callable.
+    """
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps(
+            [
+                {"do": {
+                    "behavior": "negotiate",
+                    "target": "price",
+                    "constraints": {"max_turns": 1},
+                }},
+                {"end": True},
+            ],
+            file="t",
+        )
+    )
+    backend = _AlwaysDriftingBackend()
+    bridge = FakeBridge()
+    observer = FakeObserver(replies=["I can do $30,000."])
+    writer = FakeWriter()
+
+    synthesized: list[str] = []
+
+    def spy_synthesize(text: str) -> bytes:
+        synthesized.append(text)
+        return b"\x00\x01" * 8
+
+    driver = ContractCallerDriver(
+        orchestrator=Orchestrator(),
+        validator=ContractValidator(semantic_verifier=RuleBasedSemanticVerifier()),
+        adapter=AILanguageAdapter(backend=backend),
+        synthesize=spy_synthesize,
+    )
+    sink = BridgePublishSink(bridge=bridge, orchestrator=driver.orchestrator)
+
+    result = await driver.run(scenario.caller_actions, sink, ScriptedAgentWait(observer))
+
+    # 1. The run failed as a caller violation ...
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.CALLER_BEHAVIOR_VIOLATION
+    # 2. ... the backend really was asked (so the test is not vacuous) ...
+    assert backend.calls >= 1
+    # 3. ... and the rejected text never reached TTS.
+    assert all(backend.DRIFT not in text for text in synthesized), synthesized
+    # 4. no PCM was pushed to the mixer, i.e. the agent never heard anything.
+    assert bridge._mixer.pushed == []
+    # 5. nothing was reported as published.
+    assert [k for k, _ in writer.events if k == "contract.published"] == []
+
+
+@pytest.mark.asyncio
+async def test_valid_candidate_reaches_mixer_through_the_real_sink():
+    """Positive control for the invariant above: when the candidate DOES
+    validate, the exact validated string is what gets synthesized and pushed.
+
+    Without this, 'nothing was pushed' would also pass if the harness were
+    simply broken."""
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps(
+            [
+                {"do": {
+                    "behavior": "negotiate",
+                    "target": "price",
+                    "constraints": {"max_turns": 1},
+                }},
+                {"end": True},
+            ],
+            file="t",
+        )
+    )
+
+    class _GoodBackend:
+        UTTERANCE = "Would you be able to come down to $30,000?"
+
+        def generate(self, context):
+            return {
+                "act": "negotiate",
+                "target": "price",
+                "slots": {"max_budget": 30000},
+                "utterance": self.UTTERANCE,
+            }
+
+    backend = _GoodBackend()
+    bridge = FakeBridge()
+    observer = FakeObserver(replies=["I can do $30,000."])
+    synthesized: list[str] = []
+
+    driver = ContractCallerDriver(
+        orchestrator=Orchestrator(),
+        validator=ContractValidator(semantic_verifier=RuleBasedSemanticVerifier()),
+        adapter=AILanguageAdapter(backend=backend),
+        synthesize=lambda text: (synthesized.append(text), b"\x00\x01" * 8)[1],
+    )
+    sink = BridgePublishSink(bridge=bridge, orchestrator=driver.orchestrator)
+
+    result = await driver.run(scenario.caller_actions, sink, ScriptedAgentWait(observer))
+
+    assert result.failure is None, result.failure
+    assert synthesized == [backend.UTTERANCE], synthesized
+    assert len(bridge._mixer.pushed) == 1
