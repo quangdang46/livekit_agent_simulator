@@ -129,6 +129,20 @@
         ]
       },
       "source": "authored"
+    },
+    {
+      "utterance": "Can you please provide me with the price for the 2022 Honda CR-V?",
+      "behavior": "ask",
+      "target": "price",
+      "expected": {
+        "act": "ask",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "ask"
+        ]
+      },
+      "source": "run-040"
     }
   ]
 }

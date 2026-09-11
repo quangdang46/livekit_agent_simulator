@@ -50,6 +50,11 @@ class ObserverAgentWait:
     # a field so tests can force the timing deterministically.
     snapshot_fraction: float = 0.5
     _snapshot_attempted: bool = field(default=False, repr=False)
+    # Last text this instance returned (run 039: without it, the same
+    # Observer final is returned turn after turn — the driver scores the
+    # evaluator against a stale turn while the agent's real reply is still
+    # pending. Never return the same final twice).
+    _last_returned_text: str | None = field(default=None, repr=False)
 
     def is_agent_speaking_now(self) -> bool:
         """Realtime agent-speech signal for trigger gating (Slice 4).
@@ -84,6 +89,14 @@ class ObserverAgentWait:
         # A final that already exists at call time (preamble-shape: the agent
         # answered before wait_agent_turn was even entered, e.g. run 011)
         # is FRESH evidence, not stale history — accept it immediately.
+        # Run 039 proved the inverse must also hold: a final that exists at
+        # call time is STALE history when it belongs to a turn the driver
+        # already consumed (asking again after the agent answered). Track the
+        # last RETURNED text and never return the same final twice — a
+        # repeated return would score the evaluator against the wrong turn
+        # while the agent's real (stuck, interrupted, never-finalized) reply
+        # is still pending. Tier 2 (session snapshot) and tier 3 (audio
+        # floor) are consulted for genuinely-new evidence instead.
         preexisting_mono = seen_at_start
         preexisting_text = getattr(self.observer, "last_agent_final_text", None)
         still_speaking_at_start = bool(
@@ -93,11 +106,15 @@ class ObserverAgentWait:
             preexisting_mono is not None
             and preexisting_text
             and not still_speaking_at_start
+            and str(preexisting_text) != self._last_returned_text
         ):
+            self._last_returned_text = str(preexisting_text)
             return str(preexisting_text)
         saw_audio = False
         while time.monotonic() < deadline:
-            # Tier 1: final transcript (best evidence).
+            # Tier 1: final transcript (best evidence) — must be NEW since
+            # wait entry AND never returned before (run 039: without the
+            # second guard the same final is returned turn after turn).
             final_mono = getattr(self.observer, "last_agent_final_mono", None)
             final_text = getattr(self.observer, "last_agent_final_text", None)
             still_speaking = bool(getattr(self.observer, "agent_is_active_speaker", False))
@@ -106,7 +123,9 @@ class ObserverAgentWait:
                 and final_mono != seen_at_start
                 and final_text
                 and not still_speaking
+                and str(final_text) != self._last_returned_text
             ):
+                self._last_returned_text = str(final_text)
                 return str(final_text)
 
             # Tier 3 latch: remember that the agent demonstrably talked.

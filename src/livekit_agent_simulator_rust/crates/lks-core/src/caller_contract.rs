@@ -255,6 +255,9 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 "asking for",
                 "provide the price",
                 "provide its price",
+                // Run 040 (Phase D): "Can you please provide me with the
+                // price...?" — same grounding comment as Python semantic.py.
+                "provide me with",
                 // Run 022 (Phase D): "I'm specifically interested in the
                 // price..." — interest + price topic, no question word.
                 "interested in",

@@ -69,3 +69,21 @@ async def test_preamble_style_final_is_still_tier1_evidence():
     obs.last_agent_final_text = "Hello! I can help with that."
     wait = ObserverAgentWait(observer=obs)
     assert await wait.wait_agent_turn(timeout_s=2.0) == "Hello! I can help with that."
+@pytest.mark.asyncio
+async def test_same_final_never_returned_twice_run_039():
+    """Run 039 regression: the agent answered turn 2 ("What make and model?")
+    and the driver consumed it, then asked again (turn 3). The Observer still
+    holds that same final (the agent's real turn-3 reply was interrupted and
+    never finalized). wait_agent_turn must NOT return the stale final again —
+    it must fall through to snapshot/audio tiers or time out, never repeat."""
+    import asyncio
+
+    obs = FakeObserver()
+    obs.last_agent_final_mono = time.monotonic()
+    obs.last_agent_final_text = "What make and model?"
+    wait = ObserverAgentWait(observer=obs)
+    first = await wait.wait_agent_turn(timeout_s=2.0)
+    assert first == "What make and model?"
+    # Same final still present (agent never produced a new one) — must not repeat.
+    second = await wait.wait_agent_turn(timeout_s=0.2)
+    assert second is None

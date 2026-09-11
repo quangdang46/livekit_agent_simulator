@@ -128,6 +128,15 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         "asking for",
         "provide the price",
         "provide its price",
+        # Run 040 (Phase D): "Can you please provide me with the price...?"
+        # failed closed at 0.2 — the most natural polite ask phrasing the
+        # generator produces, and NO existing pattern covers it ("provide the
+        # price" needs the exact adjacency; "me with the price" breaks it).
+        # "provide me with" marks information-request intent delivering a
+        # price. Scoped narrowly (requires the literal phrase) so it cannot
+        # hijack negotiate: a proposal ("could you do $X") still outscores
+        # on its own patterns.
+        "provide me with",
         # Run 022 (Phase D): "I'm specifically interested in the price..."
         # failed closed at 0.2 — interest + price topic with no question
         # word and no other ask marker. "interested in" marks
