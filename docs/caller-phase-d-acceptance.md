@@ -58,9 +58,9 @@ re-verified unmoved before each commit.
 
 | # | Criterion | Status | Evidence |
 |---|---|---|---|
-| E1 | Agent stating the price satisfies ask/price | ✅ since `b794010` | run 019 agent transcript verbatim in parity fixture |
+| E1 | Agent stating the price satisfies ask/price | ✅ since `b794010` | run 019 agent transcript verbatim in parity fixture; run 026 ("listed at $25,800" → ask satisfied) |
 | E2 | Agent deflection does NOT satisfy (budget exhausts correctly) | ✅ | run 021 (`FAILED_MAX_TURNS` on "What can I help you with today?" x2), run 024 |
-| E3 | A full 4-behavior call completes against a cooperative agent | ⬜ | best so far run 019 (3/4 behaviors VALID+published, failed on arrange_visit-2) |
+| E3 | A full 4-behavior call completes against a cooperative agent | ✅ run 026 | `026-contract-prodval-phase-d`: status done, `contract_scenario_end`, 6 turns — ask VALID x2, negotiate VALID x2 (incl. the run-016 flexibility phrasing), arrange_visit VALID, end clean |
 
 ## F. Assertions / reporting on the contract vocabulary
 

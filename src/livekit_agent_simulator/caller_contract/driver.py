@@ -780,6 +780,15 @@ class ContractCallerDriver:
             # what was validated -- the security boundary and the audio stay
             # on the same text. Delivery timing (pre_delay) still applies via
             # the planner's outcome metadata without touching the words.
+            #
+            # Turn-taking (run 026): wait for the agent to go silent before
+            # synthesizing, same gate the say: branch uses. Without this the
+            # caller publishes OVER agent speech — the agent then hears a new
+            # question mid-answer and its reply mixes both turns, which the
+            # evaluator scores against the wrong behavior. Bounded (6s):
+            # a talkative agent must not wedge the caller — expiry publishes
+            # anyway, exactly like say:.
+            await _wait_agent_silence(agent)
             plan = self.planner.plan_speak(candidate.utterance, _interaction(action))
             if plan.pre_delay_ms:
                 await asyncio.sleep(plan.pre_delay_ms / 1000.0)

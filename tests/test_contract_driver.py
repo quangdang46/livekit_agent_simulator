@@ -10,6 +10,7 @@ from livekit_agent_simulator.caller_contract import (
     GenerationIdentity,
 )
 from livekit_agent_simulator.caller_contract.driver import (
+    AGENT_SILENCE_WAIT_S,
     ContractCallerDriver,
 )
 from livekit_agent_simulator.caller_contract.dsl import parse_steps
@@ -266,3 +267,119 @@ async def test_stale_identity_dropped_never_published():
     result = await driver.run(actions, sink, agent)
     assert result.turns_spoken == 1
     assert len(sink.published) == 1
+
+
+class _SpeakingAgent(FakeAgent):
+    """Agent that reports itself as speaking for the first N silence polls,
+    then goes quiet — lets the test observe the do: silence gate.
+
+    The polls and the replies are INDEPENDENT channels, mirroring the real
+    Observer: is_agent_speaking_now reads the active-speaker flag while
+    wait_agent_turn returns transcript finals. A fake that couples them
+    (speaking forever + one reply) models an agent that talks over every
+    caller turn forever — no such agent exists, and the seeded policy would
+    cut into it rather than wait it out.
+    """
+
+    def __init__(self, replies=None, *, speaking_polls: int = 0):
+        super().__init__(replies)
+        self._speaking_polls = speaking_polls
+        self.polls = 0
+
+    def is_agent_speaking_now(self) -> bool:
+        self.polls += 1
+        return self.polls <= self._speaking_polls
+
+
+@pytest.mark.asyncio
+async def test_do_waits_for_agent_silence_before_publishing():
+    """Run-026 regression: the do: branch published OVER agent speech because
+    only say: called _wait_agent_silence. A speaking agent must delay the
+    do: publish; a silent agent must not delay it."""
+    import time as _time
+
+    actions = parse_steps(
+        [{"do": {"behavior": "ask", "target": "price", "constraints": {"max_turns": 2}}}],
+        file="t",
+    )
+
+    # ScriptedBackend's fallback ask line ("Could you tell me more?") has no
+    # price word, so script the single generation explicitly (TARGET_UNVERIFIED
+    # would otherwise fail the turn for reasons unrelated to this test).
+    # Silent agent: no wait.
+    # NOTE on _ScriptedBackend: it pops scripted utterances, then falls back
+    # to "Could you tell me more?" (no price word → TARGET_UNVERIFIED under
+    # ask/price). The reply below DOES satisfy the evaluator ("The price is
+    # $30,000" hits the price-statement branch), so the behavior ends after
+    # ONE turn — exactly one generation, no fallback, no budget loop.
+    satisfy_once = {"act": "ask", "target": "price", "slots": {},
+                    "utterance": "Could you tell me the price?"}
+    driver, orch = _driver(backend=_ScriptedBackend(utterances=[dict(satisfy_once)]))
+    sink = FakeSink(orch)
+    agent = _SpeakingAgent(replies=["The price is $30,000."], speaking_polls=0)
+    t0 = _time.monotonic()
+    result = await driver.run(actions, sink, agent)
+    fast_dt = _time.monotonic() - t0
+    assert result.failure is None
+    assert len(sink.published) == 1
+
+    # Speaking agent (3 polls x 50ms, then quiet): the publish must wait
+    # for silence. polls and replies are independent (see _SpeakingAgent):
+    # the flag drops after 3 polls while the scripted reply is still there
+    # to satisfy the behavior on the first agent answer.
+    driver2, orch2 = _driver(backend=_ScriptedBackend(utterances=[dict(satisfy_once)]))
+    sink2 = FakeSink(orch2)
+    agent2 = _SpeakingAgent(replies=["The price is $30,000."], speaking_polls=3)
+    t0 = _time.monotonic()
+    result2 = await driver2.run(actions, sink2, agent2)
+    slow_dt = _time.monotonic() - t0
+    assert result2.failure is None
+    assert len(sink2.published) == 1
+    assert agent2.polls > 0, "the silence gate never polled the agent"
+    assert slow_dt > fast_dt, "speaking agent did not delay the do: publish"
+
+
+@pytest.mark.asyncio
+async def test_do_silence_gate_is_bounded_by_talkative_agent():
+    """The gate must not wedge the caller: an agent that never goes silent
+    still gets a publish after AGENT_SILENCE_WAIT_S (patched short here).
+
+    NOTE: the constant is read at CALL time (``deadline = ...
+    + AGENT_SILENCE_WAIT_S`` inside ``_wait_agent_silence``), so it must be
+    patched with monkeypatch.setattr on the module — a stale
+    ``from ... import AGENT_SILENCE_WAIT_S`` copy would keep the old value
+    and this test would wait the full 6s instead of 0.15s.
+    """
+    import livekit_agent_simulator.caller_contract.driver as _driver_mod
+
+    actions = parse_steps(
+        [{"do": {"behavior": "ask", "target": "price", "constraints": {"max_turns": 1}}}],
+        file="t",
+    )
+    driver, orch = _driver(
+        backend=_ScriptedBackend(
+            utterances=[
+                {
+                    "act": "ask",
+                    "target": "price",
+                    "slots": {},
+                    "utterance": "Could you tell me the price?",
+                }
+            ]
+        )
+    )
+    sink = FakeSink(orch)
+    agent = _SpeakingAgent(replies=["The price is $30,000."], speaking_polls=10_000)
+
+    assert _driver_mod.AGENT_SILENCE_WAIT_S == AGENT_SILENCE_WAIT_S == 6.0, (
+        "a previous test left the module constant patched — "
+        f"got {_driver_mod.AGENT_SILENCE_WAIT_S}"
+    )
+    _driver_mod.AGENT_SILENCE_WAIT_S = 0.15
+    try:
+        result = await driver.run(actions, sink, agent)
+    finally:
+        _driver_mod.AGENT_SILENCE_WAIT_S = AGENT_SILENCE_WAIT_S
+
+    assert result.failure is None
+    assert len(sink.published) == 1, "bounded gate must publish anyway on expiry"
