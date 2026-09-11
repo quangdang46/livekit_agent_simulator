@@ -663,7 +663,12 @@ class ContractCallerDriver:
             # validator attempt, in order. _attempt_verdicts is ALWAYS
             # defined here (before the loop) so the emit below can never
             # hit a NameError regardless of which exit path runs.
-            _attempt_verdicts: list[tuple[str, str | None]] = []
+            # Each entry also carries the attempted utterance (truncated):
+            # run 019 proved a verdict-only trail is not diagnosable — the
+            # same behavior can VALID once then UNKNOWN twice, and without
+            # the text there is no way to know what the model generated on
+            # the failing attempts.
+            _attempt_verdicts: list[tuple[str, str | None, str]] = []
             for _ in range(self.max_retries + 1):
                 attempts += 1
                 try:
@@ -677,7 +682,11 @@ class ContractCallerDriver:
                 )
                 last_verdict = result_attempt
                 _attempt_verdicts.append(
-                    (result_attempt.verdict.value, result_attempt.reason)
+                    (
+                        result_attempt.verdict.value,
+                        result_attempt.reason,
+                        candidate_attempt.utterance,
+                    )
                 )
                 if self.recorder is not None:
                     self.recorder.record_attempt(
@@ -700,6 +709,10 @@ class ContractCallerDriver:
             # Diagnostic: record every attempt's verdict so a live
             # behavior_violation names the ACTUAL failing verdicts instead of
             # only the last one (run 013-015 class: which attempt failed how).
+            # The utterance is truncated to 240 chars: full text lives in the
+            # recorder trail (record_attempt above) and in turn_published for
+            # the winning attempt; the event needs enough to diagnose which
+            # generation failed, not the whole string.
             for _v in _attempt_verdicts:
                 _emit(
                     "contract.attempt_verdict",
@@ -707,6 +720,7 @@ class ContractCallerDriver:
                         "behavior": contract.behavior,
                         "verdict": _v[0],
                         "reason": _v[1],
+                        "utterance": _v[2][:240],
                     },
                 )
             if transport_error is not None and not candidates:
