@@ -252,11 +252,17 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 "i'm asking",
                 "i am asking",
                 "asking about",
+                "asking for",
                 "provide the price",
                 "provide its price",
                 // Run 022 (Phase D): "I'm specifically interested in the
                 // price..." — interest + price topic, no question word.
                 "interested in",
+                // Run 023 (Phase D): "Can you find out the price...?" —
+                // retrieval intent. ("confirm ... price" is a PAIR marker,
+                // scored in classify_inherent, not a literal: bare "confirm"
+                // would hijack the confirm tier.)
+                "find out",
             ],
         ),
         (
@@ -465,7 +471,13 @@ impl RuleBasedSemanticVerifier {
 
         let mut hits: HashMap<&str, usize> = HashMap::new();
         for (act, patterns) in act_patterns() {
-            let count = patterns.iter().filter(|p| lowered.contains(**p)).count();
+            let mut count = patterns.iter().filter(|p| lowered.contains(**p)).count();
+            // Pair markers (mirrors Python _PAIR_PATTERNS): two substrings
+            // that only count together. Bare "confirm" would hijack genuine
+            // confirm turns, so the ask marker is the pair, not one literal.
+            if act == "ask" && lowered.contains("confirm") && lowered.contains("price") {
+                count += 1;
+            }
             if count > 0 {
                 hits.insert(act, count);
             }

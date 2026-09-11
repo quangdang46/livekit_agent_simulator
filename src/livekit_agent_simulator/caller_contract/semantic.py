@@ -125,6 +125,7 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         "i'm asking",
         "i am asking",
         "asking about",
+        "asking for",
         "provide the price",
         "provide its price",
         # Run 022 (Phase D): "I'm specifically interested in the price..."
@@ -134,6 +135,18 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         # a topic match still scores only this one hit (0.75, not 0.92), and
         # the target gate independently requires price evidence.
         "interested in",
+        # Run 023 (Phase D): "Can you find out the price...?" failed closed
+        # at 0.2 — information retrieval with no question word and no other
+        # ask marker. "find out" marks retrieval intent. Zero blast radius:
+        # no golden/parity fixture or test contains the substring.
+        "find out",
+        # Run 023 (Phase D): "Can you please confirm the price...?" failed
+        # closed at 0.2 — and note the trap: the confirm ACT tier owns
+        # "to confirm"/"just to confirm"/"is that right". A bare "confirm"
+        # substring alone would hijack genuine confirm turns, so the marker
+        # is the PAIR "confirm ... price" (checked as two substrings below
+        # via _score, not as one literal — see _CONFIRM_PRICE_PAIR).
+        # Zero blast radius for the same reason as "find out".
     ),
     # Run 016 (Phase D): "Is there any flexibility on the price?" failed
     # closed at 0.2 — no pattern matched a plain flexibility ask, the most
@@ -189,11 +202,24 @@ def _split_clauses(utterance: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+# Pair markers: two substrings that only count TOGETHER (both must be
+# present). Used where either half alone would hijack another tier — e.g.
+# bare "confirm" would steal genuine confirm turns ("just to confirm, the
+# price is $25,800?"), but "confirm" + "price" together marks an ask about
+# the price. Format: act -> tuple of required-substring tuples.
+_PAIR_PATTERNS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "ask": (("confirm", "price"),),
+}
+
+
 def _score_act_hits(text: str) -> dict[str, int]:
     lowered = text.lower()
     hits: dict[str, int] = {}
     for act, patterns in ACT_PATTERNS.items():
         count = sum(1 for pat in patterns if pat in lowered)
+        for pair in _PAIR_PATTERNS.get(act, ()):
+            if all(sub in lowered for sub in pair):
+                count += 1
         if count:
             hits[act] = count
     return hits
