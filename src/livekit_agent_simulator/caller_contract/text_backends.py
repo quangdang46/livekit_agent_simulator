@@ -141,11 +141,14 @@ class GeminiTextBackend:
     stateless HTTP round trip; no session, no publish.
     """
 
+    # NOTE 2026-09-11 (run 011 production evidence): gemini-2.0-flash returns
+    # HTTP 404 on this key ("no longer available"); gemini-flash-latest is the
+    # working alias (same fix as semantic_llm.py LLMSemanticVerifier default).
     def __init__(
         self,
         *,
         api_key: str,
-        model: str = "gemini-2.0-flash",
+        model: str = "gemini-flash-latest",
         base_url: str = "https://generativelanguage.googleapis.com/v1beta",
         temperature: float = 0.4,
         timeout_s: float = 20.0,

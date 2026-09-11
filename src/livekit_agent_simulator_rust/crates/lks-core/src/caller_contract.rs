@@ -493,6 +493,48 @@ pub fn turn_complete_after_debounce(last_stop_ms: i64, now_ms: i64, silence_debo
 }
 
 // ---------------------------------------------------------------------
+// Seeded interruption policy (mirrors interaction_planner.py::
+// CallerInteractionPlanner.should_interrupt). Pure function: SHA-256 over
+// "{scenario_id}:{seed}:{agent_turn_index}", first 8 bytes big-endian /
+// 2^64 compared against the per-rate threshold (low=0.15, medium=0.35,
+// high=0.6). None interaction or absent rate means never. The interval
+// gate lives in the driver, not here — same split as Python.
+// ---------------------------------------------------------------------
+
+pub const INTERRUPTION_PROBABILITY_LOW: f64 = 0.15;
+pub const INTERRUPTION_PROBABILITY_MEDIUM: f64 = 0.35;
+pub const INTERRUPTION_PROBABILITY_HIGH: f64 = 0.6;
+
+pub fn interruption_roll(scenario_id: &str, seed: u64, agent_turn_index: u64) -> f64 {
+    use sha2::{Digest, Sha256};
+
+    let key = format!("{scenario_id}:{seed}:{agent_turn_index}");
+    let digest = Sha256::digest(key.as_bytes());
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(bytes) as f64 / 18446744073709551616.0
+}
+
+pub fn should_interrupt(
+    scenario_id: &str,
+    seed: Option<u64>,
+    agent_turn_index: u64,
+    rate: Option<&str>,
+) -> bool {
+    let rate = match rate {
+        Some(r) if !r.is_empty() => r,
+        _ => return false,
+    };
+    let threshold = match rate {
+        "low" => INTERRUPTION_PROBABILITY_LOW,
+        "medium" => INTERRUPTION_PROBABILITY_MEDIUM,
+        "high" => INTERRUPTION_PROBABILITY_HIGH,
+        _ => return false,
+    };
+    interruption_roll(scenario_id, seed.unwrap_or(0), agent_turn_index) < threshold
+}
+
+// ---------------------------------------------------------------------
 // Parity tests: read the SAME JSON fixtures the Python side reads.
 // ---------------------------------------------------------------------
 
@@ -600,6 +642,33 @@ mod parity_tests {
                 "{}",
                 case["name"].as_str().unwrap_or("<unnamed>")
             );
+        }
+    }
+
+    #[test]
+    fn should_interrupt_vector_matches_rust_policy() {
+        let data = load("should_interrupt.json");
+        assert_eq!(
+            data["none_interaction_expected"].as_bool(),
+            Some(false),
+            "fixture must assert None interaction never interrupts"
+        );
+        assert_eq!(
+            data["no_rate_expected"].as_bool(),
+            Some(false),
+            "fixture must assert absent rate never interrupts"
+        );
+        assert!(!super::should_interrupt("s", Some(0), 0, None));
+        assert!(!super::should_interrupt("s", Some(0), 0, Some("")));
+        for case in data["cases"].as_array().unwrap() {
+            let expected = case["expected"].as_bool().unwrap();
+            let actual = super::should_interrupt(
+                case["scenario_id"].as_str().unwrap(),
+                Some(case["seed"].as_u64().unwrap()),
+                case["turn"].as_u64().unwrap(),
+                case["rate"].as_str(),
+            );
+            assert_eq!(actual, expected, "{:?}", case);
         }
     }
 

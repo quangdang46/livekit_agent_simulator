@@ -172,3 +172,34 @@ def test_failure_codes_vector_matches_python_enums() -> None:
     data = _load("failure_codes.json")
     assert {m.value for m in FailureReason} == set(data["expected_failure_reasons"])
     assert {m.value for m in EndedBy} == set(data["expected_ended_by"])
+
+
+def test_should_interrupt_vector_matches_required_shape() -> None:
+    data = _load("should_interrupt.json")
+    assert data["none_interaction_expected"] is False
+    assert data["no_rate_expected"] is False
+    assert len(data["cases"]) > 0
+    for case in data["cases"]:
+        assert {"scenario_id", "seed", "turn", "rate", "expected"} <= set(case.keys())
+        assert case["rate"] in {"low", "medium", "high"}
+
+
+def test_should_interrupt_vector_matches_python_policy() -> None:
+    from livekit_agent_simulator.caller_contract.dsl import InteractionConfig
+    from livekit_agent_simulator.caller_contract.interaction_planner import CallerInteractionPlanner
+
+    data = _load("should_interrupt.json")
+    planner = CallerInteractionPlanner()
+    assert planner.should_interrupt(None, scenario_id="s", agent_turn_index=0) is (
+        data["none_interaction_expected"]
+    )
+    assert planner.should_interrupt(
+        InteractionConfig(), scenario_id="s", agent_turn_index=0
+    ) is (data["no_rate_expected"])
+    for case in data["cases"]:
+        ic = InteractionConfig(
+            interruption_rate=case["rate"], interruption_seed=case["seed"]
+        )
+        assert planner.should_interrupt(
+            ic, scenario_id=case["scenario_id"], agent_turn_index=case["turn"]
+        ) is case["expected"], case

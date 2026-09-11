@@ -74,9 +74,25 @@ def _build_text_backend(cfg: Any) -> Any:
 
 
 def _build_semantic_verifier(cfg: Any) -> SemanticVerifierProtocol:
-    """Tier-3 (LLM judge) when ``judge:`` is configured and ready; otherwise
-    the Tier-1 rule-based baseline — see module docstring."""
+    """Tier-3 (LLM judge) when a working judge credential exists; otherwise
+    the Tier-1 rule-based baseline — see module docstring.
+
+    Provider-aware: the ``judge:`` HTTP block serves PassCriteria/asserts
+    judging and may point at a proxy that cannot serve the synchronous
+    classify() path (run 010: HTTP 200 with empty content on every call).
+    When the simulator provider is google, the Gemini key already in hand
+    (same key the Live caller bridge uses) drives the judge directly via
+    generateContent — no dependency on the asserts-judge proxy. The HTTP
+    path is used only when the simulator provider is NOT google.
+    """
     sim_api_key = getattr(cfg.simulator, "api_key", None)
+    sim_provider = getattr(cfg.simulator, "provider", "openai")
+    if sim_provider == "google" and (sim_api_key or "").strip():
+        return LLMSemanticVerifier(
+            api_key=sim_api_key.strip(),
+            provider="gemini",
+            model="gemini-flash-latest",
+        )
     resolved = resolve_judge(getattr(cfg, "judge", None), sim_api_key=sim_api_key)
     if not resolved.ready:
         return RuleBasedSemanticVerifier()
