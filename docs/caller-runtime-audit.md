@@ -1,8 +1,35 @@
 # Caller runtime audit — is the contract path the only way to the agent?
 
-Date: 2026-09-11. Baseline: `7c23667` (architecture locked) through `fd3cc97`.
+Date: 2026-09-11. Baseline: `7c23667` (architecture locked) through `a178fd3`.
 Every claim below is reproducible from the repo at that revision; each finding
 names the commit that resolved it. Evidence only — this file changes nothing.
+
+## Audit sweep: every event-vocabulary reader checked
+
+The recovery-barge fix (`c24ddc9`) was one instance of a *class*: the contract
+path emits a new event vocabulary that legacy readers never learned. So every
+`sim.X` kind read by the evaluators (`asserts.py`, `metrics.py`) was traced to
+a **live** emitter before closing the audit:
+
+- `sim.agent.audio_onset` / `sim.caller.audio_source_start` — pulse emitters
+  (`livekit/observer.py`, the bridge speaker/audio latches in both
+  `callers/*.py`), running normally on the contract path. Not dead.
+- `sim.caller_midcall` — from `inject_reground`, which needs `_live_session`
+  (unreachable). Not reachable, but no reader fails a run on its absence.
+- `silence.detected` — `web/markers.py`; no assert/metric verdict hinges on it.
+- `sim.script.*` cue/dtmf/wait/hang_up — `ScriptRunner` only; `script.verify`
+  reading them is explicitly skipped with `skipped: True` for contract
+  scenarios (finding 2 below), so they gate nothing.
+- `sim.hang_up` — emitted by `bridge.sim_hang_up()` (still called by the
+  contract path through the hold watchdog). Live.
+- `sim.end_call_token` — emitted only from a `run()`-internal branch of the
+  bridge Realtime loop: dead on the contract path, but the only reader
+  (`_eval_ended_by_outcome`) treats a missing token as "not sim", never as a
+  hard failure, so it can only under-attribute, never falsely fail.
+- The two readers that could **fail a run on their absence** — barge recovery
+  and `ended_by` (finding 1 / finding 6 below) — are now vocabulary-shared.
+
+No other vocabulary reader was found that can decide a verdict it cannot see.
 
 ## Question
 
@@ -146,6 +173,29 @@ parse-time reject (breaking DSL change for a capability that may yet land as
 planner-level timing) and over silence (an author setting `hesitation: low`
 would reasonably expect shaping and blame the agent under test).
 
+### 6. `type: ended_by` reported "detect" for every contract run — `a178fd3`
+
+Same class again: `run.end_condition.reason` is written by whichever engine
+ran — legacy wrote `sim_end_call` / `agent_disconnected`, the contract path
+writes `contract_scenario_end` / `contract_caller_end` / `contract_agent_end`
+(`live_wiring.py`'s `EndedBy` map). The reader knew only the legacy spelling,
+so any `type: ended_by` naming a side failed. Proof: contract log → pass
+False (actual=detect); legacy-shaped log → pass True. 2 shipped templates
+set `ended_by: sim`.
+
+Fix: one shared mapping (`script/models.py::end_side_from_reason`) over both
+vocabularies, mirroring the barge-predicate placement. `contract_timeout`
+joins the no-side branch (like `max_turns`); unrecognized reasons read
+explicitly instead of passing silently.
+
+### 7. `interruption_count` was 0 for every contract run — `a178fd3`
+
+`metrics.py` counted only the legacy `interruption` kind. It now uses the same
+`is_interruption_event` predicate as `asserts.py`, so the report and the
+assert can never disagree on how many cut-ins occurred. The legacy line is
+preserved: a seeded backchannel cut-in (`contract.policy_interrupt`) IS an
+interruption but is NOT a recovery barge (correction/escalate only).
+
 ## Residual, deliberately not actioned
 
 - **`silent_mode` compat bridge.** Not closable by migration: the silent
@@ -162,10 +212,11 @@ would reasonably expect shaping and blame the agent under test).
 
 ```bash
 uv run pytest tests/test_contract_e2e_hard_boundary.py -q   # no unvalidated utterance reaches the agent
-uv run pytest tests/test_contract_live_wiring.py -q         # INVALID → no TTS/PCM/mixer
-uv run pytest tests/test_asserts.py tests/test_suite.py -q  # barge vocabulary + CI gate
+uv run pytest tests/test_contract_live_wiring.py -q         # INVALID → no TTS/PCM/mixer + play_audio layer pins
+uv run pytest tests/test_asserts.py tests/test_suite.py -q  # barge/ended_by vocabulary + CI gate
+uv run pytest tests/test_metrics.py -q                      # interruption/barge lines per vocabulary
 uv run pytest tests/test_authoring.py -q                    # shaping warning
-uv run pytest -q                                            # 1150 passed, 2 skipped, 2 xfailed
+uv run pytest -q                                            # 1158 passed, 2 skipped, 2 xfailed
 ```
 
 Note: `f22991b` was the pre-amend SHA of finding 4; `cd42772` is canonical.
