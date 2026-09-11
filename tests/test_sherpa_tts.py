@@ -161,6 +161,86 @@ def test_ensure_model_dir_rejects_tampered_file(tmp_path) -> None:
         )
 
 
+def test_ensure_model_dir_rejects_path_traversal_archive(tmp_path) -> None:
+    """An archive whose member escapes the cache dir (``..``) fails closed
+    with ModelIntegrityError — even with a matching archive SHA. The
+    traversal check is about WHERE members extract, not WHO signed them."""
+    import hashlib as _hashlib
+    import io
+    import tarfile
+
+    from livekit_agent_simulator.audio.sherpa_models import (
+        ModelFile,
+        ModelIntegrityError,
+        PinnedModelBundle,
+        ensure_model_dir,
+    )
+
+    evil = io.BytesIO()
+    with tarfile.open(fileobj=evil, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="../../evil.txt")
+        payload = b"escape"
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    archive_bytes = evil.getvalue()
+    bundle = PinnedModelBundle(
+        model_id="evil-bundle",
+        archive_url="https://example.invalid/evil.tar.gz",
+        archive_sha256=_hashlib.sha256(archive_bytes).hexdigest(),
+        archive_filename="evil.tar.gz",
+        extract_dirname="evil",
+        files=(ModelFile(relpath="model.fp16.onnx", sha256="0" * 64),),
+    )
+
+    def _downloader(url: str, dest) -> None:
+        from pathlib import Path as _Path
+
+        _Path(dest).write_bytes(archive_bytes)
+
+    with pytest.raises(ModelIntegrityError, match="escapes the cache dir"):
+        ensure_model_dir(bundle, tmp_path, downloader=_downloader)
+    assert not (tmp_path.parent / "evil.txt").exists()
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_ensure_model_dir_rejects_symlink_member(tmp_path) -> None:
+    """Symlink/hardlink members fail closed even when the archive SHA matches."""
+    import hashlib as _hashlib
+    import io
+    import tarfile
+
+    from livekit_agent_simulator.audio.sherpa_models import (
+        ModelFile,
+        ModelIntegrityError,
+        PinnedModelBundle,
+        ensure_model_dir,
+    )
+
+    evil = io.BytesIO()
+    with tarfile.open(fileobj=evil, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tar.addfile(info)
+    archive_bytes = evil.getvalue()
+    bundle = PinnedModelBundle(
+        model_id="link-bundle",
+        archive_url="https://example.invalid/link.tar.gz",
+        archive_sha256=_hashlib.sha256(archive_bytes).hexdigest(),
+        archive_filename="link.tar.gz",
+        extract_dirname="link",
+        files=(ModelFile(relpath="model.fp16.onnx", sha256="0" * 64),),
+    )
+
+    def _downloader(url: str, dest) -> None:
+        from pathlib import Path as _Path
+
+        _Path(dest).write_bytes(archive_bytes)
+
+    with pytest.raises(ModelIntegrityError, match="is a link"):
+        ensure_model_dir(bundle, tmp_path, downloader=_downloader)
+
+
 def test_sherpa_engine_synthesizes_real_pcm_when_installed() -> None:
     """With sherpa-onnx installed + pinned model cached: real PCM at 24k.
     Skipped (not failed) when the extra or model is absent."""

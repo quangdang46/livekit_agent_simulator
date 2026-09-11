@@ -101,6 +101,40 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validated_members(tar: tarfile.TarFile, dest: Path) -> list[tarfile.TarInfo]:
+    """Return archive members only if every one extracts inside ``dest``.
+
+    Defense-in-depth hygiene on top of the archive-SHA check: a pinned,
+    hash-verified archive cannot be tampered with, but a member with an
+    absolute path (``/etc/x``), a ``..`` escape, or a symlink/hardlink
+    target would still write outside ``dest``. Reject the whole archive
+    instead (fail closed via ``ModelIntegrityError``, same as a SHA
+    mismatch) so extraction can never escape the cache dir.
+
+    Explicit member check rather than ``extractall(filter=...)`` because
+    the package floor is Python 3.10 and the ``filter`` parameter only
+    exists on 3.12+.
+    """
+    from .sherpa_tts import ModelIntegrityError
+
+    dest_resolved = dest.resolve()
+    members = tar.getmembers()
+    for member in members:
+        if member.issym() or member.islnk():
+            raise ModelIntegrityError(
+                f"model archive member {member.name!r} is a link; refusing extraction"
+            )
+        target = (dest_resolved / member.name).resolve()
+        try:
+            target.relative_to(dest_resolved)
+        except ValueError:
+            raise ModelIntegrityError(
+                f"model archive member {member.name!r} escapes the cache dir; "
+                "refusing extraction"
+            ) from None
+    return members
+
+
 def ensure_model_dir(
     bundle: PinnedModelBundle,
     cache_dir: Path,
@@ -151,7 +185,7 @@ def ensure_model_dir(
     if model_dir.exists():
         shutil.rmtree(model_dir)
     with tarfile.open(archive, "r:*") as tar:
-        tar.extractall(cache_dir)
+        tar.extractall(cache_dir, members=_validated_members(tar, cache_dir))
     if not _verified():
         raise ModelIntegrityError(
             f"model {bundle.model_id!r} extracted files failed SHA256 verification"
