@@ -214,6 +214,53 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
     ]
 }
 
+fn target_keywords() -> Vec<(&'static str, &'static [&'static str])> {
+    vec![
+        (
+            "price",
+            &[
+                "price", "$", "cost", "fee", "charge", "quote", "budget",
+                "lower the price", "monthly fee", "how much",
+            ],
+        ),
+        (
+            "delivery_date",
+            &[
+                "deliver", "delivery", "arrival", "arrive", "shipping", "ship",
+                "eta", "when will", "how long",
+            ],
+        ),
+        (
+            "order_status",
+            &["order", "status", "delayed", "delay", "shipment", "tracking"],
+        ),
+        (
+            "hours",
+            &["hours", "open", "close", "opening", "what time"],
+        ),
+        ("plan", &["plan", "package", "subscription"]),
+        ("status", &["status", "update", "checking on"]),
+        ("charge", &["charge", "bill", "billing", "fee"]),
+        ("fees", &["fee", "fees", "hidden", "cost", "charge"]),
+    ]
+}
+
+/// Independent target evidence from the utterance text alone (mirrors
+/// semantic.py::_target_evidence). Unknown targets yield None at this tier.
+fn target_evidence(utterance: &str, target: &Option<String>) -> Option<String> {
+    let target = target.as_ref()?;
+    let keywords = target_keywords()
+        .into_iter()
+        .find(|(name, _)| name == target)
+        .map(|(_, kws)| kws)?;
+    let lowered = utterance.to_lowercase();
+    if keywords.iter().any(|kw| lowered.contains(kw)) {
+        Some(target.clone())
+    } else {
+        None
+    }
+}
+
 fn confidence_for(hit_count: usize) -> f64 {
     match hit_count {
         0 => NO_MATCH_CONFIDENCE,
@@ -250,7 +297,7 @@ impl RuleBasedSemanticVerifier {
             }
             return ObservedAct {
                 act: contract.behavior.clone(),
-                target: contract.target.clone(),
+                target: target_evidence(utterance, &contract.target),
                 confidence: NO_MATCH_CONFIDENCE,
                 all_acts,
             };
@@ -276,7 +323,7 @@ impl RuleBasedSemanticVerifier {
             }
         }
 
-        let target = if best_act == contract.behavior { contract.target.clone() } else { None };
+        let target = target_evidence(utterance, &contract.target);
 
         ObservedAct { act: best_act, target, confidence: confidence_for(primary_hits), all_acts }
     }
@@ -336,12 +383,10 @@ impl ContractValidator {
             return ValidationResult { verdict: Verdict::Invalid, reason: Some("ACT_MISMATCH".to_string()) };
         }
 
-        // 3. Target.
-        if let Some(expected_target) = &contract.target {
-            if candidate.target.as_deref() != Some(expected_target.as_str()) {
-                return ValidationResult { verdict: Verdict::Invalid, reason: Some("TARGET_MISMATCH".to_string()) };
-            }
-        }
+        // 3. Target claim shape — candidate.target is a generator claim,
+        // NEVER evidence (mirrors validator.py step 3). The authoritative
+        // target verdict comes from observed.target below; no claim-equality
+        // check here by design.
 
         // 4. Slot / numeric constraints.
         if let Some(max_budget) = contract.constraints.max_budget {
@@ -410,6 +455,28 @@ impl ContractValidator {
                     reason: Some("SEMANTIC_ACT_MISMATCH".to_string()),
                 };
             }
+
+            // Target evidence (authoritative): observed.target is the ONLY
+            // target signal. None + pinned contract target -> UNKNOWN
+            // (TARGET_UNVERIFIED); disagreement -> SEMANTIC_TARGET_MISMATCH.
+            if contract.target.is_some() {
+                match &observed.target {
+                    None => {
+                        return ValidationResult {
+                            verdict: Verdict::Unknown,
+                            reason: Some("TARGET_UNVERIFIED".to_string()),
+                        };
+                    }
+                    Some(observed_target) => {
+                        if Some(observed_target) != contract.target.as_ref() {
+                            return ValidationResult {
+                                verdict: Verdict::Invalid,
+                                reason: Some("SEMANTIC_TARGET_MISMATCH".to_string()),
+                            };
+                        }
+                    }
+                }
+            }
         }
 
         ValidationResult { verdict: Verdict::Valid, reason: None }
@@ -477,9 +544,12 @@ mod parity_tests {
             let data = load(filename);
             let contract = build_contract(&data["contract"]);
             let candidate = build_candidate(&data["candidate"]);
-            let use_semantic = data["use_semantic_verifier"].as_bool().unwrap_or(false);
+            // Semantic verification is MANDATORY (mirrors validator.py:
+            // explicit None still constructs the rule baseline). The flag
+            // only records which tier the vector was authored against.
+            let _use_semantic = data["use_semantic_verifier"].as_bool().unwrap_or(false);
             let validator =
-                ContractValidator::new(if use_semantic { Some(RuleBasedSemanticVerifier) } else { None });
+                ContractValidator::new(Some(RuleBasedSemanticVerifier));
 
             let result = validator.validate(&candidate, &contract);
 

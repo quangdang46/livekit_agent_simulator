@@ -684,6 +684,40 @@ pub fn parse_step(
         });
     }
 
+    // end / silence / hangup: presence-only control actions (mirrors
+    // dsl.py). Any sibling key or non-empty value is a hard error.
+    if kind == "end" || kind == "silence" || kind == "hangup" {
+        let mut unknown: Vec<&String> = raw_step
+            .keys()
+            .filter(|k| k.as_str() != kind)
+            .collect();
+        unknown.sort();
+        if !unknown.is_empty() {
+            return Err(err(
+                file,
+                line_no,
+                &format!("unknown {kind}: sibling key(s): {unknown:?}"),
+                Some(kind),
+            ));
+        }
+        match raw_step.get(kind) {
+            None | Some(Json::Bool(true)) => {}
+            Some(Json::Object(m)) if m.is_empty() => {}
+            _ => {
+                return Err(err(
+                    file,
+                    line_no,
+                    &format!("{kind}: takes no value"),
+                    Some(kind),
+                ));
+            }
+        }
+        return Ok(CallerAction {
+            kind: kind.to_string(),
+            line_no,
+            payload: Map::new(),
+        });
+    }
     // end / silence / hangup: presence only.
     Ok(CallerAction {
         kind: kind.to_string(),

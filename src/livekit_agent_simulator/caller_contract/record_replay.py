@@ -27,7 +27,11 @@ from typing import Any
 from . import CandidateUtterance, GenerationIdentity, ValidationResult, Verdict, to_dict
 from .language_adapter import LanguageBackendProtocol
 
-RECORD_FORMAT_VERSION = 1
+RECORD_FORMAT_VERSION = 2
+
+# v1 records (candidate/verdict/reason/retry_index only) still read: the
+# semantic evidence + outcome fields default to None (see from_dict).
+RECORD_FORMAT_V1 = 1
 
 
 class ReplayMismatchError(RuntimeError):
@@ -38,12 +42,22 @@ class ReplayMismatchError(RuntimeError):
 
 @dataclass
 class RecordedAttempt:
-    """One generate+validate attempt for a single turn, success or not."""
+    """One generate+validate attempt for a single turn, success or not.
+
+    v2 adds the semantic verifier's observed evidence (act/target/
+    confidence/all_acts as classified at record time) plus the run outcome
+    (failure reason + ended_by + behavior/turn counters at record end).
+    Replay asserts BOTH the validator verdict and the observed evidence,
+    so an LLM semantic verifier is never re-invoked during replay.
+    """
 
     candidate: dict[str, Any]
     verdict: str
     reason: str | None
     retry_index: int
+    observed: dict[str, Any] | None = None
+    outcome_failure: str | None = None
+    outcome_ended_by: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -51,6 +65,9 @@ class RecordedAttempt:
             "verdict": self.verdict,
             "reason": self.reason,
             "retry_index": self.retry_index,
+            "observed": self.observed,
+            "outcome_failure": self.outcome_failure,
+            "outcome_ended_by": self.outcome_ended_by,
         }
 
     @classmethod
@@ -60,6 +77,9 @@ class RecordedAttempt:
             verdict=data["verdict"],
             reason=data.get("reason"),
             retry_index=data["retry_index"],
+            observed=data.get("observed"),
+            outcome_failure=data.get("outcome_failure"),
+            outcome_ended_by=data.get("outcome_ended_by"),
         )
 
 
@@ -89,16 +109,17 @@ class RunRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunRecord":
-        if data.get("format_version") != RECORD_FORMAT_VERSION:
+        version = data.get("format_version")
+        if version not in (RECORD_FORMAT_V1, RECORD_FORMAT_VERSION):
             raise ValueError(
-                f"unsupported record_format version {data.get('format_version')!r}, "
-                f"expected {RECORD_FORMAT_VERSION}"
+                f"unsupported record_format version {version!r}, "
+                f"expected {RECORD_FORMAT_VERSION} (v{RECORD_FORMAT_V1} also reads)"
             )
         return cls(
             scenario_id=data["scenario_id"],
             seed=data["seed"],
             attempts=[RecordedAttempt.from_dict(a) for a in data["attempts"]],
-            format_version=data["format_version"],
+            format_version=int(version),
         )
 
     @classmethod
@@ -126,6 +147,7 @@ class Recorder:
         result: ValidationResult,
         *,
         retry_index: int,
+        observed: dict[str, Any] | None = None,
     ) -> None:
         self._attempts.append(
             RecordedAttempt(
@@ -133,11 +155,61 @@ class Recorder:
                 verdict=result.verdict.value,
                 reason=result.reason,
                 retry_index=retry_index,
+                observed=dict(observed) if observed is not None else None,
             )
         )
 
+    def record_outcome(
+        self,
+        *,
+        failure_reason: str | None,
+        ended_by: str,
+    ) -> None:
+        """Stamp the terminal run outcome onto every attempt (replay asserts
+        the LAST attempt's outcome matches the replayed run's outcome)."""
+        for attempt in self._attempts:
+            attempt.outcome_failure = failure_reason
+            attempt.outcome_ended_by = ended_by
+
     def finalize(self) -> RunRecord:
         return RunRecord(scenario_id=self.scenario_id, seed=self.seed, attempts=list(self._attempts))
+
+
+class RecordedSemanticVerifier:
+    """A SemanticVerifierProtocol that replays recorded observed evidence
+    instead of calling any verifier backend (rule-based OR LLM).
+
+    This is what makes replay zero-AI: the validator's semantic step reads
+    the recorded ObservedAct rather than re-classifying the utterance. Any
+    divergence between the recorded evidence and a fresh classification is
+    impossible by construction (no fresh classification happens); the
+    verdict-level assert in ReplayLanguageBackend remains the loud
+    divergence gate.
+    """
+
+    def __init__(self, record: RunRecord) -> None:
+        self._observed = [a.observed for a in record.attempts]
+        self._cursor = 0
+
+    def classify(self, utterance: str, contract) -> Any:  # noqa: ANN001,ANN201
+        from . import ObservedAct
+
+        if self._cursor >= len(self._observed):
+            raise RuntimeError("replay exhausted: no more recorded semantic evidence")
+        raw = self._observed[self._cursor]
+        self._cursor += 1
+        if raw is None:
+            # Recorded before the semantic step was evidence-capturing (v1)
+            # or the attempt never reached it: fall back to a neutral
+            # low-confidence observation (forces UNKNOWN, never a false PASS).
+            return ObservedAct(act="", target=None, confidence=0.0, all_acts=[])
+        return ObservedAct(
+            act=str(raw.get("act") or ""),
+            target=raw.get("target"),
+            slots=dict(raw.get("slots") or {}),
+            confidence=float(raw.get("confidence", 0.0)),
+            all_acts=list(raw.get("all_acts") or []),
+        )
 
 
 class ReplayLanguageBackend(LanguageBackendProtocol):
@@ -148,11 +220,14 @@ class ReplayLanguageBackend(LanguageBackendProtocol):
     After each replayed candidate is validated by the caller, the caller
     MUST call `assert_verdict(actual_verdict)` so a divergence from the
     recorded verdict raises ReplayMismatchError immediately rather than
-    silently producing a different result.
+    silently producing a different result. When the record carries v2
+    outcome stamps, the caller SHOULD also call `assert_outcome()` at run
+    end so a divergent terminal state fails loudly too.
     """
 
     def __init__(self, record: RunRecord) -> None:
         self._attempts = iter(record.attempts)
+        self._record = record
         self._last_attempt: RecordedAttempt | None = None
 
     def generate(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -171,6 +246,27 @@ class ReplayLanguageBackend(LanguageBackendProtocol):
                 f"replayed run produced {actual_verdict.value!r}"
             )
 
+    def assert_outcome(
+        self, *, failure_reason: str | None, ended_by: str
+    ) -> None:
+        """Fail loudly when the replayed run's terminal outcome differs
+        from the recording (v1 records without outcome stamps skip)."""
+        attempts = self._record.attempts
+        if not attempts:
+            return
+        recorded = attempts[-1]
+        if recorded.outcome_failure is None and recorded.outcome_ended_by is None:
+            return  # v1 record: no outcome evidence to assert
+        if (
+            recorded.outcome_failure != failure_reason
+            or recorded.outcome_ended_by != ended_by
+        ):
+            raise ReplayMismatchError(
+                f"replay outcome mismatch: recorded "
+                f"({recorded.outcome_failure!r}, {recorded.outcome_ended_by!r}), "
+                f"replayed run produced ({failure_reason!r}, {ended_by!r})"
+            )
+
 
 def rebuild_identity_from_candidate(candidate: dict[str, Any]) -> GenerationIdentity:
     """Convenience helper: reconstruct a GenerationIdentity from a recorded
@@ -187,6 +283,7 @@ def rebuild_identity_from_candidate(candidate: dict[str, Any]) -> GenerationIden
 __all__ = [
     "RECORD_FORMAT_VERSION",
     "RecordedAttempt",
+    "RecordedSemanticVerifier",
     "Recorder",
     "ReplayLanguageBackend",
     "ReplayMismatchError",

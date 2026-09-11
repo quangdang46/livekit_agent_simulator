@@ -32,6 +32,53 @@ import re
 from . import BehaviorContract, ObservedAct
 from .validator import DEFAULT_INTENT_KEYWORDS
 
+# Topic keywords per contract target. These are EVIDENCE for the target
+# gate (P0 review fix): a Tier-1 verifier with no independent target signal
+# fails closed (TARGET_UNVERIFIED) whenever the contract pins a target it
+# cannot confirm. Each entry lists generic deal-topic phrases for one
+# target; matching is substring on the lowered utterance, same discipline
+# as ACT_PATTERNS. Unknown targets (not in this map) mean no evidence can
+# be produced at this tier -> TARGET_UNVERIFIED by construction.
+TARGET_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "price": (
+        "price", "$", "cost", "fee", "charge", "quote", "budget",
+        "lower the price", "monthly fee", "how much",
+    ),
+    "delivery_date": (
+        "deliver", "delivery", "arrival", "arrive", "shipping", "ship",
+        "eta", "when will", "how long",
+    ),
+    "order_status": (
+        "order", "status", "delayed", "delay", "shipment", "tracking",
+    ),
+    "hours": ("hours", "open", "close", "opening", "what time"),
+    "plan": ("plan", "package", "subscription"),
+    "status": ("status", "update", "checking on"),
+    "charge": ("charge", "bill", "billing", "fee"),
+    "fees": ("fee", "fees", "hidden", "cost", "charge"),
+}
+
+
+def _target_evidence(utterance: str, target: str | None) -> str | None:
+    """Independent target evidence from the utterance text alone.
+
+    Returns the contract's target string when the utterance contains a
+    topic keyword for it, else None (no evidence — never a guess, never
+    the generator's claim). Unknown targets (absent from TARGET_KEYWORDS)
+    always yield None at this tier: a stronger verifier backend must
+    supply the evidence instead.
+    """
+    if target is None:
+        return None
+    keywords = TARGET_KEYWORDS.get(target)
+    if keywords is None:
+        return None
+    lowered = utterance.lower()
+    if any(kw in lowered for kw in keywords):
+        return target
+    return None
+
+
 # Keyword patterns per semantic act. Order does not determine precedence;
 # the primary act is chosen by highest match count (ties broken by contract
 # behavior match preferred, to avoid unnecessary false rejects on the
@@ -166,28 +213,16 @@ class RuleBasedSemanticVerifier:
 
         all_acts = list(dict.fromkeys([best_act, *overall_hits.keys(), *detected_intent_tags]))
 
-        # TARGET EVIDENCE (explicit limitation of this rule-based tier):
-        # this baseline has INDEPENDENT keyword evidence for act, but NO
-        # independent evidence for target — it cannot tell "lowering the
-        # PRICE" from "changing the DELIVERY DATE" beyond the act match.
-        # So when best_act == contract.behavior it returns observed.target
-        # as None (unknown), NEVER echoing contract.target as if it had
-        # derived it from the utterance. Fabricating target evidence would
-        # be strictly worse than admitting ignorance: downstream, a None
-        # target is unambiguous "not verified", while an echoed target
-        # looks like positive confirmation of something never checked.
-        #
-        # Validator contract for this tier: TARGET mismatch enforcement for
-        # rule-based verification rests on the DETERMINISTIC layer above
-        # (validator.py step 3 compares the generator's CLAIMED
-        # candidate.target against contract.target) plus the semantic ACT
-        # match here. A real tier-(2)/(3) backend MUST populate
-        # observed.target from utterance evidence (e.g. NLI-grounded span
-        # extraction) — the SemanticVerifierProtocol field already exists
-        # for it; only this baseline leaves it empty by design.
+        # TARGET EVIDENCE (P0 review fix): independent topic-keyword match
+        # against the utterance text alone — never the generator's claim,
+        # never an echo of contract.target. A match returns the target
+        # string (evidence); no match returns None (unknown), which the
+        # validator maps to TARGET_UNVERIFIED when the contract pins a
+        # target. Unknown targets (absent from TARGET_KEYWORDS) always
+        # yield None at this tier — a stronger backend must supply them.
         return ObservedAct(
             act=best_act,
-            target=None,
+            target=_target_evidence(utterance, contract.target),
             confidence=_confidence_for(primary_hits),
             all_acts=all_acts,
         )

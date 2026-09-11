@@ -292,7 +292,27 @@ async def test_interruption_policy_is_deterministic_and_gated():
         file="t",
     )
     sink = FakeSink(orch)
-    agent = FakeAgent(replies=["Sure, open 9 to 5."], speaking=[True] * 30)
+
+    class _SpeakingThenReply(FakeAgent):
+        """Replies only after several polls so the policy sees active
+        speech mid-wait (P1: decision happens WHILE the agent speaks)."""
+
+        def __init__(self):
+            super().__init__(replies=[], speaking=[])
+            self._polls = 0
+
+        async def wait_agent_turn(self, *, timeout_s: float = 30.0):
+            self.waits += 1
+            self._polls += 1
+            if self._polls < 4:
+                await __import__("asyncio").sleep(timeout_s)
+                return None
+            return "Sure, open 9 to 5."
+
+        def is_agent_speaking_now(self) -> bool:
+            return True
+
+    agent = _SpeakingThenReply()
     result = await driver.run(actions, sink, agent)
     assert result.failure is None
     assert any(label == "policy_interrupt" for _, label in sink.published)
@@ -678,3 +698,44 @@ async def test_hold_watchdog_stays_off_before_agent_speaks():
     )
     assert result.failure is None
     assert fired == []
+
+
+def test_last_speech_prefers_active_speaker_over_stale_final():
+    """An agent mid-utterance (active flag up, final 10s old) reads as
+    speaking NOW — never as 10s of dead air (hold-watchdog regression)."""
+    import time as _time
+    from types import SimpleNamespace as _NS
+
+    from livekit_agent_simulator.caller_contract.agent_wait import ObserverAgentWait
+
+    stale_mono = _time.monotonic() - 10.0
+    wait = ObserverAgentWait(
+        observer=_NS(last_agent_final_mono=stale_mono, agent_is_active_speaker=True)
+    )
+    assert wait.last_speech_at_ms() is not None
+    assert abs(wait.last_speech_at_ms() - _time.monotonic() * 1000.0) < 1000.0
+
+    quiet = ObserverAgentWait(
+        observer=_NS(last_agent_final_mono=stale_mono, agent_is_active_speaker=False)
+    )
+    assert quiet.last_speech_at_ms() == stale_mono * 1000.0
+
+    never = ObserverAgentWait(observer=_NS(agent_is_active_speaker=False))
+    assert never.last_speech_at_ms() is None
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"end": True, "typo_field": 1},
+        {"silence": True, "trigger": {"kind": "time"}},
+        {"hangup": True, "barge_in": True},
+        {"end": "now"},
+        {"silence": True, "interaction": {}},
+    ],
+)
+def test_end_silence_hangup_reject_siblings(step):
+    """Presence-only control actions: any sibling/value is a hard DSLError
+    (P1 review fix — unknown fields must never silently disappear)."""
+    with pytest.raises(DSLError):
+        parse_steps([step], file="t")

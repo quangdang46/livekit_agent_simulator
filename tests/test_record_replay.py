@@ -372,3 +372,190 @@ async def test_replay_verdict_divergence_fails_loudly(tmp_path):
     assert result.verdict != Verdict.VALID
     with pytest.raises(ReplayMismatchError):
         backend.assert_verdict(result.verdict)
+
+
+@pytest.mark.asyncio
+async def test_replay_uses_recorded_evidence_zero_ai(tmp_path):
+    """Replay serves BOTH candidates and semantic evidence from the record:
+    neither the generation backend nor any (LLM) verifier is invoked."""
+    from livekit_agent_simulator.caller_contract import ObservedAct
+    from livekit_agent_simulator.caller_contract.driver import ContractCallerDriver
+    from livekit_agent_simulator.caller_contract.dsl import parse_steps
+    from livekit_agent_simulator.caller_contract.language_adapter import AILanguageAdapter
+    from livekit_agent_simulator.caller_contract.orchestrator import Orchestrator
+    from livekit_agent_simulator.caller_contract.validator import ContractValidator
+
+    from livekit_agent_simulator.caller_contract.record_replay import (
+        RecordedSemanticVerifier,
+        Recorder,
+        ReplayLanguageBackend,
+        RunRecord,
+    )
+
+    class _FakeLLMJudge:
+        def __init__(self):
+            self.calls = 0
+
+        def classify(self, utterance, contract):
+            self.calls += 1
+            return ObservedAct(
+                act="negotiate", target="price", confidence=0.9, all_acts=["negotiate"]
+            )
+
+    class _LiveBackend:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, context):
+            self.calls += 1
+            behavior = context["current_behavior"]
+            return {
+                "act": behavior["act"],
+                "target": behavior["target"],
+                "slots": {},
+                "utterance": "Would you come down to $30,000?",
+            }
+
+    class _Sink:
+        def __init__(self, orch):
+            self.orch = orch
+
+        async def publish(self, pcm, identity, *, label, gain=1.0):
+            return True
+
+    class _Agent:
+        async def wait_agent_turn(self, *, timeout_s: float = 30.0):
+            return "Sure, I can do $30,000."
+
+        def is_agent_speaking_now(self) -> bool:
+            return False
+
+    def _make(backend, verifier):
+        orch = Orchestrator()
+        return (
+            ContractCallerDriver(
+                orchestrator=orch,
+                validator=ContractValidator(semantic_verifier=verifier),
+                adapter=AILanguageAdapter(backend=backend),
+                synthesize=lambda text: b"\x00\x01" * 10,
+            ),
+            orch,
+        )
+
+    actions = parse_steps(
+        [
+            {
+                "do": {
+                    "behavior": "negotiate",
+                    "target": "price",
+                    "constraints": {"max_turns": 2},
+                }
+            }
+        ],
+        file="t",
+    )
+    judge = _FakeLLMJudge()
+    live = _LiveBackend()
+    driver, orch = _make(live, judge)
+    recorder = Recorder(scenario_id="s", seed=1)
+    driver.recorder = recorder
+    result = await driver.run(actions, _Sink(orch), _Agent())
+    assert result.failure is None
+    recorder.record_outcome(failure_reason=None, ended_by=result.ended_by.value)
+    record = recorder.finalize()
+    assert record.attempts[0].observed is not None
+    assert record.attempts[0].observed["target"] == "price"
+
+    path = tmp_path / "run.json"
+    record.write(path)
+    loaded = RunRecord.read(path)
+    replay_backend = ReplayLanguageBackend(loaded)
+    driver2, orch2 = _make(
+        replay_backend, RecordedSemanticVerifier(loaded)
+    )
+    result2 = await driver2.run(actions, _Sink(orch2), _Agent())
+    assert result2.failure is None
+    replay_backend.assert_outcome(
+        failure_reason=None, ended_by=result2.ended_by.value
+    )
+    assert live.calls == 1, "replay must not call the generation backend"
+    assert judge.calls == 1, "replay must not call the semantic verifier"
+
+
+@pytest.mark.asyncio
+async def test_replay_outcome_mismatch_fails_loudly():
+    """A divergent terminal outcome (e.g. recorded pass, replayed fail)
+    raises ReplayMismatchError via assert_outcome."""
+    from livekit_agent_simulator.caller_contract.record_replay import (
+        RecordedAttempt,
+        ReplayLanguageBackend,
+        ReplayMismatchError,
+        RunRecord,
+    )
+
+    record = RunRecord(
+        scenario_id="s",
+        seed=1,
+        attempts=[
+            RecordedAttempt(
+                candidate={
+                    "act": "ask",
+                    "target": None,
+                    "slots": {},
+                    "utterance": "Could you tell me more?",
+                    "identity": {
+                        "behavior_id": "b1",
+                        "turn_id": 0,
+                        "generation_id": 1,
+                        "context_version": 0,
+                    },
+                },
+                verdict="VALID",
+                reason=None,
+                retry_index=0,
+                observed={"act": "ask", "target": None, "confidence": 0.9,
+                          "all_acts": ["ask"]},
+                outcome_failure=None,
+                outcome_ended_by="scenario",
+            )
+        ],
+    )
+    backend = ReplayLanguageBackend(record)
+    with pytest.raises(ReplayMismatchError):
+        backend.assert_outcome(failure_reason="CALLER_BEHAVIOR_VIOLATION", ended_by="error")
+
+
+def test_v1_records_still_read_with_none_evidence(tmp_path):
+    """v1 records (no observed/outcome fields) read as v2 with Nones —
+    verdict replay still works; outcome assert skips."""
+    from livekit_agent_simulator.caller_contract.record_replay import RunRecord
+
+    raw = {
+        "format_version": 1,
+        "scenario_id": "s",
+        "seed": 1,
+        "attempts": [
+            {
+                "candidate": {
+                    "act": "ask",
+                    "target": None,
+                    "slots": {},
+                    "utterance": "hi",
+                    "identity": {
+                        "behavior_id": "b",
+                        "turn_id": 0,
+                        "generation_id": 0,
+                        "context_version": 0,
+                    },
+                },
+                "verdict": "VALID",
+                "reason": None,
+                "retry_index": 0,
+            }
+        ],
+    }
+    path = tmp_path / "v1.json"
+    path.write_text(__import__("json").dumps(raw))
+    record = RunRecord.read(path)
+    assert record.attempts[0].observed is None
+    assert record.attempts[0].outcome_failure is None

@@ -65,17 +65,17 @@ class ObserverAgentWait:
         """Monotonic-ms timestamp of the latest agent-speech evidence, or
         None when the agent has never demonstrably spoken.
 
-        Prefers the transcript final timestamp (edge-triggered, precise);
-        falls back to "now" while the active-speaker flag is up (the agent
-        is talking but no final has landed yet). The driver uses this for
-        gap-tolerant trigger tracking: a brief signal dropout shorter than
-        the gap tolerance does not reset the continuity clock.
+        An ACTIVE speaker is ongoing speech, not dead air: while the flag
+        is up this returns "now" regardless of when the last transcript
+        final landed (a long utterance's stale final must never read as
+        silence — otherwise the hold watchdog could hang up mid-sentence).
+        Otherwise the transcript final timestamp (edge-triggered, precise).
         """
+        if bool(getattr(self.observer, "agent_is_active_speaker", False)):
+            return time.monotonic() * 1000.0
         mono = getattr(self.observer, "last_agent_final_mono", None)
         if isinstance(mono, (int, float)):
             return float(mono) * 1000.0
-        if bool(getattr(self.observer, "agent_is_active_speaker", False)):
-            return time.monotonic() * 1000.0
         return None
 
     async def wait_agent_turn(self, *, timeout_s: float) -> str | None:

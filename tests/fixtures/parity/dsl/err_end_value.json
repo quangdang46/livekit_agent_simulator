@@ -1,0 +1,9 @@
+{
+  "id": "err_end_value",
+  "steps": [
+    {
+      "end": "now"
+    }
+  ],
+  "expect": "error"
+}

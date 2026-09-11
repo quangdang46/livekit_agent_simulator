@@ -1,0 +1,10 @@
+{
+  "id": "err_hangup_barge",
+  "steps": [
+    {
+      "hangup": true,
+      "barge_in": true
+    }
+  ],
+  "expect": "error"
+}

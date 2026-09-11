@@ -27,14 +27,6 @@
         "act": "negotiate",
         "target": "price",
         "confidence_min": 0.5
-      },
-      "known_limitations": {
-        "rule_based": {
-          "reason": "tier-1 has no independent target evidence; always returns target=None regardless of the actual utterance content. Outcome (VALID) is still correct here because the DETERMINISTIC claim-check (candidate.target == contract.target) already passed \u2014 only the FIELD is wrong, not the verdict.",
-          "actual": {
-            "target": null
-          }
-        }
       }
     },
     {
@@ -145,14 +137,6 @@
         "act": "negotiate",
         "target": "price",
         "confidence_min": 0.5
-      },
-      "known_limitations": {
-        "rule_based": {
-          "reason": "no independent target evidence -> observed.target always None. Verdict still correct via the deterministic claim-check, but the semantic layer contributes zero positive target confirmation.",
-          "actual": {
-            "target": null
-          }
-        }
       }
     },
     {

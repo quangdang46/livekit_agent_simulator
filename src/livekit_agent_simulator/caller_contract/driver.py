@@ -664,14 +664,20 @@ class ContractCallerDriver:
                 except LanguageGenerationError as exc:
                     transport_error = exc
                     break
-                result_attempt = self.validator.validate(candidate_attempt, contract)
+                observed_trail: list[dict[str, Any]] = []
+                result_attempt = self.validator.validate(
+                    candidate_attempt, contract, record_observed=observed_trail
+                )
                 last_verdict = result_attempt
                 _attempt_verdicts.append(
                     (result_attempt.verdict.value, result_attempt.reason)
                 )
                 if self.recorder is not None:
                     self.recorder.record_attempt(
-                        candidate_attempt, result_attempt, retry_index=attempts - 1
+                        candidate_attempt,
+                        result_attempt,
+                        retry_index=attempts - 1,
+                        observed=observed_trail[-1] if observed_trail else None,
                     )
                 # Replay mode: the backend served a recorded candidate, so the
                 # verdict MUST match the recording — divergence fails loudly
@@ -816,19 +822,6 @@ class ContractCallerDriver:
                 "contract.turn_published",
                 {"behavior": contract.behavior, "turn": turns, "text": text},
             )
-            # Seeded interruption policy (contract equivalent of the legacy
-            # InterruptRateRunner, but per-agent-turn deterministic instead of
-            # wall-clock parallel): before waiting for the agent, decide
-            # whether to emit one fixed backchannel cut-in. Only while the
-            # agent is speaking, at most one per interval (time-gated here),
-            # fixed text "Mhm." (never AI, never validator).
-            policy_extra = await self._maybe_interrupt(
-                action, sink, agent, log, _emit
-            )
-            if isinstance(policy_extra, DriverResult):
-                policy_extra.turns_spoken = turns + policy_extra.turns_spoken
-                return policy_extra
-            turns += policy_extra
             # Settle the caller-audio onset latch BEFORE waiting for the
             # agent: the agent's audible answer must be attributable to THIS
             # caller turn. PublishSink.publish already drained the mixer
@@ -839,7 +832,15 @@ class ContractCallerDriver:
             # timeout budget -- a slow network here must not be misread as a
             # slow agent.
             await asyncio.sleep(1.0)
-            agent_text = await agent.wait_agent_turn(timeout_s=30.0)
+            # Seeded interruption policy (P1 fix): decided WHILE the agent is
+            # speaking, not before it starts. wait_agent_turn is wrapped so
+            # the policy can cut in mid-answer: the wrapper polls the
+            # speaking flag during the wait and emits one fixed backchannel
+            # ("Mhm.", never AI, never validator) the moment the agent is
+            # audibly responding and the seeded flip + interval allow it.
+            agent_text = await self._wait_agent_turn_with_policy(
+                action, sink, agent, log, _emit, timeout_s=30.0
+            )
             if agent_text is None:
                 # Agent silence, NOT a caller violation — a separate failure
                 # class (see AgentTurnWait docstring). The caller's turn was
@@ -880,45 +881,117 @@ class ContractCallerDriver:
             turns,
         )
 
-    async def _maybe_interrupt(
+    async def _wait_agent_turn_with_policy(
         self,
         action: CallerAction,
         sink: PublishSink,
         agent: AgentTurnWait,
         log: list[Turn],
         _emit: Any,
-    ) -> int | DriverResult:
-        """Seeded per-turn interruption: 0 normally, 1 when a backchannel
-        cut-in was published, DriverResult on publish failure.
+        *,
+        timeout_s: float,
+    ) -> str | None:
+        """Wait for the agent turn, cutting in mid-answer when the seeded
+        interruption policy allows it (P1 fix: the decision happens WHILE
+        the agent speaks, not before it starts — the old pre-wait check saw
+        a silent agent and could never fire in real conversations).
 
-        Gates (all must hold): the action's interaction enables
-        ``interruption_rate``; the agent is speaking NOW (never cut into
-        silence); the seeded coin flip for this agent-turn index says yes;
-        the wall-clock interval since the last cut-in has elapsed. Fixed
-        text ``Mhm.`` via the planner's backchannel (no AI, no validator).
+        Polls the speaking flag during the wait: the first poll that sees
+        active speech evaluates the seeded flip + interval; on yes, one
+        fixed backchannel ("Mhm.", never AI, never validator) publishes
+        immediately and the wait continues for the actual turn text.
+        Returns the agent text, or None on timeout (same contract as
+        AgentTurnWait.wait_agent_turn).
         """
         interaction = action.interaction
         if interaction is None or not interaction.interruption_rate:
-            return 0
+            return await agent.wait_agent_turn(timeout_s=timeout_s)
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout_s
+        interrupted = False
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            # Short slices so the cut-in lands mid-answer, not after it.
+            try:
+                text = await asyncio.wait_for(
+                    agent.wait_agent_turn(timeout_s=min(remaining, 0.25)),
+                    timeout=min(remaining, 0.25) + 5.0,
+                )
+            except asyncio.TimeoutError:
+                text = None
+            if text is not None:
+                return text
+            if interrupted:
+                continue
+            if self._policy_cut_in(action, sink, agent, log, _emit):
+                interrupted = True
+                # Publish synchronously below (needs sink + TTS); the wait
+                # loop continues afterwards for the real turn text.
+                outcome = await self._publish_policy_cut_in(
+                    sink, log, _emit
+                )
+                if isinstance(outcome, DriverResult):
+                    # Publish failure inside a turn wait: surface as the
+                    # turn's agent text being unavailable is wrong — stash
+                    # the failure by returning None is wrong too. The
+                    # cut-in is best-effort decoration: log and continue
+                    # waiting for the real answer.
+                    _emit(
+                        "contract.policy_interrupt_dropped",
+                        {"reason": outcome.failure.reason.value if outcome.failure else "unknown"},
+                    )
+
+    def _policy_cut_in(
+        self,
+        action: CallerAction,
+        sink: PublishSink,
+        agent: AgentTurnWait,
+        log: list[Turn],
+        _emit: Any,
+    ) -> bool:
+        """Pure decision: should the policy cut in RIGHT NOW?
+
+        Gates (all must hold): interaction enables interruption_rate; the
+        agent is speaking NOW (never cut into silence); the seeded flip for
+        this agent-turn index says yes; the wall-clock interval elapsed.
+        No I/O, no publish — the caller publishes on True.
+        """
+        interaction = action.interaction
+        if interaction is None or not interaction.interruption_rate:
+            return False
         speaking = getattr(agent, "is_agent_speaking_now", lambda: False)
         if not speaking():
-            return 0
+            return False
         scenario_id = getattr(self, "_scenario_id", "")
         turn_index = len([t for t in log if t.speaker == "agent"])
         if not self.planner.should_interrupt(
             interaction, scenario_id=scenario_id, agent_turn_index=turn_index
         ):
-            return 0
+            return False
         interval_ms = interaction.interruption_interval_ms or _INTERVAL_MS_BY_RATE.get(
             interaction.interruption_rate, 45_000
         )
         now_ms = asyncio.get_event_loop().time() * 1000.0
         last_ms = getattr(self, "_last_interrupt_ms", None)
         if last_ms is not None and now_ms - last_ms < interval_ms:
-            return 0
-        self._last_interrupt_ms = now_ms
+            return False
+        return True
+
+    async def _publish_policy_cut_in(
+        self,
+        sink: PublishSink,
+        log: list[Turn],
+        _emit: Any,
+    ) -> int | DriverResult:
+        """Publish one fixed backchannel cut-in ("Mhm."). Returns 1, or a
+        DriverResult on publish failure (caller treats it as decoration:
+        logged, never fatal to the behavior)."""
+        self._last_interrupt_ms = asyncio.get_event_loop().time() * 1000.0
         outcome = self.planner.plan_backchannel()
         text = " ".join(outcome.tokens) if outcome.tokens else "Mhm."
+        turn_index = len([t for t in log if t.speaker == "agent"])
         _emit("contract.policy_interrupt", {"text": text, "turn": turn_index})
         try:
             interrupt_pcm = self._speak(text)

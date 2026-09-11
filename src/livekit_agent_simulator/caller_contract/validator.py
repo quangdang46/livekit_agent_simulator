@@ -29,6 +29,7 @@ from . import (
     ObservedAct,
     ValidationResult,
     Verdict,
+    to_dict,
 )
 
 # End/goodbye guard: lexical signal that the utterance is trying to close
@@ -116,7 +117,13 @@ class ContractValidator:
         self,
         candidate: CandidateUtterance,
         contract: BehaviorContract,
+        *,
+        record_observed: Any = None,
     ) -> ValidationResult:
+        """Validate a candidate. ``record_observed`` (optional list): when
+        provided, the semantic verifier's ObservedAct dict is appended on
+        every call that reaches the semantic step — the record path uses
+        this to capture evidence for deterministic replay."""
         # 1. Schema — malformed candidate/contract is INVALID, not ERROR.
         try:
             candidate.validate()
@@ -125,6 +132,10 @@ class ContractValidator:
             return ValidationResult(verdict=Verdict.INVALID, reason=f"SCHEMA_INVALID: {exc}")
 
         # 2. Act — the generator's claimed act must equal the contract behavior.
+        # This is a cheap pre-filter on the CLAIM, not evidence: the semantic
+        # verifier below re-derives the act from the utterance text alone and
+        # its SEMANTIC_ACT_MISMATCH verdict is authoritative (a lying claim
+        # that matches here is still caught there).
         if candidate.act != contract.behavior:
             return ValidationResult(
                 verdict=Verdict.INVALID,
@@ -132,13 +143,21 @@ class ContractValidator:
                 details={"expected_act": contract.behavior, "observed_act": candidate.act},
             )
 
-        # 3. Target — if the contract pins a target, the candidate must match it.
-        if contract.target is not None and candidate.target != contract.target:
-            return ValidationResult(
-                verdict=Verdict.INVALID,
-                reason="TARGET_MISMATCH",
-                details={"expected_target": contract.target, "observed_target": candidate.target},
-            )
+        # 3. Target claim shape — candidate.target is a generator claim, NEVER
+        # evidence. The ONLY authoritative target verdict comes from the
+        # semantic verifier's observed.target below (step 8):
+        #   - observed.target set + agrees with contract -> PASS (evidence).
+        #   - observed.target set + disagrees -> SEMANTIC_TARGET_MISMATCH.
+        #   - observed.target None + contract pins a target -> UNKNOWN
+        #     (TARGET_UNVERIFIED: no independent evidence the utterance is
+        #     about the contract's topic — the generator merely asserting so
+        #     proves nothing).
+        # There is deliberately NO claim-equality check here: trusting
+        # candidate.target == contract.target as a pass would let a lying
+        # generator ("Do you offer financing?" claimed as target=price) slip
+        # past target enforcement whenever the verifier tier lacks target
+        # evidence. claim/target divergence is still DIAGNOSTIC (recorded in
+        # details for the retry trail) but never a verdict by itself.
 
         # 4. Slot / numeric constraints — e.g. a claimed max_budget above contract's ceiling.
         constraints = contract.constraints
@@ -186,6 +205,8 @@ class ContractValidator:
                 observed.validate()
             except Exception as exc:  # noqa: BLE001 — verifier failure must never look like PASS
                 return ValidationResult(verdict=Verdict.ERROR, reason=f"VERIFIER_UNAVAILABLE: {exc}")
+            if record_observed is not None:
+                record_observed.append(to_dict(observed))
 
             # Ambiguous/low-confidence classification is ALWAYS a reject,
             # regardless of whether observed.act happens to equal
@@ -213,26 +234,31 @@ class ContractValidator:
                     details={"expected": contract.behavior, "observed": observed.act},
                 )
 
-            # Target cross-check (only when the backend supplies INDEPENDENT
-            # target evidence): a verifier that actually derived a target
-            # from the utterance (observed.target is not None) and disagrees
-            # with the contract's pinned target rejects the candidate. The
-            # rule-based baseline always returns target=None (it has no
-            # independent target evidence — see semantic.py), so this branch
-            # is a no-op for it by design: target enforcement for that tier
-            # stays on the deterministic claim check in step 3 above. A
-            # future tier-(2)/(3) backend populates observed.target and this
-            # same branch enforces it with zero validator changes.
-            if (
-                contract.target is not None
-                and observed.target is not None
-                and observed.target != contract.target
-            ):
-                return ValidationResult(
-                    verdict=Verdict.INVALID,
-                    reason="SEMANTIC_TARGET_MISMATCH",
-                    details={"expected_target": contract.target, "observed_target": observed.target},
-                )
+            # Target evidence (authoritative): observed.target is the ONLY
+            # target signal. A verifier that derived a target from the
+            # utterance and disagrees with the contract's pinned target
+            # rejects the candidate. A verifier with NO target evidence
+            # (observed.target None — what the rule-based baseline always
+            # returns) while the contract pins a target means the topic is
+            # UNVERIFIED: reject as UNKNOWN (never VALID on a bare claim).
+            # Contracts without a pinned target skip this gate entirely.
+            if contract.target is not None:
+                if observed.target is None:
+                    return ValidationResult(
+                        verdict=Verdict.UNKNOWN,
+                        reason="TARGET_UNVERIFIED",
+                        details={
+                            "expected_target": contract.target,
+                            "observed_target": None,
+                            "claimed_target": candidate.target,
+                        },
+                    )
+                if observed.target != contract.target:
+                    return ValidationResult(
+                        verdict=Verdict.INVALID,
+                        reason="SEMANTIC_TARGET_MISMATCH",
+                        details={"expected_target": contract.target, "observed_target": observed.target},
+                    )
 
         return ValidationResult(verdict=Verdict.VALID)
 

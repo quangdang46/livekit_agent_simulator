@@ -113,14 +113,12 @@ def test_classifier_never_trusts_candidate_only_utterance_text() -> None:
     assert param_names == ["self", "utterance", "contract"]
 
 
-def test_rule_baseline_never_fabricates_target_evidence() -> None:
-    """MEDIUM review finding: the rule-based tier has keyword evidence for
-    act but NO independent evidence for target, so it must return
-    observed.target=None rather than echoing contract.target. An echoed
-    target would masquerade as positive confirmation of something never
-    checked (e.g. negotiate/price contract vs "changing the delivery
-    date" utterance). A real tier-(2)/(3) backend populates this field
-    from utterance evidence; this baseline leaves it empty by design."""
+def test_rule_baseline_returns_target_only_on_topic_evidence() -> None:
+    """P0 review fix: the rule tier derives target from utterance topic
+    keywords (TARGET_KEYWORDS), never from the generator's claim and never
+    by echoing contract.target. A price-topic utterance yields price; an
+    utterance about another topic yields None (validator: TARGET_UNVERIFIED);
+    an utterance with no negotiable topic at all also yields None."""
     verifier = RuleBasedSemanticVerifier()
     contract = _negotiate_contract()  # negotiate / price
     observed = verifier.classify(
@@ -128,8 +126,11 @@ def test_rule_baseline_never_fabricates_target_evidence() -> None:
     )
     assert observed.act == "negotiate"
     assert observed.confidence >= SEMANTIC_CONFIDENCE_THRESHOLD
-    assert observed.target is None, (
-        "rule baseline must not echo contract.target as observed evidence"
+    assert observed.target == "price"
+
+    drifted = verifier.classify("Can you come down on the mileage?", contract)
+    assert drifted.target is None, (
+        "no price-topic evidence in a mileage utterance: must not echo contract.target"
     )
 
 

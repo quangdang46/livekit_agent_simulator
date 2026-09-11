@@ -1,0 +1,12 @@
+{
+  "id": "err_silence_trigger",
+  "steps": [
+    {
+      "silence": true,
+      "trigger": {
+        "kind": "time"
+      }
+    }
+  ],
+  "expect": "error"
+}

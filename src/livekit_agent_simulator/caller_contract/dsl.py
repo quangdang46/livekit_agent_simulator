@@ -529,9 +529,35 @@ def parse_step(
             audio_loop=loop,
             trigger=trigger,
         )
-    # end / silence / hangup: no payload validation needed beyond
-    # being present; they carry no extra fields in this MVP DSL.
-    return CallerAction(kind=kind, line_no=line_no)
+    # end / silence / hangup: presence-only control actions. Any sibling
+    # key is a hard error — an unknown field here must never silently
+    # disappear (same invariant as say:/interrupt:/play_audio:).
+    if kind in ("end", "silence", "hangup"):
+        allowed = {kind}
+        unknown = set(raw_step.keys()) - allowed
+        if unknown:
+            raise _err(
+                f"unknown {kind}: sibling key(s): {sorted(unknown)}",
+                file=file,
+                line=line_no,
+                field=kind,
+            )
+        raw_flag = raw_step.get(kind, True)
+        if raw_flag not in (True, None) and not (
+            isinstance(raw_flag, dict) and not raw_flag
+        ):
+            raise _err(
+                f"{kind}: takes no value",
+                file=file,
+                line=line_no,
+                field=kind,
+            )
+        return CallerAction(kind=kind, line_no=line_no)
+    raise _err(  # pragma: no cover - guarded by _KNOWN_ACTION_KINDS above
+        f"unhandled action kind {kind!r}",
+        file=file,
+        line=line_no,
+    )
 
 
 def parse_steps(

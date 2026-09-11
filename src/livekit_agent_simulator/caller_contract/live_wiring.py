@@ -139,30 +139,31 @@ def _sherpa_engine():
 
     Raises on any problem (missing package, missing model, corrupt file) —
     the caller (``_synthesize``) treats every raise as "fall back to SAPI".
-    Model registry lives in ``audio/sherpa_models.py`` (pinned URL + SHA).
+    Model registry lives in ``audio/sherpa_models.py`` (pinned bundle URL +
+    per-file SHAs, verified by ``ensure_model_dir``).
     """
     from pathlib import Path
 
-    from ..audio.sherpa_models import default_model_spec, default_voice
-    from ..audio.sherpa_tts import SherpaOnnxTtsEngine, download_and_verify_model
+    from ..audio.sherpa_models import default_model_bundle, default_voice, ensure_model_dir
+    from ..audio.sherpa_tts import SherpaOnnxTtsEngine
     from ..audio.tts_engine import TtsCache
 
-    spec = default_model_spec()
+    bundle = default_model_bundle()
     cache_dir = Path.home() / ".cache" / "lks" / "tts-models"
-    # Network fetch only when the pinned file is absent; tests inject a
-    # fake downloader via download_and_verify_model directly. Live runs use
+    # Network fetch only when the pinned files are absent; tests inject a
+    # fake downloader via ensure_model_dir directly. Live runs use
     # a minimal urllib downloader here (stdlib only, same as text_backends).
     import urllib.request
 
     def _download(url: str, dest: Path) -> None:
-        with urllib.request.urlopen(url, timeout=120) as resp, open(dest, "wb") as fh:
+        with urllib.request.urlopen(url, timeout=300) as resp, open(dest, "wb") as fh:
             fh.write(resp.read())
 
-    model_path = download_and_verify_model(spec, cache_dir, downloader=_download)
+    model_dir = ensure_model_dir(bundle, cache_dir, downloader=_download)
     utterance_cache = TtsCache(cache_dir=Path.home() / ".cache" / "lks" / "tts-pcm")
     voice, language = default_voice()
     engine = SherpaOnnxTtsEngine(
-        model_id=spec.model_id, model_path=model_path
+        model_id=bundle.model_id, model_path=model_dir
     )
     return engine, utterance_cache, voice, language
 
@@ -269,15 +270,26 @@ async def run_contract_driver_path(
         raise ValueError("record_path and replay_path are mutually exclusive")
     _ = run  # reserved: max_turns/timeout_s already live on each contract
     orch = Orchestrator()
-    validator = ContractValidator(semantic_verifier=_build_semantic_verifier(cfg))
+    replay_record = None
     if replay_path is not None:
-        from .record_replay import ReplayLanguageBackend, RunRecord
-
-        replay_backend = ReplayLanguageBackend(
-            RunRecord.read(replay_path)
+        from .record_replay import (
+            RecordedSemanticVerifier,
+            ReplayLanguageBackend,
+            RunRecord,
         )
+
+        # Zero-AI replay: BOTH the generation backend AND the semantic
+        # verifier serve recorded evidence. Building the LLM judge backend
+        # here would defeat replay (network calls inside validation), so
+        # the recorded-evidence verifier replaces it unconditionally.
+        replay_record = RunRecord.read(replay_path)
+        replay_backend = ReplayLanguageBackend(replay_record)
         adapter = AILanguageAdapter(backend=replay_backend)
+        validator = ContractValidator(
+            semantic_verifier=RecordedSemanticVerifier(replay_record)
+        )
     else:
+        validator = ContractValidator(semantic_verifier=_build_semantic_verifier(cfg))
         adapter = AILanguageAdapter(backend=_build_text_backend(cfg))
     driver = ContractCallerDriver(
         orchestrator=orch,
@@ -302,7 +314,7 @@ async def run_contract_driver_path(
     def _emit(kind: str, spec: dict[str, Any] | None = None) -> None:
         writer.emit(kind, spec=spec or {}, source="sim.contract", include_dialogue=False)
 
-    from ..behavior_compile import silent_mode_enabled, speech_conditions_of
+    from ..behavior_compile import silent_mode_enabled
 
     # SimpleNamespace test doubles carry only caller_actions: default to the
     # immediate-start ("user") path with silent mode off.
@@ -310,23 +322,29 @@ async def run_contract_driver_path(
     first_speaker = getattr(run_spec, "first_speaker", "user") or "user"
     persona = getattr(scenario, "persona", None)
 
-    # Legacy speech_conditions.interruption_* bridge: a scenario that never
-    # authored interaction: still gets its persona rate policy on every do:.
-    # Explicit per-action interaction: wins. Same migration-bridge status as
-    # silent_mode below (persona-owned today, scenario-owned end-state).
+    # Compatibility bridge (DEPRECATED, removal gate: all templates must
+    # author interaction: explicitly — see interrupt-rate-medium.yaml):
+    # persona speech_conditions.interruption_* still fills a missing
+    # per-action interaction on do: steps. Explicit interaction wins.
+    # Warns once per run (contract.compat_bridge) so remaining users are
+    # visible in reports. silent_mode below has the same status.
     persona_interrupt: dict[str, Any] = {}
-    sc = speech_conditions_of(persona or {})
-    legacy_rate = sc.get("interruption_rate", sc.get("interrupt_rate"))
-    if legacy_rate is not None:
-        persona_interrupt["interruption_rate"] = legacy_rate
-        if sc.get("interruption_interval_ms") is not None:
-            persona_interrupt["interruption_interval_ms"] = sc["interruption_interval_ms"]
-        persona_interrupt["interruption_seed"] = _seed_from_id(
-            getattr(scenario, "id", "")
-        )
+    sc = (persona or {}).get("speech_conditions") or {}
+    if isinstance(sc, dict):
+        legacy_rate = sc.get("interruption_rate", sc.get("interrupt_rate"))
+        if legacy_rate is not None:
+            persona_interrupt["interruption_rate"] = legacy_rate
+            if sc.get("interruption_interval_ms") is not None:
+                persona_interrupt["interruption_interval_ms"] = sc[
+                    "interruption_interval_ms"
+                ]
+            persona_interrupt["interruption_seed"] = _seed_from_id(
+                getattr(scenario, "id", "")
+            )
     if persona_interrupt:
         from .dsl import _parse_interaction
 
+        bridged = 0
         for action in scenario.caller_actions:
             if getattr(action, "kind", None) != "do" or action.interaction is not None:
                 continue
@@ -334,18 +352,38 @@ async def run_contract_driver_path(
                 action.interaction = _parse_interaction(
                     persona_interrupt, file=None, line=getattr(action, "line_no", 0)
                 )
+                bridged += 1
             except Exception:  # noqa: BLE001 — invalid legacy rate fails at parse of persona, not here
                 pass
+        if bridged:
+            _emit(
+                "contract.compat_bridge",
+                {
+                    "bridge": "persona.interruption_rate",
+                    "actions": bridged,
+                    "note": "DEPRECATED: author interaction: on the do: step instead",
+                },
+            )
     driver._scenario_id = str(getattr(scenario, "id", ""))
 
     # Greeting wait reuses the scenario's own timeout (run_spec.timeout_s):
     # no second timeout semantics — an agent that never greets fails the
     # same way a run that never progresses does.
-    # NOTE (migration bridge): silent_mode is still read from the legacy
-    # persona speech_conditions via behavior_compile. The contract-native
-    # end-state is a scenario/execution-level property; until that exists
-    # this stays a deliberate bridge, not a permanent persona dependency.
+    # Compatibility bridge (DEPRECATED, same status as interruption_rate
+    # above): silent_mode is still read from persona speech_conditions.
+    # Removal gate: no template may rely on it silently — the compat event
+    # below makes every use visible; delete the bridge once templates
+    # author wait/end-only caller_steps without persona silent_mode.
     greeting_timeout_s = float(getattr(run_spec, "timeout_s", 30.0) or 30.0)
+    _silent = silent_mode_enabled(persona)
+    if _silent:
+        _emit(
+            "contract.compat_bridge",
+            {
+                "bridge": "persona.silent_mode",
+                "note": "DEPRECATED: author wait/end-only caller_steps instead",
+            },
+        )
 
     assets = BridgeAssetPlayer(
         bridge=bridge,
@@ -369,21 +407,49 @@ async def run_contract_driver_path(
         if callable(hangup):
             hangup()
 
-    result = await driver.run(
-        scenario.caller_actions,
-        sink,
-        agent,
-        emit=_emit,
-        first_speaker=first_speaker,
-        silent_mode=silent_mode_enabled(persona),
-        greeting_timeout_s=greeting_timeout_s,
-        assets=assets,
-        hold_timeout_s=hold_timeout_s,
-        on_hold_timeout=_on_hold_timeout,
-    )
-    if recorder is not None and record_path is not None:
-        recorder.finalize().write(record_path)
-        _emit("contract.record_written", {"path": str(record_path)})
+    # Record even failing runs: the whole point of --record is reproducing
+    # failures, and a ContractDriverFailure raise must not skip finalize().
+    # Outcome stamps let replay assert the terminal state too. An unexpected
+    # exception inside driver.run (never a DriverResult failure — those
+    # return normally) still finalizes with an ERROR outcome stamp.
+    result: DriverResult | None = None
+    try:
+        result = await driver.run(
+            scenario.caller_actions,
+            sink,
+            agent,
+            emit=_emit,
+            first_speaker=first_speaker,
+            silent_mode=_silent,
+            greeting_timeout_s=greeting_timeout_s,
+            assets=assets,
+            hold_timeout_s=hold_timeout_s,
+            on_hold_timeout=_on_hold_timeout,
+        )
+    finally:
+        if recorder is not None and record_path is not None:
+            failure = result.failure if result is not None else None
+            recorder.record_outcome(
+                failure_reason=(
+                    failure.reason.value if failure is not None else "ERROR"
+                ),
+                ended_by=(
+                    result.ended_by.value
+                    if result is not None
+                    else EndedBy.ERROR.value
+                ),
+            )
+            recorder.finalize().write(record_path)
+            _emit("contract.record_written", {"path": str(record_path)})
+    assert result is not None  # driver.run always returns (failures are values, not raises)
+
+    if replay_record is not None:
+        replay_backend.assert_outcome(
+            failure_reason=(
+                result.failure.reason.value if result.failure is not None else None
+            ),
+            ended_by=result.ended_by.value,
+        )
 
     if result.failure is not None:
         raise ContractDriverFailure(result)

@@ -77,6 +77,10 @@ def test_act_mismatch_reject() -> None:
 
 
 def test_target_mismatch_reject() -> None:
+    """Target drift is caught on EVIDENCE, not on the generator's claim:
+    the mileage utterance carries no price-topic evidence, so the
+    utterance is about an unverified topic (TARGET_UNVERIFIED) even
+    though the claim itself also diverges."""
     validator = ContractValidator()
     contract = _negotiate_contract()
     candidate = CandidateUtterance(
@@ -87,8 +91,9 @@ def test_target_mismatch_reject() -> None:
         identity=_identity(),
     )
     result = validator.validate(candidate, contract)
-    assert result.verdict == Verdict.INVALID
-    assert result.reason == "TARGET_MISMATCH"
+    assert result.verdict == Verdict.UNKNOWN
+    assert result.reason == "TARGET_UNVERIFIED"
+    assert result.details["claimed_target"] == "mileage"
 
 
 def test_slot_violation_reject() -> None:
@@ -355,11 +360,11 @@ def test_semantic_target_mismatch_rejects_when_backend_supplies_evidence() -> No
     assert result.details["observed_target"] == "delivery_date"
 
 
-def test_rule_baseline_none_target_never_triggers_target_mismatch() -> None:
-    """The rule baseline returns observed.target=None (no independent target
-    evidence), so the SEMANTIC_TARGET_MISMATCH branch must stay a no-op for
-    it -- target enforcement for that tier rests on the deterministic claim
-    check (step 3), which still applies."""
+def test_rule_baseline_none_target_means_unverified() -> None:
+    """A verifier with no independent target evidence (observed.target=None)
+    while the contract pins a target means the topic is UNVERIFIED — the
+    generator merely claiming the right target proves nothing (P0 review
+    fix: candidate.target is diagnostic only, never evidence)."""
     validator = ContractValidator(
         semantic_verifier=_FakeSemanticVerifier(observed_act="negotiate", observed_target=None)
     )
@@ -372,4 +377,5 @@ def test_rule_baseline_none_target_never_triggers_target_mismatch() -> None:
         identity=_identity(),
     )
     result = validator.validate(candidate, contract)
-    assert result.is_valid(), result.details
+    assert result.verdict == Verdict.UNKNOWN
+    assert result.reason == "TARGET_UNVERIFIED"

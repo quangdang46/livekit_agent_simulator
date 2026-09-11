@@ -78,12 +78,33 @@ def download_and_verify_model(
     return dest
 
 
+# Voice name -> Kitten speaker id. Kitten nano EN ships 8 voices
+# (4 female + 4 male); af_heart (female) is the contract-path default.
+# Unknown names fall back to sid 0 (fail-audible, never fail-silent).
+VOICE_TO_SID = {
+    "af_heart": 0,
+    "af_bella": 1,
+    "af_nicole": 2,
+    "af_sarah": 3,
+    "am_adam": 4,
+    "am_michael": 5,
+    "bf_emma": 6,
+    "bm_george": 7,
+}
+
+
+def _voice_to_sid(voice: str) -> int:
+    return VOICE_TO_SID.get(str(voice or "").strip().lower(), 0)
+
+
 @dataclass
 class SherpaOnnxTtsEngine:
-    """TtsEngine implementation backed by sherpa-onnx OfflineTts.
+    """TtsEngine implementation backed by sherpa-onnx OfflineTts (Kitten).
 
     `model_id` matches the TtsEngine Protocol (see tts_engine.py) so this
-    engine can be used interchangeably with TtsCache.
+    engine can be used interchangeably with TtsCache. `model_path` is the
+    extracted model DIRECTORY (model.fp16.onnx + voices.bin + tokens.txt +
+    espeak-ng-data/); `voice` selects the Kitten speaker id.
     """
 
     model_id: str
@@ -95,23 +116,58 @@ class SherpaOnnxTtsEngine:
         if self._offline_tts is not None:
             return self._offline_tts
         try:
-            import sherpa_onnx  # noqa: F401  (lazy import; optional dependency)
+            import sherpa_onnx
         except ImportError as exc:  # pragma: no cover - exercised only when package absent
             raise SherpaOnnxNotInstalledError(
                 "sherpa-onnx is not installed. Install with `uv sync --extra tts-sherpa`."
             ) from exc
-        # Real config construction (OfflineTtsConfig / OfflineTts.create) is
-        # intentionally left as a documented next step for the actual model
-        # wiring — see docs/tts-benchmark.md for the current benchmark
-        # status. This module's contract (TtsEngine.synthesize signature,
-        # caching, SHA verification) is what's under test today.
-        raise NotImplementedError(
-            "SherpaOnnxTtsEngine backend wiring pending model benchmark (see docs/tts-benchmark.md)"
+        model_dir = Path(self.model_path)
+        kitten = sherpa_onnx.OfflineTtsKittenModelConfig(
+            model=str(model_dir / "model.fp16.onnx"),
+            voices=str(model_dir / "voices.bin"),
+            tokens=str(model_dir / "tokens.txt"),
+            data_dir=str(model_dir / "espeak-ng-data"),
         )
+        config = sherpa_onnx.OfflineTtsConfig(
+            model=sherpa_onnx.OfflineTtsModelConfig(
+                kitten=kitten,
+                num_threads=2,
+                debug=False,
+                provider="cpu",
+            ),
+            max_num_sentences=1,
+        )
+        if not config.validate():
+            raise RuntimeError(
+                f"sherpa-onnx Kitten config invalid (model dir {model_dir})"
+            )
+        self._offline_tts = sherpa_onnx.OfflineTts(config)
+        return self._offline_tts
 
     def synthesize(self, text: str, *, voice: str, language: str) -> bytes:
+        """Synthesize text -> PCM16 mono bytes at the engine sample rate.
+
+        Raises SherpaOnnxNotInstalledError (no package) or RuntimeError
+        (bad model dir) — the contract path treats every raise as "fall
+        back to OS TTS", never as silent audio.
+        """
+        import array
+
+        if not text or not text.strip():
+            raise ValueError("synthesize text must be non-empty")
         backend = self._ensure_backend()
-        raise NotImplementedError  # pragma: no cover - see _ensure_backend
+        audio = backend.generate(text, sid=_voice_to_sid(voice), speed=1.0)
+        samples = audio.samples
+        rate = int(audio.sample_rate or self.sample_rate)
+        pcm = array.array("h", (max(-32768, min(32767, int(s * 32768))) for s in samples))
+        raw = pcm.tobytes()
+        if rate != self.sample_rate and rate > 0:
+            # Resample to the engine rate (contract mixer runs at 24k;
+            # Kitten native is 24k so this is normally a no-op).
+            import audioop
+
+            raw, _ = audioop.ratecv(raw, 2, 1, rate, self.sample_rate, None)
+        return bytes(raw)
 
 
 __all__ = [

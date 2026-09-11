@@ -9,8 +9,15 @@
       "max_budget": 30000,
       "max_words": null,
       "max_duration_s": null,
-      "forbidden_intents": ["financing", "trade_in", "vehicle_change"],
-      "must_not": ["invent_facts", "end_call"]
+      "forbidden_intents": [
+        "financing",
+        "trade_in",
+        "vehicle_change"
+      ],
+      "must_not": [
+        "invent_facts",
+        "end_call"
+      ]
     }
   },
   "candidate": {
@@ -18,8 +25,13 @@
     "target": "mileage",
     "slots": {},
     "utterance": "Can you come down on the mileage?",
-    "identity": {"behavior_id": "b2", "turn_id": 1, "generation_id": 1, "context_version": 0}
+    "identity": {
+      "behavior_id": "b2",
+      "turn_id": 1,
+      "generation_id": 1,
+      "context_version": 0
+    }
   },
-  "expected_verdict": "INVALID",
-  "expected_reason": "TARGET_MISMATCH"
+  "expected_verdict": "UNKNOWN",
+  "expected_reason": "TARGET_UNVERIFIED"
 }

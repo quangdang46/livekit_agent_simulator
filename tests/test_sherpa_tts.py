@@ -96,3 +96,91 @@ def test_sherpa_engine_synthesize_raises_clear_error_without_package(tmp_path) -
 )
 def test_synthesize_produces_pcm_at_expected_sample_rate() -> None:  # pragma: no cover
     pytest.importorskip("sherpa_onnx")
+
+
+def test_ensure_model_dir_verifies_without_download(tmp_path) -> None:
+    """ensure_model_dir with all pinned files present + valid: no download,
+    returns the model dir."""
+    import hashlib as _hashlib
+
+    from livekit_agent_simulator.audio.sherpa_models import (
+        ModelFile,
+        PinnedModelBundle,
+        ensure_model_dir,
+    )
+
+    content = b"fake-onnx-bytes"
+    digest = _hashlib.sha256(content).hexdigest()
+    bundle = PinnedModelBundle(
+        model_id="test-bundle",
+        archive_url="https://example.invalid/b.tar.bz2",
+        archive_sha256="0" * 64,
+        archive_filename="b.tar.bz2",
+        extract_dirname="b",
+        files=(ModelFile(relpath="model.fp16.onnx", sha256=digest),),
+    )
+    model_dir = tmp_path / "b"
+    model_dir.mkdir()
+    (model_dir / "model.fp16.onnx").write_bytes(content)
+    (model_dir / "espeak-ng-data").mkdir()
+    (model_dir / "espeak-ng-data" / "marker").write_bytes(b"x")
+
+    calls: list[str] = []
+    result = ensure_model_dir(
+        bundle, tmp_path, downloader=lambda url, dest: calls.append(url)
+    )
+    assert result == model_dir
+    assert calls == []
+
+
+def test_ensure_model_dir_rejects_tampered_file(tmp_path) -> None:
+    """A pinned file whose SHA mismatches fails closed (fail-fast, never
+    silent wrong-audio)."""
+    from livekit_agent_simulator.audio.sherpa_models import (
+        ModelFile,
+        ModelIntegrityError,
+        PinnedModelBundle,
+        ensure_model_dir,
+    )
+
+    bundle = PinnedModelBundle(
+        model_id="test-bundle",
+        archive_url="https://example.invalid/b.tar.bz2",
+        archive_sha256="0" * 64,
+        archive_filename="b.tar.bz2",
+        extract_dirname="b",
+        files=(ModelFile(relpath="model.fp16.onnx", sha256="1" * 64),),
+    )
+    model_dir = tmp_path / "b"
+    model_dir.mkdir()
+    (model_dir / "model.fp16.onnx").write_bytes(b"tampered")
+
+    with pytest.raises(ModelIntegrityError):
+        ensure_model_dir(
+            bundle, tmp_path, downloader=lambda url, dest: None
+        )
+
+
+def test_sherpa_engine_synthesizes_real_pcm_when_installed() -> None:
+    """With sherpa-onnx installed + pinned model cached: real PCM at 24k.
+    Skipped (not failed) when the extra or model is absent."""
+    pytest.importorskip("sherpa_onnx")
+    from pathlib import Path
+
+    from livekit_agent_simulator.audio.sherpa_models import (
+        default_model_bundle,
+        ensure_model_dir,
+    )
+
+    model_dir = (
+        Path.home() / ".cache" / "lks" / "tts-models" / default_model_bundle().extract_dirname
+    )
+    if not (model_dir / "model.fp16.onnx").is_file():
+        pytest.skip("pinned Kitten model not cached; run scripts/benchmark_tts.py setup first")
+
+    engine = SherpaOnnxTtsEngine(
+        model_id=default_model_bundle().model_id, model_path=model_dir
+    )
+    pcm = engine.synthesize("Hi there.", voice="af_heart", language="en-US")
+    assert len(pcm) > 1000
+    assert len(pcm) % 2 == 0  # PCM16 frames
