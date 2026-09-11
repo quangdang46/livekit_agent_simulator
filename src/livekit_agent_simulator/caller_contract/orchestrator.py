@@ -200,6 +200,27 @@ _NEGOTIATION_REFUSAL_PATTERNS = (
     "no room",
     "no further discount",
 )
+# Run 041 (Phase D): the agent CONFIRMED the visit twice ("Awesome, we can
+# definitely organise that. Would tomorrow morning around 10am work...?"
+# / "No worries at all. I'll line that up and flick you a text...") and
+# the evaluator scored both NOT_SATISFIED — same shape as run 030, but for
+# arrange_visit: a confirmed booking IS an answer to arrange_visit, unlike
+# a deflection. Scoped to behavior=="arrange_visit" at the call site: a
+# visit confirmation must not satisfy ask/negotiate/end.
+_ARRANGE_VISIT_CONFIRM_PATTERNS = (
+    "we can definitely organise that",
+    "we can definitely organize that",
+    "would tomorrow morning",
+    "would tomorrow",
+    "around 10am work for you",
+    "i'll line that up",
+    "i will line that up",
+    "flick you a text",
+    "send you a text with the details",
+    "pop in today",
+    "come in today",
+    "free to pop in",
+)
 
 
 class BehaviorEvaluator:
@@ -221,6 +242,11 @@ class BehaviorEvaluator:
         # concluded with the price standing); a deflection does not. Scoped
         # to behavior=="negotiate" so it cannot satisfy ask or anything else.
         if contract.behavior == "negotiate" and any(p in text for p in _NEGOTIATION_REFUSAL_PATTERNS):
+            return EvaluatorVerdict.SATISFIED
+        # A confirmed booking answers an arrange_visit behavior (the visit
+        # is agreed: time proposed, details promised). Scoped to
+        # behavior=="arrange_visit" so it cannot satisfy ask/negotiate/end.
+        if contract.behavior == "arrange_visit" and any(p in text for p in _ARRANGE_VISIT_CONFIRM_PATTERNS):
             return EvaluatorVerdict.SATISFIED
         if any(p in text for p in _SATISFIED_PATTERNS):
             return EvaluatorVerdict.SATISFIED

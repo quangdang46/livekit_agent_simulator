@@ -989,6 +989,24 @@ const EVALUATOR_PRICE_STATEMENT_PATTERNS: [&str; 5] = [
     "costs",
 ];
 
+// Run 041 (Phase D): a confirmed booking answers an arrange_visit
+// behavior — same grounding comment as Python orchestrator.py. Scoped to
+// behavior=="arrange_visit" at the call site.
+const EVALUATOR_ARRANGE_VISIT_CONFIRM_PATTERNS: [&str; 12] = [
+    "we can definitely organise that",
+    "we can definitely organize that",
+    "would tomorrow morning",
+    "would tomorrow",
+    "around 10am work for you",
+    "i'll line that up",
+    "i will line that up",
+    "flick you a text",
+    "send you a text with the details",
+    "pop in today",
+    "come in today",
+    "free to pop in",
+];
+
 // Run 030 (Phase D): a reasoned refusal answers a negotiate behavior —
 // same grounding comment as Python orchestrator.py. Scoped to
 // behavior=="negotiate" at the call site.
@@ -1021,6 +1039,13 @@ pub fn evaluate_behavior(
     }
     if contract_behavior == "negotiate"
         && EVALUATOR_NEGOTIATION_REFUSAL_PATTERNS
+            .iter()
+            .any(|p| text.contains(p))
+    {
+        return EvaluatorVerdict::Satisfied;
+    }
+    if contract_behavior == "arrange_visit"
+        && EVALUATOR_ARRANGE_VISIT_CONFIRM_PATTERNS
             .iter()
             .any(|p| text.contains(p))
     {
