@@ -343,30 +343,33 @@ async def run_scenario_instance(
 
             # Gemini brain always on sim_room (WebRTC: same as agent_room).
             # Recorder still gets L=sim via mixer; R=agent via Observer (not only Gemini listen path).
-            from .caller import DefaultCallerPolicy
-            from .caller.policy import CallerPolicyContext
-            _midcall_ctx = CallerPolicyContext(
-                persona=dict(scenario.persona or {}),
-                locale=scenario.effective_locale(),
-                context=dict(scenario.context or {}),
-                script_steps=list(scenario.script_steps or []),
-                first_speaker=run.first_speaker,
-            )
-            # Variant policy (saved optimizer artifact) drives BOTH the SI and the
-            # reground cues so a prompt override behaves consistently end-to-end.
-            _policy = scenario.caller_policy or DefaultCallerPolicy()
-            _midcall_cues = _policy.midcall_cues(_midcall_ctx)
+            #
+            # The caller brain (persona system instruction + mid-call cues) is
+            # NOT built here. It was pure dead computation on this path: the
+            # only consumers are inside the bridge's Realtime session loop
+            # (``GeminiCallerBridge.run`` -> ``_emit_bootstrap_cues`` /
+            # ``inject_reground``), and the contract path never opens a
+            # session — ``run()`` has no call sites (the bridge is used only
+            # for publish_mic / publish_validated_pcm / watch_agent_tracks /
+            # stop). The contract AI adapter builds its prompt from the
+            # BehaviorContract instead (see caller_contract.text_backends).
+            #
+            # Consequence, stated plainly: a saved ``lks optimize`` artifact
+            # (``Scenario.caller_policy``) has NO runtime effect on the
+            # caller-contract path, because the persona prompt it optimizes is
+            # not part of it. Wiring the policy into the contract adapter's
+            # context is a deliberate design change, not a cleanup — do not
+            # re-add the composition here expecting it to take effect.
             _silent = silent_mode_enabled(scenario.persona)
             bridge = build_caller_bridge(
                 cfg=cfg,
                 room=leg_handle.sim_room,
                 observer=observer,
                 writer=writer,
-                persona_system_prompt=scenario.persona_system_prompt(),
+                persona_system_prompt="",
                 first_speaker=run.first_speaker,
                 recorder=recorder,
                 voice_gain=resolve_voice_gain(scenario.persona),
-                midcall_cues=[] if _silent else _midcall_cues,
                 silent_mode=_silent,
                 audio_effects=resolve_audio_effects(scenario.persona),
             )
