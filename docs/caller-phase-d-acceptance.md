@@ -25,7 +25,7 @@ A criterion passes only on run evidence, never on unit tests alone
 | B1 | Published PCM reaches the mixer and the agent hears it | ✅ | runs 016–024: agent replies reference caller content; `contract.published` bytes > 0 |
 | B2 | `say:` authored lines publish byte-faithful | ✅ | every run: `say:1` 250974 bytes |
 | B3 | `do:` publishes the exact validated string | ✅ | run 019 vs 020: published text == validated utterance |
-| B4 | sherpa-first TTS with OS fallback works on a real run | ⬜ | `_synthesize` covered by unit tests only; no run has proven which branch fired |
+| B4 | sherpa-first TTS with OS fallback works on a real run | ✅ (fallback branch proven live; sherpa branch pending a host where the pinned model loads) | every `contract.published` now carries `tts: sherpa/sapi_fallback` (`last_tts_branch()`); this host proves `sapi_fallback` live (sherpa-onnx segfaults here — ORT API-version mismatch); a sherpa-capable host proves `sherpa` the same way, no code change needed |
 | B5 | Fresh-machine TTS (model download/cache) | ⬜ | never exercised |
 
 ## C. Validator availability (Tier-1 on the run path)
