@@ -112,8 +112,15 @@ def _synthesize(text: str) -> bytes:
     ``_SHERPA_DEAD`` so no later utterance pays for another model download
     attempt (and mocked-urllib tests that patch urlopen for the AI backend
     never see sherpa traffic after the first fallback).
+
+    Branch evidence: whichever branch fires records itself in the
+    process-global ``_TTS_BRANCH`` (``"sherpa"`` or ``"sapi_fallback"``),
+    readable via ``last_tts_branch()``. The driver surfaces it per publish
+    (``contract.published`` carries ``tts: <branch>``), so a run proves
+    which branch fired instead of unit tests asserting it in isolation
+    (acceptance B4).
     """
-    global _SHERPA_DEAD
+    global _SHERPA_DEAD, _TTS_BRANCH
     if not _SHERPA_DEAD:
         try:
             from ..audio.tts_engine import TtsCache
@@ -123,15 +130,27 @@ def _synthesize(text: str) -> bytes:
                 engine, text, voice=voice, language=language
             )
             if pcm:
+                _TTS_BRANCH = "sherpa"
                 return bytes(pcm)
         except Exception:  # noqa: BLE001 — any sherpa failure falls back to OS TTS
             pass
         _SHERPA_DEAD = True
+    _TTS_BRANCH = "sapi_fallback"
     pcm = synthesize_pcm16_mono(text, rate=TARGET_RATE)
     return pcm or b""
 
 
 _SHERPA_DEAD = False
+_TTS_BRANCH: str | None = None
+
+
+def last_tts_branch() -> str | None:
+    """Which TTS branch the last ``_synthesize`` call took (acceptance B4).
+
+    ``"sherpa"``, ``"sapi_fallback"``, or ``None`` when nothing has been
+    synthesized yet in this process.
+    """
+    return _TTS_BRANCH
 
 
 def _sherpa_engine():

@@ -63,7 +63,20 @@ class BridgePublishSink:
             self._emit("contract.published", {"label": label, "bytes": len(pcm), "ok": False})
             return False
 
-        self._emit("contract.published", {"label": label, "bytes": len(pcm), "ok": True})
+        # TTS branch evidence (acceptance B4): which synthesizer produced
+        # this PCM. Read lazily so unit-test doubles without live_wiring
+        # still work — absence of evidence is None, never a crash.
+        tts_branch: str | None = None
+        try:
+            from .live_wiring import last_tts_branch
+
+            tts_branch = last_tts_branch()
+        except Exception:  # noqa: BLE001 — evidence is best-effort
+            tts_branch = None
+        spec: dict[str, Any] = {"label": label, "bytes": len(pcm), "ok": True}
+        if tts_branch is not None:
+            spec["tts"] = tts_branch
+        self._emit("contract.published", spec)
         drained = await self._drain(label, pcm_len=len(pcm))
         if not drained:
             raise PublishDrainTimeout(
