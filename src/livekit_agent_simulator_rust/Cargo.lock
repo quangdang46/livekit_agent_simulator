@@ -2056,6 +2056,7 @@ dependencies = [
  "jiff",
  "livekit",
  "livekit-api",
+ "livekit-data-stream",
  "livekit-protocol",
  "lks-core",
  "log",
