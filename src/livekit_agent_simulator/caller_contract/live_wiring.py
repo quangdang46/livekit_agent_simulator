@@ -463,9 +463,15 @@ async def run_contract_driver_path(
     finally:
         if recorder is not None and record_path is not None:
             failure = result.failure if result is not None else None
+            # A clean scenario_end is NOT a failure: stamp None (not the
+            # string "ERROR") so replay's assert_outcome compares
+            # (None, "scenario") on both sides. The old code stamped the
+            # literal "ERROR" here, which could never match a real passing
+            # run and made every passing record unreplayable (run 060:
+            # recorded ('ERROR','scenario') vs replayed (None,'scenario')).
             recorder.record_outcome(
                 failure_reason=(
-                    failure.reason.value if failure is not None else "ERROR"
+                    failure.reason.value if failure is not None else None
                 ),
                 ended_by=(
                     result.ended_by.value
