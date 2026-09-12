@@ -26,6 +26,22 @@ execute:
   max_turns: 6
   timeout_s: 90
   first_speaker: agent
+# Contract path (caller_contract single path): the ambient bed is a delivery
+# primitive (play_audio:), never a say: string — audio files are not
+# utterances and must never flow through TTS or the validator. The dialogue
+# itself is plain say:/end: turns. Legacy speech_conditions:/script: below
+# unchanged.
+caller_steps:
+  - play_audio:
+      asset: builtin:noise.ambient
+      gain: 0.3
+      loop: true
+    trigger:
+      kind: time
+      delay_ms: 1500
+  - say: "Hi, what are your hours?"
+  - say: "Thanks, bye."
+  - end: true
 script:
   steps:
   - id: auto-ambient

@@ -55,28 +55,16 @@ def _mono(e: dict[str, Any]) -> int:
 
 
 def _is_barge_event(e: dict[str, Any]) -> bool:
-    """True for recovery-relevant barges only (correction/escalate; not backchannel/noise)."""
-    from .script.models import counts_for_recovery_barge
+    """True for recovery-relevant barges only (correction/escalate; not backchannel/noise).
 
-    kind = str(e.get("kind") or "")
-    spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
-    cls = spec.get("class") or spec.get("interrupt_class")
-    if kind == "sim.script.cue" and spec.get("barge_in"):
-        return counts_for_recovery_barge(
-            barge_in=True, interrupt_class=str(cls) if cls else None
-        )
-    if kind == "interruption" and (
-        spec.get("barge_in") or str(spec.get("by") or "") == "sim"
-    ):
-        # Explicit false_positive / non-recovery classes do not count.
-        if str(spec.get("class") or "") in ("noise", "backchannel", "dtmf", "silence"):
-            return False
-        if spec.get("false_positive"):
-            return False
-        return counts_for_recovery_barge(
-            barge_in=True, interrupt_class=str(cls) if cls else "correction"
-        )
-    return False
+    Delegates to the shared vocabulary bridge so the contract-path cut-ins
+    (``contract.barge`` / ``contract.interrupt``) count exactly like the
+    legacy ``sim.script.cue`` ones — otherwise barge_count is always 0 and
+    recovery_rate is always None on the contract path.
+    """
+    from .script.models import is_recovery_barge_event
+
+    return is_recovery_barge_event(e)
 
 
 def _script_say_catalog(events: list[dict[str, Any]]) -> list[tuple[int, str]]:
@@ -202,6 +190,8 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
     ttfw_ms: int | None = None
     first_agent_kind: str | None = None
 
+    from .script.models import is_interruption_event  # hoisted: used per event
+
     for e in events:
         kind = str(e.get("kind") or "")
         spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
@@ -234,14 +224,18 @@ def compute_voice_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
             tool_starts += 1
         elif kind == "tool.error":
             tool_errors += 1
-        elif kind == "interruption":
-            interruptions += 1
         elif kind == "silence.detected":
             silence_events += 1
         elif kind == "sim.caller.audio_source_start":
             user_audio_source_ms.append(mono)
         elif kind == "sim.agent.audio_onset":
             agent_audio_onset_ms.append(mono)
+
+        # Interruptions count BOTH vocabularies (legacy `interruption` and the
+        # contract cut-in kinds) — matching asserts.evaluate_asserts, so the
+        # report and the assert can never disagree on how many cut-ins occurred.
+        if is_interruption_event(e):
+            interruptions += 1
 
         if _is_barge_event(e):
             barge_ms.append(mono)

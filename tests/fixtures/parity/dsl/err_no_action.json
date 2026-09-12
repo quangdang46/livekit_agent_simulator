@@ -1,0 +1,9 @@
+{
+  "id": "err_no_action",
+  "steps": [
+    {
+      "frobnicate": 1
+    }
+  ],
+  "expect": "error"
+}

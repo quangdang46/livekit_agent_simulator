@@ -1,0 +1,16 @@
+{
+  "id": "say_interaction",
+  "steps": [
+    {
+      "say": "Hi.",
+      "interaction": {
+        "pace": "slow",
+        "pre_delay": 200
+      }
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "say"
+  ]
+}

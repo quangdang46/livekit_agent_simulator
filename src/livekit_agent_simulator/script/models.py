@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 SUPPORTED_TRIGGERS = frozenset({"agent_speaking", "silence", "time"})
 SUPPORTED_ACTIONS = frozenset({"speak", "wait", "hang_up", "dtmf"})
@@ -65,6 +65,133 @@ def counts_for_recovery_barge(
         return False
     cls = interrupt_class or "correction"
     return cls in RECOVERY_BARGE_CLASSES
+
+
+# --- Event-vocabulary bridge (caller_contract migration) --------------------
+#
+# The caller log has TWO vocabularies for the same caller action:
+#
+#   legacy  : sim.script.cue{barge_in, interrupt_class}  /  interruption{by=sim}
+#   contract: contract.barge{class}  /  contract.interrupt{class}
+#
+# Only the legacy emitters (ScriptRunner, InterruptRateRunner, the Realtime
+# session pump) ever wrote the legacy kinds, and none of them is instantiated
+# on the contract path — so a reader that only understands the legacy spelling
+# counts ZERO barges for a contract run. That silently fails every
+# ``type: recovery`` outcome whose ``min_agent_finals_after_barge_in`` is set,
+# and reports barge_count=0 / recovery_rate=None in metrics.
+#
+# These helpers are the single place that knows both spellings, so asserts,
+# metrics and authoring can never drift apart again.
+
+# Contract kinds that represent the caller talking over the agent.
+CONTRACT_BARGE_KINDS = frozenset({"contract.barge", "contract.interrupt"})
+
+# Classes that are never a *recovery* barge even though they are cut-ins.
+_NON_RECOVERY_CUTIN_CLASSES = frozenset({"noise", "backchannel", "dtmf", "silence"})
+
+
+def _spec_of(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    spec = event.get("spec")
+    return spec if isinstance(spec, Mapping) else {}
+
+
+def is_recovery_barge_event(event: Mapping[str, Any]) -> bool:
+    """True when this log event is a recovery-relevant caller barge.
+
+    Understands both the legacy and the contract event vocabulary — see the
+    module note above. ``contract.policy_interrupt`` (the seeded backchannel
+    cut-in) is deliberately NOT a recovery barge: it is a backchannel, and
+    ``RECOVERY_BARGE_CLASSES`` excludes those.
+    """
+    kind = str(event.get("kind") or "")
+    spec = _spec_of(event)
+
+    if kind == "sim.script.cue":
+        return counts_for_recovery_barge(
+            barge_in=bool(spec.get("barge_in")),
+            interrupt_class=_class_of(spec),
+        )
+    if kind == "interruption":
+        if not (spec.get("barge_in") or str(spec.get("by") or "") == "sim"):
+            return False
+        if spec.get("false_positive"):
+            return False
+        return counts_for_recovery_barge(
+            barge_in=True, interrupt_class=_class_of(spec)
+        )
+    if kind in CONTRACT_BARGE_KINDS:
+        return counts_for_recovery_barge(
+            barge_in=True, interrupt_class=_class_of(spec)
+        )
+    return False
+
+
+def is_interruption_event(event: Mapping[str, Any]) -> bool:
+    """True when this log event counts as a caller interruption.
+
+    Covers the legacy ``interruption`` kind and every contract cut-in kind, so
+    ``min_interruptions`` / ``interruption_count`` mean the same thing on both
+    paths.
+
+    ``contract.policy_interrupt`` counts here but is NOT a recovery barge:
+    a backchannel cut-in is still an interruption, it just is not a
+    *correction/escalate* one (see ``RECOVERY_BARGE_CLASSES``). The legacy
+    seeded runner drew the same line — it always emitted ``interruption``,
+    and the class filter decided whether it counted for recovery.
+    """
+    kind = str(event.get("kind") or "")
+    if kind == "interruption":
+        return True
+    return kind in CONTRACT_BARGE_KINDS or kind == "contract.policy_interrupt"
+
+
+def _class_of(spec: Mapping[str, Any]) -> str | None:
+    cls = spec.get("class") or spec.get("interrupt_class")
+    return str(cls) if cls else None
+
+
+# --- End-of-call attribution, both vocabularies ----------------------------
+#
+# `run.end_condition.reason` is written by whichever caller engine ran, and the
+# two engines spell it differently:
+#
+#   legacy  : sim_end_call / agent_disconnected / dead_call_silence / max_turns / timeout
+#   contract: contract_scenario_end / contract_caller_end / contract_agent_end /
+#             contract_timeout / contract_transport_error / contract_error
+#             (live_wiring.py's EndedBy -> reason map)
+#
+# A reader that knows only the legacy spellings reports "detect" for every
+# contract run, which fails any `type: ended_by` assert that names a side.
+
+# Contract reason -> the assert vocabulary (sim | agent). Absent = no side.
+_CONTRACT_END_SIDES: dict[str, str] = {
+    # The scenario's caller_steps ran to completion (or hit `end: true`):
+    # the simulated caller drove the ending.
+    "contract_scenario_end": "sim",
+    "contract_caller_end": "sim",
+    "contract_agent_end": "agent",
+}
+
+_LEGACY_END_SIDES: dict[str, str] = {
+    "sim_end_call": "sim",
+    "agent_disconnected": "agent",
+    "dead_call_silence": "agent",
+}
+
+
+def end_side_from_reason(reason: str) -> str | None:
+    """Map a `run.end_condition` reason to the side that ended the call.
+
+    Returns "sim" / "agent", or None when the reason carries no side
+    (timeout, max_turns, transport). Understands both the legacy and the
+    contract spelling — see the module note above.
+    """
+    key = str(reason or "")
+    for table in (_CONTRACT_END_SIDES, _LEGACY_END_SIDES):
+        if key in table:
+            return table[key]
+    return None
 
 
 @dataclass(frozen=True)

@@ -126,6 +126,16 @@ def execute(
     profile: Optional[str] = PROFILE_OPTION,
     environment: Optional[str] = ENVIRONMENT_OPTION,
     as_json: bool = JSON_OPTION,
+    record: Optional[Path] = typer.Option(
+        None,
+        "--record",
+        help="Write a versioned caller record (every generate+validate attempt) for later --replay.",
+    ),
+    replay: Optional[Path] = typer.Option(
+        None,
+        "--replay",
+        help="Replay a caller record with no AI calls (fails loudly on verdict divergence).",
+    ),
 ) -> None:
     """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)"""
     result = _run(
@@ -139,6 +149,8 @@ def execute(
             optimized=optimized,
             profile=profile,
             environment=environment,
+            record_path=record,
+            replay_path=replay,
         )
     )
     from .suite import evaluate_run_result

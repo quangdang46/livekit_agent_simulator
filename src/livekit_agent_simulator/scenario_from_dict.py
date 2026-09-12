@@ -131,6 +131,18 @@ def scenario_from_dict(
     if isinstance(beh_raw, dict):
         behavior_spec = dict(beh_raw)
 
+    caller_actions: list[Any] = []
+    caller_steps_raw = data.get("caller_steps")
+    if caller_steps_raw is not None:
+        from .caller_contract.dsl import DSLError, parse_steps
+
+        if not isinstance(caller_steps_raw, list):
+            raise ScenarioError(f"{path_label}: caller_steps must be an array")
+        try:
+            caller_actions = parse_steps(caller_steps_raw, file=path_label)
+        except DSLError as e:
+            raise ScenarioError(str(e)) from e
+
     # PassCriteria may be a list (flat criteria), a dict {mode, criteria, judges},
     # or the export shape {pass_criteria, pass_judges, pass_criteria_mode}.
     pass_criteria: list[str] = []
@@ -173,6 +185,7 @@ def scenario_from_dict(
         plugin_modules=plugin_modules,
         asserts=asserts,
         behavior_spec=behavior_spec,
+        caller_actions=caller_actions,
     )
 
     try:

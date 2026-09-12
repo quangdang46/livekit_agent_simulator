@@ -22,6 +22,18 @@ execute:
   max_turns: 3
   timeout_s: 120
   first_speaker: user
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# Persona/assert/execute blocks below unchanged.
+caller_steps:
+  - say: "こんにちは、今のプランを確認したいです。"
+  - do:
+      behavior: ask
+      target: plan
+      constraints:
+        max_turns: 2
+  - say: "ありがとう、さようなら。"
+  - end: true
 pass_criteria:
   criteria:
   - The agent responded in Japanese

@@ -1,0 +1,301 @@
+{
+  "$schema_note": "One case = one ground-truth semantic judgment, independent of any backend. `expected` is the CORRECT answer a real semantic verifier must reach. `known_limitations.<backend_id>` documents that a specific backend cannot reach it YET, with the backend's ACTUAL (wrong-but-safe or wrong) answer \u2014 the runner asserts `expected` under an xfail(strict=True) for that backend so an unexpected pass (backend improved) fails loudly instead of going unnoticed. A case with no entry for a backend means that backend must match `expected` exactly.",
+  "cases": [
+    {
+      "id": "act-negotiate-paraphrase-pass",
+      "category": "ACT",
+      "contract": {
+        "behavior": "negotiate",
+        "target": "price",
+        "constraints": {
+          "max_turns": 3,
+          "forbidden_intents": [
+            "financing",
+            "trade_in",
+            "vehicle_change"
+          ]
+        }
+      },
+      "candidate_claim": {
+        "act": "negotiate",
+        "target": "price"
+      },
+      "utterance": "Would you consider $30,000, a little closer to my number?",
+      "expected": {
+        "verdict": "valid",
+        "reason": null,
+        "act": "negotiate",
+        "target": "price",
+        "confidence_min": 0.5
+      }
+    },
+    {
+      "id": "act-negotiate-vs-ask-near-miss",
+      "category": "ACT",
+      "contract": {
+        "behavior": "ask",
+        "target": null,
+        "constraints": {
+          "max_turns": 3
+        }
+      },
+      "candidate_claim": {
+        "act": "ask",
+        "target": null
+      },
+      "utterance": "Could you lower the price, and by the way do you offer financing?",
+      "expected": {
+        "verdict": "reject",
+        "reason": "SEMANTIC_ACT_MISMATCH",
+        "act": "negotiate",
+        "target": null,
+        "all_acts_contains": [
+          "negotiate",
+          "financing"
+        ]
+      }
+    },
+    {
+      "id": "act-multi-act-nested-forbidden",
+      "category": "ACT",
+      "contract": {
+        "behavior": "negotiate",
+        "target": "price",
+        "constraints": {
+          "max_turns": 3,
+          "forbidden_intents": [
+            "financing",
+            "trade_in",
+            "vehicle_change"
+          ]
+        }
+      },
+      "candidate_claim": {
+        "act": "negotiate",
+        "target": "price"
+      },
+      "utterance": "Could you lower the price, and by the way do you offer financing?",
+      "expected": {
+        "verdict": "reject",
+        "reason": "FORBIDDEN_INTENT_DETECTED",
+        "act": "negotiate",
+        "all_acts_contains": [
+          "negotiate",
+          "financing"
+        ]
+      }
+    },
+    {
+      "id": "act-ambiguous-reject",
+      "category": "ACT",
+      "contract": {
+        "behavior": "negotiate",
+        "target": "price",
+        "constraints": {
+          "max_turns": 3,
+          "forbidden_intents": [
+            "financing"
+          ]
+        }
+      },
+      "candidate_claim": {
+        "act": "negotiate",
+        "target": "price"
+      },
+      "utterance": "Well, that's an interesting thought about the weather today.",
+      "expected": {
+        "verdict": "reject",
+        "reason": "LOW_CONFIDENCE",
+        "act": null,
+        "target": null,
+        "confidence_max": 0.5
+      }
+    },
+    {
+      "id": "target-price-match",
+      "category": "TARGET",
+      "contract": {
+        "behavior": "negotiate",
+        "target": "price",
+        "constraints": {
+          "max_turns": 3,
+          "forbidden_intents": [
+            "financing",
+            "trade_in",
+            "vehicle_change"
+          ]
+        }
+      },
+      "candidate_claim": {
+        "act": "negotiate",
+        "target": "price"
+      },
+      "utterance": "Could you meet me at $30,000, a little closer to my number?",
+      "expected": {
+        "verdict": "valid",
+        "reason": null,
+        "act": "negotiate",
+        "target": "price",
+        "confidence_min": 0.5
+      }
+    },
+    {
+      "id": "target-delivery-date-vs-price-mismatch",
+      "category": "TARGET",
+      "contract": {
+        "behavior": "negotiate",
+        "target": "price",
+        "constraints": {
+          "max_turns": 3,
+          "forbidden_intents": [
+            "financing",
+            "trade_in",
+            "vehicle_change"
+          ]
+        }
+      },
+      "candidate_claim": {
+        "act": "negotiate",
+        "target": "price"
+      },
+      "utterance": "Could you deliver it next Saturday?",
+      "expected": {
+        "verdict": "reject",
+        "reason": "SEMANTIC_TARGET_MISMATCH",
+        "act": "negotiate",
+        "target": "delivery_date"
+      },
+      "known_limitations": {
+        "rule_based": {
+          "reason": "cannot infer target='delivery_date' from the utterance at all (no target evidence extraction). The utterance also scores zero ACT_PATTERNS hits, so it conservatively falls through to LOW_CONFIDENCE instead of the semantically-correct SEMANTIC_TARGET_MISMATCH. Verdict is still 'reject' (safe fail), but for the wrong reason and without ever detecting the actual off-topic target.",
+          "actual": {
+            "verdict": "reject",
+            "reason": "LOW_CONFIDENCE",
+            "act": "negotiate",
+            "target": null
+          }
+        }
+      }
+    },
+    {
+      "id": "target-unknown-no-target-contract",
+      "category": "TARGET",
+      "contract": {
+        "behavior": "ask",
+        "target": null,
+        "constraints": {
+          "max_turns": 3
+        }
+      },
+      "candidate_claim": {
+        "act": "ask",
+        "target": null
+      },
+      "utterance": "What's the price?",
+      "expected": {
+        "verdict": "valid",
+        "reason": null,
+        "act": "ask",
+        "target": null,
+        "confidence_min": 0.5
+      }
+    },
+    {
+      "id": "forbidden-explicit-keyword",
+      "category": "FORBIDDEN",
+      "contract": {
+        "behavior": "negotiate",
+        "target": "price",
+        "constraints": {
+          "max_turns": 3,
+          "forbidden_intents": [
+            "financing",
+            "trade_in",
+            "vehicle_change"
+          ]
+        }
+      },
+      "candidate_claim": {
+        "act": "negotiate",
+        "target": "price"
+      },
+      "utterance": "Do you offer financing options?",
+      "expected": {
+        "verdict": "reject",
+        "reason": "FORBIDDEN_INTENT_DETECTED",
+        "act": "negotiate",
+        "all_acts_contains": [
+          "financing"
+        ]
+      }
+    },
+    {
+      "id": "forbidden-paraphrased-no-keyword",
+      "category": "FORBIDDEN",
+      "contract": {
+        "behavior": "negotiate",
+        "target": "price",
+        "constraints": {
+          "max_turns": 3,
+          "forbidden_intents": [
+            "financing",
+            "trade_in",
+            "vehicle_change"
+          ]
+        }
+      },
+      "candidate_claim": {
+        "act": "negotiate",
+        "target": "price"
+      },
+      "utterance": "Could I pay this off over several months rather than all at once?",
+      "_target_note": "target=financing, NOT the contract's price: this utterance's real topic is a payment-plan proposal, and ObservedAct.target must be derived purely from utterance evidence, never copied from contract.target (a backend that echoed contract.target here would be masking the exact topic drift FORBIDDEN_INTENT_DETECTED is supposed to catch).",
+      "expected": {
+        "verdict": "reject",
+        "reason": "FORBIDDEN_INTENT_DETECTED",
+        "act": "negotiate",
+        "target": "financing",
+        "all_acts_contains": [
+          "financing"
+        ]
+      },
+      "known_limitations": {
+        "rule_based": {
+          "reason": "this is a genuine paraphrase with ZERO overlap against DEFAULT_INTENT_KEYWORDS['financing'] ('financing', 'finance option', 'loan', 'payment plan') and zero ACT_PATTERNS hits, so the lexical forbidden-intent guard (validator step 7) and the semantic classifier both miss it entirely. Conservatively falls through to LOW_CONFIDENCE (safe fail: never published), but never actually identifies the financing intent -- this is the exact case class real semantic generalization (tier-2/3) exists to close.",
+          "actual": {
+            "verdict": "reject",
+            "reason": "LOW_CONFIDENCE",
+            "act": "negotiate",
+            "target": null,
+            "all_acts_not_contains": [
+              "financing"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "confidence-valid-margin",
+      "category": "CONFIDENCE",
+      "contract": {
+        "behavior": "accept",
+        "target": null,
+        "constraints": {
+          "max_turns": 3
+        }
+      },
+      "candidate_claim": {
+        "act": "accept",
+        "target": null
+      },
+      "utterance": "That sounds good, I'll take it.",
+      "expected": {
+        "verdict": "valid",
+        "reason": null,
+        "act": "accept",
+        "target": null,
+        "confidence_min": 0.5
+      }
+    }
+  ]
+}

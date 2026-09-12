@@ -158,6 +158,10 @@ def scenario_to_dict(scenario: Scenario) -> dict[str, Any]:
         data["telephony"] = _as_plain(scenario.telephony)
     if scenario.behavior_spec:
         data["behavior"] = dict(scenario.behavior_spec)
+    if scenario.caller_actions:
+        from .caller_contract.dsl import unparse_steps
+
+        data["caller_steps"] = unparse_steps(scenario.caller_actions)
     if scenario.script_steps:
         script: dict[str, Any] = {
             "steps": [_as_plain(s) for s in scenario.script_steps],

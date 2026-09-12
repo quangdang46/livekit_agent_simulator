@@ -1,0 +1,61 @@
+{
+  "id": "interaction_planner",
+  "description": "Interaction planner delivery parity (interaction_planner.py): plan_speak token ops (hesitation insert at 1 when >1 token else 0, stumble first-content-token repeat with '...' suffix, pre_delay_ms, pace passthrough), verify_semantic_preserving whitelist, and non-speech action kinds. hesitation/stumble values other than 'none'/null activate (any non-'none' string, never free text — inserted tokens come only from the fixed allowlist).",
+  "hesitation_allowlist": ["uh,", "um,", "hmm,"],
+  "speak_cases": [
+    {
+      "utterance": "Could you come down on the price?",
+      "interaction": null,
+      "expected": {"tokens": ["Could", "you", "come", "down", "on", "the", "price?"], "pre_delay_ms": 0, "pace": null}
+    },
+    {
+      "utterance": "Could you come down on the price?",
+      "interaction": {"pace": "slow"},
+      "expected": {"tokens": ["Could", "you", "come", "down", "on", "the", "price?"], "pre_delay_ms": 0, "pace": "slow"}
+    },
+    {
+      "utterance": "Could you come down on the price?",
+      "interaction": {"hesitation": "low"},
+      "expected": {"tokens": ["Could", "uh,", "you", "come", "down", "on", "the", "price?"], "pre_delay_ms": 0, "pace": null}
+    },
+    {
+      "utterance": "Could you come down on the price?",
+      "interaction": {"stumble": "low"},
+      "expected": {"tokens": ["Could...", "Could", "you", "come", "down", "on", "the", "price?"], "pre_delay_ms": 0, "pace": null}
+    },
+    {
+      "utterance": "Could you come down on the price?",
+      "interaction": {"pre_delay_ms": 500},
+      "expected": {"tokens": ["Could", "you", "come", "down", "on", "the", "price?"], "pre_delay_ms": 500, "pace": null}
+    },
+    {
+      "utterance": "Hi",
+      "interaction": {"hesitation": "low"},
+      "expected": {"tokens": ["uh,", "Hi"], "pre_delay_ms": 0, "pace": null}
+    },
+    {
+      "utterance": "Could you come down on the price?",
+      "interaction": {"pace": "slow", "hesitation": "low", "stumble": "low", "pre_delay_ms": 250},
+      "expected": {"tokens": ["Could...", "Could", "uh,", "you", "come", "down", "on", "the", "price?"], "pre_delay_ms": 250, "pace": "slow"}
+    },
+    {
+      "utterance": "Could you come down on the price?",
+      "interaction": {"hesitation": "none", "stumble": "none"},
+      "expected": {"tokens": ["Could", "you", "come", "down", "on", "the", "price?"], "pre_delay_ms": 0, "pace": null}
+    }
+  ],
+  "preserving_cases": [
+    {"utterance": "hello world", "tokens": ["hello", "world"], "expected": true},
+    {"utterance": "hello world", "tokens": ["hello", "injected"], "expected": false},
+    {"utterance": "hello world", "tokens": ["hello", "um,", "world"], "expected": true},
+    {"utterance": "hello world", "tokens": ["hello", "er,", "world"], "expected": false},
+    {"utterance": "Could you come down?", "tokens": ["Could...", "Could", "you", "come", "down?"], "expected": true}
+  ],
+  "action_cases": [
+    {"op": "dtmf", "digits": "123", "expected_kind": "DTMF"},
+    {"op": "silence", "expected_kind": "SILENCE"},
+    {"op": "hangup", "expected_kind": "HANGUP"},
+    {"op": "backchannel_default", "expected_kind": "BACKCHANNEL", "expected_tokens": ["uh-huh"]},
+    {"op": "barge_in", "expected_kind": "BARGE_IN_TRIGGER"}
+  ]
+}

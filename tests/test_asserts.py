@@ -443,3 +443,154 @@ def test_turn_taking_audio_passes_when_fast() -> None:
     )
     res = evaluate_asserts(events, spec)
     assert res["pass"] is True
+
+
+# ---------------------------------------------------------------------------
+# Caller-path event vocabulary (caller_contract migration)
+#
+# The contract path emits contract.barge / contract.interrupt; the legacy
+# runners emitted sim.script.cue / interruption. Only the legacy spellings
+# were understood, so a contract run counted ZERO recovery barges and every
+# `type: recovery` outcome with min_agent_finals_after_barge_in set failed a
+# run that had actually recovered (4 shipped templates hit this).
+# ---------------------------------------------------------------------------
+
+
+def _recovery_spec(min_after: int = 1):
+    return parse_assert_spec(
+        {
+            "outcomes": [
+                {
+                    "id": "recovers",
+                    "type": "recovery",
+                    "min_agent_finals_after_barge_in": min_after,
+                }
+            ]
+        }
+    )
+
+
+def _agent_finals(*times: int) -> list[dict]:
+    return [{"kind": "transcript.agent.final", "ts_mono_ms": t, "spec": {"text": "ok"}} for t in times]
+
+
+def test_recovery_passes_for_contract_interrupt_event() -> None:
+    events = [
+        {"kind": "contract.interrupt", "ts_mono_ms": 1000, "spec": {"line": 3, "class": "correction"}},
+        *_agent_finals(2000, 3000),
+    ]
+    res = evaluate_asserts(events, _recovery_spec())
+    assert res["pass"] is True, res["checks"]
+    assert res["checks"][0]["agent_finals_after_barge_in"] == 2
+
+
+def test_recovery_passes_for_contract_barge_event() -> None:
+    events = [
+        {"kind": "contract.barge", "ts_mono_ms": 1000, "spec": {"line": 7, "class": "correction"}},
+        *_agent_finals(2000),
+    ]
+    assert evaluate_asserts(events, _recovery_spec())["pass"] is True
+
+
+def test_recovery_fails_when_nothing_recovered_after_a_contract_barge() -> None:
+    """Negative control: the fix must not make a genuinely unrecovered run pass."""
+    events = [
+        {"kind": "contract.barge", "ts_mono_ms": 3000, "spec": {"line": 7, "class": "correction"}},
+        *_agent_finals(1000, 2000),  # all agent speech is BEFORE the barge
+    ]
+    res = evaluate_asserts(events, _recovery_spec())
+    assert res["pass"] is False
+    assert res["checks"][0]["agent_finals_after_barge_in"] == 0
+
+
+def test_seeded_policy_cutin_is_not_a_recovery_barge() -> None:
+    """The seeded interruption is a backchannel cut-in — it must not inflate
+    the recovery count (RECOVERY_BARGE_CLASSES excludes backchannel)."""
+    events = [
+        {"kind": "contract.policy_interrupt", "ts_mono_ms": 1000, "spec": {"text": "Mhm.", "turn": 0}},
+        *_agent_finals(2000),
+    ]
+    from livekit_agent_simulator.metrics import compute_voice_metrics
+
+    assert compute_voice_metrics(events).get("barge_count") in (0, None)
+
+
+def test_contract_barge_counts_toward_min_interruptions() -> None:
+    spec = parse_assert_spec(
+        {
+            "outcomes": [
+                {
+                    "id": "cut_in",
+                    "type": "recovery",
+                    "min_agent_finals_after_barge_in": 1,
+                    "min_interruptions": 1,
+                }
+            ]
+        }
+    )
+    events = [
+        {"kind": "contract.barge", "ts_mono_ms": 1000, "spec": {"line": 7, "class": "correction"}},
+        *_agent_finals(2000),
+    ]
+    assert evaluate_asserts(events, spec)["pass"] is True
+
+
+def test_legacy_spelling_still_counts() -> None:
+    """Back-compat: logs recorded before the contract path keep working."""
+    events = [
+        {
+            "kind": "sim.script.cue",
+            "ts_mono_ms": 1000,
+            "spec": {"step_id": "barge", "barge_in": True, "interrupt_class": "correction"},
+        },
+        *_agent_finals(2000),
+    ]
+    assert evaluate_asserts(events, _recovery_spec())["pass"] is True
+
+
+# ---------------------------------------------------------------------------
+# ended_by attribution across the caller-path vocabularies.
+#
+# run.end_condition.reason is written by whichever caller engine ran. The
+# contract path writes contract_* reasons (live_wiring.py's EndedBy map); the
+# legacy engine wrote sim_end_call / agent_disconnected. A reader that knew
+# only the legacy spellings reported "detect" for every contract run, failing
+# any `type: ended_by` assert that named a side — 2 shipped templates set
+# `ended_by: sim`.
+# ---------------------------------------------------------------------------
+
+
+def _ended_by_spec(expected: str):
+    return parse_assert_spec(
+        {"outcomes": [{"id": "who", "type": "ended_by", "ended_by": expected}]}
+    )
+
+
+def _end_events(reason: str) -> list[dict]:
+    return [{"kind": "run.end_condition", "ts_mono_ms": 1, "spec": {"reason": reason}}]
+
+
+def test_ended_by_understands_contract_reasons():
+    assert evaluate_asserts(_end_events("contract_scenario_end"), _ended_by_spec("sim"))["pass"] is True
+    assert evaluate_asserts(_end_events("contract_caller_end"), _ended_by_spec("sim"))["pass"] is True
+    assert evaluate_asserts(_end_events("contract_agent_end"), _ended_by_spec("agent"))["pass"] is True
+
+
+def test_ended_by_still_understands_legacy_reasons():
+    assert evaluate_asserts(_end_events("sim_end_call"), _ended_by_spec("sim"))["pass"] is True
+    assert evaluate_asserts(_end_events("agent_disconnected"), _ended_by_spec("agent"))["pass"] is True
+    assert evaluate_asserts(_end_events("dead_call_silence"), _ended_by_spec("agent"))["pass"] is True
+
+
+def test_ended_by_still_detects_the_wrong_side():
+    """Negative control: the widened vocabulary must not make every side match."""
+    r = evaluate_asserts(_end_events("contract_agent_end"), _ended_by_spec("sim"))
+    assert r["pass"] is False
+    assert r["checks"][0]["actual"] == "agent"
+
+
+def test_ended_by_no_side_reasons_report_detect():
+    """timeout/max_turns carry no side: detect passes, a named side fails."""
+    for reason in ("contract_timeout", "max_turns", "timeout"):
+        assert evaluate_asserts(_end_events(reason), _ended_by_spec("detect"))["pass"] is True
+        assert evaluate_asserts(_end_events(reason), _ended_by_spec("sim"))["pass"] is False

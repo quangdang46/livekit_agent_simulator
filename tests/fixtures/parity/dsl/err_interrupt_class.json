@@ -1,0 +1,12 @@
+{
+  "id": "err_interrupt_class",
+  "steps": [
+    {
+      "interrupt": true,
+      "interaction": {
+        "interrupt_class": "nuke"
+      }
+    }
+  ],
+  "expect": "error"
+}

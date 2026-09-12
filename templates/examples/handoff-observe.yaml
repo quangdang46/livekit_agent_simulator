@@ -24,6 +24,18 @@ execute:
   max_turns: 8
   timeout_s: 150
   first_speaker: agent
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# Persona/assert/execute blocks below unchanged.
+caller_steps:
+  - say: "Hi, I have a question about a charge I don't recognize."
+  - do:
+      behavior: ask
+      target: charge
+      constraints:
+        max_turns: 4
+  - say: "Thanks, bye."
+  - end: true
 assert:
   outcomes:
   # Positive case: this billing triage flow MUST hand off to a specialist.

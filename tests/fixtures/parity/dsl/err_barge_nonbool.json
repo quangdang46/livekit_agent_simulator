@@ -1,0 +1,10 @@
+{
+  "id": "err_barge_nonbool",
+  "steps": [
+    {
+      "say": "Hi.",
+      "barge_in": "yes"
+    }
+  ],
+  "expect": "error"
+}

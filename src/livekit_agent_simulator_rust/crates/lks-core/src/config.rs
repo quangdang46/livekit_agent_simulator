@@ -76,11 +76,13 @@ impl Default for AudioOnsetConfig {
         Self {
             enabled: false,
             vad: "rms".into(),
-            threshold: 0.012,
+            // Tuned against real run-057 agent audio — same grounding
+            // comment as Python config.py.
+            threshold: 0.025,
             win_ms: 20,
-            energy_frames: 3,
-            exit_frames: 5,
-            refractory_ms: 60,
+            energy_frames: 4,
+            exit_frames: 15,
+            refractory_ms: 1500,
         }
     }
 }

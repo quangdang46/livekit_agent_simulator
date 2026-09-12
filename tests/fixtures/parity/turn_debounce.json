@@ -1,0 +1,30 @@
+{
+  "id": "turn_debounce",
+  "description": "Pure formula both Python and Rust must implement identically: agent_audio_stopped is not turn-complete until (now_ms - last_stop_ms) >= silence_debounce_ms.",
+  "cases": [
+    {
+      "silence_debounce_ms": 300,
+      "last_stop_ms": 100,
+      "now_ms": 150,
+      "expected_turn_complete": false
+    },
+    {
+      "silence_debounce_ms": 300,
+      "last_stop_ms": 100,
+      "now_ms": 500,
+      "expected_turn_complete": true
+    },
+    {
+      "silence_debounce_ms": 200,
+      "last_stop_ms": 150,
+      "now_ms": 349,
+      "expected_turn_complete": false
+    },
+    {
+      "silence_debounce_ms": 200,
+      "last_stop_ms": 150,
+      "now_ms": 350,
+      "expected_turn_complete": true
+    }
+  ]
+}

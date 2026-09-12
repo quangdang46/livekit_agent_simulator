@@ -23,6 +23,15 @@ execute:
   timeout_s: 120
   first_speaker: agent
   hold_music_timeout_s: 20.0
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# Persona/assert/execute blocks below unchanged.
+caller_steps:
+  - say: "Hi, what are your hours?"
+  - wait: 15000
+  - say: "Hello? Anyone there?"
+  - wait: 5000
+  - end: true
 assert:
   outcomes:
   - id: caller_gave_up

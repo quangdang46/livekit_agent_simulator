@@ -397,6 +397,70 @@ async def test_end_call_token_in_transcript_tears_down():
 
 
 # ---------------------------------------------------------------------------
+# inject say-match enforcement (Gemini parity: off-script model audio rejected)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inject_openai_text_rejects_off_script_and_falls_back_to_sapi():
+    """Role-flipped model audio must NOT count as the say-line.
+
+    Regression for the turn-drop/corruption class: _inject_openai_text used to
+    return True on any queued audio, so paraphrased/role-flipped output counted
+    as the scripted cue. Now a heard transcript that fails _inject_matches_say
+    returns False (caller falls back to local SAPI TTS) and emits sim.script.error.
+    """
+    bridge = _bridge()
+    ws = FakeWS()
+    bridge._send_ok = True
+    bridge._ws = ws
+    say = "My callback number is five five five zero one two three"
+
+    def _mixer_produce():
+        bridge._mixer.push_speech(b"\x00\x01" * 2400)
+        # Model "hears" itself saying something off-script (role-flip/recap);
+        # fed during the poll like a real async transcript delta (the inject
+        # entry clears _inject_heard_text, so pre-seeding would be wiped).
+        bridge._inject_heard_text = "Sure, what is your postal code please"
+        return 100
+
+    bridge._mixer.speech_queued_ms = _mixer_produce
+    ok = await bridge._inject_openai_text(say, label="say1", delivery="openai_text", gain=1.0)
+    assert ok is False
+    assert bridge._mixer.cleared >= 1
+    kinds = [k for k, _ in bridge.writer.events]
+    assert "sim.script.error" in kinds
+
+
+@pytest.mark.asyncio
+async def test_inject_openai_text_accepts_verbatim_say():
+    bridge = _bridge()
+    ws = FakeWS()
+    bridge._send_ok = True
+    bridge._ws = ws
+    say = "My callback number is five five five zero one two three"
+
+    async def _mixer_produce_then_drain():
+        return 0
+
+    bridge._mixer.speech_queued_ms = lambda: 100  # audio present at once
+    bridge._inject_heard_text = say
+    bridge._inject_turn_active = True
+
+    # Drain loop needs queued_ms to drop to 0 after first check; emulate by
+    # flipping to drained once the pre-check passed.
+    calls = {"n": 0}
+
+    def _queued():
+        calls["n"] += 1
+        return 100 if calls["n"] == 1 else 0
+
+    bridge._mixer.speech_queued_ms = _queued
+    ok = await bridge._inject_openai_text(say, label="say1", delivery="openai_text", gain=1.0)
+    assert ok is True
+
+
+# ---------------------------------------------------------------------------
 # silent mode
 # ---------------------------------------------------------------------------
 

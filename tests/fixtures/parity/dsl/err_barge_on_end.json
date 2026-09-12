@@ -1,0 +1,10 @@
+{
+  "id": "err_barge_on_end",
+  "steps": [
+    {
+      "end": true,
+      "barge_in": true
+    }
+  ],
+  "expect": "error"
+}

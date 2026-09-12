@@ -1,0 +1,10 @@
+{
+  "id": "err_say_sibling",
+  "steps": [
+    {
+      "say": "Hi.",
+      "frobnicate": 1
+    }
+  ],
+  "expect": "error"
+}

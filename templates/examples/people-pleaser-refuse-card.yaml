@@ -26,6 +26,23 @@ execute:
   max_turns: 6
   timeout_s: 130
   first_speaker: agent
+# Contract path (caller_contract single path): this step drives
+# ContractCallerDriver instead of the legacy ScriptRunner. The refusal barges
+# mid-sentence (agent_speaking + barge_in) like the legacy cue; the interview
+# content (delayed order + card refusal) stays in persona/assert below.
+# Legacy behavior:/script: blocks unchanged.
+caller_steps:
+  - say: "No — I will not give a card number over the phone."
+    trigger:
+      kind: agent_speaking
+      min_agent_active_ms: 450
+      delay_ms: 450
+    barge_in: true
+  - say: "Thanks, that's all. Bye."
+    trigger:
+      kind: silence
+      delay_ms: 1500
+  - end: true
 behavior:
   barge_ins:
   - id: refuse-card

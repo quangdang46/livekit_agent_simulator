@@ -419,33 +419,16 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
         )
 
     pending_llm: list[dict[str, Any]] = []
-    from .script.models import counts_for_recovery_barge
+    from .script.models import is_interruption_event, is_recovery_barge_event
 
     barge_ms: list[int] = []
     for e in events:
-        kind = str(e.get("kind") or "")
-        spec = e.get("spec") if isinstance(e.get("spec"), dict) else {}
+        if not is_recovery_barge_event(e):
+            continue
         try:
-            mono = int(e.get("ts_mono_ms") or 0)
+            barge_ms.append(int(e.get("ts_mono_ms") or 0))
         except (TypeError, ValueError):
-            mono = 0
-        cls = spec.get("class") or spec.get("interrupt_class")
-        cls_s = str(cls) if cls else None
-        if kind == "sim.script.cue" and counts_for_recovery_barge(
-            barge_in=bool(spec.get("barge_in")), interrupt_class=cls_s
-        ):
-            barge_ms.append(mono)
-        if kind == "interruption" and (
-            spec.get("barge_in") or str(spec.get("by") or "") == "sim"
-        ):
-            if str(spec.get("class") or "") in ("noise", "backchannel", "dtmf", "silence"):
-                continue
-            if spec.get("false_positive"):
-                continue
-            if counts_for_recovery_barge(
-                barge_in=True, interrupt_class=cls_s or "correction"
-            ):
-                barge_ms.append(mono)
+            barge_ms.append(0)
     barge_ms = sorted(set(barge_ms))
     agent_final_ms: list[int] = []
     for e in events:
@@ -455,7 +438,7 @@ def evaluate_asserts(events: list[dict[str, Any]], asserts: AssertSpec | None) -
             agent_final_ms.append(int(e.get("ts_mono_ms") or 0))
         except (TypeError, ValueError):
             continue
-    interruptions = [e for e in events if e.get("kind") == "interruption"]
+    interruptions = [e for e in events if is_interruption_event(e)]
 
     for oc in asserts.outcomes:
         if oc.type == "transcript_contains":
@@ -808,7 +791,15 @@ def _eval_audio_latency_outcome(
 
 
 def _eval_ended_by_outcome(oc: OutcomeExpect, events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Assert that the call ended by the expected side (sim | agent | detect)."""
+    """Assert that the call ended by the expected side (sim | agent | detect).
+
+    Reads BOTH the legacy and the contract end-of-call vocabulary — see
+    ``script.models.end_side_from_reason``. Knowing only the legacy spelling
+    reported "detect" for every contract run, failing any ``type: ended_by``
+    assert that names a side.
+    """
+    from .script.models import end_side_from_reason
+
     sim_hangup = [e for e in events if e.get("kind") in ("sim.hang_up", "sim.script.hang_up")]
     end_cond = [e for e in events if e.get("kind") == "run.end_condition"]
 
@@ -821,14 +812,14 @@ def _eval_ended_by_outcome(oc: OutcomeExpect, events: list[dict[str, Any]]) -> d
     elif end_cond:
         er = end_cond[-1].get("spec", {}).get("reason", "")
         er_s = str(er) if er else ""
-        if "sim_end_call" in er_s:
-            who = "sim"
+        side = end_side_from_reason(er_s)
+        if side is not None:
+            who = side
             reason_parts.append(f"end_reason: {er_s}")
-        elif er_s in ("agent_disconnected", "dead_call_silence"):
-            who = "agent"
-            reason_parts.append(f"end_reason: {er_s}")
-        elif er_s in ("max_turns", "timeout"):
+        elif er_s in ("max_turns", "timeout", "contract_timeout"):
             reason_parts.append(f"end_reason: {er_s} (no hang-up side)")
+        else:
+            reason_parts.append(f"end_reason: {er_s} (unrecognized)")
     else:
         for e in events:
             if e.get("kind") == "sim.end_call_token":

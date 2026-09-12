@@ -1,0 +1,12 @@
+{
+  "id": "err_trigger_on_do",
+  "steps": [
+    {
+      "do": "ask",
+      "trigger": {
+        "kind": "time"
+      }
+    }
+  ],
+  "expect": "error"
+}

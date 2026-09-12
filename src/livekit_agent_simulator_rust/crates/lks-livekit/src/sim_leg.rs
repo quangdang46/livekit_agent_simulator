@@ -61,7 +61,7 @@ pub async fn run_inbound_sip(
         identity,
         &sim_room_name,
     )?;
-    let (room, _room_events) = connect_room(&cfg.livekit.url, &token, &sim_room_name).await?;
+    let (room, _room_events) = connect_room(&cfg.livekit.url, &token, &sim_room_name, crate::room::RoomObserveGate::default()).await?;
 
     let mut w = writer.lock().await;
     w.emit(
@@ -228,7 +228,7 @@ pub async fn run_outbound_sim_callee(
         identity,
         &sim_room_name,
     )?;
-    let (sim_room, _) = connect_room(&cfg.livekit.url, &token, &sim_room_name).await?;
+    let (sim_room, _) = connect_room(&cfg.livekit.url, &token, &sim_room_name, crate::room::RoomObserveGate::default()).await?;
     let mut w = writer.lock().await;
     w.emit("sim.connected",
         Some(&serde_json::json!({"identity": identity, "room": sim_room_name, "mode": "outbound_sim_callee"}).as_object().cloned().unwrap_or_default()),
@@ -263,7 +263,7 @@ pub async fn run_outbound_sim_callee(
         &format!("lks-obs-{}", &run_id[..8]),
         &agent_room_name,
     )?;
-    let (agent_room, _) = connect_room(&cfg.livekit.url, &obs_token, &agent_room_name).await?;
+    let (agent_room, _) = connect_room(&cfg.livekit.url, &obs_token, &agent_room_name, crate::room::RoomObserveGate::default()).await?;
 
     // Dial call_to from the agent-room (the agent's outbound call to the sim DID).
     let sip = SIPClient::with_api_key(&api_host, &cfg.livekit.api_key, &cfg.livekit.api_secret);
@@ -353,7 +353,7 @@ pub async fn run_agent_dials(
         identity,
         &sim_room_name,
     )?;
-    let (sim_room, _) = connect_room(&cfg.livekit.url, &token, &sim_room_name).await?;
+    let (sim_room, _) = connect_room(&cfg.livekit.url, &token, &sim_room_name, crate::room::RoomObserveGate::default()).await?;
     let mut w = writer.lock().await;
     w.emit("sim.connected",
         Some(&serde_json::json!({"identity": identity, "room": sim_room_name, "mode": "agent_dials"}).as_object().cloned().unwrap_or_default()),

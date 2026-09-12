@@ -24,6 +24,22 @@ execute:
   max_turns: 5
   timeout_s: 100
   first_speaker: agent
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy ScriptRunner. The threat barges
+# mid-sentence (agent_speaking + barge_in); the bye fires on a wall-clock
+# delay then ends. Legacy script:/persona blocks below unchanged.
+caller_steps:
+  - say: "If you restart the main menu I will hang up."
+    trigger:
+      kind: agent_speaking
+      min_agent_active_ms: 200
+      delay_ms: 800
+    barge_in: true
+  - say: "I am hanging up now."
+    trigger:
+      kind: time
+      delay_ms: 12000
+  - end: true
 script:
   steps:
   - id: threat

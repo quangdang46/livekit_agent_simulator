@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use livekit::prelude::*;
+use livekit_data_stream::api::StreamReader;
 use tokio::sync::broadcast;
 
 use lks_core::errors::RunError;
@@ -39,13 +40,52 @@ pub enum SimRoomEvent {
         /// Sender identity (Python packet.participant.identity), if known.
         sender: Option<String>,
     },
+    /// A fully-read `lk.transcription` text stream (port of observer.py's
+    /// `_on_transcription_stream`/`_read_transcription`). Only emitted for
+    /// the topic gated by `RoomObserveGate::lk_transcription`.
+    TextStream {
+        topic: String,
+        participant_identity: String,
+        text: String,
+        final_: bool,
+        segment_id: Option<String>,
+    },
+    /// A fully-read `lk.agent.session` byte stream (all chunks concatenated,
+    /// one message per stream — port of agent_session_observer.py's framing
+    /// note). Only emitted for the topic gated by
+    /// `RoomObserveGate::lk_agent_session`.
+    ByteStream {
+        topic: String,
+        participant_identity: String,
+        data: Vec<u8>,
+    },
+    /// A text/byte stream failed to read or had no readable payload —
+    /// port of observer.py's `observer.error {where: "lk.transcription", ...}`.
+    StreamError { topic: String, error: String },
 }
+
+/// Which SDK-standard telemetry streams `connect_room` should read and
+/// surface as `SimRoomEvent`s. Mirrors `ObserveConfig.lk_transcription` /
+/// `lk_agent_session` (Python `observer.py`/`agent_session_observer.py`
+/// gate handler *registration* on these; the Rust SDK fires every stream-open
+/// event regardless, so this is a post-hoc topic filter instead).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoomObserveGate {
+    pub lk_transcription: bool,
+    pub lk_agent_session: bool,
+}
+
+const TOPIC_TRANSCRIPTION: &str = "lk.transcription";
+const TOPIC_AGENT_SESSION: &str = "lk.agent.session";
+const ATTR_TRANSCRIPTION_FINAL: &str = "lk.transcription_final";
+const ATTR_SEGMENT_ID: &str = "lk.segment_id";
 
 /// Connect to a LiveKit room and return (room handle, event receiver).
 pub async fn connect_room(
     url: &str,
     token: &str,
     _room_name: &str,
+    observe_gate: RoomObserveGate,
 ) -> Result<(Arc<Room>, broadcast::Receiver<SimRoomEvent>), RunError> {
     let (room, mut events) = Room::connect(url, token, RoomOptions::default())
         .await
@@ -102,6 +142,87 @@ pub async fn connect_room(
                         data: payload.to_vec(),
                         sender,
                     })
+                }
+                RoomEvent::TextStreamOpened {
+                    reader,
+                    topic,
+                    participant_identity,
+                } => {
+                    // Read must happen off the main loop (read_all() awaits
+                    // full stream completion) — port of observer.py wrapping
+                    // its handler in `asyncio.ensure_future(...)`.
+                    if observe_gate.lk_transcription && topic == TOPIC_TRANSCRIPTION {
+                        if let Some(reader) = reader.take() {
+                            let tx3 = tx2.clone();
+                            let participant_identity = participant_identity.to_string();
+                            tokio::spawn(async move {
+                                // Attributes MUST be read AFTER read_all()
+                                // completes: the SDK's final flush carries
+                                // lk.transcription_final=true on the CLOSE
+                                // frame (room_io/_output.py _flush_task →
+                                // writer.aclose(attributes=...)), so a
+                                // snapshot at open time always says false.
+                                // Matches Python observer.py _read_transcription
+                                // (read_all() first, attrs second).
+                                // Clone info BEFORE read_all (which takes
+                                // self by value): TextStreamInfo's attribute
+                                // map is Arc-shared with the stream manager,
+                                // so the trailer's final=true (arriving with
+                                // the close frame) is visible afterwards.
+                                let info = reader.info().clone();
+                                let sim = match reader.read_all().await {
+                                    Ok(text) => {
+                                        let attrs = info.attributes();
+                                        let final_ = attrs
+                                            .get(ATTR_TRANSCRIPTION_FINAL)
+                                            .map(|v| v.eq_ignore_ascii_case("true"))
+                                            .unwrap_or(false);
+                                        let segment_id = attrs.get(ATTR_SEGMENT_ID).cloned();
+                                        SimRoomEvent::TextStream {
+                                            topic: TOPIC_TRANSCRIPTION.to_string(),
+                                            participant_identity,
+                                            text,
+                                            final_,
+                                            segment_id,
+                                        }
+                                    },
+                                    Err(e) => SimRoomEvent::StreamError {
+                                        topic: TOPIC_TRANSCRIPTION.to_string(),
+                                        error: e.to_string(),
+                                    },
+                                };
+                                let _ = tx3.send(sim);
+                            });
+                        }
+                    }
+                    None
+                }
+                RoomEvent::ByteStreamOpened {
+                    reader,
+                    topic,
+                    participant_identity,
+                } => {
+                    if observe_gate.lk_agent_session && topic == TOPIC_AGENT_SESSION {
+                        if let Some(reader) = reader.take() {
+                            let tx3 = tx2.clone();
+                            let participant_identity = participant_identity.to_string();
+                            tokio::spawn(async move {
+                                let sim = match reader.read_all().await {
+                                    Ok(bytes) => SimRoomEvent::ByteStream {
+                                        topic: TOPIC_AGENT_SESSION.to_string(),
+                                        participant_identity,
+                                        data: bytes.to_vec(),
+                                    },
+                                    Err(e) => SimRoomEvent::StreamError {
+                                        topic: TOPIC_AGENT_SESSION.to_string(),
+                                        error: e.to_string(),
+                                    },
+                                };
+                                let _ = tx3.send(sim);
+                            });
+                        }
+                    }
+                    None
                 }
                 _ => None,
             };

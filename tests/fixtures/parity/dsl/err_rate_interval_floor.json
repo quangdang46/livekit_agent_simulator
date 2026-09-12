@@ -1,0 +1,15 @@
+{
+  "id": "err_rate_interval_floor",
+  "steps": [
+    {
+      "do": {
+        "behavior": "ask",
+        "interaction": {
+          "interruption_rate": "medium",
+          "interruption_interval_ms": 500
+        }
+      }
+    }
+  ],
+  "expect": "error"
+}

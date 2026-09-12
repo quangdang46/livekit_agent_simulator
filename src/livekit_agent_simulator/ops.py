@@ -425,6 +425,8 @@ async def _run_scenario(
     caller_policy: Any = None,
     profile: str | None = None,
     environment: str | None = None,
+    record_path: Any = None,
+    replay_path: Any = None,
 ) -> dict[str, Any]:
     """Internal: run JSONL scenario after preflight (orchestrator also preflights)."""
     cfg = load_config(project_root, profile=profile, environment=environment)
@@ -434,6 +436,8 @@ async def _run_scenario(
         run_name=run_name,
         agent_name=agent_name,
         caller_policy=caller_policy,
+        record_path=record_path,
+        replay_path=replay_path,
     )
 
 
@@ -468,6 +472,8 @@ async def execute_scenario(
     optimized: str | None = None,
     profile: str | None = None,
     environment: str | None = None,
+    record_path: Any = None,
+    replay_path: Any = None,
 ) -> dict[str, Any]:
     """Validate then run one scenario from `.agent-sim/scenarios/<id>.jsonl`.
 
@@ -505,6 +511,11 @@ async def execute_scenario(
     iterations: list[dict[str, Any]] = []
     hard_passes = 0
 
+    if record_path is not None and replay_path is not None:
+        raise ValueError("record_path and replay_path are mutually exclusive")
+    if replay_path is not None and repeat > 1:
+        raise ValueError("replay_path does not support repeat > 1 (one replay per run)")
+
     def _run() -> dict[str, Any]:
         return _run_scenario(
             project_root,
@@ -514,6 +525,8 @@ async def execute_scenario(
             caller_policy=caller_policy,
             profile=profile,
             environment=environment,
+            record_path=record_path,
+            replay_path=replay_path,
         )
 
     for i in range(repeat):

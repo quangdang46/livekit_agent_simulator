@@ -1,0 +1,13 @@
+{
+  "id": "err_trigger_unknown_key",
+  "steps": [
+    {
+      "say": "Hi.",
+      "trigger": {
+        "kind": "time",
+        "bogus": 1
+      }
+    }
+  ],
+  "expect": "error"
+}

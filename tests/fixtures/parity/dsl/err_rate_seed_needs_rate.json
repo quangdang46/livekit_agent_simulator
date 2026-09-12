@@ -1,0 +1,14 @@
+{
+  "id": "err_rate_seed_needs_rate",
+  "steps": [
+    {
+      "do": {
+        "behavior": "ask",
+        "interaction": {
+          "interruption_seed": 3
+        }
+      }
+    }
+  ],
+  "expect": "error"
+}

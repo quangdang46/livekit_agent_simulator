@@ -71,9 +71,26 @@ dispatch:
 #       say: Wait — one second
 #       class: correction
 
-# === Script (optional) — timed cues; omit if speech_conditions/Behavior enough ===
+# === Caller steps (contract path) — the caller choreography ===
+# say: exact line (deterministic) | do: adaptive behavior w/ contract |
+# wait: ms | interrupt: cut-in | play_audio: ambient bed | end:
+# Optional per-say gating: trigger: {kind: time|agent_speaking|silence,
+# delay_ms, min_agent_active_ms} + barge_in: true to talk over the agent.
+# caller_steps:
+#   - say: "Hi, I'm calling about my order."
+#   - do:
+#       behavior: ask
+#       target: order_status
+#       constraints:
+#         max_turns: 3
+#   - say: "Thanks, bye."
+#   - end: true
+
+# === Script (optional, legacy) — timed cues; omit if speech_conditions/Behavior enough ===
 # trigger: agent_speaking | silence | time
 # action: speak | wait | hang_up
+# NOTE: prefer caller_steps: above — the legacy ScriptRunner path is
+# deprecated and will be removed once migration completes.
 # script:
 #   steps:
 #     - id: bye
