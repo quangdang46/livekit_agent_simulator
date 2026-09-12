@@ -148,3 +148,22 @@ in `crates/lks-core/src/observer.rs` (`on_transcript` state machine) with
 its own `observer_transcript.json` fixture. The live `lks-livekit` bridges
 (room IO, realtime sessions, TTS playout) are the transport/execution layer
 around this machine, not part of it.
+
+## 8. Build note (Windows host, verified 2026-09-12)
+
+`lks-livekit` links the vendored WebRTC native objects (`webrtc-sys`).
+Two host issues were hit and resolved on the dev machine; neither is in
+the port code:
+
+1. **MAX_PATH**: the default deep `target/` path exceeds Windows path
+   limits inside the vendored webrtc headers (`abseil-cpp` includes fail
+   with C1083 despite the files existing). Workaround: build with a short
+   target dir — `subst W: <repo>\target` then
+   `CARGO_TARGET_DIR="W:/debug" cargo ...`.
+2. **CRT mismatch**: `webrtc-sys` native objects build `MT_StaticRelease`
+   while Rust links `MD_DynamicRelease` (LNK2038). Workaround:
+   `RUSTFLAGS="-C target-feature=+crt-static"`. With both workarounds,
+   `cargo check --workspace` is green, `lks-core` 27/27 test binaries pass,
+   `lks-livekit` lib tests 11/11 pass, and `lksr.exe` links successfully.
+   (`execute_parity` integration binaries hit an unrelated MSYS DLL-loader
+   issue when spawned from this shell; lib tests are the supported gate.)
