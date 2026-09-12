@@ -211,9 +211,17 @@ def test_replay_mismatch_fails_loudly_not_silently() -> None:
 
 
 def test_replay_exhausted_raises_clear_error() -> None:
+    from livekit_agent_simulator.caller_contract.language_adapter import (
+        LanguageGenerationError,
+    )
+
     record = RunRecord(scenario_id="s1", seed=1, attempts=[])
     backend = ReplayLanguageBackend(record)
-    with pytest.raises(RuntimeError, match="replay exhausted"):
+    # Run 063: exhaustion means the live agent diverged past the recorded
+    # attempt count — surfaced as the terminal LanguageGenerationError (the
+    # driver's transport-error path), never a bare RuntimeError that the
+    # adapter would mis-wrap.
+    with pytest.raises(LanguageGenerationError, match="replay divergence"):
         backend.generate({})
 
 

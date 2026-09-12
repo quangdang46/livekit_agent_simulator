@@ -234,7 +234,25 @@ class ReplayLanguageBackend(LanguageBackendProtocol):
         try:
             self._last_attempt = next(self._attempts)
         except StopIteration as exc:
-            raise RuntimeError("replay exhausted: no more recorded attempts") from exc
+            # Run 063: the replayed LIVE run legitimately needs MORE
+            # generations than the record holds (the agent answered
+            # differently, so the driver keeps generating past the
+            # recorded attempt count). The old code raised a bare
+            # RuntimeError, which the adapter wrapped as
+            # LANGUAGE_GENERATION_ERROR — a misleading failure that hides
+            # the real story (agent divergence, not transport). Raise the
+            # terminal wrapper directly so the driver maps it to a
+            # REPLAY_DIVERGENCE-shaped LANGUAGE_GENERATION_ERROR with the
+            # counts attached, instead of a bare "replay exhausted".
+            from .language_adapter import LanguageGenerationError
+
+            raise LanguageGenerationError(
+                f"replay divergence: live run needed more generations than "
+                f"the record holds (record has "
+                f"{len(self._record.attempts)} attempts; the agent's live "
+                f"answers diverged from the recorded run, so the driver "
+                f"kept generating)"
+            ) from exc
         return dict(self._last_attempt.candidate)
 
     def assert_verdict(self, actual_verdict: Verdict) -> None:
