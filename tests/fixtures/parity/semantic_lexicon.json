@@ -172,6 +172,34 @@
         ]
       },
       "source": "run-042 guard: bare adjustments absent stays ask"
+    },
+    {
+      "utterance": "I'm hoping to negotiate the price of the 2022 Honda CR-V.",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "negotiate"
+        ]
+      },
+      "source": "run-054"
+    },
+    {
+      "utterance": "Can we discuss a lower price for the 2022 Honda CR-V?",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "negotiate"
+        ]
+      },
+      "source": "run-054"
     }
   ]
 }

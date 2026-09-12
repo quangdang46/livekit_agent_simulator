@@ -183,6 +183,16 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         # ADJUSTMENT (a concession), not a fact. "adjustments ... price"
         # marks the proposal shape. Scoped as a PAIR below (both substrings
         # required) so a plain "let me know the price" still scores ask.
+        # Run 054 (Phase D): "I'm hoping to negotiate the price..." and
+        # "can we discuss a lower price?" both failed closed at 0.2 — the
+        # generator's two most natural negotiate phrasings, and NO existing
+        # pattern covers either ("negotiate the price" is the verb itself;
+        # "discuss a lower price" is a concession discussion, not a fact
+        # question). Both are proposal-shaped, never pure fact-seeking, so
+        # they cannot hijack ask: ask needs a question word + info target,
+        # and neither marker contains one.
+        "negotiate the price",
+        "discuss a lower price",
     ),
     "confirm": ("so it's", "just to confirm", "is that right", "to confirm"),
     "deny": ("no thanks", "i don't think so", "that won't work"),

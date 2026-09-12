@@ -143,6 +143,14 @@ class Observer:
         # Roles that already emitted a final in the current turn (late interims
         # for those roles are dropped — see on_transcript).
         self._finalized_roles: set[str] = set()
+        # (role, segment_id) of the last final per lk.transcription segment.
+        # Run 050: the SDK's lk.transcription delta-stream writer closes
+        # asynchronously, so interim chunks of an ALREADY-FINALIZED segment
+        # keep arriving after the turn advanced (same segment_id, stale
+        # text). The role-level guard above cannot catch them (the role's
+        # final set was cleared on begin_turn). Track finality per segment
+        # so a stale-segment interim is dropped even across turn boundaries.
+        self._finalized_segments: set[tuple[str, str]] = set()
 
         self.agent_is_active_speaker = False
         self._agent_active_since_mono: float | None = None
@@ -488,7 +496,21 @@ class Observer:
             # providers (OpenAI bridge) can deliver a trailing `.delta` after
             # `.done`, which previously produced interim-after-final within a
             # turn. Consumers must never see that inversion.
+            #
+            # Run 050 proved the same inversion happens via lk.transcription
+            # delta streams: the SDK's delta-stream writer closes
+            # asynchronously (flushTaskImpl), so interim chunks of an
+            # ALREADY-FINALIZED segment keep arriving AFTER the turn advanced
+            # (same segment_id, stale text). The role-level guard above cannot
+            # catch them — the role's final set was cleared on begin_turn —
+            # so finality is also tracked per (role, segment_id) below.
             if self._role_has_final(role):
+                return
+            if (
+                source == "lk.transcription"
+                and segment_id
+                and (role, segment_id) in self._finalized_segments
+            ):
                 return
             self.writer.emit(f"transcript.{role}.interim", spec=spec, source=source)
             return
@@ -556,6 +578,8 @@ class Observer:
             self._last_user_final_mono = time.monotonic()
             self._agent_replied_this_turn = False
             self._finalized_roles.add("user")
+            if source == "lk.transcription" and segment_id:
+                self._finalized_segments.add((role, segment_id))
             self.writer.emit("transcript.user.final", spec=spec, source=source)
         else:
             # A caller_contract single-path run (first_speaker=user) speaks
@@ -588,6 +612,8 @@ class Observer:
             self._last_agent_final_mono = time.monotonic()
             self._last_agent_final_text = text
             self._finalized_roles.add("agent")
+            if source == "lk.transcription" and segment_id:
+                self._finalized_segments.add((role, segment_id))
             self.writer.emit("transcript.agent.final", spec=spec, source=source)
 
     # --------------------------------------------------------------- data topics
