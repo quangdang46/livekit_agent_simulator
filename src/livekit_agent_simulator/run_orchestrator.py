@@ -580,6 +580,31 @@ async def run_scenario_instance(
                     behavior_summary["recovery_assert_pass"] = bool(chk.get("pass"))
                     break
         summary_extra["caller"] = {"behavior_summary": behavior_summary}
+        # Caller-contract evidence (§11): behavior sequence + per-turn
+        # generated text + validation, aggregated from the contract.*
+        # event trail (no new collection — the driver already emits all of
+        # it). Additive under summary["caller_contract"]; the transcript /
+        # timing / asserts pipeline above is untouched.
+        try:
+            from .caller_contract.contract_summary import (
+                build_caller_contract_summary,
+            )
+
+            summary_extra["caller_contract"] = build_caller_contract_summary(
+                events=writer.events,
+                behaviors=[
+                    {
+                        "behavior": (a.contract.behavior if a.contract else a.kind),
+                        "target": (
+                            a.contract.target if a.contract is not None else None
+                        ),
+                    }
+                    for a in (scenario.caller_actions or [])
+                    if a.kind == "do" and a.contract is not None
+                ],
+            )
+        except Exception:  # noqa: BLE001 — summary must never break a run
+            pass
 
     # ── Phase: soft LLM judge (does not flip hard gate by itself) ────────
     if status in ("done", "failed") and cfg.judge is not None and scenario.pass_criteria:

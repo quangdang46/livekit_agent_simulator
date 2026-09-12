@@ -134,6 +134,7 @@ class EventWriter:
         status: str,
         meta: dict[str, Any] | None = None,
         verdict: dict[str, Any] | None = None,
+        caller_contract: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Compute metrics, emit run.ended, write timeline/summary/meta. Returns summary."""
         from ..metrics import compute_voice_metrics
@@ -169,6 +170,12 @@ class EventWriter:
             "verdict": verdict,
             "turns": turns,
         }
+        # Caller-contract evidence (§11): behavior sequence + per-turn
+        # generated text + validation, merged from the record/replay layer
+        # (record_replay.py) when the live wiring collected it. Additive
+        # only — never replaces the transcript/timing/asserts pipeline.
+        if caller_contract is not None:
+            summary["caller_contract"] = caller_contract
 
         self.emit("run.ended", spec={"status": status, "summary_digest": {
             "turn_count": summary["turn_count"],
@@ -509,7 +516,15 @@ class EventWriter:
             return f"{len(spec.get('model_usage') or [])} model usage entries"
         if kind == "silence.detected":
             return f"{spec.get('duration_ms', '?')}ms of silence"
-        keys = [k for k in ("name", "identity", "topic", "status", "room", "node_id", "reason") if spec.get(k)]
+        if kind == "contract.turn_published":
+            text = str(spec.get("text") or "").replace("|", "\\|").replace("\n", " ")
+            return f"{spec.get('behavior', '?')} turn {spec.get('turn', '?')}: {text[:100]}"
+        if kind == "contract.attempt_verdict":
+            utt = str(spec.get("utterance") or "").replace("|", "\\|").replace("\n", " ")
+            return f"{spec.get('behavior', '?')} {spec.get('verdict', '?')} ({spec.get('reason') or '-'}) {utt[:80]}"
+        if kind == "contract.behavior_violation":
+            return f"{spec.get('behavior', '?')} {spec.get('reason', '?')}"
+        keys = [k for k in ("name", "identity", "topic", "status", "room", "node_id", "reason", "behavior", "verdict") if spec.get(k)]
         return ", ".join(f"{k}={spec[k]}" for k in keys)[:120]
 
     @property
