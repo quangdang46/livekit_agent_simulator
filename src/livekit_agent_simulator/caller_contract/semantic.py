@@ -209,7 +209,16 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
     # decide the act.
     "arrange_visit": ("come by", "hold it until", "schedule a time", "book a time",
                       "visit", "stop by", "take a look", "come and look", "come to look",
-                      "come and see", "come to see", "see the car", "look at the"),
+                      "come and see", "come to see", "see the car", "look at the",
+                      # Run 055 (Phase D): "I'd like to arrange a time to check
+                      # out the 2022 Honda CR-V in person..." classified as
+                      # provide ("i'd like to" hit, arrange_visit 0) — the
+                      # sentence's MAIN verb phrase is arranging a time, not
+                      # providing info. "arrange a time" + "check out ... in
+                      # person" mark the visit-booking shape. Both are
+                      # multi-word and visit-specific, so they cannot hijack
+                      # provide ("i want"/"i'd like to" + bare noun) or ask.
+                      "arrange a time", "check out", "in person"),
     "end": ("goodbye", "bye", "thanks, that's all", "have a good day"),
 }
 

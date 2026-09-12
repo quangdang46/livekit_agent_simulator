@@ -333,6 +333,11 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 "come to see",
                 "see the car",
                 "look at the",
+                // Run 055 (Phase D) — same grounding comment as Python
+                // semantic.py.
+                "arrange a time",
+                "check out",
+                "in person",
             ],
         ),
         (

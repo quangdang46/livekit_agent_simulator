@@ -200,6 +200,21 @@
         ]
       },
       "source": "run-054"
+    },
+    {
+      "utterance": "I'd like to arrange a time to check out the 2022 Honda CR-V in person and discuss options.",
+      "behavior": "arrange_visit",
+      "target": null,
+      "expected": {
+        "act": "arrange_visit",
+        "confidence": 0.92,
+        "target": null,
+        "all_acts": [
+          "arrange_visit",
+          "provide"
+        ]
+      },
+      "source": "run-055"
     }
   ]
 }

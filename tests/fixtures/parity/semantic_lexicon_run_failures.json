@@ -64,7 +64,7 @@
       "target": null,
       "expected": {
         "act": "arrange_visit",
-        "confidence": 0.85,
+        "confidence": 0.92,
         "target": null,
         "all_acts": [
           "arrange_visit"
