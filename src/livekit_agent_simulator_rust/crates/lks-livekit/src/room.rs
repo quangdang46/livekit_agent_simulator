@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use livekit::prelude::*;
+use livekit_data_stream::api::StreamReader;
 use tokio::sync::broadcast;
 
 use lks_core::errors::RunError;
