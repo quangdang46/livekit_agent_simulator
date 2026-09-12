@@ -291,6 +291,10 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 // semantic.py.
                 "negotiate the price",
                 "discuss a lower price",
+                // Run 056 (Phase D): "lowering the price" / "better price"
+                // — same grounding comment as Python semantic.py.
+                "lowering the price",
+                "better price",
             ],
         ),
         (

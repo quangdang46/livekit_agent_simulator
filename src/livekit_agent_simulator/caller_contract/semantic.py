@@ -193,6 +193,14 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
         # and neither marker contains one.
         "negotiate the price",
         "discuss a lower price",
+        # Run 056 (Phase D): "any possibility of lowering the price" and
+        # "offer a better price than..." both failed closed at 0.2 —
+        # proposal-shaped (a concession is requested), never fact-seeking.
+        # "lowering the price" is the gerund twin of "lower the price";
+        # "better price" marks a discount request. Neither contains an ask
+        # question-word + info-target shape, so no ask hijack.
+        "lowering the price",
+        "better price",
     ),
     "confirm": ("so it's", "just to confirm", "is that right", "to confirm"),
     "deny": ("no thanks", "i don't think so", "that won't work"),

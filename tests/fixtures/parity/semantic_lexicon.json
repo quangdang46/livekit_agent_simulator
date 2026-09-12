@@ -215,6 +215,36 @@
         ]
       },
       "source": "run-055"
+    },
+    {
+      "utterance": "I'd like to know if there's any possibility of lowering the price on the 2022 Honda CR-V.",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "negotiate",
+          "ask",
+          "provide"
+        ]
+      },
+      "source": "run-056"
+    },
+    {
+      "utterance": "I would like to know if you can offer a better price than the listed $25,800 for the 2022 Honda CR-V.",
+      "behavior": "negotiate",
+      "target": "price",
+      "expected": {
+        "act": "negotiate",
+        "confidence": 0.75,
+        "target": "price",
+        "all_acts": [
+          "negotiate"
+        ]
+      },
+      "source": "run-056"
     }
   ]
 }
