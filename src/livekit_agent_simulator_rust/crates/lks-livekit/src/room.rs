@@ -156,19 +156,35 @@ pub async fn connect_room(
                             let tx3 = tx2.clone();
                             let participant_identity = participant_identity.to_string();
                             tokio::spawn(async move {
-                                let attrs = reader.info().attributes();
-                                let final_ = attrs
-                                    .get(ATTR_TRANSCRIPTION_FINAL)
-                                    .map(|v| v.eq_ignore_ascii_case("true"))
-                                    .unwrap_or(false);
-                                let segment_id = attrs.get(ATTR_SEGMENT_ID).cloned();
+                                // Attributes MUST be read AFTER read_all()
+                                // completes: the SDK's final flush carries
+                                // lk.transcription_final=true on the CLOSE
+                                // frame (room_io/_output.py _flush_task →
+                                // writer.aclose(attributes=...)), so a
+                                // snapshot at open time always says false.
+                                // Matches Python observer.py _read_transcription
+                                // (read_all() first, attrs second).
+                                // Clone info BEFORE read_all (which takes
+                                // self by value): TextStreamInfo's attribute
+                                // map is Arc-shared with the stream manager,
+                                // so the trailer's final=true (arriving with
+                                // the close frame) is visible afterwards.
+                                let info = reader.info().clone();
                                 let sim = match reader.read_all().await {
-                                    Ok(text) => SimRoomEvent::TextStream {
-                                        topic: TOPIC_TRANSCRIPTION.to_string(),
-                                        participant_identity,
-                                        text,
-                                        final_,
-                                        segment_id,
+                                    Ok(text) => {
+                                        let attrs = info.attributes();
+                                        let final_ = attrs
+                                            .get(ATTR_TRANSCRIPTION_FINAL)
+                                            .map(|v| v.eq_ignore_ascii_case("true"))
+                                            .unwrap_or(false);
+                                        let segment_id = attrs.get(ATTR_SEGMENT_ID).cloned();
+                                        SimRoomEvent::TextStream {
+                                            topic: TOPIC_TRANSCRIPTION.to_string(),
+                                            participant_identity,
+                                            text,
+                                            final_,
+                                            segment_id,
+                                        }
                                     },
                                     Err(e) => SimRoomEvent::StreamError {
                                         topic: TOPIC_TRANSCRIPTION.to_string(),
