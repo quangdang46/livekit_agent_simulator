@@ -672,6 +672,7 @@ pub async fn execute_scenario_parsed(
                 identity,
                 writer_arc.clone(),
             )
+            .with_recorder(recorder.clone())
             .with_dispatch_metadata(dispatch_meta)
             .with_silent_mode(silent)
             .with_observe(cfg.observe.clone())

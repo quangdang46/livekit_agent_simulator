@@ -30,6 +30,8 @@ pub struct GeminiCallerBridge {
     room_name: String,
     identity: String,
     writer: Arc<Mutex<EventWriter>>,
+    /// Shared conversation recorder (sim+agent → conversation.wav).
+    recorder: Option<crate::script::SharedRecorder>,
     /// Scenario Dispatch.metadata || config default (None = empty string).
     dispatch_metadata: Option<String>,
     /// Persona.speech_conditions.silent_mode — mute injects + no farewell
@@ -58,11 +60,20 @@ impl GeminiCallerBridge {
             room_name,
             identity,
             writer,
+            recorder: None,
             dispatch_metadata: None,
             silent_mode: false,
             persona_speech_conditions: Default::default(),
             observe: ObserveConfig::default(),
         }
+    }
+
+    /// Share the conversation recorder so the pumps feed it audio
+    /// (port of Python gemini.py `recorder=` — sim via mic pump, agent via
+    /// room-audio pump; stereo conversation.wav like the OpenAI bridge).
+    pub fn with_recorder(mut self, rec: crate::script::SharedRecorder) -> Self {
+        self.recorder = Some(rec);
+        self
     }
 
     /// Builder: observe config for data-topic + lk.agent.session observation.
@@ -208,10 +219,11 @@ impl GeminiCallerBridge {
             let sc = &self.persona_speech_conditions;
             crate::degradation::resolve_audio_effects(sc.get("effects")).unwrap_or_default()
         };
+        let rec_sim = self.recorder.clone();
         let mic_task = tokio::spawn(super::openai::pump_mic_shared(
             out_rx,
             source.clone(),
-            None,
+            rec_sim,
             mic_effects,
         ));
 
@@ -324,10 +336,12 @@ impl GeminiCallerBridge {
         // Agent room audio → Gemini session (24k PCM). The room-events
         // broadcast is shared with the end loop below (resubscribe).
         let session_tx = session.clone();
+        let rec_agent = self.recorder.clone();
         let agent_audio_task = tokio::spawn(pump_agent_audio_gemini(
             room.clone(),
             room_events.resubscribe(),
             session_tx,
+            rec_agent,
         ));
 
         // Wait for end_call, the agent leaving, or a hard slice cap. Emits
@@ -343,13 +357,6 @@ impl GeminiCallerBridge {
         // lk.agent.session + data-topic observation (Python observer parity).
         let mut session_observer = crate::observe::SessionObserver::new();
         let mut data_router = crate::observe::DataRouter::new(self.observe.clone());
-        data_router.on_transcript = Some(Box::new(|_role, _text, _source| {
-            // Consumed per Python; model-session transcript pipeline drives
-            // turn tracking in this build.
-            // TODO(follow-up): route through the shared `observer`
-            // (constructed above, before `gemini_task`) once this closure
-            // becomes async-lock-aware — same open item as openai.rs.
-        }));
         let writer_obs = self.writer.clone();
         loop {
             tokio::select! {
@@ -420,8 +427,32 @@ impl GeminiCallerBridge {
                                 let mut w = writer_obs.lock().await;
                                 crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
                             } else {
-                                let mut w = writer_obs.lock().await;
-                                data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                // Data-topic transcript_turn → shared Observer
+                                // (final=true, source=topic), Python parity with
+                                // observer.py `_handle_data_topic`. Staged by
+                                // the sync router, fed here where the async
+                                // observer lock is available.
+                                let staged = {
+                                    let mut w = writer_obs.lock().await;
+                                    data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                    data_router.take_transcript()
+                                };
+                                if let Some(t) = staged {
+                                    if !t.text.trim().is_empty() {
+                                        let mut w = writer_obs.lock().await;
+                                        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                        observer.lock().await.on_transcript(
+                                            &mut w,
+                                            &t.role,
+                                            &t.text,
+                                            true,
+                                            None,
+                                            &t.source,
+                                            std::time::Instant::now(),
+                                            now_wall_ms,
+                                        );
+                                    }
+                                }
                             }
                         }
                         Ok(SimRoomEvent::TextStream { participant_identity, text, final_, segment_id, .. }) => {
@@ -484,6 +515,7 @@ async fn pump_agent_audio_gemini(
     room: Arc<livekit::Room>,
     mut room_events: broadcast::Receiver<SimRoomEvent>,
     session: Arc<Mutex<Session>>,
+    recorder: Option<crate::script::SharedRecorder>,
 ) {
     // Wait for the agent's audio track.
     let track: Option<livekit::webrtc::audio_track::RtcAudioTrack> = loop {
@@ -508,6 +540,13 @@ async fn pump_agent_audio_gemini(
     while let Some(frame) = stream.next().await {
         let pcm: &[i16] = frame.data.as_ref();
         let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        // Agent channel → conversation.wav (Python gemini.py fallback parity;
+        // recorder resamples 24k → 16k stereo internally).
+        if let Some(rec) = &recorder {
+            if let Ok(mut r) = rec.lock() {
+                r.push_agent(&bytes, GEMINI_RATE);
+            }
+        }
         let s = session.lock().await;
         if s.send_audio(&bytes).await.is_err() {
             return;

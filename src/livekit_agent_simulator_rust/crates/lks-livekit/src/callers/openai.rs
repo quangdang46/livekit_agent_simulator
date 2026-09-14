@@ -606,13 +606,6 @@ impl OpenAiCallerBridge {
         // lk.agent.session + data-topic observation (Python observer parity).
         let mut session_observer = crate::observe::SessionObserver::new();
         let mut data_router = crate::observe::DataRouter::new(self.observe.clone());
-        data_router.on_transcript = Some(Box::new(|_role, _text, _source| {
-            // Transcript payloads published on data topics are consumed (not
-            // data.message) per Python; the model-session transcript pipeline
-            // already drives turn tracking in this build.
-            // TODO(follow-up): route through the shared `observer` —
-            // needs the DataRouter callback to become async-lock-aware first.
-        }));
         let writer_obs = self.writer.clone();
         let mut disconnect_rx = end_rx.resubscribe();
         // Hard cap: single immutable timer so it actually fires after 45s (a
@@ -796,8 +789,32 @@ impl OpenAiCallerBridge {
                                 let mut w = writer_obs.lock().await;
                                 crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
                             } else {
-                                let mut w = writer_obs.lock().await;
-                                data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                // Data-topic transcript_turn → shared Observer
+                                // (final=true, source=topic), Python parity with
+                                // observer.py `_handle_data_topic`. Staged by
+                                // the sync router, fed here where the async
+                                // observer lock is available.
+                                let staged = {
+                                    let mut w = writer_obs.lock().await;
+                                    data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                    data_router.take_transcript()
+                                };
+                                if let Some(t) = staged {
+                                    if !t.text.trim().is_empty() {
+                                        let mut w = writer_obs.lock().await;
+                                        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                        observer.lock().await.on_transcript(
+                                            &mut w,
+                                            &t.role,
+                                            &t.text,
+                                            true,
+                                            None,
+                                            &t.source,
+                                            std::time::Instant::now(),
+                                            now_wall_ms,
+                                        );
+                                    }
+                                }
                             }
                         }
                         Ok(SimRoomEvent::TextStream { participant_identity, text, final_, segment_id, .. }) => {
