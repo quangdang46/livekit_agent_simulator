@@ -105,8 +105,10 @@ fn parse_trigger(
         )
     })?;
     let allowed = ["kind", "delay_ms", "min_agent_active_ms"];
-    let mut unknown: Vec<&String> =
-        obj.keys().filter(|k| !allowed.contains(&k.as_str())).collect();
+    let mut unknown: Vec<&String> = obj
+        .keys()
+        .filter(|k| !allowed.contains(&k.as_str()))
+        .collect();
     unknown.sort();
     if !unknown.is_empty() {
         return Err(err(
@@ -116,17 +118,14 @@ fn parse_trigger(
             Some("trigger"),
         ));
     }
-    let kind = obj
-        .get("kind")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            err(
-                file,
-                line,
-                "trigger: mapping requires a 'kind' key",
-                Some("trigger.kind"),
-            )
-        })?;
+    let kind = obj.get("kind").and_then(|v| v.as_str()).ok_or_else(|| {
+        err(
+            file,
+            line,
+            "trigger: mapping requires a 'kind' key",
+            Some("trigger.kind"),
+        )
+    })?;
     if !TRIGGER_KINDS.contains(&kind) {
         return Err(err(
             file,
@@ -185,8 +184,10 @@ fn parse_interaction(
         "interruption_interval_ms",
         "interruption_seed",
     ];
-    let mut unknown: Vec<&String> =
-        obj.keys().filter(|k| !allowed.contains(&k.as_str())).collect();
+    let mut unknown: Vec<&String> = obj
+        .keys()
+        .filter(|k| !allowed.contains(&k.as_str()))
+        .collect();
     unknown.sort();
     if !unknown.is_empty() {
         return Err(err(
@@ -201,9 +202,7 @@ fn parse_interaction(
             return Err(err(
                 file,
                 line,
-                &format!(
-                    "unknown interrupt_class {cls:?}; expected one of {INTERRUPT_CLASSES:?}"
-                ),
+                &format!("unknown interrupt_class {cls:?}; expected one of {INTERRUPT_CLASSES:?}"),
                 Some("interaction.interrupt_class"),
             ));
         }
@@ -218,13 +217,15 @@ fn parse_interaction(
     });
     if let Some(r) = &rate {
         let raw_present = obj.contains_key("interruption_rate");
-        if raw_present && !r.is_empty() && !["none", "off"].contains(&r.as_str()) && !INTERRUPTION_RATES.contains(&r.as_str()) {
+        if raw_present
+            && !r.is_empty()
+            && !["none", "off"].contains(&r.as_str())
+            && !INTERRUPTION_RATES.contains(&r.as_str())
+        {
             return Err(err(
                 file,
                 line,
-                &format!(
-                    "unknown interruption_rate {r:?}; expected one of {INTERRUPTION_RATES:?}"
-                ),
+                &format!("unknown interruption_rate {r:?}; expected one of {INTERRUPTION_RATES:?}"),
                 Some("interaction.interruption_rate"),
             ));
         }
@@ -249,10 +250,12 @@ fn parse_interaction(
             ));
         }
     }
-    let has_rate = rate.as_ref().map(|r| !r.is_empty() && !["none", "off"].contains(&r.as_str())).unwrap_or(false);
+    let has_rate = rate
+        .as_ref()
+        .map(|r| !r.is_empty() && !["none", "off"].contains(&r.as_str()))
+        .unwrap_or(false);
     if !has_rate
-        && (obj.contains_key("interruption_interval_ms")
-            || obj.contains_key("interruption_seed"))
+        && (obj.contains_key("interruption_interval_ms") || obj.contains_key("interruption_seed"))
     {
         return Err(err(
             file,
@@ -287,8 +290,10 @@ fn parse_constraints(
         "forbidden_intents",
         "must_not",
     ];
-    let mut unknown: Vec<&String> =
-        obj.keys().filter(|k| !allowed.contains(&k.as_str())).collect();
+    let mut unknown: Vec<&String> = obj
+        .keys()
+        .filter(|k| !allowed.contains(&k.as_str()))
+        .collect();
     unknown.sort();
     if !unknown.is_empty() {
         return Err(err(
@@ -318,8 +323,10 @@ pub fn parse_step(
     line_no: i64,
     file: &str,
 ) -> Result<CallerAction, ScenarioError> {
-    let present: Vec<&String> =
-        raw_step.keys().filter(|k| ACTION_KINDS.contains(&k.as_str())).collect();
+    let present: Vec<&String> = raw_step
+        .keys()
+        .filter(|k| ACTION_KINDS.contains(&k.as_str()))
+        .collect();
     if present.is_empty() {
         return Err(err(
             file,
@@ -345,21 +352,19 @@ pub fn parse_step(
     let kind = present[0].as_str();
 
     if kind == "say" {
-        let value = raw_step.get("say").and_then(|v| v.as_str()).ok_or_else(|| {
-            err(
-                file,
-                line_no,
-                "say: must be a plain string, not a mapping",
-                Some("say"),
-            )
-        })?;
+        let value = raw_step
+            .get("say")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                err(
+                    file,
+                    line_no,
+                    "say: must be a plain string, not a mapping",
+                    Some("say"),
+                )
+            })?;
         if value.trim().is_empty() {
-            return Err(err(
-                file,
-                line_no,
-                "say: must not be empty",
-                Some("say"),
-            ));
+            return Err(err(file, line_no, "say: must not be empty", Some("say")));
         }
         let allowed = ["say", "interaction", "trigger", "barge_in"];
         let mut unknown: Vec<&String> = raw_step
@@ -467,17 +472,11 @@ pub fn parse_step(
                 if let Some(t) = map.get("target") {
                     payload.insert("target".into(), t.clone());
                 }
-                let constraints =
-                    parse_constraints(map.get("constraints"), file, line_no)?;
+                let constraints = parse_constraints(map.get("constraints"), file, line_no)?;
                 if !constraints.is_empty() {
-                    payload.insert(
-                        "constraints".into(),
-                        Json::Object(constraints),
-                    );
+                    payload.insert("constraints".into(), Json::Object(constraints));
                 }
-                if let Some(inter) =
-                    parse_interaction(map.get("interaction"), file, line_no)?
-                {
+                if let Some(inter) = parse_interaction(map.get("interaction"), file, line_no)? {
                     payload.insert("interaction".into(), Json::Object(inter));
                 }
             }
@@ -591,9 +590,7 @@ pub fn parse_step(
             ));
         }
         let mut payload = Map::new();
-        if let Some(inter) =
-            parse_interaction(raw_step.get("interaction"), file, line_no)?
-        {
+        if let Some(inter) = parse_interaction(raw_step.get("interaction"), file, line_no)? {
             payload.insert("interaction".into(), Json::Object(inter));
         }
         return Ok(CallerAction {
@@ -604,14 +601,17 @@ pub fn parse_step(
     }
 
     if kind == "play_audio" {
-        let spec = raw_step.get("play_audio").and_then(|v| v.as_object()).ok_or_else(|| {
-            err(
-                file,
-                line_no,
-                "play_audio: must be a mapping {asset:, gain:, loop:}",
-                Some("play_audio"),
-            )
-        })?;
+        let spec = raw_step
+            .get("play_audio")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| {
+                err(
+                    file,
+                    line_no,
+                    "play_audio: must be a mapping {asset:, gain:, loop:}",
+                    Some("play_audio"),
+                )
+            })?;
         let allowed = ["asset", "gain", "loop"];
         let mut unknown: Vec<&String> = spec
             .keys()
@@ -649,7 +649,10 @@ pub fn parse_step(
             ));
         }
         if let Some(g) = spec.get("gain") {
-            let ok = g.as_f64().map(|f| (0.0..=1.0).contains(&f)).unwrap_or(false);
+            let ok = g
+                .as_f64()
+                .map(|f| (0.0..=1.0).contains(&f))
+                .unwrap_or(false);
             if !ok {
                 return Err(err(
                     file,
@@ -670,10 +673,7 @@ pub fn parse_step(
             }
         }
         let mut payload = Map::new();
-        payload.insert(
-            "play_audio".into(),
-            Json::Object(spec.clone()),
-        );
+        payload.insert("play_audio".into(), Json::Object(spec.clone()));
         if let Some(trig) = parse_trigger(raw_step.get("trigger"), file, line_no)? {
             payload.insert("trigger".into(), Json::Object(trig));
         }
@@ -687,10 +687,7 @@ pub fn parse_step(
     // end / silence / hangup: presence-only control actions (mirrors
     // dsl.py). Any sibling key or non-empty value is a hard error.
     if kind == "end" || kind == "silence" || kind == "hangup" {
-        let mut unknown: Vec<&String> = raw_step
-            .keys()
-            .filter(|k| k.as_str() != kind)
-            .collect();
+        let mut unknown: Vec<&String> = raw_step.keys().filter(|k| k.as_str() != kind).collect();
         unknown.sort();
         if !unknown.is_empty() {
             return Err(err(
@@ -727,22 +724,14 @@ pub fn parse_step(
 }
 
 /// Parse an ordered step list (mirrors dsl.py parse_steps).
-pub fn parse_steps(
-    raw_steps: &[Json],
-    file: &str,
-) -> Result<Vec<CallerAction>, ScenarioError> {
+pub fn parse_steps(raw_steps: &[Json], file: &str) -> Result<Vec<CallerAction>, ScenarioError> {
     raw_steps
         .iter()
         .enumerate()
         .map(|(idx, step)| {
-            let map = step.as_object().ok_or_else(|| {
-                err(
-                    file,
-                    (idx + 1) as i64,
-                    "step must be a mapping",
-                    None,
-                )
-            })?;
+            let map = step
+                .as_object()
+                .ok_or_else(|| err(file, (idx + 1) as i64, "step must be a mapping", None))?;
             parse_step(map, (idx + 1) as i64, file)
         })
         .collect()

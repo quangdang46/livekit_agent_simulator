@@ -655,11 +655,10 @@ pub fn scenario_from_dict(
     // a silent fallback to the legacy script path).
     let mut caller_actions = Vec::new();
     if let Some(raw_steps) = data.get("caller_steps") {
-        let arr = raw_steps.as_array().ok_or_else(|| {
-            ScenarioError(format!("{path_label}: caller_steps must be an array"))
-        })?;
-        caller_actions =
-            crate::caller_dsl::parse_steps(arr, path_label)?;
+        let arr = raw_steps
+            .as_array()
+            .ok_or_else(|| ScenarioError(format!("{path_label}: caller_steps must be an array")))?;
+        caller_actions = crate::caller_dsl::parse_steps(arr, path_label)?;
     }
 
     // Fix (lksr caller_steps ignored): the Rust caller bridges only ever

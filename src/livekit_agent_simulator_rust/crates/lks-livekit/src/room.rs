@@ -61,7 +61,10 @@ pub enum SimRoomEvent {
     },
     /// A text/byte stream failed to read or had no readable payload —
     /// port of observer.py's `observer.error {where: "lk.transcription", ...}`.
-    StreamError { topic: String, error: String },
+    StreamError {
+        topic: String,
+        error: String,
+    },
 }
 
 /// Which SDK-standard telemetry streams `connect_room` should read and
@@ -185,7 +188,7 @@ pub async fn connect_room(
                                             final_,
                                             segment_id,
                                         }
-                                    },
+                                    }
                                     Err(e) => SimRoomEvent::StreamError {
                                         topic: TOPIC_TRANSCRIPTION.to_string(),
                                         error: e.to_string(),

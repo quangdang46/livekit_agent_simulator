@@ -93,7 +93,10 @@ fn caller_steps_roundtrip_preserves_trigger_and_barge() {
     assert_eq!(steps[0]["trigger"]["kind"], json!("agent_speaking"));
     assert_eq!(steps[0]["trigger"]["min_agent_active_ms"], json!(350));
     assert_eq!(steps[0]["barge_in"], json!(true));
-    assert_eq!(steps[1]["play_audio"]["asset"], json!("builtin:noise.ambient"));
+    assert_eq!(
+        steps[1]["play_audio"]["asset"],
+        json!("builtin:noise.ambient")
+    );
     assert_eq!(steps[1]["trigger"]["kind"], json!("time"));
     assert_eq!(steps[4].get("end"), Some(&json!(true)));
 }

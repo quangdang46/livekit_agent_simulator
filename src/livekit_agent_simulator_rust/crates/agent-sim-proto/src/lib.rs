@@ -213,11 +213,27 @@ fn decode_model_usage(bytes: &[u8]) -> Result<Json, String> {
         let sub = &bytes[pos..pos + len];
         pos += len;
         match field {
-            1 => { out.insert("llm".into(), decode_llm_model_usage(sub)?); }
-            2 => { out.insert("tts".into(), decode_tts_model_usage(sub)?); }
-            3 => { out.insert("stt".into(), decode_stt_model_usage(sub)?); }
-            4 => { out.insert("interruption".into(), decode_provider_model_count(sub, "total_requests")?); }
-            5 => { out.insert("eot".into(), decode_provider_model_count(sub, "total_requests")?); }
+            1 => {
+                out.insert("llm".into(), decode_llm_model_usage(sub)?);
+            }
+            2 => {
+                out.insert("tts".into(), decode_tts_model_usage(sub)?);
+            }
+            3 => {
+                out.insert("stt".into(), decode_stt_model_usage(sub)?);
+            }
+            4 => {
+                out.insert(
+                    "interruption".into(),
+                    decode_provider_model_count(sub, "total_requests")?,
+                );
+            }
+            5 => {
+                out.insert(
+                    "eot".into(),
+                    decode_provider_model_count(sub, "total_requests")?,
+                );
+            }
             _ => {}
         }
     }
@@ -290,10 +306,30 @@ fn decode_tts_model_usage(bytes: &[u8]) -> Result<Json, String> {
                     json!(s),
                 );
             }
-            (3, 0) => { out.insert("input_tokens".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
-            (4, 0) => { out.insert("output_tokens".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
-            (5, 0) => { out.insert("characters_count".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
-            (6, 1) => { out.insert("audio_duration".into(), json!(fixed64_f64(bytes, &mut pos).ok_or("f64")?)); }
+            (3, 0) => {
+                out.insert(
+                    "input_tokens".into(),
+                    json!(varint(bytes, &mut pos).ok_or("v")?),
+                );
+            }
+            (4, 0) => {
+                out.insert(
+                    "output_tokens".into(),
+                    json!(varint(bytes, &mut pos).ok_or("v")?),
+                );
+            }
+            (5, 0) => {
+                out.insert(
+                    "characters_count".into(),
+                    json!(varint(bytes, &mut pos).ok_or("v")?),
+                );
+            }
+            (6, 1) => {
+                out.insert(
+                    "audio_duration".into(),
+                    json!(fixed64_f64(bytes, &mut pos).ok_or("f64")?),
+                );
+            }
             _ => {
                 skip_field(bytes, &mut pos, wire).ok_or("skip")?;
             }
@@ -321,9 +357,24 @@ fn decode_stt_model_usage(bytes: &[u8]) -> Result<Json, String> {
                     json!(s),
                 );
             }
-            (3, 0) => { out.insert("input_tokens".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
-            (4, 0) => { out.insert("output_tokens".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
-            (5, 1) => { out.insert("audio_duration".into(), json!(fixed64_f64(bytes, &mut pos).ok_or("f64")?)); }
+            (3, 0) => {
+                out.insert(
+                    "input_tokens".into(),
+                    json!(varint(bytes, &mut pos).ok_or("v")?),
+                );
+            }
+            (4, 0) => {
+                out.insert(
+                    "output_tokens".into(),
+                    json!(varint(bytes, &mut pos).ok_or("v")?),
+                );
+            }
+            (5, 1) => {
+                out.insert(
+                    "audio_duration".into(),
+                    json!(fixed64_f64(bytes, &mut pos).ok_or("f64")?),
+                );
+            }
             _ => {
                 skip_field(bytes, &mut pos, wire).ok_or("skip")?;
             }
