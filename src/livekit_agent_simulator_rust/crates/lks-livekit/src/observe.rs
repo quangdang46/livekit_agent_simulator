@@ -110,10 +110,18 @@ impl SessionObserver {
             );
             return;
         }
-        if event.get("session_usage_updated").is_some() {
-            // Usage payloads are not decoded field-by-field; empty diff-guard
-            // mirrors Python's _last_usage dedupe (nothing to compare → emit once).
-            let usage = json!({});
+        if let Some(updated) = event
+            .get("session_usage_updated")
+            .and_then(|v| v.as_object())
+        {
+            // Fix (lksr session.usage missing): the payload used to always be
+            // `{}` (agent-sim-proto discarded the bytes), so this dedupe-guard
+            // — a real port of Python's `_emit_usage` `usage == self._last_usage`
+            // check — latched on the first empty emission and silently
+            // dropped every subsequent session.usage event for the rest of
+            // the run. Now that agent-sim-proto decodes the real
+            // AgentSessionUsage payload, the guard only skips genuine repeats.
+            let usage = updated.get("usage").cloned().unwrap_or_else(|| json!({}));
             if usage == self.last_usage {
                 return;
             }

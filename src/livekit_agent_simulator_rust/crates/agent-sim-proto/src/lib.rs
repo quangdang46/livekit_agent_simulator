@@ -108,10 +108,19 @@ fn decode_agent_session_event(bytes: &[u8]) -> Result<Map<String, Json>, String>
                 out.insert("user_state_changed".into(), Json::Object(m));
             }
             FIELD_SESSION_USAGE_UPDATED if wire == 2 => {
+                // Fix (lksr session.usage missing): this used to discard the
+                // bytes and always emit `{"usage": {}}` — the observer's
+                // dedupe-guard then latched on that empty payload forever
+                // (see observe.rs SessionObserver::handle_event), so no run
+                // ever surfaced a session.usage event with real numbers.
+                // Decode SessionUsageUpdated.usage (AgentSessionUsage,
+                // field 1) → { model_usage: [ {llm|tts|stt|interruption|eot: {...}} ] }
+                // (field numbers verified against the installed
+                // livekit.protocol.agent_pb.agent_session pyi/descriptors).
                 let len = varint(bytes, &mut pos).ok_or("len")? as usize;
-                let _ = &bytes[pos..pos + len];
+                let usage = decode_session_usage(&bytes[pos..pos + len])?;
                 pos += len;
-                out.insert("session_usage_updated".into(), json!({"usage": {}}));
+                out.insert("session_usage_updated".into(), json!({"usage": usage}));
             }
             FIELD_ERROR if wire == 2 => {
                 let len = varint(bytes, &mut pos).ok_or("len")? as usize;
@@ -160,6 +169,198 @@ fn decode_agent_session_event(bytes: &[u8]) -> Result<Map<String, Json>, String>
         }
     }
     Ok(out)
+}
+
+/// Read a protobuf `double` (wire type 1, little-endian fixed64).
+fn fixed64_f64(buf: &[u8], pos: &mut usize) -> Option<f64> {
+    let bytes: [u8; 8] = buf.get(*pos..*pos + 8)?.try_into().ok()?;
+    *pos += 8;
+    Some(f64::from_le_bytes(bytes))
+}
+
+/// AgentSessionUsage.model_usage (repeated ModelUsage, field 1).
+fn decode_session_usage(bytes: &[u8]) -> Result<Json, String> {
+    let mut pos = 0usize;
+    let mut model_usage = Vec::new();
+    while pos < bytes.len() {
+        let tag = varint(bytes, &mut pos).ok_or("tag")?;
+        let field = tag >> 3;
+        let wire = (tag & 0x7) as u8;
+        if field == 1 && wire == 2 {
+            let len = varint(bytes, &mut pos).ok_or("len")? as usize;
+            model_usage.push(decode_model_usage(&bytes[pos..pos + len])?);
+            pos += len;
+        } else {
+            skip_field(bytes, &mut pos, wire).ok_or("skip")?;
+        }
+    }
+    Ok(json!({ "model_usage": model_usage }))
+}
+
+/// ModelUsage oneof: llm=1, tts=2, stt=3, interruption=4, eot=5.
+fn decode_model_usage(bytes: &[u8]) -> Result<Json, String> {
+    let mut pos = 0usize;
+    let mut out = Map::new();
+    while pos < bytes.len() {
+        let tag = varint(bytes, &mut pos).ok_or("tag")?;
+        let field = tag >> 3;
+        let wire = (tag & 0x7) as u8;
+        if wire != 2 {
+            skip_field(bytes, &mut pos, wire).ok_or("skip")?;
+            continue;
+        }
+        let len = varint(bytes, &mut pos).ok_or("len")? as usize;
+        let sub = &bytes[pos..pos + len];
+        pos += len;
+        match field {
+            1 => { out.insert("llm".into(), decode_llm_model_usage(sub)?); }
+            2 => { out.insert("tts".into(), decode_tts_model_usage(sub)?); }
+            3 => { out.insert("stt".into(), decode_stt_model_usage(sub)?); }
+            4 => { out.insert("interruption".into(), decode_provider_model_count(sub, "total_requests")?); }
+            5 => { out.insert("eot".into(), decode_provider_model_count(sub, "total_requests")?); }
+            _ => {}
+        }
+    }
+    Ok(Json::Object(out))
+}
+
+/// LLMModelUsage (see field table in the pyi: provider/model strings then
+/// 11 varint token counters + a double session_duration).
+fn decode_llm_model_usage(bytes: &[u8]) -> Result<Json, String> {
+    let mut pos = 0usize;
+    let mut out = Map::new();
+    while pos < bytes.len() {
+        let tag = varint(bytes, &mut pos).ok_or("tag")?;
+        let field = tag >> 3;
+        let wire = (tag & 0x7) as u8;
+        match (field, wire) {
+            (1, 2) | (2, 2) => {
+                let len = varint(bytes, &mut pos).ok_or("len")? as usize;
+                let s = String::from_utf8_lossy(&bytes[pos..pos + len]).to_string();
+                pos += len;
+                out.insert(
+                    if field == 1 { "provider" } else { "model" }.into(),
+                    json!(s),
+                );
+            }
+            (3..=13, 0) => {
+                let v = varint(bytes, &mut pos).ok_or("v")?;
+                let key = match field {
+                    3 => "input_tokens",
+                    4 => "input_cached_tokens",
+                    5 => "input_audio_tokens",
+                    6 => "input_cached_audio_tokens",
+                    7 => "input_text_tokens",
+                    8 => "input_cached_text_tokens",
+                    9 => "input_image_tokens",
+                    10 => "input_cached_image_tokens",
+                    11 => "output_tokens",
+                    12 => "output_audio_tokens",
+                    13 => "output_text_tokens",
+                    _ => unreachable!(),
+                };
+                out.insert(key.into(), json!(v));
+            }
+            (14, 1) => {
+                let v = fixed64_f64(bytes, &mut pos).ok_or("f64")?;
+                out.insert("session_duration".into(), json!(v));
+            }
+            _ => skip_field(bytes, &mut pos, wire).ok_or("skip")?,
+        }
+    }
+    Ok(Json::Object(out))
+}
+
+/// TTSModelUsage: provider(1,str) model(2,str) input_tokens(3) output_tokens(4)
+/// characters_count(5) audio_duration(6, double).
+fn decode_tts_model_usage(bytes: &[u8]) -> Result<Json, String> {
+    let mut pos = 0usize;
+    let mut out = Map::new();
+    while pos < bytes.len() {
+        let tag = varint(bytes, &mut pos).ok_or("tag")?;
+        let field = tag >> 3;
+        let wire = (tag & 0x7) as u8;
+        match (field, wire) {
+            (1, 2) | (2, 2) => {
+                let len = varint(bytes, &mut pos).ok_or("len")? as usize;
+                let s = String::from_utf8_lossy(&bytes[pos..pos + len]).to_string();
+                pos += len;
+                out.insert(
+                    if field == 1 { "provider" } else { "model" }.into(),
+                    json!(s),
+                );
+            }
+            (3, 0) => { out.insert("input_tokens".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
+            (4, 0) => { out.insert("output_tokens".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
+            (5, 0) => { out.insert("characters_count".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
+            (6, 1) => { out.insert("audio_duration".into(), json!(fixed64_f64(bytes, &mut pos).ok_or("f64")?)); }
+            _ => {
+                skip_field(bytes, &mut pos, wire).ok_or("skip")?;
+            }
+        }
+    }
+    Ok(Json::Object(out))
+}
+
+/// STTModelUsage: provider(1,str) model(2,str) input_tokens(3) output_tokens(4)
+/// audio_duration(5, double).
+fn decode_stt_model_usage(bytes: &[u8]) -> Result<Json, String> {
+    let mut pos = 0usize;
+    let mut out = Map::new();
+    while pos < bytes.len() {
+        let tag = varint(bytes, &mut pos).ok_or("tag")?;
+        let field = tag >> 3;
+        let wire = (tag & 0x7) as u8;
+        match (field, wire) {
+            (1, 2) | (2, 2) => {
+                let len = varint(bytes, &mut pos).ok_or("len")? as usize;
+                let s = String::from_utf8_lossy(&bytes[pos..pos + len]).to_string();
+                pos += len;
+                out.insert(
+                    if field == 1 { "provider" } else { "model" }.into(),
+                    json!(s),
+                );
+            }
+            (3, 0) => { out.insert("input_tokens".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
+            (4, 0) => { out.insert("output_tokens".into(), json!(varint(bytes, &mut pos).ok_or("v")?)); }
+            (5, 1) => { out.insert("audio_duration".into(), json!(fixed64_f64(bytes, &mut pos).ok_or("f64")?)); }
+            _ => {
+                skip_field(bytes, &mut pos, wire).ok_or("skip")?;
+            }
+        }
+    }
+    Ok(Json::Object(out))
+}
+
+/// InterruptionModelUsage / EotModelUsage: provider(1,str) model(2,str)
+/// total_requests(3, varint) — identical shape, shared decoder.
+fn decode_provider_model_count(bytes: &[u8], count_field_name: &str) -> Result<Json, String> {
+    let mut pos = 0usize;
+    let mut out = Map::new();
+    while pos < bytes.len() {
+        let tag = varint(bytes, &mut pos).ok_or("tag")?;
+        let field = tag >> 3;
+        let wire = (tag & 0x7) as u8;
+        match (field, wire) {
+            (1, 2) | (2, 2) => {
+                let len = varint(bytes, &mut pos).ok_or("len")? as usize;
+                let s = String::from_utf8_lossy(&bytes[pos..pos + len]).to_string();
+                pos += len;
+                out.insert(
+                    if field == 1 { "provider" } else { "model" }.into(),
+                    json!(s),
+                );
+            }
+            (3, 0) => {
+                let v = varint(bytes, &mut pos).ok_or("v")?;
+                out.insert(count_field_name.into(), json!(v));
+            }
+            _ => {
+                skip_field(bytes, &mut pos, wire).ok_or("skip")?;
+            }
+        }
+    }
+    Ok(Json::Object(out))
 }
 
 fn decode_state_pair(bytes: &[u8]) -> Result<(String, String), String> {
