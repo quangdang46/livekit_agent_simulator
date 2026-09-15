@@ -700,6 +700,12 @@ pub async fn execute_scenario_parsed(
             .with_observe(cfg.observe.clone())
             .with_speech_conditions(persona_sc)
             .with_cue_rx(cue_rx)
+            // Contract path (caller_steps non-empty): plumbing-only bridge —
+            // no persona Realtime session, no freestyle generation.
+            // Port of run_orchestrator.py: the contract path "never opens a
+            // session — run() has no call sites (the bridge is used only for
+            // publish_mic)". ScriptRuntime drives speech via TTS→mic.
+            .with_contract_only(!scenario.caller_actions.is_empty())
             // Fix (lksr hardcoded 45s slice cap): run_spec() resolves
             // Execute.timeout_s || Simulator.timeout_s (default 120s, see
             // lks-core::scenario::SimulatorSpec) instead of the caller

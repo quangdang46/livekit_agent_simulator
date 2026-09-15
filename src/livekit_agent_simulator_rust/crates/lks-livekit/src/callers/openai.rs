@@ -48,6 +48,14 @@ pub struct OpenAiCallerBridge {
     identity: String,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
     shared_mic: Option<crate::script::SharedMicSource>,
+    /// Contract path (caller_steps non-empty): the bridge is mic/mixer +
+    /// observation plumbing ONLY — no OpenAI Realtime persona session, no
+    /// freestyle generation. Port of run_orchestrator.py: the contract path
+    /// "never opens a session — run() has no call sites (the bridge is used
+    /// only for publish_mic); the contract AI adapter builds its prompt from
+    /// the BehaviorContract instead". run() with this set skips straight to
+    /// run_plumbing() after dispatch.agent_joined.
+    contract_only: bool,
     recorder: Option<crate::script::SharedRecorder>,
     /// Scenario Dispatch.metadata || config default (None = empty string).
     dispatch_metadata: Option<String>,
@@ -91,6 +99,7 @@ impl OpenAiCallerBridge {
             identity,
             writer,
             shared_mic: None,
+            contract_only: false,
             recorder: None,
             dispatch_metadata: None,
             silent_mode: false,
@@ -125,6 +134,14 @@ impl OpenAiCallerBridge {
     /// Builder: Persona.speech_conditions.silent_mode.
     pub fn with_silent_mode(mut self, silent: bool) -> Self {
         self.silent_mode = silent;
+        self
+    }
+
+    /// Builder: contract-only plumbing mode (caller_steps drives the run —
+    /// no persona Realtime session). Set by run.rs from
+    /// `!scenario.caller_actions.is_empty()`.
+    pub fn with_contract_only(mut self, contract_only: bool) -> Self {
+        self.contract_only = contract_only;
         self
     }
 
@@ -282,7 +299,16 @@ impl OpenAiCallerBridge {
 
     /// Run the caller: connect room → dispatch agent → open OpenAI WS →
     /// pump audio both ways until `end_call`.
+    ///
+    /// Contract-only mode (`contract_only`, set by run.rs when the scenario
+    /// carries caller_actions): skip the persona Realtime session entirely —
+    /// no WS, no pumps, no bootstrap. The bridge is mic/mixer + observation
+    /// plumbing; ScriptRuntime drives speech via the TTS→mic path. Port of
+    /// run_orchestrator.py: the contract path "never opens a session".
     pub async fn run(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+        if self.contract_only {
+            return self.run_plumbing(_end_call).await;
+        }
         // Internal end signal so the cap can shut the pumps down gracefully.
         let (end_tx, end_rx) = broadcast::channel::<()>(1);
         // True while the OpenAI server has an in-flight response (Python's
@@ -638,12 +664,39 @@ impl OpenAiCallerBridge {
         let cap = tokio::time::sleep(std::time::Duration::from_secs(self.slice_cap_secs));
         tokio::pin!(cap);
         // Cue consumer: ScriptRuntime Speak/Dtmf commands (port of
-        // bridge.inject_cue). Speak = verbatim user-turn text item +
-        // response.create; Dtmf = LiveKit publish_dtmf data packet.
+        // bridge.inject_cue).
+        //
+        // Contract-only mode: Speak = OpenAI TTS (mp3 → 24k PCM) played into
+        // the SHARED mic (TTS→mic, the Python BridgePublishSink equivalent —
+        // mic audio, never a Realtime text item; there is no persona session
+        // to inject into). Freestyle mode (legacy): Speak = verbatim
+        // user-turn text item + response.create into the persona session.
+        // Dtmf = LiveKit publish_dtmf data packet in both modes.
+        //
+        // TTS voice follows the scenario's sim voice when it names an OpenAI
+        // TTS voice, else the OpenAI default ("alloy"); contract do:/say:
+        // text is what the agent TRANSCRIBES (STT-side), so voice identity
+        // never affects assertions — parity with Python (sherpa/SAPI voice
+        // is equally arbitrary there).
         let mut cue_rx: Option<crate::script::CueRx> = self.cue_rx.lock().take();
         let room_for_dtmf = room.clone();
         let ws_tx_cue = ws_tx.clone();
         let writer_cue = self.writer.clone();
+        let contract_mode = self.contract_only;
+        let tts_voice = {
+            let v = sim_cfg.voice.voice.trim().to_lowercase();
+            match v.as_str() {
+                "alloy" | "ash" | "ballad" | "coral" | "echo" | "sage" | "shimmer" | "verse"
+                | "marin" | "cedar" => v,
+                _ => "alloy".to_string(),
+            }
+        };
+        let tts_key = sim_cfg.api_key.clone();
+        let tts_mic = if contract_mode {
+            Some(source.clone())
+        } else {
+            None
+        };
         loop {
             tokio::select! {
                 _ = disconnect_rx.recv() => break,
@@ -666,6 +719,75 @@ impl OpenAiCallerBridge {
                                     false,
                                     None,
                                 );
+                                continue;
+                            }
+                            if contract_mode {
+                                // TTS→mic (contract path): synthesize, then
+                                // play PCM into the shared mic the agent hears.
+                                let tts_label = label.clone();
+                                let tts_text = text.clone();
+                                let tts_result =
+                                    synthesize_caller_speech(&tts_key, &tts_voice, &tts_text).await;
+                                match tts_result {
+                                    Ok(pcm) => {
+                                        let frames = pcm.len() / 2;
+                                        if let Some(mic) = &tts_mic {
+                                            let shared: crate::script::SharedMicSource =
+                                                Arc::new(tokio::sync::Mutex::new(Some(
+                                                    mic.clone(),
+                                                )));
+                                            if let Err(e) =
+                                                crate::script::play_pcm_to_source(
+                                                    &shared, &pcm, OPENAI_OUT_RATE,
+                                                )
+                                                .await
+                                            {
+                                                let mut w = writer_cue.lock().await;
+                                                w.emit(
+                                                    "sim.script.tts_error",
+                                                    Some(&serde_json::json!({"label": tts_label, "error": e}).as_object().cloned().unwrap_or_default()),
+                                                    "sim.script",
+                                                    None,
+                                                    None,
+                                                    false,
+                                                    None,
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                        let mut w = writer_cue.lock().await;
+                                        w.emit(
+                                            "transcript.user.final",
+                                            Some(&serde_json::json!({"text": tts_text, "final": true}).as_object().cloned().unwrap_or_default()),
+                                            "sim.script",
+                                            None,
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                        w.emit(
+                                            "sim.script_inject",
+                                            Some(&serde_json::json!({"label": tts_label, "delivery": "tts_mic", "frames": frames}).as_object().cloned().unwrap_or_default()),
+                                            "sim.script",
+                                            None,
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        let mut w = writer_cue.lock().await;
+                                        w.emit(
+                                            "sim.script.tts_error",
+                                            Some(&serde_json::json!({"label": tts_label, "error": e}).as_object().cloned().unwrap_or_default()),
+                                            "sim.script",
+                                            None,
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                    }
+                                }
                                 continue;
                             }
                             let item = serde_json::json!({
@@ -896,6 +1018,584 @@ impl OpenAiCallerBridge {
         let _ = (audio_tx, out_tx, dispatch_id);
         Ok(())
     }
+
+    /// Contract-only plumbing run: room connect → mic publish → dispatch →
+    /// agent-join wait → observation event loop with the cue consumer
+    /// (TTS→mic Speak + DTMF). No persona Realtime session, no freestyle
+    /// generation, no pumps. Port of run_orchestrator.py: the contract path
+    /// "never opens a session — run() has no call sites (the bridge is used
+    /// only for publish_mic)".
+    ///
+    /// Code is deliberately factored out of run() (not interleaved with
+    /// `if contract_only` branches) so the legacy freestyle body stays
+    /// byte-identical for review. The shared pieces (room connect, mic
+    /// publish, dispatch, agent-join, observer config) mirror run()'s steps
+    /// 1–2 verbatim; only the session/pumps half is replaced by the cue loop.
+    async fn run_plumbing(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+        let (_end_tx, end_rx) = broadcast::channel::<()>(1);
+        let livekit_cfg = &self.livekit;
+
+        // 1. Room: connect as the sim caller, publish mic (same as run()).
+        let token = make_token(
+            &livekit_cfg.api_key,
+            &livekit_cfg.api_secret,
+            &self.identity,
+            &self.room_name,
+        )?;
+        let observe_gate = crate::room::RoomObserveGate {
+            lk_transcription: self.observe.lk_transcription,
+            lk_agent_session: self.observe.lk_agent_session,
+        };
+        let (room, room_events) =
+            connect_room(&livekit_cfg.url, &token, &self.room_name, observe_gate).await?;
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "identity".into(),
+                serde_json::Value::String(self.identity.clone()),
+            );
+            spec_m.insert(
+                "room".into(),
+                serde_json::Value::String(self.room_name.clone()),
+            );
+            spec_m.insert(
+                "mode".into(),
+                serde_json::Value::String("webrtc_sim".into()),
+            );
+            w.emit(
+                "sim.connected",
+                Some(&spec_m),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+        let source = publish_mic_shared(&room)?;
+        let source = Arc::new(source);
+        if let Some(shared) = &self.shared_mic {
+            let mut guard = shared.lock().await;
+            *guard = Some(source.clone());
+        }
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "sample_rate".into(),
+                serde_json::Value::Number(OPENAI_OUT_RATE.into()),
+            );
+            spec_m.insert("mixer".into(), serde_json::Value::String("parallel".into()));
+            spec_m.insert(
+                "provider".into(),
+                serde_json::Value::String("openai".into()),
+            );
+            w.emit(
+                "sim.mic_published",
+                Some(&spec_m),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+        {
+            let mut w = self.writer.lock().await;
+            w.emit(
+                "sim.contract_only",
+                Some(
+                    &serde_json::json!({"mode": "plumbing", "note": "no persona Realtime session; ScriptRuntime drives speech via TTS->mic"})
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+
+        // 2. Dispatch the agent (server API) + wait for join (same as run()).
+        let api_host = livekit_cfg
+            .url
+            .replace("wss://", "https://")
+            .replace("ws://", "https://");
+        let dispatch_id = crate::dispatch::create_dispatch(
+            &api_host,
+            &livekit_cfg.api_key,
+            &livekit_cfg.api_secret,
+            &self.room_name,
+            &livekit_cfg.agent_name,
+            self.dispatch_metadata.as_deref(),
+        )
+        .await?;
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "room".into(),
+                serde_json::Value::String(self.room_name.clone()),
+            );
+            spec_m.insert(
+                "agent_name".into(),
+                serde_json::Value::String(livekit_cfg.agent_name.clone()),
+            );
+            spec_m.insert(
+                "dispatch_id".into(),
+                serde_json::Value::String(dispatch_id.clone()),
+            );
+            spec_m.insert(
+                "metadata_set".into(),
+                serde_json::Value::Bool(self.dispatch_metadata.is_some()),
+            );
+            spec_m.insert(
+                "mode".into(),
+                serde_json::Value::String("webrtc_sim".into()),
+            );
+            w.emit(
+                "dispatch.created",
+                Some(&spec_m),
+                "mcp",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+        let agent_identity =
+            crate::dispatch::wait_for_agent_join(&api_host, livekit_cfg, &self.room_name).await?;
+        let observer_cfg = lks_core::observer::ObserverConfig {
+            agent_identity: agent_identity.clone(),
+            sim_identity: self.identity.clone(),
+            first_speaker: self.first_speaker.clone(),
+            transcript_dedupe_window_ms: self.observe.transcript_dedupe_window_ms,
+            ..Default::default()
+        };
+        let observer = std::sync::Arc::new(tokio::sync::Mutex::new(
+            lks_core::observer::Observer::new(observer_cfg),
+        ));
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "identity".into(),
+                serde_json::Value::String(agent_identity.clone()),
+            );
+            spec_m.insert(
+                "mode".into(),
+                serde_json::Value::String("webrtc_sim".into()),
+            );
+            w.emit(
+                "dispatch.agent_joined",
+                Some(&spec_m),
+                "mcp",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+
+        // 3. Observation + cue loop (no persona WS). The room-events arms are
+        // the same handlers as run()'s select loop (observer.py parity);
+        // Speak cues go TTS→mic (see the contract_mode arm below).
+        let mut room_events_watch = room_events;
+        let mut session_observer = crate::observe::SessionObserver::new();
+        let mut data_router = crate::observe::DataRouter::new(self.observe.clone());
+        let writer_obs = self.writer.clone();
+        let mut disconnect_rx = end_rx.resubscribe();
+        let cap = tokio::time::sleep(std::time::Duration::from_secs(self.slice_cap_secs));
+        tokio::pin!(cap);
+        let mut cue_rx: Option<crate::script::CueRx> = self.cue_rx.lock().take();
+        let room_for_dtmf = room.clone();
+        let writer_cue = self.writer.clone();
+        let tts_voice = {
+            let v = self.sim.voice.voice.trim().to_lowercase();
+            match v.as_str() {
+                "alloy" | "ash" | "ballad" | "coral" | "echo" | "sage" | "shimmer" | "verse"
+                | "marin" | "cedar" => v,
+                _ => "alloy".to_string(),
+            }
+        };
+        let tts_key = self.sim.api_key.clone();
+        let tts_source = source.clone();
+        loop {
+            tokio::select! {
+                _ = disconnect_rx.recv() => break,
+                cue = async {
+                    match cue_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match cue {
+                        Some(crate::script::CueCommand::Speak { text, label }) => {
+                            if self.silent_mode {
+                                let mut w = writer_cue.lock().await;
+                                w.emit(
+                                    "sim.silent_mode_skip_inject",
+                                    Some(&serde_json::json!({"label": label, "delivery": "tts_mic", "text": text.chars().take(120).collect::<String>()}).as_object().cloned().unwrap_or_default()),
+                                    "sim",
+                                    None,
+                                    None,
+                                    false,
+                                    None,
+                                );
+                                continue;
+                            }
+                            match synthesize_caller_speech(&tts_key, &tts_voice, &text).await {
+                                Ok(pcm) => {
+                                    let frames = pcm.len() / 2;
+                                    let shared: crate::script::SharedMicSource =
+                                        Arc::new(tokio::sync::Mutex::new(Some(tts_source.clone())));
+                                    if let Err(e) = crate::script::play_pcm_to_source(
+                                        &shared, &pcm, OPENAI_OUT_RATE,
+                                    )
+                                    .await
+                                    {
+                                        let mut w = writer_cue.lock().await;
+                                        w.emit(
+                                            "sim.script.tts_error",
+                                            Some(&serde_json::json!({"label": label, "error": e}).as_object().cloned().unwrap_or_default()),
+                                            "sim.script",
+                                            None,
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                        continue;
+                                    }
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "transcript.user.final",
+                                        Some(&serde_json::json!({"text": text, "final": true}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                    w.emit(
+                                        "sim.script_inject",
+                                        Some(&serde_json::json!({"label": label, "delivery": "tts_mic", "frames": frames}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                }
+                                Err(e) => {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.tts_error",
+                                        Some(&serde_json::json!({"label": label, "error": e}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                        Some(crate::script::CueCommand::Dtmf { digits }) => {
+                            const DMAP: &[(&str, u32)] = &[
+                                ("0", 0), ("1", 1), ("2", 2), ("3", 3), ("4", 4),
+                                ("5", 5), ("6", 6), ("7", 7), ("8", 8), ("9", 9),
+                                ("*", 10), ("#", 11),
+                            ];
+                            let lp = room_for_dtmf.local_participant();
+                            for ch in digits.chars() {
+                                if ch == 'w' {
+                                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                                    continue;
+                                }
+                                let Some((_, code)) = DMAP.iter().find(|(d, _)| *d == ch.to_string()) else {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.dtmf_error",
+                                        Some(&serde_json::json!({"error": format!("unknown DTMF char {ch:?}")}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                    break;
+                                };
+                                let dtmf = livekit::SipDTMF {
+                                    code: *code,
+                                    digit: ch.to_string(),
+                                    ..Default::default()
+                                };
+                                if let Err(e) = lp.publish_dtmf(dtmf).await {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.dtmf_error",
+                                        Some(&serde_json::json!({"error": format!("publish_dtmf: {e}")}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                ev = room_events_watch.recv() => {
+                    match ev {
+                        Ok(SimRoomEvent::ParticipantConnected { identity, name }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("identity".into(), serde_json::Value::String(identity.clone()));
+                            spec_m.insert("name".into(), serde_json::Value::String(name));
+                            spec_m.insert("kind".into(), serde_json::Value::String("Remote".into()));
+                            w.emit("room.participant_connected", Some(&spec_m), "room", None, None, false, None);
+                            drop(w);
+                        }
+                        Ok(SimRoomEvent::ParticipantDisconnected { identity }) => {
+                            {
+                                let mut w = writer_obs.lock().await;
+                                let mut spec_m = serde_json::Map::new();
+                                spec_m.insert("identity".into(), serde_json::Value::String(identity.clone()));
+                                w.emit("room.participant_disconnected", Some(&spec_m), "room", None, None, false, None);
+                            }
+                            eprintln!("[lksr] agent disconnected ({identity}) — ending run");
+                            break;
+                        }
+                        Ok(SimRoomEvent::Disconnected) => {
+                            let mut w = writer_obs.lock().await;
+                            w.emit("room.disconnected", None, "room", None, None, false, None);
+                            drop(w);
+                            break;
+                        }
+                        Ok(SimRoomEvent::ActiveSpeakersChanged { identities }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("identities".into(), serde_json::Value::Array(
+                                identities.iter().map(|i| serde_json::Value::String(i.clone())).collect(),
+                            ));
+                            w.emit(
+                                "room.active_speakers",
+                                Some(&spec_m),
+                                "room",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            drop(w);
+                            let is_agent = identities
+                                .iter()
+                                .any(|i| i != Self::SIM_IDENTITY && i != &self.identity);
+                            AGENT_ACTIVE_SPEAKER.store(is_agent, Ordering::SeqCst);
+                        }
+                        Ok(SimRoomEvent::TrackSubscribed { track_sid, participant_identity }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("identity".into(), serde_json::Value::String(participant_identity));
+                            spec_m.insert("kind".into(), serde_json::Value::String("audio".into()));
+                            spec_m.insert("sid".into(), serde_json::Value::String(track_sid));
+                            w.emit("room.track_subscribed", Some(&spec_m), "room", None, None, false, None);
+                            drop(w);
+                        }
+                        Ok(SimRoomEvent::DataReceived { topic, data, sender }) => {
+                            if self.observe.lk_agent_session && topic == crate::observe::TOPIC_SESSION_MESSAGES {
+                                let mut w = writer_obs.lock().await;
+                                crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                            } else {
+                                let staged = {
+                                    let mut w = writer_obs.lock().await;
+                                    data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                    data_router.take_transcript()
+                                };
+                                if let Some(t) = staged {
+                                    if !t.text.trim().is_empty() {
+                                        let mut w = writer_obs.lock().await;
+                                        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                        observer.lock().await.on_transcript(
+                                            &mut w,
+                                            &t.role,
+                                            &t.text,
+                                            true,
+                                            None,
+                                            &t.source,
+                                            std::time::Instant::now(),
+                                            now_wall_ms,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Ok(SimRoomEvent::TextStream { participant_identity, text, final_, segment_id, .. }) => {
+                            if !text.trim().is_empty() {
+                                let role = if participant_identity == agent_identity { "agent" } else { "user" };
+                                let mut w = writer_obs.lock().await;
+                                let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                observer.lock().await.on_transcript(
+                                    &mut w,
+                                    role,
+                                    &text,
+                                    final_,
+                                    segment_id.as_deref(),
+                                    "lk.transcription",
+                                    std::time::Instant::now(),
+                                    now_wall_ms,
+                                );
+                            }
+                        }
+                        Ok(SimRoomEvent::ByteStream { data, .. }) => {
+                            let mut w = writer_obs.lock().await;
+                            crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                        }
+                        Ok(SimRoomEvent::StreamError { topic, error }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("where".into(), json!(topic));
+                            spec_m.insert("error".into(), json!(error));
+                            w.emit("observer.error", Some(&spec_m), &topic, None, None, false, None);
+                        }
+                        _ => {}
+                    }
+                }
+                _ = &mut cap => {
+                    eprintln!("[lksr] slice cap reached ({}s) — ending run", self.slice_cap_secs);
+                    break;
+                }
+            }
+        }
+        let _ = dispatch_id;
+        Ok(())
+    }
+}
+
+/// Contract-path TTS: OpenAI audio/speech → mp3 bytes → 24 kHz mono PCM16.
+///
+/// Port of live_wiring.py `_synthesize` (contract path speaks through TTS,
+/// never through a persona Realtime session). MP3 decode needs no new dep:
+/// the `hound` crate (already a dependency) only writes WAV, so this parses
+/// MP3 frames minimally — no. MP3 decode is non-trivial without a decoder
+/// crate, so request `wav` output format from the API instead (supported:
+/// mp3/opus/aac/flac/wav/pcm) and parse the 44-byte RIFF header directly.
+/// Falls back to 24 kHz resample-free playback: requests 24 kHz explicitly
+/// (`response_format=wav` has no rate param — OpenAI returns the model's
+/// native rate, resampled below when it differs).
+async fn synthesize_caller_speech(
+    api_key: &str,
+    voice: &str,
+    text: &str,
+) -> Result<Vec<i16>, String> {
+    // reqwest with rustls (no default features) — mirrors the blocking-free
+    // async style used by lks-core::contract_do::generate_do_candidate.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("tts client: {e}"))?;
+    let resp = client
+        .post("https://api.openai.com/v1/audio/speech")
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": "tts-1",
+            "input": text,
+            "voice": voice,
+            "response_format": "wav",
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("tts request: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let clipped: String = body.chars().take(200).collect();
+        return Err(format!("tts HTTP {status}: {clipped}"));
+    }
+    let bytes = resp.bytes().await.map_err(|e| format!("tts body: {e}"))?;
+    wav_bytes_to_pcm16_24k(&bytes)
+}
+
+/// Parse a WAV (44-byte RIFF header, 16-bit PCM mono) into samples,
+/// resampling to 24 kHz when the file rate differs (linear interpolation —
+/// TTS speech tolerates it; avoids pulling a resampling crate for one call).
+fn wav_bytes_to_pcm16_24k(bytes: &[u8]) -> Result<Vec<i16>, String> {
+    if bytes.len() < 44 {
+        return Err(format!("tts wav too short: {} bytes", bytes.len()));
+    }
+    if &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err("tts response is not a WAV file".to_string());
+    }
+    // Walk chunks to find "fmt " and "data" (fmt may not be first).
+    let mut pos = 12usize;
+    let mut fmt_rate = 0u32;
+    let mut fmt_channels = 0u16;
+    let mut fmt_bits = 0u16;
+    let mut data: &[u8] = &[];
+    while pos + 8 <= bytes.len() {
+        let id = &bytes[pos..pos + 4];
+        let size = u32::from_le_bytes(
+            bytes[pos + 4..pos + 8]
+                .try_into()
+                .map_err(|_| "wav truncated chunk header".to_string())?,
+        ) as usize;
+        let body_start = pos + 8;
+        let body_end = (body_start + size).min(bytes.len());
+        if id == b"fmt " {
+            if size < 16 {
+                return Err("tts wav fmt chunk too small".to_string());
+            }
+            let audio_fmt =
+                u16::from_le_bytes(bytes[body_start..body_start + 2].try_into().unwrap());
+            if audio_fmt != 1 {
+                return Err(format!("tts wav not PCM (format {audio_fmt})"));
+            }
+            fmt_channels =
+                u16::from_le_bytes(bytes[body_start + 2..body_start + 4].try_into().unwrap());
+            fmt_rate =
+                u32::from_le_bytes(bytes[body_start + 4..body_start + 8].try_into().unwrap());
+            fmt_bits =
+                u16::from_le_bytes(bytes[body_start + 14..body_start + 16].try_into().unwrap());
+        } else if id == b"data" {
+            data = &bytes[body_start..body_end];
+        }
+        pos = body_end + (size % 2);
+    }
+    if fmt_rate == 0 || data.is_empty() {
+        return Err("tts wav missing fmt/data chunks".to_string());
+    }
+    if fmt_bits != 16 {
+        return Err(format!("tts wav not 16-bit (bits {fmt_bits})"));
+    }
+    // Mono: pairs of LE bytes. Stereo (unexpected): take left channel.
+    let stride = fmt_channels.max(1) as usize;
+    let mut samples: Vec<i16> = data
+        .chunks_exact(2 * stride)
+        .map(|f| i16::from_le_bytes([f[0], f[1]]))
+        .collect();
+    if fmt_rate != OPENAI_OUT_RATE {
+        // Linear resample to 24 kHz.
+        let ratio = OPENAI_OUT_RATE as f64 / fmt_rate as f64;
+        let out_len = ((samples.len() as f64) * ratio) as usize;
+        let mut out = Vec::with_capacity(out_len);
+        for i in 0..out_len {
+            let src = i as f64 / ratio;
+            let lo = src.floor() as usize;
+            let hi = (lo + 1).min(samples.len() - 1);
+            let frac = (src - lo as f64) as f32;
+            let a = samples[lo.min(samples.len() - 1)] as f32;
+            let b = samples[hi] as f32;
+            out.push((a + (b - a) * frac) as i16);
+        }
+        samples = out;
+    }
+    Ok(samples)
 }
 
 pub fn publish_mic_shared(

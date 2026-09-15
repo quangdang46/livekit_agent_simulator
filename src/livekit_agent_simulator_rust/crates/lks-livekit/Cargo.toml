@@ -28,6 +28,10 @@ regex = "1.13.1"
 rand = { workspace = true }
 jiff = { workspace = true }
 parking_lot = "0.12"
+# Contract-path TTS (OpenAI audio/speech) + do: text backend reuse the same
+# reqwest shape lks-core already uses (default-features off, rustls) — no
+# new TLS stack, no new dep family.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-no-provider"] }
 
 [features]
 # Passthrough so `cargo build -p lks --features lks-core/python-plugins`
