@@ -162,9 +162,19 @@ impl ScriptRuntime {
             // Post-cue gap: after a speak step, wait for the agent to reply
             // (up to 8s) before arming the next step — mirrors the Python
             // _await_agent_reply window so steps don't fire over the agent.
+            //
+            // first_speaker=user opener exception (run 002-final-lksr2): the
+            // FIRST caller turn has no agent reply to wait for yet — the
+            // agent's greeting comes AFTER our opener by construction. Waiting
+            // here deadlocks step 2 behind an 8s gate on every iteration
+            // while the agent (hearing nothing yet — TTS for step 1 may still
+            // be synthesizing) stays silent. Skip the gap until the caller
+            // has spoken at least once (user_has_spoken).
             if let Some(since) = awaiting_reply_since {
                 let state = self.state.lock().await;
-                let replied = state.agent_replied_this_turn || !state.agent_is_active_speaker;
+                let replied = state.agent_replied_this_turn
+                    || !state.user_has_spoken
+                    || !state.agent_is_active_speaker;
                 drop(state);
                 if replied || since.elapsed() >= Duration::from_secs(8) {
                     awaiting_reply_since = None;
