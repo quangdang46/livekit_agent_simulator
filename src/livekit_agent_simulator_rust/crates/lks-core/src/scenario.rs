@@ -422,7 +422,19 @@ fn caller_actions_to_script_steps(actions: &[crate::caller_dsl::CallerAction]) -
                 if let Some(bi) = action.get("barge_in") {
                     step.insert("barge_in".into(), bi.clone());
                 }
-                insert_trigger_fields(&mut step, trigger);
+                // Trigger-less say: fire IMMEDIATELY (Python dsl: "trigger
+                // gates WHEN a say fires (None = immediately, legacy say
+                // behavior)"). The runtime defaults a missing trigger to
+                // agent_speaking — correct for legacy scripts (agent greets
+                // first) but a deadlock on user-first contract runs (run
+                // dbg-beat: step 1 opener sat arming 60s waiting for agent
+                // speech that comes AFTER our opener). Emit time/0 explicitly.
+                if trigger.is_none() {
+                    step.insert("trigger".into(), Json::String("time".into()));
+                    step.insert("delay_ms".into(), Json::Number(0.into()));
+                } else {
+                    insert_trigger_fields(&mut step, trigger);
+                }
             }
             "wait" => {
                 let Some(ms) = action.get("wait").and_then(|v| v.as_i64()) else {

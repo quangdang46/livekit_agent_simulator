@@ -569,13 +569,6 @@ impl ScriptRuntime {
                         crate::callers::openai::MUTE_PERSONA_ACTIVE
                             .store(true, std::sync::atomic::Ordering::SeqCst);
                     }
-                    eprintln!("[lksr] script fire speak ({label}): {say}");
-                    // Speak fired: log BEFORE the cue send so a wedged
-                    // on_action (TTS synthesize/playback hanging with no
-                    // timeout) shows up as fire-without-inject instead of
-                    // total silence (run 018: bed fired, then zero dialogue
-                    // until the slice cap — no evidence which half wedged).
-                    eprintln!("[lksr] script fire speak ({label}): {say}");
                     // PERMANENT instrument (not temp-debug): the cue send
                     // is fire-and-forget (let _ =) — if the bridge never
                     // receives, the run dies silent until the slice cap with
