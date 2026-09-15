@@ -702,11 +702,16 @@ impl OpenAiCallerBridge {
         let ws_tx_cue = ws_tx.clone();
         let writer_cue = self.writer.clone();
         let contract_mode = self.contract_only;
+        // TTS voice allowlist is the audio/speech enum ONLY (nova, shimmer,
+        // echo, onyx, fable, alloy, ash, sage, coral) — Realtime voices
+        // (marin, cedar, ballad, verse...) 400 here. Map unknown → alloy;
+        // voice identity never affects assertions (agent transcribes STT-side).
+        // (run verify-fresh: marin → HTTP 400 on all 3 Speak cues.)
         let tts_voice = {
             let v = sim_cfg.voice.voice.trim().to_lowercase();
             match v.as_str() {
-                "alloy" | "ash" | "ballad" | "coral" | "echo" | "sage" | "shimmer" | "verse"
-                | "marin" | "cedar" => v,
+                "alloy" | "ash" | "sage" | "coral" | "echo" | "shimmer" | "nova" | "onyx"
+                | "fable" => v,
                 _ => "alloy".to_string(),
             }
         };
@@ -1263,11 +1268,13 @@ impl OpenAiCallerBridge {
         let mut cue_rx: Option<crate::script::CueRx> = self.cue_rx.lock().take();
         let room_for_dtmf = room.clone();
         let writer_cue = self.writer.clone();
+        // Same audio/speech-only allowlist as the freestyle cue loop
+        // above (Realtime voices 400 here) — see comment there.
         let tts_voice = {
             let v = self.sim.voice.voice.trim().to_lowercase();
             match v.as_str() {
-                "alloy" | "ash" | "ballad" | "coral" | "echo" | "sage" | "shimmer" | "verse"
-                | "marin" | "cedar" => v,
+                "alloy" | "ash" | "sage" | "coral" | "echo" | "shimmer" | "nova" | "onyx"
+                | "fable" => v,
                 _ => "alloy".to_string(),
             }
         };
