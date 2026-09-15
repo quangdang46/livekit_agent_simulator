@@ -1025,6 +1025,20 @@ impl OpenAiCallerBridge {
                             // see lks-core::observer). sim.openai-sourced turns
                             // converge onto the same instance (Phase 3), so
                             // cross-source dedup priority functions as designed.
+                            //
+                            // do-driver signal (same as the run_plumbing arm
+                            // below): bump AGENT_FINAL_SEQ on agent finals so
+                            // run_contract_do's satisfaction wait sees replies
+                            // even when they arrive via lk.transcription
+                            // rather than the persona WS transcription path.
+                            if !text.trim().is_empty() && final_ && participant_identity == agent_identity {
+                                *crate::callers::openai::AGENT_FINAL_TEXT.lock() =
+                                    text.trim().to_string();
+                                crate::callers::openai::AGENT_FINAL_SEQ.fetch_add(
+                                    1,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                );
+                            }
                             if !text.trim().is_empty() {
                                 let role = if participant_identity == agent_identity { "agent" } else { "user" };
                                 let mut w = writer_obs.lock().await;
@@ -1536,6 +1550,21 @@ impl OpenAiCallerBridge {
                                 // fired, run timed out). user finals mark
                                 // user_has_spoken; agent finals mark
                                 // has_spoken + replied_this_turn + latch text.
+                                //
+                                // do-driver signal (run verify-voice): the
+                                // contract_do satisfaction wait polls
+                                // AGENT_FINAL_SEQ — bump it here too, since
+                                // run_plumbing has no persona WS whose
+                                // input_audio_transcription.completed would
+                                // otherwise bump it via emit_agent_final.
+                                if final_ {
+                                    *crate::callers::openai::AGENT_FINAL_TEXT.lock() =
+                                        text.trim().to_string();
+                                    crate::callers::openai::AGENT_FINAL_SEQ.fetch_add(
+                                        1,
+                                        std::sync::atomic::Ordering::SeqCst,
+                                    );
+                                }
                                 if let Some(st) = &self.script_state {
                                     let mut s = st.lock().await;
                                     if role == "agent" && final_ {
