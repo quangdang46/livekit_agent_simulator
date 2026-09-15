@@ -458,7 +458,7 @@ fn lexical_forbidden_intent_hit(utterance: &str, forbidden_intents: &[String]) -
             .iter()
             .find(|(name, _)| *name == intent)
             .map(|(_, kws)| kws.to_vec())
-            .unwrap_or_else(|| vec![]);
+            .unwrap_or_default();
         let hit = if keywords.is_empty() {
             lowered.contains(&intent.replace('_', " "))
         } else {
@@ -1399,7 +1399,7 @@ pub struct InteractionOutcome {
 
 /// Minimal interaction config for the delivery layer (mirrors the
 /// InteractionConfig fields plan_speak() reads: pace/hesitation/
-//// stumble/pre_delay_ms — parsing/validation lives in caller_dsl.rs).
+/// stumble/pre_delay_ms — parsing/validation lives in caller_dsl.rs).
 pub struct InteractionSpec {
     pub pace: Option<String>,
     pub hesitation: Option<String>,

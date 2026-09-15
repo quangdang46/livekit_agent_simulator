@@ -330,7 +330,7 @@ pub fn scenario_to_dict(s: &crate::scenario::Scenario) -> Map<String, Json> {
                     }
                 }
                 _ => {
-                    step.insert(action.kind.clone().into(), Json::Bool(true));
+                    step.insert(action.kind.clone(), Json::Bool(true));
                 }
             }
             steps.push(Json::Object(step));

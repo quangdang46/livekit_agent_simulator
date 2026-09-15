@@ -542,15 +542,9 @@ pub fn parse_step(
     }
 
     if raw_step.contains_key("trigger") || raw_step.contains_key("barge_in") {
-        // play_audio allows trigger (handled below); everything else rejects.
-        if kind != "play_audio" {
-            return Err(err(
-                file,
-                line_no,
-                "trigger:/barge_in: are only supported on say: steps in this slice",
-                Some(kind),
-            ));
-        } else if raw_step.contains_key("barge_in") {
+        // play_audio allows trigger: (handled below) but never barge_in:;
+        // every other kind rejects both.
+        if kind != "play_audio" || raw_step.contains_key("barge_in") {
             return Err(err(
                 file,
                 line_no,
