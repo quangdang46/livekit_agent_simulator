@@ -415,6 +415,7 @@ impl ScriptRuntime {
                     return Ok(());
                 }
                 "room_pcm" => {
+                    eprintln!("[lksr] script fire room_pcm ({label}): asset check");
                     let asset = Self::step_str(&step, "asset", "");
                     let gain = step.get("gain").and_then(|v| v.as_f64()).unwrap_or(1.0);
                     let rloop = Self::step_bool(&step, "loop", false);
@@ -568,6 +569,7 @@ impl ScriptRuntime {
                         crate::callers::openai::MUTE_PERSONA_ACTIVE
                             .store(true, std::sync::atomic::Ordering::SeqCst);
                     }
+                    eprintln!("[lksr] script fire speak ({label}): {say}");
                     let _ = (self.on_action)(ScriptAction::Speak {
                         text: say,
                         label,
