@@ -612,7 +612,7 @@ fn slot_as_f64(value: Option<&Value>) -> Option<f64> {
 }
 
 pub struct ContractValidator {
-    semantic_verifier: Option<Box<dyn SemanticVerifierProtocol>>,
+    semantic_verifier: Option<Box<dyn SemanticVerifierProtocol + Send>>,
     /// Verifier failure from the most recent validate() (see
     /// `take_verifier_failure`). Reset at the start of every validate.
     recorded_failure: Option<String>,
@@ -623,7 +623,7 @@ impl ContractValidator {
     /// `None` constructs the tier-1 rule baseline automatically — mirrors
     /// Python, where semantic verification is MANDATORY in every runtime
     /// path and `None` is only for isolating the deterministic layer.
-    pub fn new(semantic_verifier: Option<Box<dyn SemanticVerifierProtocol>>) -> Self {
+    pub fn new(semantic_verifier: Option<Box<dyn SemanticVerifierProtocol + Send>>) -> Self {
         Self {
             semantic_verifier: Some(
                 semantic_verifier.unwrap_or_else(|| Box::new(RuleBasedSemanticVerifier)),
