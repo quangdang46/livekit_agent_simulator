@@ -428,7 +428,7 @@ fn confidence_for(hit_count: usize) -> f64 {
 /// `RuleBasedSemanticVerifier` (tier 1) and `RecordedSemanticVerifier`
 /// (zero-AI replay), so the validator's enforcement boundary is the same
 /// object for both.
-pub trait SemanticVerifierProtocol {
+pub trait SemanticVerifierProtocol: Send {
     fn classify(&mut self, utterance: &str, contract: &BehaviorContract) -> ObservedAct;
 
     /// Evidence from the most recent `classify()`, as a recordable
