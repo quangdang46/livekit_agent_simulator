@@ -570,6 +570,12 @@ impl ScriptRuntime {
                             .store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                     eprintln!("[lksr] script fire speak ({label}): {say}");
+                    // Speak fired: log BEFORE the cue send so a wedged
+                    // on_action (TTS synthesize/playback hanging with no
+                    // timeout) shows up as fire-without-inject instead of
+                    // total silence (run 018: bed fired, then zero dialogue
+                    // until the slice cap — no evidence which half wedged).
+                    eprintln!("[lksr] script fire speak ({label}): {say}");
                     let _ = (self.on_action)(ScriptAction::Speak {
                         text: say,
                         label,
