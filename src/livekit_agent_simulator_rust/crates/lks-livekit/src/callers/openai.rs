@@ -379,7 +379,7 @@ impl OpenAiCallerBridge {
         }
 
         // Publish a 24 kHz mono audio source as the caller mic.
-        let source = publish_mic_shared(&room)?;
+        let source = publish_mic_shared(&room).await?;
         let source = Arc::new(source);
         // Expose the source to the script runtime for room_pcm playback.
         if let Some(shared) = &self.shared_mic {
@@ -1145,7 +1145,7 @@ impl OpenAiCallerBridge {
                 None,
             );
         }
-        let source = publish_mic_shared(&room)?;
+        let source = publish_mic_shared(&room).await?;
         let source = Arc::new(source);
         if let Some(shared) = &self.shared_mic {
             let mut guard = shared.lock().await;
@@ -1705,7 +1705,7 @@ fn wav_bytes_to_pcm16_24k(bytes: &[u8]) -> Result<Vec<i16>, String> {
     Ok(samples)
 }
 
-pub fn publish_mic_shared(
+pub async fn publish_mic_shared(
     room: &Arc<livekit::Room>,
 ) -> Result<livekit::webrtc::audio_source::native::NativeAudioSource, RunError> {
     use livekit::prelude::*;
@@ -1725,16 +1725,18 @@ pub fn publish_mic_shared(
         ..Default::default()
     };
     // Publish the mic track so the agent hears the caller.
+    //
+    // AWAIT the publish (do not fire-and-forget): contract-path TTS cues
+    // (and room_pcm beds) play into this source via the shared handle, and
+    // a publish that silently fails/races leaves playback with nowhere to
+    // go — the agent hears nothing and the run sits until the slice cap
+    // (run 001-final-lksr: ambient bed fired, then 300s of silence). A loud
+    // error here fails fast instead.
     let room = room.clone();
-    tokio::spawn(async move {
-        if let Err(e) = room
-            .local_participant()
-            .publish_track(LocalTrack::Audio(track), options)
-            .await
-        {
-            log::warn!("mic publish failed: {e}");
-        }
-    });
+    room.local_participant()
+        .publish_track(LocalTrack::Audio(track), options)
+        .await
+        .map_err(|e| RunError(format!("mic publish failed: {e}")))?;
     Ok(source)
 }
 

@@ -120,7 +120,7 @@ impl GeminiCallerBridge {
         };
         let (room, room_events) =
             connect_room(&livekit_cfg.url, &token, &self.room_name, observe_gate).await?;
-        let source = super::openai::publish_mic_shared(&room)?;
+        let source = super::openai::publish_mic_shared(&room).await?;
         let source = Arc::new(source);
 
         // 2. Dispatch the agent.
