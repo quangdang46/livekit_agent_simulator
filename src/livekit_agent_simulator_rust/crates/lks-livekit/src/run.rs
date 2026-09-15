@@ -567,6 +567,7 @@ pub async fn execute_scenario_parsed(
             }),
             locale,
             do_api_key,
+            run_spec.first_speaker.clone(),
         );
         Some(tokio::spawn(
             async move { runtime.run(end_rx_script).await },

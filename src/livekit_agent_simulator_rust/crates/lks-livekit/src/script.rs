@@ -95,6 +95,9 @@ pub struct ScriptRuntime {
     /// bridge's Realtime session uses — `cfg.simulator.api_key`; port of
     /// `live_wiring.py::_build_text_backend`, no separate credential).
     do_api_key: String,
+    /// run_spec.first_speaker ("agent"|"user") — gates the legacy
+    /// require_agent_spoke_first silence assumption (see trigger gate).
+    first_speaker: String,
 }
 
 impl ScriptRuntime {
@@ -107,6 +110,7 @@ impl ScriptRuntime {
         on_action: Box<dyn Fn(ScriptAction) -> Result<(), String> + Send + Sync>,
         locale: String,
         do_api_key: String,
+        first_speaker: String,
     ) -> Self {
         Self {
             steps,
@@ -117,6 +121,7 @@ impl ScriptRuntime {
             defer_state: parking_lot::Mutex::new(None),
             locale,
             do_api_key,
+            first_speaker,
         }
     }
 
@@ -181,11 +186,24 @@ impl ScriptRuntime {
             let min_agent_active_ms = Self::step_i64(&step, "min_agent_active_ms");
 
             // Trigger gate.
+            //
+            // first_speaker=user contract runs (e.g. dealer-live-full):
+            // the caller opens the call, so silence-gated steps must NOT
+            // wait for the agent to have spoken first — the agent hasn't
+            // said anything yet by construction (its greeting comes AFTER
+            // our opener). Port of run_orchestrator first_speaker=user
+            // semantics: caller starts immediately; only first_speaker=agent
+            // runs wait for the greeting first. The stale
+            // require_agent_spoke_first=true default (a legacy-script
+            // assumption) deadlocked every silence step here — run 009 fired
+            // only caller-step-0 then sat until the slice cap.
+            let first_speaker_is_agent = self.first_speaker == "agent";
             let state = self.state.lock().await;
             let active = match trigger.as_str() {
                 "time" => true,
                 "silence" => {
-                    if Self::step_bool(&step, "require_agent_spoke_first", true)
+                    if first_speaker_is_agent
+                        && Self::step_bool(&step, "require_agent_spoke_first", true)
                         && !state.agent_has_spoken
                     {
                         false
