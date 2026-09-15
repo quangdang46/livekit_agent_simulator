@@ -149,6 +149,9 @@ impl ScriptRuntime {
         let mut arm_idx: usize = 0;
         let mut trigger_since: Vec<Option<Instant>> = vec![None; self.steps.len()];
         let mut awaiting_reply_since: Option<Instant> = None;
+        // Local "have we fired our own opener yet" flag — see BUG FIX note
+        // below on why this must NOT be `state.user_has_spoken`.
+        let mut own_turn_fired = false;
         let mut stop_rx = stop_rx;
 
         while arm_idx < self.steps.len() {
@@ -170,11 +173,26 @@ impl ScriptRuntime {
             // while the agent (hearing nothing yet — TTS for step 1 may still
             // be synthesizing) stays silent. Skip the gap until the caller
             // has spoken at least once (user_has_spoken).
+            //
+            // BUG FIX (run 006-dealer-live-full, take 1): `|| !state.agent_is_active_speaker`
+            // used to trivially satisfy this gate — the agent isn't the
+            // active speaker BEFORE it starts talking either (TTS/response
+            // latency), so every speak step fired the very next 50ms tick
+            // instead of waiting for a real agent final.
+            //
+            // BUG FIX (run 006-dealer-live-full, take 2): swapping in
+            // `!state.user_has_spoken` still burst-fired steps 2-5 — that
+            // flag only flips once the ROOM's transcription pipeline has
+            // transcribed OUR OWN TTS'd speech back as a "user final" (see
+            // callers/openai.rs role=="user" arm), which lags several
+            // seconds behind us firing the cue. A LOCAL flag (own_turn_fired,
+            // set the instant we fire our own step, not derived from async
+            // STT) is the only thing that actually reflects "have we spoken
+            // yet" at gate-check time. `agent_replied_this_turn` (set true
+            // only on a genuine agent final) remains the real gate.
             if let Some(since) = awaiting_reply_since {
                 let state = self.state.lock().await;
-                let replied = state.agent_replied_this_turn
-                    || !state.user_has_spoken
-                    || !state.agent_is_active_speaker;
+                let replied = state.agent_replied_this_turn || !own_turn_fired;
                 drop(state);
                 if replied || since.elapsed() >= Duration::from_secs(8) {
                     awaiting_reply_since = None;
@@ -599,6 +617,7 @@ impl ScriptRuntime {
                     });
                     // Speak steps open a reply window before the next step.
                     awaiting_reply_since = Some(Instant::now());
+                    own_turn_fired = true;
                 }
             }
             if once {
@@ -793,17 +812,49 @@ impl ScriptRuntime {
             // past the baseline captured before publish, so a stale final
             // from before this turn is never mistaken for the reply) —
             // bounded, mirrors `_wait_agent_turn_with_policy(timeout_s=30.0)`.
+            //
+            // BUG FIX (run 006-dealer-live-full): the agent's transcription
+            // stream emits multiple `final_=true` TextStream segments per
+            // spoken turn (sentence/clause fragments), each bumping
+            // AGENT_FINAL_SEQ — see callers/openai.rs TextStream arms. Taking
+            // only the FIRST fragment ("Sure. We're available from about")
+            // meant `evaluate_behavior` never saw the actual answer (dates)
+            // that arrived in a later fragment of the SAME turn, so the
+            // do-driver looped through 5 near-identical re-asks and the
+            // agent, hearing itself interrupted/re-asked mid-sentence every
+            // time, hung up thinking the connection was broken. Concatenate
+            // every fragment that lands until AGENT_FINAL_SEQ goes quiet for
+            // `quiet_window` — a lightweight port of the observer's
+            // transcript_dedupe_window_ms merge, scoped to this wait only.
+            let quiet_window = Duration::from_millis(900);
             let baseline =
                 crate::callers::openai::AGENT_FINAL_SEQ.load(std::sync::atomic::Ordering::SeqCst);
+            let mut last_seq = baseline;
+            let mut collected = String::new();
+            let mut quiet_deadline: Option<Instant> = None;
             let deadline = Instant::now() + Duration::from_secs(30);
             let agent_text = loop {
-                if crate::callers::openai::AGENT_FINAL_SEQ.load(std::sync::atomic::Ordering::SeqCst)
-                    > baseline
-                {
-                    break Some(crate::callers::openai::AGENT_FINAL_TEXT.lock().clone());
+                let seq = crate::callers::openai::AGENT_FINAL_SEQ
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                if seq > last_seq {
+                    last_seq = seq;
+                    let frag = crate::callers::openai::AGENT_FINAL_TEXT.lock().clone();
+                    let frag = frag.trim();
+                    if !frag.is_empty() {
+                        if !collected.is_empty() {
+                            collected.push(' ');
+                        }
+                        collected.push_str(frag);
+                    }
+                    quiet_deadline = Some(Instant::now() + quiet_window);
+                }
+                if let Some(qd) = quiet_deadline {
+                    if Instant::now() >= qd {
+                        break Some(collected);
+                    }
                 }
                 if Instant::now() >= deadline {
-                    break None;
+                    break if collected.is_empty() { None } else { Some(collected) };
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             };
