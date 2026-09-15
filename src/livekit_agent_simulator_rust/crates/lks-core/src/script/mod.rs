@@ -14,6 +14,13 @@ use serde_json::{Map, Value as Json};
 
 pub const SUPPORTED_TRIGGERS: [&str; 3] = ["agent_speaking", "silence", "time"];
 pub const SUPPORTED_ACTIONS: [&str; 4] = ["speak", "wait", "hang_up", "dtmf"];
+/// `contract_do` steps (port of `caller_steps` `do:`) never go through the
+/// typed `ScriptStep`/`parse_script_steps` round-trip — they carry
+/// behavior/target/constraints/interaction fields with no slot in
+/// `ScriptStep` — but are spliced into the SAME ordered raw-JSON step list
+/// the runtime walks (see `scenario::project_caller_actions_to_script_steps`
+/// and `lks-livekit::script::ScriptRuntime::run`).
+pub const CONTRACT_DO_ACTION: &str = "contract_do";
 pub const INTERRUPTION_CLASSES: [&str; 6] = [
     "correction",
     "backchannel",

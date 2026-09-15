@@ -40,6 +40,7 @@ async fn time_trigger_fires_speak_after_delay() {
             Ok(())
         }),
         "en".into(),
+        "test-api-key".into(),
     );
     let started = std::time::Instant::now();
     runtime.run(end_rx).await.unwrap();
@@ -73,6 +74,7 @@ async fn silence_trigger_waits_for_agent_to_speak_first() {
             Ok(())
         }),
         "en".into(),
+        "test-api-key".into(),
     );
     // Spawn the runtime; agent hasn't spoken → silence trigger must not fire.
     let rx = end_rx.resubscribe();
@@ -125,6 +127,7 @@ async fn hang_up_ends_run() {
             Ok(())
         }),
         "en".into(),
+        "test-api-key".into(),
     );
     let _ = end_tx;
     runtime.run(end_rx).await.unwrap();
