@@ -465,6 +465,9 @@ pub async fn execute_scenario_parsed(
         let shared_mic_closure = shared_mic.clone();
         let cue_tx_script = cue_tx.clone();
         let locale = cfg.simulator.language.clone();
+        // `do:` text backend reuses the simulator's own OpenAI key (port of
+        // `live_wiring.py::_build_text_backend` — no separate credential).
+        let do_api_key = cfg.simulator.api_key.clone();
         let runtime = crate::script::ScriptRuntime::new(
             scenario.script_steps.clone(),
             script_writer,
@@ -563,6 +566,7 @@ pub async fn execute_scenario_parsed(
                 _ => Ok(()),
             }),
             locale,
+            do_api_key,
         );
         Some(tokio::spawn(
             async move { runtime.run(end_rx_script).await },
@@ -1000,6 +1004,20 @@ pub async fn execute_scenario_parsed(
             "failed"
         }
     };
+    // A `do:` step's BEHAVIOR_TIMEOUT/CALLER_BEHAVIOR_VIOLATION/AGENT_TIMEOUT
+    // ends the run via end_tx (the bridge exits with Ok(()) — end_tx is its
+    // normal shutdown signal), so `run_result` alone can't see the failure.
+    // The script task's JoinHandle result is discarded on abort above, so
+    // `CONTRACT_DO_FAILED` is the side channel that carries it here (port of
+    // driver.py's BEHAVIOR_TIMEOUT/CALLER_BEHAVIOR_VIOLATION ending the run
+    // with error).
+    let contract_do_failure = if crate::script::CONTRACT_DO_FAILED.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        status = "failed";
+        Some(crate::script::CONTRACT_DO_FAILURE_REASON.lock().clone())
+    } else {
+        None
+    };
 
     let mut w = writer_arc.lock().await;
     let duration_ms = w.t0_mono().elapsed().as_millis() as i64;
@@ -1008,6 +1026,17 @@ pub async fn execute_scenario_parsed(
     if let Err(e) = &run_result {
         let mut err_spec = serde_json::Map::new();
         err_spec.insert("error".into(), serde_json::Value::String(e.to_string()));
+        err_spec.insert(
+            "mode".into(),
+            serde_json::Value::String(scenario.effective_caller_mode().to_string()),
+        );
+        w.emit("run.error", Some(&err_spec), "mcp", None, None, false, None);
+    } else if let Some(reason) = &contract_do_failure {
+        let mut err_spec = serde_json::Map::new();
+        err_spec.insert(
+            "error".into(),
+            serde_json::Value::String(format!("contract_do: {reason}")),
+        );
         err_spec.insert(
             "mode".into(),
             serde_json::Value::String(scenario.effective_caller_mode().to_string()),

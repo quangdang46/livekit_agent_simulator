@@ -194,6 +194,11 @@ impl OpenAiCallerBridge {
         if t.is_empty() {
             return;
         }
+        // contract_do driver signal: bump seq + latch text BEFORE the
+        // dialogue update below, so a `do:` turn already polling can never
+        // observe the new seq without the matching text.
+        *crate::callers::openai::AGENT_FINAL_TEXT.lock() = t.clone();
+        crate::callers::openai::AGENT_FINAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
         {
             let mut w = writer.lock().await;
@@ -1131,6 +1136,12 @@ pub static LAST_ANY_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 pub static AGENT_HAS_SPOKEN: AtomicBool = AtomicBool::new(false);
 /// True while a script step with mute_persona=true is active — suppress freestyle audio.
 pub static MUTE_PERSONA_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Bumped every time `emit_agent_final` fires — read by the `contract_do`
+/// driver (`crate::script`) to detect a NEW agent reply (vs. a stale one
+/// from before it published) without polling the shared Observer directly.
+pub static AGENT_FINAL_SEQ: AtomicI64 = AtomicI64::new(0);
+/// Text of the most recent agent final (paired with `AGENT_FINAL_SEQ`).
+pub static AGENT_FINAL_TEXT: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
 
 pub fn find_subscribed_audio(
     room: &Arc<livekit::Room>,

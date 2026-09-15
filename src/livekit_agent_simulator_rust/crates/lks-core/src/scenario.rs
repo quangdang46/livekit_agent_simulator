@@ -367,13 +367,45 @@ impl Scenario {
     }
 }
 
+// Port of `driver.py::_INTERRUPT_LINES` (caller_contract/driver.py:1110):
+// fixed cut-in lines per interrupt class. Author-fixed text (like `say`):
+// never AI-generated, never validator-gated, and always published
+// immediately (barge delivery) — an interrupt that waits for silence would
+// be a contradiction. Classes mirror the legacy interrupt_class vocabulary
+// (correction|backchannel); unknown classes fall back to "correction".
+const INTERRUPT_LINE_CORRECTION: &str = "Wait — one second.";
+const INTERRUPT_LINE_BACKCHANNEL: &str = "Mhm.";
+
+/// Port of `driver.py::_interrupt_text`/`_interrupt_class`: resolve the
+/// fixed cut-in line for an `interrupt:` CallerAction from its optional
+/// `interaction.interrupt_class` (default "correction").
+fn interrupt_text(action: &crate::caller_dsl::CallerAction) -> (&'static str, &'static str) {
+    let cls = action
+        .get("interaction")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.get("interrupt_class"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_lowercase());
+    match cls.as_deref() {
+        Some("backchannel") => ("backchannel", INTERRUPT_LINE_BACKCHANNEL),
+        _ => ("correction", INTERRUPT_LINE_CORRECTION),
+    }
+}
+
 /// Port of the `caller_steps` → `script_steps` projection described above
 /// (fix: caller_steps ignored / freestyle-only driver). Each `CallerAction`
 /// becomes a raw ScriptStep dict (same field names `crate::script::parse`
 /// already validates); kinds without a ScriptStep equivalent in this slice
-/// (`do`, `interrupt`, `silence` — behavior-catalog / rate-based cues, not
-/// timed caller cues) are skipped rather than erroring, since they carry no
-/// runtime effect on the legacy driver either way.
+/// (`silence` — a control action the legacy driver has no cue for) are
+/// skipped rather than erroring, since they carry no runtime effect on the
+/// legacy driver either way.
+///
+/// `do:` steps are emitted as raw `action: "contract_do"` objects that
+/// deliberately do NOT go through `crate::script::parse::parse_script_steps`
+/// (the typed `ScriptStep` mirror has no slot for behavior/target/
+/// constraints/interaction) — see `project_caller_actions_to_script_steps`
+/// below, which splices these back in by original index after the
+/// typed-parseable steps round-trip through the validator.
 fn caller_actions_to_script_steps(actions: &[crate::caller_dsl::CallerAction]) -> Vec<Json> {
     let mut out = Vec::with_capacity(actions.len());
     for (i, action) in actions.iter().enumerate() {
@@ -429,14 +461,100 @@ fn caller_actions_to_script_steps(actions: &[crate::caller_dsl::CallerAction]) -
                 }
                 insert_trigger_fields(&mut step, trigger);
             }
-            // "do" / "interrupt" / "silence": no ScriptStep equivalent yet —
-            // dropped (parse-only surface for these predates a driver on
-            // either side; see caller_dsl.rs module docs).
+            "interrupt" => {
+                // Fixed cut-in line, immediate barge (never validator-gated,
+                // never waits for silence) — port of driver.py `_interrupt_text`.
+                let (cls, text) = interrupt_text(action);
+                step.insert("action".into(), Json::String("speak".into()));
+                step.insert("say".into(), Json::String(text.to_string()));
+                step.insert("barge_in".into(), Json::Bool(true));
+                step.insert("trigger".into(), Json::String("agent_speaking".into()));
+                step.insert("class".into(), Json::String(cls.to_string()));
+            }
+            "do" => {
+                // Raw (non-typed) marker step — spliced back post-parse by
+                // `project_caller_actions_to_script_steps`. Carries behavior/
+                // target/constraints/interaction verbatim for the do-driver
+                // (lks-livekit `contract_do`).
+                step.insert("action".into(), Json::String("contract_do".into()));
+                // Runs in-order as soon as it is armed (delay_ms: 0) — the
+                // do-driver itself waits for agent silence before publishing
+                // (port of driver.py `_wait_agent_silence`), same as `say:`.
+                step.insert("trigger".into(), Json::String("time".into()));
+                step.insert("delay_ms".into(), Json::Number(0.into()));
+                if let Some(b) = action.get("behavior") {
+                    step.insert("behavior".into(), b.clone());
+                }
+                if let Some(t) = action.get("target") {
+                    step.insert("target".into(), t.clone());
+                }
+                if let Some(c) = action.get("constraints") {
+                    step.insert("constraints".into(), c.clone());
+                }
+                if let Some(inter) = action.get("interaction") {
+                    step.insert("interaction".into(), inter.clone());
+                }
+            }
+            // "silence": no ScriptStep equivalent yet — dropped (parse-only
+            // surface predates a driver on either side).
             _ => continue,
         }
         out.push(Json::Object(step));
     }
     out
+}
+
+/// Wraps `caller_actions_to_script_steps` + `parse_script_steps`: the typed
+/// parser has no field slot for `contract_do` steps' behavior/target/
+/// constraints/interaction, so those steps are pulled out before the typed
+/// round-trip and spliced back (by their original relative order) after —
+/// this keeps `parse_script_steps` byte-parity with the Python-mirrored
+/// `ScriptStep` shape while still letting `do:`/`interrupt:` ride the same
+/// ordered step list the runtime already walks.
+fn project_caller_actions_to_script_steps(
+    actions: &[crate::caller_dsl::CallerAction],
+    path_label: &str,
+) -> Result<Vec<Json>, ScenarioError> {
+    let raw = caller_actions_to_script_steps(actions);
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut typed_input = Vec::new();
+    // position -> raw contract_do step, so it can be reinserted at the same
+    // relative slot once the typed steps come back (typed_input omits them).
+    let mut do_steps: Vec<(usize, Json)> = Vec::new();
+    for (i, step) in raw.into_iter().enumerate() {
+        let is_do = step
+            .get("action")
+            .and_then(|v| v.as_str())
+            .map(|a| a == "contract_do")
+            .unwrap_or(false);
+        if is_do {
+            do_steps.push((i, step));
+        } else {
+            typed_input.push((i, step));
+        }
+    }
+    let mut spec = Map::new();
+    spec.insert(
+        "steps".into(),
+        Json::Array(typed_input.iter().map(|(_, s)| s.clone()).collect()),
+    );
+    let typed = crate::script::parse::parse_script_steps(&spec, path_label)
+        .map_err(ScenarioError)?
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
+        .collect::<Vec<_>>();
+    // Re-merge in original order: (original_index, step_json) pairs from
+    // both lists, sorted back by original_index.
+    let mut merged: Vec<(usize, Json)> = typed_input
+        .into_iter()
+        .map(|(idx, _)| idx)
+        .zip(typed)
+        .collect();
+    merged.extend(do_steps);
+    merged.sort_by_key(|(idx, _)| *idx);
+    Ok(merged.into_iter().map(|(_, s)| s).collect())
 }
 
 /// Flatten a caller_dsl `trigger: {kind, delay_ms, min_agent_active_ms}`
@@ -672,19 +790,9 @@ pub fn scenario_from_dict(
     // no new driver/timer machinery, and legacy `script:` scenarios (whose
     // script_steps is already populated above) are completely unaffected.
     if script_steps.is_empty() && !caller_actions.is_empty() {
-        let raw = caller_actions_to_script_steps(&caller_actions);
-        if !raw.is_empty() {
-            let mut spec = Map::new();
-            spec.insert("steps".into(), Json::Array(raw));
-            match crate::script::parse::parse_script_steps(&spec, path_label) {
-                Ok(typed) => {
-                    script_steps = typed
-                        .iter()
-                        .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
-                        .collect();
-                }
-                Err(e) => return Err(ScenarioError(e)),
-            }
+        let projected = project_caller_actions_to_script_steps(&caller_actions, path_label)?;
+        if !projected.is_empty() {
+            script_steps = projected;
         }
     }
 
