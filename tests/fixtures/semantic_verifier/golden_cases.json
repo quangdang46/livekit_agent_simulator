@@ -1,5 +1,5 @@
 {
-  "$schema_note": "One case = one ground-truth semantic judgment, independent of any backend. `expected` is the CORRECT answer a real semantic verifier must reach. `known_limitations.<backend_id>` documents that a specific backend cannot reach it YET, with the backend's ACTUAL (wrong-but-safe or wrong) answer \u2014 the runner asserts `expected` under an xfail(strict=True) for that backend so an unexpected pass (backend improved) fails loudly instead of going unnoticed. A case with no entry for a backend means that backend must match `expected` exactly.",
+  "$schema_note": "One case = one ground-truth semantic judgment, independent of any backend. `expected` is the CORRECT answer a real semantic verifier must reach. `known_limitations.<backend_id>` documents that a specific backend cannot reach it YET, with the backend's ACTUAL (wrong-but-safe or wrong) answer — the runner asserts `expected` under an xfail(strict=True) for that backend so an unexpected pass (backend improved) fails loudly instead of going unnoticed. A case with no entry for a backend means that backend must match `expected` exactly.",
   "cases": [
     {
       "id": "act-negotiate-paraphrase-pass",
@@ -293,6 +293,52 @@
         "verdict": "valid",
         "reason": null,
         "act": "accept",
+        "target": null,
+        "confidence_min": 0.5
+      }
+    },
+    {
+      "id": "act-arrange-visit-test-drive-pass",
+      "category": "ACT",
+      "contract": {
+        "behavior": "arrange_visit",
+        "target": null,
+        "constraints": {
+          "max_turns": 3
+        }
+      },
+      "candidate_claim": {
+        "act": "arrange_visit",
+        "target": null
+      },
+      "utterance": "I'd like to schedule a test drive for the Toyota Hilux tomorrow morning.",
+      "expected": {
+        "verdict": "valid",
+        "reason": null,
+        "act": "arrange_visit",
+        "target": null,
+        "confidence_min": 0.5
+      }
+    },
+    {
+      "id": "act-end-thanks-pass",
+      "category": "ACT",
+      "contract": {
+        "behavior": "end",
+        "target": null,
+        "constraints": {
+          "max_turns": 3
+        }
+      },
+      "candidate_claim": {
+        "act": "end",
+        "target": null
+      },
+      "utterance": "Thank you for your help!",
+      "expected": {
+        "verdict": "valid",
+        "reason": null,
+        "act": "end",
         "target": null,
         "confidence_min": 0.5
       }

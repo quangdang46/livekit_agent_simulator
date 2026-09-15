@@ -226,8 +226,30 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
                       # person" mark the visit-booking shape. Both are
                       # multi-word and visit-specific, so they cannot hijack
                       # provide ("i want"/"i'd like to" + bare noun) or ask.
-                      "arrange a time", "check out", "in person"),
-    "end": ("goodbye", "bye", "thanks, that's all", "have a good day"),
+                      "arrange a time", "check out", "in person",
+                      # Live runs 005-006 (dealer-live-full): the generator's
+                      # natural test-drive phrasing — "schedule/book a test
+                      # drive (for ...) tomorrow morning" — scored 0 hits
+                      # despite obvious booking intent, failing BEHAVIOR_
+                      # TIMEOUT ×3. "test drive" + "book/schedule ... time"
+                      # marks the test-drive booking shape. Scoped narrowly
+                      # (requires the literal "test drive" noun) so day-name
+                      # or bare "schedule" alone never decides the act; the
+                      # visit-specific noun keeps provide/ask from hijacking
+                      # (neither owns "test drive" as a pattern).
+                      "test drive"),
+    # Live run 007 (dealer-live-full): the generator's natural goodbye —
+    # "Thank you for your help!" — scored 0 hits (no goodbye/bye/thanks-
+    # that's-all) → LOW_CONFIDENCE ×3. "thank you" + "thanks" mark polite
+    # closing intent. Scoped: "thank you" alone is polite filler anywhere,
+    # but on an END-behavior contract the validator already gates act-match
+    # first — these patterns only let a genuine thanks-shaped goodbye
+    # classify as end instead of failing closed; they cannot hijack other
+    # behaviors because no other behavior's generator output ends with a
+    # bare thank-you (and the contract-behavior tie-break prefers the
+    # contract act on ties).
+    "end": ("goodbye", "bye", "thanks, that's all", "have a good day",
+            "thank you", "thanks for your help", "thanks for the help"),
 }
 
 # Confidence assigned when N keyword hits are found for the winning act.
