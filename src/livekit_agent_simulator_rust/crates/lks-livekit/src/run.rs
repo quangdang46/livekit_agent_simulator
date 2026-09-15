@@ -694,6 +694,10 @@ pub async fn execute_scenario_parsed(
                 writer_arc.clone(),
             )
             .with_shared_mic(shared_mic.clone())
+            // Feed agent/user speech back to ScriptRuntime's trigger gates —
+            // same Arc handed to ScriptRuntime::new above. Without this the
+            // contract path is deaf (run 004: only caller-step-0 fired).
+            .with_script_state(script_state.clone())
             .with_recorder(recorder.clone())
             .with_dispatch_metadata(dispatch_meta)
             .with_silent_mode(silent)

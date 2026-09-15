@@ -48,6 +48,11 @@ pub struct OpenAiCallerBridge {
     identity: String,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
     shared_mic: Option<crate::script::SharedMicSource>,
+    /// Shared ScriptObserverState (see with_script_state) — run_plumbing()'s
+    /// observation loop writes agent/user speech here; ScriptRuntime's
+    /// trigger gates read it. Without this the contract path is deaf (run
+    /// 004: only caller-step-0 fired, run ended on timeout).
+    script_state: Option<Arc<tokio::sync::Mutex<crate::script::ScriptObserverState>>>,
     /// Contract path (caller_steps non-empty): the bridge is mic/mixer +
     /// observation plumbing ONLY — no OpenAI Realtime persona session, no
     /// freestyle generation. Port of run_orchestrator.py: the contract path
@@ -99,6 +104,7 @@ impl OpenAiCallerBridge {
             identity,
             writer,
             shared_mic: None,
+            script_state: None,
             contract_only: false,
             recorder: None,
             dispatch_metadata: None,
@@ -142,6 +148,19 @@ impl OpenAiCallerBridge {
     /// `!scenario.caller_actions.is_empty()`.
     pub fn with_contract_only(mut self, contract_only: bool) -> Self {
         self.contract_only = contract_only;
+        self
+    }
+
+    /// Builder: shared ScriptObserverState handle so run_plumbing()'s
+    /// observation loop can feed agent/user speech back to ScriptRuntime's
+    /// trigger gates (silence/agent_speaking) and reply tracking. None =
+    /// triggers never fire (same as the unwired legacy state). Wired by
+    /// run.rs from the same Arc handed to ScriptRuntime::new.
+    pub fn with_script_state(
+        mut self,
+        state: Arc<tokio::sync::Mutex<crate::script::ScriptObserverState>>,
+    ) -> Self {
+        self.script_state = Some(state);
         self
     }
 
@@ -1269,6 +1288,14 @@ impl OpenAiCallerBridge {
                                         );
                                         continue;
                                     }
+                                    // New caller turn: clear the replied latch so
+                                    // the post-cue gap (script.rs) waits for
+                                    // the agent's answer to THIS turn.
+                                    if let Some(st) = &self.script_state {
+                                        let mut s = st.lock().await;
+                                        s.user_has_spoken = true;
+                                        s.agent_replied_this_turn = false;
+                                    }
                                     let mut w = writer_cue.lock().await;
                                     w.emit(
                                         "transcript.user.final",
@@ -1439,6 +1466,22 @@ impl OpenAiCallerBridge {
                         Ok(SimRoomEvent::TextStream { participant_identity, text, final_, segment_id, .. }) => {
                             if !text.trim().is_empty() {
                                 let role = if participant_identity == agent_identity { "agent" } else { "user" };
+                                // Feed ScriptRuntime's trigger gates (run 004:
+                                // contract path was deaf — only caller-step-0
+                                // fired, run timed out). user finals mark
+                                // user_has_spoken; agent finals mark
+                                // has_spoken + replied_this_turn + latch text.
+                                if let Some(st) = &self.script_state {
+                                    let mut s = st.lock().await;
+                                    if role == "agent" && final_ {
+                                        s.agent_has_spoken = true;
+                                        s.agent_replied_this_turn = true;
+                                        s.last_agent_final_text = text.trim().to_string();
+                                    } else if role == "user" && final_ {
+                                        s.user_has_spoken = true;
+                                        s.agent_replied_this_turn = false;
+                                    }
+                                }
                                 let mut w = writer_obs.lock().await;
                                 let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
                                 observer.lock().await.on_transcript(
