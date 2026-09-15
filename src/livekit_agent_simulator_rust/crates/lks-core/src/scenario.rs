@@ -943,13 +943,53 @@ pub fn apply_behavior_compile(
     // Typed parse of the raw script section (steps + verify) so
     // apply_caller_behavior can merge/compile; the raw section is reconstructed
     // from the typed steps for the compile call.
+    //
+    // `contract_do` steps (from caller_steps' `do:` — see
+    // project_caller_actions_to_script_steps) have no ScriptStep type slot
+    // for behavior/target/constraints/interaction and would fail
+    // parse_script_steps here exactly like at the first call site. Unlike
+    // there, this pass has no splice-by-index seam (apply_caller_behavior
+    // may merge/reorder steps by id), so each contract_do step is swapped
+    // for a placeholder ("wait", 0ms — a genuine no-op ScriptStep, never
+    // executed since ScriptRuntime special-cases action=="contract_do"
+    // before dispatch) that carries the SAME id, parsed/compiled normally,
+    // then swapped back to the original contract_do JSON by id afterward —
+    // preserving whatever position/merge behavior apply_caller_behavior
+    // gives it without this function needing to model that merge itself.
     let mut typed_steps: Vec<crate::script::ScriptStep> = Vec::new();
     let mut typed_verify: Option<crate::script::ScriptVerifySpec> = None;
     let script_raw = scenario.script_steps.clone();
-    if !script_raw.is_empty() {
+    let mut contract_do_by_id: std::collections::HashMap<String, Json> =
+        std::collections::HashMap::new();
+    let placeholder_raw: Vec<Json> = script_raw
+        .into_iter()
+        .map(|step| {
+            let is_do = step
+                .get("action")
+                .and_then(|v| v.as_str())
+                .map(|a| a == "contract_do")
+                .unwrap_or(false);
+            if !is_do {
+                return step;
+            }
+            let id = step
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            contract_do_by_id.insert(id.clone(), step);
+            let mut placeholder = Map::new();
+            placeholder.insert("id".into(), Json::String(id));
+            placeholder.insert("action".into(), Json::String("wait".into()));
+            placeholder.insert("trigger".into(), Json::String("time".into()));
+            placeholder.insert("delay_ms".into(), Json::Number(0.into()));
+            Json::Object(placeholder)
+        })
+        .collect();
+    if !placeholder_raw.is_empty() {
         // Wrap the raw steps in a {steps: [...]} spec the parser expects.
         let mut spec = Map::new();
-        spec.insert("steps".into(), Json::Array(script_raw));
+        spec.insert("steps".into(), Json::Array(placeholder_raw));
         typed_steps = parse_script_steps(&spec, path_label).map_err(ScenarioError)?;
     }
     if let Some(sv) = &scenario.script_verify {
@@ -968,6 +1008,10 @@ pub fn apply_behavior_compile(
     scenario.script_steps = compiled_steps
         .iter()
         .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
+        .map(|s| {
+            let id = s.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+            contract_do_by_id.remove(id).unwrap_or(s)
+        })
         .collect();
     scenario.script_verify = compiled_verify.map(|v| serde_json::to_value(v).unwrap_or(Json::Null));
     Ok(scenario)
