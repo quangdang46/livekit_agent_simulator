@@ -33,6 +33,18 @@ execute:
   max_turns: 5
   timeout_s: 120
   first_speaker: agent
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# Persona/assert/execute blocks below unchanged.
+caller_steps:
+  - say: "Hi, I'm calling about an unknown charge on my bill."
+  - do:
+      behavior: ask
+      target: charge
+      constraints:
+        max_turns: 3
+  - say: "Thanks, bye."
+  - end: true
 pass_criteria:
   criteria:
   - The agent understood a caller on a degraded/rough audio line

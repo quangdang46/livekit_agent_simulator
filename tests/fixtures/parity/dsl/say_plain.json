@@ -1,0 +1,12 @@
+{
+  "id": "say_plain",
+  "steps": [
+    {
+      "say": "Hi."
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "say"
+  ]
+}

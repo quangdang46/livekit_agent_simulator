@@ -465,6 +465,9 @@ pub async fn execute_scenario_parsed(
         let shared_mic_closure = shared_mic.clone();
         let cue_tx_script = cue_tx.clone();
         let locale = cfg.simulator.language.clone();
+        // `do:` text backend reuses the simulator's own OpenAI key (port of
+        // `live_wiring.py::_build_text_backend` — no separate credential).
+        let do_api_key = cfg.simulator.api_key.clone();
         let runtime = crate::script::ScriptRuntime::new(
             scenario.script_steps.clone(),
             script_writer,
@@ -491,19 +494,36 @@ pub async fn execute_scenario_parsed(
                     r#loop,
                     label,
                 } => {
-                    // Resolve the WAV: builtin:<name> → templates/cues, else target cues dir.
+                    // Resolve the WAV: builtin:<id> → mapped filename via the
+                    // same BUILTIN_CUES table Python's cue_catalog uses
+                    // (builtin:<id> is an ALIAS, not a filename:
+                    // builtin:noise.ambient → ambient_noise_bed.wav). Then
+                    // templates/cues, else target cues dir. Without the alias
+                    // map, every builtin: ref resolves to a nonexistent
+                    // <id>.wav, hound errors, the closure returns Err — and
+                    // ScriptRuntime treats a RoomPcm Err as... check.
+                    // (run 016-clean-lksr: bed fired sim.script.cue, then
+                    // 300s silence — asset noise.ambient.wav never existed.)
                     let cues_dir =
                         lks_core::config::load_config(project_root_owned.clone(), None, None)
                             .map(|c| c.cues_dir())
                             .unwrap_or_else(|_| project_root_owned.join(".agent-sim/cues"));
-                    let resolved = if let Some(name) = asset.strip_prefix("builtin:") {
+                    fn builtin_file(id: &str) -> &str {
+                        match id {
+                            "noise.ambient" => "ambient_noise_bed.wav",
+                            "noise.loud" => "loud_noise_burst.wav",
+                            "noise.blip" => "loud_interrupt_blip.wav",
+                            _ => id,
+                        }
+                    }
+                    let resolved = if let Some(id) = asset.strip_prefix("builtin:") {
                         // Package templates/cues (walk up from the crate).
                         let templates = std::env::current_dir()
                             .unwrap_or_else(|_| std::path::PathBuf::from("."));
                         let mut p = templates;
                         let mut found = None;
                         for _ in 0..6 {
-                            let cand = p.join("templates").join("cues").join(format!("{name}.wav"));
+                            let cand = p.join("templates").join("cues").join(builtin_file(id));
                             if cand.exists() {
                                 found = Some(cand);
                                 break;
@@ -512,7 +532,7 @@ pub async fn execute_scenario_parsed(
                                 break;
                             }
                         }
-                        found.unwrap_or_else(|| cues_dir.join(format!("{name}.wav")))
+                        found.unwrap_or_else(|| cues_dir.join(builtin_file(id)))
                     } else {
                         cues_dir.join(&asset)
                     };
@@ -563,6 +583,8 @@ pub async fn execute_scenario_parsed(
                 _ => Ok(()),
             }),
             locale,
+            do_api_key,
+            run_spec.first_speaker.clone(),
         );
         Some(tokio::spawn(
             async move { runtime.run(end_rx_script).await },
@@ -672,6 +694,7 @@ pub async fn execute_scenario_parsed(
                 identity,
                 writer_arc.clone(),
             )
+            .with_recorder(recorder.clone())
             .with_dispatch_metadata(dispatch_meta)
             .with_silent_mode(silent)
             .with_observe(cfg.observe.clone())
@@ -689,12 +712,27 @@ pub async fn execute_scenario_parsed(
                 writer_arc.clone(),
             )
             .with_shared_mic(shared_mic.clone())
+            // Feed agent/user speech back to ScriptRuntime's trigger gates —
+            // same Arc handed to ScriptRuntime::new above. Without this the
+            // contract path is deaf (run 004: only caller-step-0 fired).
+            .with_script_state(script_state.clone())
             .with_recorder(recorder.clone())
             .with_dispatch_metadata(dispatch_meta)
             .with_silent_mode(silent)
             .with_observe(cfg.observe.clone())
             .with_speech_conditions(persona_sc)
-            .with_cue_rx(cue_rx);
+            .with_cue_rx(cue_rx)
+            // Contract path (caller_steps non-empty): plumbing-only bridge —
+            // no persona Realtime session, no freestyle generation.
+            // Port of run_orchestrator.py: the contract path "never opens a
+            // session — run() has no call sites (the bridge is used only for
+            // publish_mic)". ScriptRuntime drives speech via TTS→mic.
+            .with_contract_only(!scenario.caller_actions.is_empty())
+            // Fix (lksr hardcoded 45s slice cap): run_spec() resolves
+            // Execute.timeout_s || Simulator.timeout_s (default 120s, see
+            // lks-core::scenario::SimulatorSpec) instead of the caller
+            // bridge's own historical 45s constant.
+            .with_slice_cap_secs(run_spec.timeout_s);
             Box::pin(async move { bridge.run(end_rx).await })
         }
     };
@@ -994,6 +1032,20 @@ pub async fn execute_scenario_parsed(
             "failed"
         }
     };
+    // A `do:` step's BEHAVIOR_TIMEOUT/CALLER_BEHAVIOR_VIOLATION/AGENT_TIMEOUT
+    // ends the run via end_tx (the bridge exits with Ok(()) — end_tx is its
+    // normal shutdown signal), so `run_result` alone can't see the failure.
+    // The script task's JoinHandle result is discarded on abort above, so
+    // `CONTRACT_DO_FAILED` is the side channel that carries it here (port of
+    // driver.py's BEHAVIOR_TIMEOUT/CALLER_BEHAVIOR_VIOLATION ending the run
+    // with error).
+    let contract_do_failure =
+        if crate::script::CONTRACT_DO_FAILED.load(std::sync::atomic::Ordering::SeqCst) {
+            status = "failed";
+            Some(crate::script::CONTRACT_DO_FAILURE_REASON.lock().clone())
+        } else {
+            None
+        };
 
     let mut w = writer_arc.lock().await;
     let duration_ms = w.t0_mono().elapsed().as_millis() as i64;
@@ -1002,6 +1054,17 @@ pub async fn execute_scenario_parsed(
     if let Err(e) = &run_result {
         let mut err_spec = serde_json::Map::new();
         err_spec.insert("error".into(), serde_json::Value::String(e.to_string()));
+        err_spec.insert(
+            "mode".into(),
+            serde_json::Value::String(scenario.effective_caller_mode().to_string()),
+        );
+        w.emit("run.error", Some(&err_spec), "mcp", None, None, false, None);
+    } else if let Some(reason) = &contract_do_failure {
+        let mut err_spec = serde_json::Map::new();
+        err_spec.insert(
+            "error".into(),
+            serde_json::Value::String(format!("contract_do: {reason}")),
+        );
         err_spec.insert(
             "mode".into(),
             serde_json::Value::String(scenario.effective_caller_mode().to_string()),

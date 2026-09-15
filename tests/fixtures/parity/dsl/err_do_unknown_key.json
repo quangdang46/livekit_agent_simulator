@@ -1,0 +1,12 @@
+{
+  "id": "err_do_unknown_key",
+  "steps": [
+    {
+      "do": {
+        "behavior": "ask",
+        "bogus": 1
+      }
+    }
+  ],
+  "expect": "error"
+}

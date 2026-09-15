@@ -1,0 +1,12 @@
+{
+  "run_id": "demo-backchannel",
+  "scenario_id": "billing-stress",
+  "persona": {
+    "name": "Alex"
+  },
+  "window_s": [
+    18.0,
+    30.0
+  ],
+  "duration_ms": 12000
+}

@@ -200,3 +200,30 @@ def test_agent_audio_onset_emits_corrected_timestamp(tmp_path) -> None:
     assert ev["spec"]["onset_frame_idx"] == 3200
     assert ev["spec"]["sample_rate"] == 16_000
     assert ev["spec"]["vad"]["method"] == "rms"
+def test_stale_segment_interim_dropped_across_turns_run_050(tmp_path) -> None:
+    """Run 050 regression: the SDK's lk.transcription delta-stream writer
+    closes asynchronously, so interim chunks of an ALREADY-FINALIZED segment
+    keep arriving after the turn advanced (same segment_id, stale text).
+    The role-level late-interim guard cannot catch them (the role's final
+    set was cleared on begin_turn) — finality must be tracked per
+    (role, segment_id) so the stale tail is dropped even across turns."""
+    obs, writer = _observer(tmp_path, first_speaker="agent")
+    seg = "SG_stale_tail"
+
+    obs.on_transcript("user", "Could you tell me the price?", final=True,
+                      segment_id=seg, source="lk.transcription")
+    assert obs.turn == 1
+    # A new turn begins (different segment) after the agent replied — a
+    # long, substantive agent answer ends the turn, so the next user final
+    # advances (mirrors test_new_turn_starts_after_a_real_agent_answer).
+    obs.on_transcript("agent", "Thanks, let me pull up the full details and options for you now please.", final=True,
+                      source="voice_ai.transcript")
+    obs.on_transcript("user", "A brand new question here", final=True,
+                      segment_id="SG_new", source="lk.transcription")
+    assert obs.turn == 2
+    before = len(writer._events)
+    # Stale interim of the OLD segment arrives late — must be dropped.
+    obs.on_transcript("user", "Could you tell me the pr", final=False,
+                      segment_id=seg, source="lk.transcription")
+    assert len(writer._events) == before
+    assert obs.turn == 2

@@ -638,7 +638,15 @@ fn main() -> anyhow::Result<()> {
             if !gate_ok {
                 std::process::exit(1);
             }
-            Ok(())
+            // Hard exit on success too (run 006-dealer-live-full): main()
+            // returning normally lets Rust's normal shutdown drop the tokio
+            // runtime, which waits on any straggler task/thread (livekit's
+            // native webrtc/audio threads, the embedded-CPython interpreter
+            // under python-plugins) — one of those left the process hung for
+            // minutes after the report was already written to disk. The
+            // failure branch above already exits hard; mirror it here so a
+            // passing run can't get stuck in the same teardown path.
+            std::process::exit(0);
         }
         Some(Command::ExecuteAll {
             scenario_ids,

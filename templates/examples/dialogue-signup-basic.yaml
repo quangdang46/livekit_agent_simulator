@@ -36,6 +36,19 @@ execute:
   max_turns: 12
   timeout_s: 200
   first_speaker: user
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# first_speaker=user starts immediately (no greeting wait); keep the legacy
+# persona block above as the brief/constraints source (unchanged).
+caller_steps:
+  - say: "Hi, I'm calling about the basic plan."
+  - do:
+      behavior: ask
+      target: price
+      constraints:
+        max_turns: 4
+  - say: "Thanks, bye."
+  - end: true
 assert:
   outcomes:
   - id: caller_asked_fee

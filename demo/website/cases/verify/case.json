@@ -1,0 +1,17 @@
+{
+  "id": "verify",
+  "toc": "Verify",
+  "title": "Pass / fail checks",
+  "color": "#34d399",
+  "copy": "Every run ends with checks: did the script steps fire, and did the agent behave? Either can fail CI.",
+  "chips": [
+    [
+      "script pass",
+      "pass"
+    ],
+    [
+      "assert pass",
+      "pass"
+    ]
+  ]
+}

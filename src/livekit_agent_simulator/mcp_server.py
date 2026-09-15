@@ -124,6 +124,8 @@ async def execute_scenario(
     optimized: str | None = None,
     profile: str | None = None,
     environment: str | None = None,
+    record_path: str | None = None,
+    replay_path: str | None = None,
 ) -> dict[str, Any]:
     """Validate then execute one scenario from `.agent-sim/scenarios/*.yaml` (legacy `*.jsonl` still read).
 
@@ -154,6 +156,8 @@ async def execute_scenario(
         optimized=optimized,
         profile=profile,
         environment=environment,
+        record_path=record_path,
+        replay_path=replay_path,
     )
 
 

@@ -109,11 +109,19 @@ class AudioOnsetConfig:
 
     enabled: bool = False
     vad: str = "rms"
-    threshold: float = 0.012
+    # Tuned against real run-057 agent audio (2026-09-12): the old defaults
+    # (0.012/3/5/60) fired 43 onsets on 5 spoken answers — intra-word pauses
+    # (100-300ms) exited SPEECH (exit 100ms) and re-fired after 60ms
+    # refractory. New values treat normal speech rhythm as one utterance:
+    # exit needs 300ms of quiet, re-fire needs 1.5s, entry needs 4
+    # consecutive energy windows at a slightly higher floor. Result on the
+    # same audio: 20 onsets aligned with real turn starts (one per answer
+    # plus a few long-answer continuations), silence stays at zero.
+    threshold: float = 0.025
     win_ms: int = 20
-    energy_frames: int = 3
-    exit_frames: int = 5
-    refractory_ms: int = 60
+    energy_frames: int = 4
+    exit_frames: int = 15
+    refractory_ms: int = 1500
 
 
 @dataclass

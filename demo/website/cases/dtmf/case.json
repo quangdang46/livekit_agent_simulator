@@ -1,0 +1,13 @@
+{
+  "id": "dtmf",
+  "toc": "DTMF",
+  "title": "DTMF keypress",
+  "color": "#60a5fa",
+  "copy": "The caller presses phone keys on an IVR menu. The keypress is logged and routed to billing.",
+  "chips": [
+    [
+      "routed to billing",
+      "info"
+    ]
+  ]
+}

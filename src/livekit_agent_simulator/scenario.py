@@ -42,6 +42,7 @@ KNOWN_KINDS = {
     "Assert",
     "Caller",
     "Telephony",
+    "CallerSteps",
 }
 
 CALLER_MODES = frozenset(
@@ -176,6 +177,12 @@ class Scenario:
     asserts: AssertSpec | None = None
     # Raw Behavior.spec (Hamming-style policy); compiled into script_steps at parse end.
     behavior_spec: dict[str, Any] | None = None
+    # New single-path caller pipeline (caller_contract): parsed CallerAction
+    # list from `caller_steps:` (YAML/dict) or `CallerSteps` (JSONL). Purely
+    # additive — empty by default, never populated from legacy persona/script;
+    # a scenario using this drives ContractCallerDriver instead of the legacy
+    # persona+ScriptRunner path (see run_orchestrator branch).
+    caller_actions: list[Any] = field(default_factory=list)
     # Optional persona-prompt policy override (a saved optimizer variant). When
     # set, persona_system_prompt() composes with this policy instead of the
     # builtin DefaultCallerPolicy — the runtime seam for `lks execute --optimized`.
@@ -260,6 +267,7 @@ class Scenario:
             "plugin_modules": list(self.plugin_modules),
             "has_asserts": self.asserts is not None and not self.asserts.empty,
             "has_behavior": bool(self.behavior_spec),
+            "caller_actions": len(self.caller_actions),
             "constraints": (
                 list(self.persona.get("constraints") or [])
                 if isinstance(self.persona.get("constraints"), list)
@@ -499,6 +507,16 @@ def parse_scenario(path: Path | str) -> Scenario:
             try:
                 scenario.asserts = parse_assert_spec(spec, f"{path}:{line_no}")
             except ValueError as e:
+                raise ScenarioError(str(e)) from e
+        elif kind == "CallerSteps":
+            from .caller_contract.dsl import DSLError, parse_steps
+
+            raw_steps = spec.get("steps")
+            if not isinstance(raw_steps, list):
+                raise ScenarioError(f"{path}:{line_no}: CallerSteps.spec.steps must be an array")
+            try:
+                scenario.caller_actions = parse_steps(raw_steps, file=f"{path}:{line_no}")
+            except DSLError as e:
                 raise ScenarioError(str(e)) from e
 
     if not scenario.persona.get("brief"):

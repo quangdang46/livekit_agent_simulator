@@ -233,3 +233,44 @@ def test_audio_metrics_missing_agent_onset():
     m = compute_voice_metrics(events)
     assert m["ttfa_run_ms"] is None
     assert m["turn_taking_audio_ms"]["count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Interruption / barge counting across the caller-path vocabularies.
+#
+# The legacy engine wrote `interruption`; the contract path writes
+# contract.barge / contract.interrupt / contract.policy_interrupt. Counting
+# only the legacy kind made interruption_count 0 for every contract run.
+#
+# The two counts draw different lines on purpose: a backchannel cut-in IS an
+# interruption but is NOT a recovery barge (RECOVERY_BARGE_CLASSES).
+# ---------------------------------------------------------------------------
+
+
+def test_interruption_count_understands_contract_cut_in_kinds():
+    for kind in ("contract.barge", "contract.interrupt", "contract.policy_interrupt"):
+        m = compute_voice_metrics([_ev(kind, 1000, **{"class": "correction"})])
+        assert m["interruption_count"] == 1, kind
+
+
+def test_interruption_count_still_counts_the_legacy_kind():
+    m = compute_voice_metrics([_ev("interruption", 1000, by="sim")])
+    assert m["interruption_count"] == 1
+
+
+def test_seeded_policy_cut_in_is_an_interruption_but_not_a_recovery_barge():
+    m = compute_voice_metrics([_ev("contract.policy_interrupt", 1000, text="Mhm.")])
+    assert m["interruption_count"] == 1
+    assert m["barge_count"] == 0
+    assert m["barge_recovery_rate"] is None
+
+
+def test_correction_cut_in_counts_as_both():
+    m = compute_voice_metrics(
+        [
+            _ev("contract.barge", 1000, **{"class": "correction"}),
+            _ev("transcript.agent.final", 2000, text="sure"),
+        ]
+    )
+    assert m["interruption_count"] == 1
+    assert m["barge_count"] == 1

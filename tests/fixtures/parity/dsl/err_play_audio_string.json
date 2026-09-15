@@ -1,0 +1,9 @@
+{
+  "id": "err_play_audio_string",
+  "steps": [
+    {
+      "play_audio": "x"
+    }
+  ],
+  "expect": "error"
+}

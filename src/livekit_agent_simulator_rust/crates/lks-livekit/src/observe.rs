@@ -110,10 +110,18 @@ impl SessionObserver {
             );
             return;
         }
-        if event.get("session_usage_updated").is_some() {
-            // Usage payloads are not decoded field-by-field; empty diff-guard
-            // mirrors Python's _last_usage dedupe (nothing to compare → emit once).
-            let usage = json!({});
+        if let Some(updated) = event
+            .get("session_usage_updated")
+            .and_then(|v| v.as_object())
+        {
+            // Fix (lksr session.usage missing): the payload used to always be
+            // `{}` (agent-sim-proto discarded the bytes), so this dedupe-guard
+            // — a real port of Python's `_emit_usage` `usage == self._last_usage`
+            // check — latched on the first empty emission and silently
+            // dropped every subsequent session.usage event for the rest of
+            // the run. Now that agent-sim-proto decodes the real
+            // AgentSessionUsage payload, the guard only skips genuine repeats.
+            let usage = updated.get("usage").cloned().unwrap_or_else(|| json!({}));
             if usage == self.last_usage {
                 return;
             }
@@ -421,16 +429,28 @@ fn lookup_path<'a>(payload: &'a Json, path: &str) -> &'a Json {
     cur
 }
 
+/// Parsed data-topic transcript turn, returned to the caller so it can feed
+/// the shared `Observer` (port of observer.py `_handle_data_topic` calling
+/// `on_transcript(role, text, final=True, source=topic or "data")`).
+/// Returned rather than delivered via callback because the `Observer` lives
+/// behind an async `Mutex` while `handle_data` is sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTranscript {
+    pub role: String,
+    pub text: String,
+    pub source: String,
+}
+
 /// Port of `observer.py` data-topic handling.
 pub struct DataRouter {
     observe: ObserveConfig,
     /// Open tool.start events from data-plane patterns (keyed by call_id).
     open_tools: HashMap<String, OpenTool>,
-    /// Optional transcript sink (role, text, source) — wired by the caller
-    /// bridges to their transcript pipeline. When absent, parsed transcript
-    /// payloads are consumed (not emitted as data.message), mirroring Python.
-    #[allow(clippy::type_complexity)]
-    pub on_transcript: Option<Box<dyn Fn(&str, &str, &str) + Send>>,
+    /// Latest parsed `transcript_turn` staged by [`DataRouter::handle_data`].
+    /// The caller bridge takes it and feeds the shared async `Observer`
+    /// (`on_transcript(role, text, final=true, source=topic)`), because this
+    /// struct is sync while the `Observer` lives behind an async `Mutex`.
+    pending_transcript: Option<DataTranscript>,
 }
 
 impl DataRouter {
@@ -438,12 +458,24 @@ impl DataRouter {
         Self {
             observe,
             open_tools: HashMap::new(),
-            on_transcript: None,
+            pending_transcript: None,
         }
+    }
+
+    /// Take the transcript turn staged by the last [`DataRouter::handle_data`]
+    /// call (if any). The caller bridge feeds it to the shared async
+    /// `Observer` via `on_transcript(role, text, final=true, source=topic)`.
+    pub fn take_transcript(&mut self) -> Option<DataTranscript> {
+        self.pending_transcript.take()
     }
 
     /// Handle one room data packet. Returns false when the topic was dropped
     /// by the `observe.data_topics` filter (Python drops silently).
+    ///
+    /// A parsed `transcript_turn` is consumed (never `data.message`) and
+    /// staged for [`DataRouter::take_transcript`] — the bridge feeds it to
+    /// the shared `Observer` with `final=true` (observer.py
+    /// `_handle_data_topic`). Python parity: always final, never interim.
     pub fn handle_data(
         &mut self,
         topic: &str,
@@ -476,15 +508,34 @@ impl DataRouter {
                 return true;
             }
         };
-
-        if payload.is_object() && self.match_tool_patterns(topic, &payload, w) {
-            return true;
+        if let Some(t) = self.parse_data(topic, &payload, sender, w) {
+            self.pending_transcript = Some(t);
         }
-        if let Some((role, text)) = self.parse_transcript_payload(&payload) {
-            if let Some(cb) = &self.on_transcript {
-                cb(&role, &text, source);
-            }
-            return true;
+        true
+    }
+
+    /// Parse one decoded data payload. Returns `Some(DataTranscript)` for a
+    /// `transcript_turn` payload (caller feeds it to the shared Observer);
+    /// emits `data.message` side effects for everything else and returns
+    /// `None`. Tool patterns win over transcript parsing (Python:
+    /// `_match_tool_patterns` checked first).
+    pub fn parse_data(
+        &mut self,
+        topic: &str,
+        payload: &Json,
+        sender: Option<&str>,
+        w: &mut EventWriter,
+    ) -> Option<DataTranscript> {
+        let source = if topic.is_empty() { "data" } else { topic };
+        if payload.is_object() && self.match_tool_patterns(topic, payload, w) {
+            return None;
+        }
+        if let Some((role, text)) = self.parse_transcript_payload(payload) {
+            return Some(DataTranscript {
+                role,
+                text,
+                source: source.to_string(),
+            });
         }
         let spec = json!({
             "topic": topic,
@@ -500,7 +551,7 @@ impl DataRouter {
             true,
             None,
         );
-        true
+        None
     }
 
     /// Port of `_parse_transcript_payload` — generic transcript_turn shape.
@@ -725,19 +776,17 @@ mod tests {
     }
 
     #[test]
-    fn data_router_transcript_payload_goes_to_sink_not_data_message() {
+    fn data_router_transcript_payload_staged_not_data_message() {
         let (dir, mut w) = tmp_writer();
         let mut router = DataRouter::new(observe_cfg());
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = seen.clone();
-        router.on_transcript = Some(Box::new(move |role, text, _src| {
-            sink.lock()
-                .unwrap()
-                .push((role.to_string(), text.to_string()));
-        }));
         let payload = br#"{"type":"transcript_turn","turn":{"role":"agent","text":"hello there"}}"#;
         assert!(router.handle_data("t", payload, None, &mut w));
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        // Staged for take_transcript (the bridge feeds the shared Observer).
+        let staged = router.take_transcript().expect("transcript staged");
+        assert_eq!(staged.role, "agent");
+        assert_eq!(staged.text, "hello there");
+        assert_eq!(staged.source, "t");
+        assert!(router.take_transcript().is_none());
         assert!(!w
             .events()
             .iter()
@@ -746,7 +795,7 @@ mod tests {
         let interim =
             br#"{"type":"transcript_turn","interim":true,"turn":{"role":"agent","text":"x"}}"#;
         assert!(router.handle_data("t", interim, None, &mut w));
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert!(router.take_transcript().is_none());
         drop(dir);
     }
 

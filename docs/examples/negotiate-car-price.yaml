@@ -1,0 +1,28 @@
+# Example scenario for the new Behavior DSL (docs/behavior-dsl.md).
+# Validated by tests/test_behavior_dsl_docs_example.py against
+# livekit_agent_simulator.caller_contract.dsl.parse_steps().
+#
+# This is a caller-steps example, not a full agent-sim/v1 scenario file
+# (see scenario.py for the full JSONL wire format used elsewhere).
+steps:
+  - say: "Hi, I'm calling about the 2022 Honda CR-V."
+
+  - do: ask
+
+  - do:
+      behavior: negotiate
+      target: price
+      constraints:
+        max_turns: 3
+        max_budget: 30000
+        forbidden_intents: ["financing", "trade_in", "vehicle_change"]
+        must_not: ["invent_facts", "end_call"]
+      interaction:
+        pace: slow
+        hesitation: occasional
+
+  - do: arrange_visit
+
+  - say: "Thanks, bye."
+
+  - end: true

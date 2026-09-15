@@ -1,0 +1,12 @@
+{
+  "id": "err_play_audio_sibling",
+  "steps": [
+    {
+      "play_audio": {
+        "asset": "x"
+      },
+      "barge_in": true
+    }
+  ],
+  "expect": "error"
+}

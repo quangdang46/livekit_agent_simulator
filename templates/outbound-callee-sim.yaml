@@ -36,6 +36,16 @@ assert:
     call_status_any:
     - active
     dial_answered: true
+# Contract path (caller_contract single path): caller_steps drive
+# ContractCallerDriver; persona/caller/telepathy blocks below unchanged.
+caller_steps:
+  - say: "Hello?"
+  - do:
+      behavior: ask
+      constraints:
+        max_turns: 2
+  - say: "OK, thanks, bye."
+  - end: true
 pass_criteria:
   criteria:
   - The agent spoke to the callee

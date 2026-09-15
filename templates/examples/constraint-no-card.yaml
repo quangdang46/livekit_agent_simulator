@@ -26,6 +26,22 @@ execute:
   max_turns: 5
   timeout_s: 120
   first_speaker: agent
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# first_speaker=agent waits for the agent greeting before the first action
+# (contract nudge-equivalent); forbidden_intents keeps card data out of the
+# caller's own validated speech. Persona block above unchanged.
+caller_steps:
+  - say: "Hi, I'm calling about my delayed order."
+  - do:
+      behavior: provide
+      target: order_status
+      constraints:
+        max_turns: 3
+        forbidden_intents:
+          - card_number
+  - say: "Thanks, that's all. Bye."
+  - end: true
 assert:
   outcomes:
   - id: no_card_leak

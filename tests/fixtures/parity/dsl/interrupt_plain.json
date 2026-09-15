@@ -1,0 +1,12 @@
+{
+  "id": "interrupt_plain",
+  "steps": [
+    {
+      "interrupt": true
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "interrupt"
+  ]
+}

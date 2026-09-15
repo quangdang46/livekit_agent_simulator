@@ -91,6 +91,13 @@ pub struct ScriptRuntime {
     /// Locale for the default hang-up farewell text (from config).
     #[allow(dead_code)]
     locale: String,
+    /// OpenAI API key for the `do:` text backend (same key the caller
+    /// bridge's Realtime session uses — `cfg.simulator.api_key`; port of
+    /// `live_wiring.py::_build_text_backend`, no separate credential).
+    do_api_key: String,
+    /// run_spec.first_speaker ("agent"|"user") — gates the legacy
+    /// require_agent_spoke_first silence assumption (see trigger gate).
+    first_speaker: String,
 }
 
 impl ScriptRuntime {
@@ -102,6 +109,8 @@ impl ScriptRuntime {
         end_tx: tokio::sync::broadcast::Sender<()>,
         on_action: Box<dyn Fn(ScriptAction) -> Result<(), String> + Send + Sync>,
         locale: String,
+        do_api_key: String,
+        first_speaker: String,
     ) -> Self {
         Self {
             steps,
@@ -111,6 +120,8 @@ impl ScriptRuntime {
             on_action,
             defer_state: parking_lot::Mutex::new(None),
             locale,
+            do_api_key,
+            first_speaker,
         }
     }
 
@@ -138,6 +149,9 @@ impl ScriptRuntime {
         let mut arm_idx: usize = 0;
         let mut trigger_since: Vec<Option<Instant>> = vec![None; self.steps.len()];
         let mut awaiting_reply_since: Option<Instant> = None;
+        // Local "have we fired our own opener yet" flag — see BUG FIX note
+        // below on why this must NOT be `state.user_has_spoken`.
+        let mut own_turn_fired = false;
         let mut stop_rx = stop_rx;
 
         while arm_idx < self.steps.len() {
@@ -151,9 +165,34 @@ impl ScriptRuntime {
             // Post-cue gap: after a speak step, wait for the agent to reply
             // (up to 8s) before arming the next step — mirrors the Python
             // _await_agent_reply window so steps don't fire over the agent.
+            //
+            // first_speaker=user opener exception (run 002-final-lksr2): the
+            // FIRST caller turn has no agent reply to wait for yet — the
+            // agent's greeting comes AFTER our opener by construction. Waiting
+            // here deadlocks step 2 behind an 8s gate on every iteration
+            // while the agent (hearing nothing yet — TTS for step 1 may still
+            // be synthesizing) stays silent. Skip the gap until the caller
+            // has spoken at least once (user_has_spoken).
+            //
+            // BUG FIX (run 006-dealer-live-full, take 1): `|| !state.agent_is_active_speaker`
+            // used to trivially satisfy this gate — the agent isn't the
+            // active speaker BEFORE it starts talking either (TTS/response
+            // latency), so every speak step fired the very next 50ms tick
+            // instead of waiting for a real agent final.
+            //
+            // BUG FIX (run 006-dealer-live-full, take 2): swapping in
+            // `!state.user_has_spoken` still burst-fired steps 2-5 — that
+            // flag only flips once the ROOM's transcription pipeline has
+            // transcribed OUR OWN TTS'd speech back as a "user final" (see
+            // callers/openai.rs role=="user" arm), which lags several
+            // seconds behind us firing the cue. A LOCAL flag (own_turn_fired,
+            // set the instant we fire our own step, not derived from async
+            // STT) is the only thing that actually reflects "have we spoken
+            // yet" at gate-check time. `agent_replied_this_turn` (set true
+            // only on a genuine agent final) remains the real gate.
             if let Some(since) = awaiting_reply_since {
                 let state = self.state.lock().await;
-                let replied = state.agent_replied_this_turn || !state.agent_is_active_speaker;
+                let replied = state.agent_replied_this_turn || !own_turn_fired;
                 drop(state);
                 if replied || since.elapsed() >= Duration::from_secs(8) {
                     awaiting_reply_since = None;
@@ -175,11 +214,24 @@ impl ScriptRuntime {
             let min_agent_active_ms = Self::step_i64(&step, "min_agent_active_ms");
 
             // Trigger gate.
+            //
+            // first_speaker=user contract runs (e.g. dealer-live-full):
+            // the caller opens the call, so silence-gated steps must NOT
+            // wait for the agent to have spoken first — the agent hasn't
+            // said anything yet by construction (its greeting comes AFTER
+            // our opener). Port of run_orchestrator first_speaker=user
+            // semantics: caller starts immediately; only first_speaker=agent
+            // runs wait for the greeting first. The stale
+            // require_agent_spoke_first=true default (a legacy-script
+            // assumption) deadlocked every silence step here — run 009 fired
+            // only caller-step-0 then sat until the slice cap.
+            let first_speaker_is_agent = self.first_speaker == "agent";
             let state = self.state.lock().await;
             let active = match trigger.as_str() {
                 "time" => true,
                 "silence" => {
-                    if Self::step_bool(&step, "require_agent_spoke_first", true)
+                    if first_speaker_is_agent
+                        && Self::step_bool(&step, "require_agent_spoke_first", true)
                         && !state.agent_has_spoken
                     {
                         false
@@ -218,6 +270,19 @@ impl ScriptRuntime {
                 .and_then(|v| v.as_str())
                 .map(String::from);
             let delivery = Self::step_str(&step, "delivery", "gemini_text");
+
+            if action == "contract_do" {
+                // Never hold the EventWriter lock across the do-driver's
+                // network calls / agent-reply wait — acquire it fresh for
+                // each emit inside run_contract_do instead.
+                if once {
+                    fired.push(id.clone());
+                }
+                let label = Self::step_str(&step, "label", &id);
+                self.run_contract_do(&step, &id, &label).await?;
+                arm_idx += 1;
+                continue;
+            }
 
             let mut w = self.writer.lock().await;
             match action.as_str() {
@@ -368,6 +433,7 @@ impl ScriptRuntime {
                     return Ok(());
                 }
                 "room_pcm" => {
+                    eprintln!("[lksr] script fire room_pcm ({label}): asset check");
                     let asset = Self::step_str(&step, "asset", "");
                     let gain = step.get("gain").and_then(|v| v.as_f64()).unwrap_or(1.0);
                     let rloop = Self::step_bool(&step, "loop", false);
@@ -521,6 +587,27 @@ impl ScriptRuntime {
                         crate::callers::openai::MUTE_PERSONA_ACTIVE
                             .store(true, std::sync::atomic::Ordering::SeqCst);
                     }
+                    // PERMANENT instrument (not temp-debug): the cue send
+                    // is fire-and-forget (let _ =) — if the bridge never
+                    // receives, the run dies silent until the slice cap with
+                    // zero evidence. This event names the step that fired.
+                    {
+                        let mut w = self.writer.lock().await;
+                        w.emit(
+                            "sim.script.fired",
+                            Some(
+                                &serde_json::json!({"step_id": id, "label": label, "action": "speak"})
+                                    .as_object()
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            ),
+                            "sim.script",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                    }
                     let _ = (self.on_action)(ScriptAction::Speak {
                         text: say,
                         label,
@@ -530,6 +617,7 @@ impl ScriptRuntime {
                     });
                     // Speak steps open a reply window before the next step.
                     awaiting_reply_since = Some(Instant::now());
+                    own_turn_fired = true;
                 }
             }
             if once {
@@ -539,7 +627,320 @@ impl ScriptRuntime {
         }
         Ok(())
     }
+
+    /// Port of `driver.py::_run_behavior` (+ `caller_contract/validator.py`
+    /// generate/validate retry, `text_backends.py` HTTP call): drive one
+    /// `do:` step to SATISFIED or the single canonical failure exit
+    /// (BEHAVIOR_TIMEOUT / CALLER_BEHAVIOR_VIOLATION / AGENT_TIMEOUT — all
+    /// end the run here, mirroring Python's one-owner budget gate).
+    async fn run_contract_do(
+        &self,
+        step: &serde_json::Value,
+        id: &str,
+        label: &str,
+    ) -> Result<(), RunError> {
+        let behavior = Self::step_str(step, "behavior", "");
+        if behavior.trim().is_empty() {
+            return Err(RunError(format!(
+                "contract_do step {id:?}: missing behavior"
+            )));
+        }
+        let target = step
+            .get("target")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let constraints_raw = step
+            .get("constraints")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        // TODO(port): interaction.interruption_rate/interval_ms/seed (seeded
+        // backchannel policy, interaction_planner.py) — parsed by caller_dsl
+        // at scenario load, ignored here; not load-bearing for satisfaction.
+        // TODO(port): forbidden-intent semantic check (needs
+        // DEFAULT_INTENT_KEYWORDS + intent taxonomy) — the lexical check in
+        // ContractValidator::validate already runs; the semantic-verifier
+        // pass is skipped by passing `None` below (tier-1 rule lexicon only,
+        // same as the lks Python side's live-run selection).
+        let contract = lks_core::caller_contract::BehaviorContract {
+            behavior: behavior.clone(),
+            target: target.clone(),
+            constraints: lks_core::contract_do::parse_do_constraints(Some(&constraints_raw)),
+        };
+
+        let mut validator = lks_core::caller_contract::ContractValidator::new(None);
+        let mut orchestrator = lks_core::caller_contract::OrchestratorState::new();
+        orchestrator.start_behavior();
+        let mut log: Vec<lks_core::contract_do::DoTurn> = Vec::new();
+        let mut agent_latest: Option<String> = None;
+
+        loop {
+            if matches!(
+                orchestrator.check_max_turns(contract.constraints.max_turns),
+                lks_core::caller_contract::BehaviorOutcome::FailedMaxTurns
+            ) {
+                let reason = format!("behavior {behavior:?} unsatisfied after max_turns");
+                self.fail_contract_do(id, label, &reason).await;
+                return Err(RunError(reason));
+            }
+            let turn = log.len() as i64;
+            let context = lks_core::contract_do::build_context(
+                &contract,
+                turn,
+                agent_latest.as_deref(),
+                &[],
+                &log,
+                lks_core::contract_do::DEFAULT_RECENT_TURNS_CAP,
+            );
+
+            // Bounded retry: generate -> validate (validator verdicts only
+            // — a transport failure does not consume this budget in
+            // Python, but this slice keeps it simple and counts it too,
+            // since DEFAULT_MAX_RETRIES+1 attempts already bounds runtime).
+            let mut candidate = None;
+            let mut last_reason = String::from("no attempts");
+            for attempt in 0..=lks_core::contract_do::DEFAULT_MAX_RETRIES {
+                let identity = orchestrator.new_generation();
+                let attempt_result = lks_core::contract_do::generate_do_candidate(
+                    &self.do_api_key,
+                    "https://api.openai.com/v1",
+                    lks_core::contract_do::DEFAULT_MODEL,
+                    lks_core::contract_do::DEFAULT_TEMPERATURE,
+                    lks_core::contract_do::DEFAULT_TIMEOUT_S,
+                    &context,
+                    identity,
+                )
+                .await;
+                let cand = match attempt_result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        last_reason = format!("LANGUAGE_GENERATION_ERROR: {e}");
+                        continue;
+                    }
+                };
+                let verdict = validator.validate(&cand, &contract);
+                {
+                    let mut w = self.writer.lock().await;
+                    w.emit(
+                        "contract.attempt_verdict",
+                        Some(
+                            &json!({
+                                "behavior": behavior.clone(),
+                                "verdict": verdict.verdict.as_str(),
+                                "reason": verdict.reason.clone(),
+                                "attempt": attempt,
+                            })
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default(),
+                        ),
+                        "sim.script",
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
+                }
+                if verdict.is_valid() {
+                    candidate = Some(cand);
+                    break;
+                }
+                last_reason = verdict.reason.unwrap_or_else(|| "INVALID".to_string());
+            }
+            let Some(candidate) = candidate else {
+                let reason = last_reason;
+                {
+                    let mut w = self.writer.lock().await;
+                    w.emit(
+                        "contract.behavior_violation",
+                        Some(
+                            &json!({"behavior": behavior.clone(), "reason": reason.clone()})
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                        ),
+                        "sim.script",
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
+                }
+                self.fail_contract_do(id, label, &reason).await;
+                return Err(RunError(format!("do: {behavior:?}: {reason}")));
+            };
+
+            // Publish exactly the validated string via the existing Speak
+            // cue path (never a planner-reshaped variant) — reuses
+            // `on_action`/cue_tx, no new delivery machinery.
+            {
+                let mut w = self.writer.lock().await;
+                w.emit(
+                    "contract.turn_published",
+                    Some(
+                        &json!({
+                            "behavior": behavior.clone(),
+                            "turn": turn,
+                            "text": candidate.utterance.clone(),
+                        })
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                    ),
+                    "sim.script",
+                    None,
+                    None,
+                    false,
+                    None,
+                );
+            }
+            let text = candidate.utterance.clone();
+            let _ = (self.on_action)(ScriptAction::Speak {
+                text: text.clone(),
+                label: format!("do:{behavior}"),
+                barge_in: false,
+                interrupt_class: None,
+                delivery: "gemini_text".to_string(),
+            });
+            log.push(lks_core::contract_do::DoTurn {
+                speaker: "caller".to_string(),
+                text: text.clone(),
+            });
+            orchestrator.advance_behavior_turn();
+
+            // Wait for the agent's NEXT final (AGENT_FINAL_SEQ must advance
+            // past the baseline captured before publish, so a stale final
+            // from before this turn is never mistaken for the reply) —
+            // bounded, mirrors `_wait_agent_turn_with_policy(timeout_s=30.0)`.
+            //
+            // BUG FIX (run 006-dealer-live-full): the agent's transcription
+            // stream emits multiple `final_=true` TextStream segments per
+            // spoken turn (sentence/clause fragments), each bumping
+            // AGENT_FINAL_SEQ — see callers/openai.rs TextStream arms. Taking
+            // only the FIRST fragment ("Sure. We're available from about")
+            // meant `evaluate_behavior` never saw the actual answer (dates)
+            // that arrived in a later fragment of the SAME turn, so the
+            // do-driver looped through 5 near-identical re-asks and the
+            // agent, hearing itself interrupted/re-asked mid-sentence every
+            // time, hung up thinking the connection was broken. Concatenate
+            // every fragment that lands until AGENT_FINAL_SEQ goes quiet for
+            // `quiet_window` — a lightweight port of the observer's
+            // transcript_dedupe_window_ms merge, scoped to this wait only.
+            let quiet_window = Duration::from_millis(900);
+            let baseline =
+                crate::callers::openai::AGENT_FINAL_SEQ.load(std::sync::atomic::Ordering::SeqCst);
+            let mut last_seq = baseline;
+            let mut collected = String::new();
+            let mut quiet_deadline: Option<Instant> = None;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let agent_text = loop {
+                let seq = crate::callers::openai::AGENT_FINAL_SEQ
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                if seq > last_seq {
+                    last_seq = seq;
+                    let frag = crate::callers::openai::AGENT_FINAL_TEXT.lock().clone();
+                    let frag = frag.trim();
+                    if !frag.is_empty() {
+                        if !collected.is_empty() {
+                            collected.push(' ');
+                        }
+                        collected.push_str(frag);
+                    }
+                    quiet_deadline = Some(Instant::now() + quiet_window);
+                }
+                if let Some(qd) = quiet_deadline {
+                    if Instant::now() >= qd {
+                        break Some(collected);
+                    }
+                }
+                if Instant::now() >= deadline {
+                    break if collected.is_empty() { None } else { Some(collected) };
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            let Some(agent_text) = agent_text else {
+                let reason = format!("agent did not reply to behavior {behavior:?} within timeout");
+                {
+                    let mut w = self.writer.lock().await;
+                    w.emit(
+                        "contract.agent_timeout",
+                        Some(
+                            &json!({"behavior": behavior, "turn": turn})
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                        ),
+                        "sim.script",
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
+                }
+                self.fail_contract_do(id, label, &reason).await;
+                return Err(RunError(reason));
+            };
+            log.push(lks_core::contract_do::DoTurn {
+                speaker: "agent".to_string(),
+                text: agent_text.clone(),
+            });
+            agent_latest = Some(agent_text.clone());
+
+            let verdict = lks_core::caller_contract::evaluate_behavior(
+                &behavior,
+                target.as_deref(),
+                &agent_text,
+            );
+            if matches!(
+                verdict,
+                lks_core::caller_contract::EvaluatorVerdict::Satisfied
+            ) {
+                return Ok(());
+            }
+            // Not satisfied: loop back to check_max_turns at the top — the
+            // ONLY exit for budget exhaustion (mirrors driver.py's single
+            // canonical BEHAVIOR_TIMEOUT funnel, no inline range bound).
+        }
+    }
+
+    /// Emit the failure event + end the run (port of driver.py's single
+    /// canonical BEHAVIOR_TIMEOUT/CALLER_BEHAVIOR_VIOLATION/AGENT_TIMEOUT
+    /// exit funnel). Sets `CONTRACT_DO_FAILED` so `run.rs` can flip a
+    /// "done" status to "failed" even though the script task's JoinHandle
+    /// result is otherwise discarded on abort.
+    async fn fail_contract_do(&self, id: &str, label: &str, reason: &str) {
+        CONTRACT_DO_FAILED.store(true, std::sync::atomic::Ordering::SeqCst);
+        *CONTRACT_DO_FAILURE_REASON.lock() = reason.to_string();
+        {
+            let mut w = self.writer.lock().await;
+            w.emit(
+                "sim.script.contract_do_failed",
+                Some(
+                    &json!({"step_id": id, "label": label, "reason": reason})
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+                "sim.script",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+        let _ = self.end_tx.send(());
+    }
 }
+
+/// Set by `ScriptRuntime::fail_contract_do` on any `do:` failure exit
+/// (BEHAVIOR_TIMEOUT / CALLER_BEHAVIOR_VIOLATION / AGENT_TIMEOUT). The
+/// script task's `JoinHandle` result is discarded on abort in `run.rs`, so
+/// this pair of statics is the signal `run.rs` checks to flip a "done"
+/// status to "failed" after the bridge exits.
+pub static CONTRACT_DO_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub static CONTRACT_DO_FAILURE_REASON: parking_lot::Mutex<String> =
+    parking_lot::Mutex::new(String::new());
 
 /// Shared mic-source handle so the script runtime can play room_pcm cues.
 pub type SharedMicSource = Arc<tokio::sync::Mutex<Option<Arc<NativeAudioSource>>>>;

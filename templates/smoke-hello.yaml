@@ -17,6 +17,12 @@ execute:
   max_turns: 2
   timeout_s: 90
   first_speaker: user
+# Contract path (caller_contract single path): caller_steps drive
+# ContractCallerDriver; persona/caller/telepathy blocks below unchanged.
+caller_steps:
+  - say: "Hi, did I reach the right place?"
+  - say: "I'll call back later. Thanks, bye."
+  - end: true
 pass_criteria:
   criteria:
   - The agent responded to the caller

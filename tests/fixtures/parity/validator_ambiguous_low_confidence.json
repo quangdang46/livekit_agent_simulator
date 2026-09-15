@@ -1,0 +1,26 @@
+{
+  "id": "validator_ambiguous_low_confidence",
+  "description": "Genuinely ambiguous utterance (no act pattern hits) must be rejected as UNKNOWN, never treated as valid just because contract.behavior happens to be echoed as the fallback act.",
+  "use_semantic_verifier": true,
+  "contract": {
+    "behavior": "negotiate",
+    "target": "price",
+    "constraints": {
+      "max_turns": 3,
+      "max_budget": 30000,
+      "max_words": null,
+      "max_duration_s": null,
+      "forbidden_intents": ["financing", "trade_in", "vehicle_change"],
+      "must_not": ["invent_facts", "end_call"]
+    }
+  },
+  "candidate": {
+    "act": "negotiate",
+    "target": "price",
+    "slots": {"max_budget": 30000},
+    "utterance": "Well, that's an interesting thought about the weather today.",
+    "identity": {"behavior_id": "b2", "turn_id": 1, "generation_id": 1, "context_version": 0}
+  },
+  "expected_verdict": "UNKNOWN",
+  "expected_reason": "LOW_CONFIDENCE"
+}

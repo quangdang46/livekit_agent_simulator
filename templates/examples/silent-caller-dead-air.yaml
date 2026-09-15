@@ -18,3 +18,10 @@ execute:
   max_turns: 12
   timeout_s: 60
   first_speaker: agent
+# Contract path: silent_mode (persona speech_conditions) drops say:/do:,
+# so this scenario is wait + end only. The caller stays mute while the
+# driver still observes the agent greeting (first_speaker=agent) — the
+# dead-air case. No say:/do: steps by design.
+caller_steps:
+  - wait: 5000
+  - end: true

@@ -1,0 +1,84 @@
+{
+  "run_id": "demo-backchannel",
+  "scenario_id": "billing-stress",
+  "audio": {
+    "file": "conversation.wav",
+    "duration_ms": 12000,
+    "channels": {
+      "left": "sim",
+      "right": "agent"
+    }
+  },
+  "cues": [
+    {
+      "role": "user",
+      "start_ms": 2000,
+      "end_ms": 6000,
+      "text": "uh-huh… yeah, okay.",
+      "source": "demo",
+      "detail": "backchannel sustain · not a full turn"
+    },
+    {
+      "role": "agent",
+      "start_ms": 7000,
+      "end_ms": 11000,
+      "text": "Great — receipt sent. Anything else?",
+      "source": "demo"
+    }
+  ],
+  "markers": [
+    {
+      "type": "backchannel",
+      "start_ms": 2000,
+      "end_ms": 6000,
+      "label": "Backchannel uh-huh ×5",
+      "detail": "",
+      "step_id": null,
+      "say": null
+    }
+  ],
+  "marker_counts": {
+    "backchannel": 1
+  },
+  "script_verify": {
+    "pass": true
+  },
+  "assert_verify": {
+    "pass": true,
+    "checks": []
+  },
+  "caller": null,
+  "behavior_summary": {
+    "marker_counts": {
+      "backchannel": 1
+    }
+  },
+  "tool_events": [],
+  "tool_summary": {
+    "tool_count": 0,
+    "tool_errors": 0
+  },
+  "session_summary": null,
+  "chat_history": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "text": "uh-huh… yeah, okay."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "agent",
+      "content": [
+        {
+          "text": "Great — receipt sent. Anything else?"
+        }
+      ]
+    }
+  ],
+  "caller_contract": null,
+  "observe_gaps": []
+}

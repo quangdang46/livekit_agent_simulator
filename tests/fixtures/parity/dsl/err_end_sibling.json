@@ -1,0 +1,10 @@
+{
+  "id": "err_end_sibling",
+  "steps": [
+    {
+      "end": true,
+      "typo_field": 1
+    }
+  ],
+  "expect": "error"
+}

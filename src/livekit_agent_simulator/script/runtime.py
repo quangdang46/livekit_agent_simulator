@@ -474,6 +474,16 @@ class ScriptRunner:
                     # Non-barge lines: do not talk over the agent (silent Gemini inject).
                     if not step.barge_in:
                         await self._wait_agent_idle(timeout_s=6.0)
+                    # Turn-taking gate: never fire a new cue while previous caller
+                    # audio is still draining from the mixer — otherwise cues
+                    # overlap into continuous run-on speech (live turn-drop bug:
+                    # next cue fired on silence-timer alone while old speech
+                    # still played). Barge-in intentionally skips this gate.
+                    if not step.barge_in and step.action == "speak":
+                        try:
+                            await self.bridge.drain_persona_speech(timeout_s=8.0)
+                        except Exception:  # noqa: BLE001 — drain is best-effort gating
+                            pass
                     # Hard barge-in: always mix a short PCM blip into the mic first so
                     # the agent STT / stereo L channel actually "cuts across" speech.
                     # gemini_text alone is delayed TTS and rarely sounds like an interrupt.

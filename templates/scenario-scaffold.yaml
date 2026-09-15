@@ -71,9 +71,91 @@ dispatch:
 #       say: Wait — one second
 #       class: correction
 
-# === Script (optional) — timed cues; omit if speech_conditions/Behavior enough ===
+# === Caller steps (contract path) — the caller choreography ===
+# 9 kinds (dsl.py _KNOWN_ACTION_KINDS): say | do | wait | dtmf |
+# interrupt | play_audio | end | silence | hangup. Exactly one key per step.
+#
+# say: verbatim line — deterministic (no AI, no validator), still crosses
+#   the Orchestrator turn gate. Non-barge says wait for agent silence;
+#   barge_in: true skips that gate and cuts in (emits contract.barge).
+# do: adaptive behavior — AI generates ONE utterance for `behavior:` (catalog:
+#   ask, confirm, deny, accept, reject, negotiate, clarify, provide,
+#   arrange_visit, interrupt, end), Tier-1 rule-based validator checks
+#   act-match + confidence (>= 0.5) + target evidence + goodbye guard.
+#   Topic steering: the generator sees ONLY the BehaviorContract + recent
+#   turns — persona brief/goals NEVER reach it. Domain-specific wording
+#   (names, models) belongs in say:, not do:.
+#   target: pin ONLY a target in the Tier-1 TARGET_KEYWORDS lexicon
+#   (semantic.py: price, delivery_date, order_status, hours, plan, status,
+#   charge, fees). Any other pinned target fails closed as TARGET_UNVERIFIED
+#   by design — leave target: unset and carry the topic via say:/context.
+#   Satisfaction: a do: PASSES only when the agent's reply satisfies it
+#   (price statement / refusal / booking confirmation / generic agreement).
+#   Never author a do: whose satisfaction condition the agent cannot meet
+#   truthfully (e.g. asking the price of something out of stock) — the
+#   evaluator rightly holds out and the run fails FAILED_MAX_TURNS.
+# wait: blind ms sleep only (no wait-for-agent-turn — use trigger: silence).
+# dtmf: IVR digits string (e.g. "1w2" — w = 120ms pause). silence: emit-only
+#   control marker (no runtime wait — use trigger: silence on a say:).
+#   hangup: caller hangs up (ends run). end: run terminator (no value).
+# interrupt: fixed short cut-in line, NOT validator-gated, publishes
+#   immediately (barge by design). interaction.interrupt_class: correction
+#   (default) | backchannel.
+# play_audio: ambient bed on the mixer's parallel noise layer — delivery
+#   primitive, NEVER an utterance (no TTS, no validator, no turn-log entry).
+#   asset: builtin:<name> (templates/cues/) or a path. gain: 0.0-1.0.
+# trigger: WHEN a say:/play_audio: fires (say only for agent_speaking/silence):
+#   time: fire delay_ms after armed. agent_speaking: fire once the agent
+#     spoke continuously for min_agent_active_ms, then delay_ms.
+#   silence: fire once the agent has been silent continuously for delay_ms
+#     (delay_ms IS the silence duration) — the wait-for-agent-turn primitive.
+# interaction: delivery shaping on validated utterances (pace, hesitation,
+#   stumble, pre_delay, backchannel, barge_in) + seeded interruption policy
+#   (interruption_rate: low|medium|high + interruption_interval_ms >= 1000 +
+#   interruption_seed — deterministic backchannel cut-ins, never an LLM call).
+#   On say: only timing applies (delivery is byte-faithful by design).
+# constraints (do: only): max_turns (default 3 — widen to 5 when the agent
+#   legitimately needs several turns), max_words, max_duration_s,
+#   max_budget, forbidden_intents, must_not.
+# caller_steps:
+#   - play_audio:
+#       asset: builtin:noise.ambient
+#       gain: 0.3
+#       loop: true
+#     trigger:
+#       kind: time
+#       delay_ms: 1500
+#   - say: "Hi, I'm calling about my order."
+#   - say: "Any update on the shipping?"
+#     trigger:
+#       kind: silence
+#       delay_ms: 3000
+#   - do:
+#       behavior: ask
+#       target: order_status
+#       constraints:
+#         max_turns: 3
+#   - say: "Sorry to cut in — one more thing."
+#     trigger:
+#       kind: agent_speaking
+#       min_agent_active_ms: 1500
+#       delay_ms: 500
+#     barge_in: true
+#   - interrupt: true
+#     interaction:
+#       interrupt_class: backchannel
+#   - do:
+#       behavior: end
+#       constraints:
+#         max_turns: 5
+#         max_words: 20
+#   - end: true
+
+# === Script (optional, legacy) — timed cues; omit if speech_conditions/Behavior enough ===
 # trigger: agent_speaking | silence | time
 # action: speak | wait | hang_up
+# NOTE: prefer caller_steps: above — the legacy ScriptRunner path is
+# deprecated and will be removed once migration completes.
 # script:
 #   steps:
 #     - id: bye
@@ -83,8 +165,21 @@ dispatch:
 #       once: true
 
 # === Assert — tools / transcript / outcomes / sip ===
-# constraint_respected example: {"id":"no_card","type":"constraint_respected","must_not_phrases":["4111","card number"]}
+# tools: name + min_count/max_count + args_contains (subset match). NOTE: the
+#   agent-session observer emits tool arguments as a RAW JSON STRING
+#   (protobuf passthrough) — args_contains parses it, so plain key/value
+#   pairs just work (e.g. args_contains: {make: Toyota} matches
+#   arguments: '{"make":"Toyota","model":"Hilux"}').
+# transcript: role agent|user|any + contains_any + must_not_match (regex).
+# outcomes: transcript_contains (+ negate: true to assert absence),
+#   recovery, latency, ended_by, goals_met, constraint_respected, ...
+#   e.g. {"id":"no_card","type":"constraint_respected","must_not_phrases":["4111","card number"]}
 assert:
+  tools:
+  - name: check_inventory
+    min_count: 1
+    args_contains:
+      make: Toyota
   transcript:
   - role: agent
     contains_any:
@@ -92,6 +187,7 @@ assert:
     - support
     - hello
     - hi
+    must_not_match: "I don't know"
   outcomes:
   - id: agent_spoke
     type: transcript_contains
@@ -102,6 +198,11 @@ assert:
     - i
     - o
     - u
+  - id: no_retry_prompt
+    type: transcript_contains
+    phrases:
+    - "again, please"
+    negate: true
 
 # === PassCriteria (optional soft judge) ===
 # mode: all (default) | majority | any

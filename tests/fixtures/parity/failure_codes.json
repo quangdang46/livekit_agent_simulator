@@ -1,0 +1,14 @@
+{
+  "id": "failure_codes",
+  "description": "The seven canonical FailureReason codes and the six canonical EndedBy values must be identical string literals in both lks (Python) and lksr (Rust).",
+  "expected_failure_reasons": [
+    "CALLER_BEHAVIOR_VIOLATION",
+    "LANGUAGE_GENERATION_ERROR",
+    "VALIDATION_ERROR",
+    "TTS_ERROR",
+    "TRANSPORT_ERROR",
+    "AGENT_TIMEOUT",
+    "BEHAVIOR_TIMEOUT"
+  ],
+  "expected_ended_by": ["scenario", "caller", "agent", "timeout", "transport", "error"]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "err_interaction_key",
+  "steps": [
+    {
+      "say": "Hi.",
+      "interaction": {
+        "bogus": 1
+      }
+    }
+  ],
+  "expect": "error"
+}

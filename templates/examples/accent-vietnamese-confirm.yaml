@@ -23,6 +23,18 @@ execute:
   max_turns: 4
   timeout_s: 90
   first_speaker: user
+# Contract path (caller_contract single path): these steps drive
+# ContractCallerDriver instead of the legacy persona free-generation bridge.
+# Persona/assert/execute blocks below unchanged.
+caller_steps:
+  - say: "Chào bạn, mình muốn xác nhận đơn hàng đã đặt."
+  - do:
+      behavior: ask
+      target: delivery_date
+      constraints:
+        max_turns: 3
+  - say: "Cảm ơn bạn nhé, chào bạn."
+  - end: true
 pass_criteria:
   criteria:
   - The agent responded in Vietnamese
