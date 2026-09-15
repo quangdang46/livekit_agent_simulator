@@ -576,6 +576,27 @@ impl ScriptRuntime {
                     // total silence (run 018: bed fired, then zero dialogue
                     // until the slice cap — no evidence which half wedged).
                     eprintln!("[lksr] script fire speak ({label}): {say}");
+                    // PERMANENT instrument (not temp-debug): the cue send
+                    // is fire-and-forget (let _ =) — if the bridge never
+                    // receives, the run dies silent until the slice cap with
+                    // zero evidence. This event names the step that fired.
+                    {
+                        let mut w = self.writer.lock().await;
+                        w.emit(
+                            "sim.script.fired",
+                            Some(
+                                &serde_json::json!({"step_id": id, "label": label, "action": "speak"})
+                                    .as_object()
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            ),
+                            "sim.script",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                    }
                     let _ = (self.on_action)(ScriptAction::Speak {
                         text: say,
                         label,

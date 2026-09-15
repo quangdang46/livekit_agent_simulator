@@ -768,6 +768,7 @@ impl OpenAiCallerBridge {
                                 match tts_result {
                                     Ok(pcm) => {
                                         let frames = pcm.len() / 2;
+                                        eprintln!("[lksr] TTS ok ({label}): {frames} frames, playing to mic");
                                         // Play into the SHARED mic handle (the
                                         // same Arc run.rs handed to both the
                                         // bridge and ScriptRuntime) — NOT a
@@ -813,6 +814,7 @@ impl OpenAiCallerBridge {
                                         );
                                     }
                                     Err(e) => {
+                                        eprintln!("[lksr] TTS error ({label}): {e}");
                                         let mut w = writer_cue.lock().await;
                                         w.emit(
                                             "sim.script.tts_error",
@@ -1295,6 +1297,7 @@ impl OpenAiCallerBridge {
                                 );
                                 continue;
                             }
+                            eprintln!("[lksr] TTS speak ({label}): {text}");
                             match synthesize_caller_speech(&tts_key, &tts_voice, &text).await {
                                 Ok(pcm) => {
                                     let frames = pcm.len() / 2;
