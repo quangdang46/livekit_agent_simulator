@@ -1526,6 +1526,30 @@ impl OpenAiCallerBridge {
                                 };
                                 if let Some(t) = staged {
                                     if !t.text.trim().is_empty() {
+                                        // BUG FIX (run 011-dealer-live-full):
+                                        // the do-driver's AGENT_FINAL_SEQ/TEXT
+                                        // was only bumped from the
+                                        // lk.transcription TextStream arm
+                                        // below. This scenario's agent
+                                        // replies landed via the custom
+                                        // voice_ai.transcript DATA CHANNEL
+                                        // instead (same as the freestyle
+                                        // path's dedup priority — both
+                                        // sources race, either can win), so
+                                        // AGENT_FINAL_SEQ never advanced and
+                                        // run_contract_do hit
+                                        // contract.agent_timeout after 30s
+                                        // even though the agent had already
+                                        // replied twice. Bump here too, on
+                                        // genuine agent finals only.
+                                        if t.role == "agent" {
+                                            *crate::callers::openai::AGENT_FINAL_TEXT.lock() =
+                                                t.text.trim().to_string();
+                                            crate::callers::openai::AGENT_FINAL_SEQ.fetch_add(
+                                                1,
+                                                std::sync::atomic::Ordering::SeqCst,
+                                            );
+                                        }
                                         let mut w = writer_obs.lock().await;
                                         let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
                                         observer.lock().await.on_transcript(
