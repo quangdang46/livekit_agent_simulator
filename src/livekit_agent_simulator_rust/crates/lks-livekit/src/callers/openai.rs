@@ -938,6 +938,17 @@ impl OpenAiCallerBridge {
                                 .iter()
                                 .any(|i| i != Self::SIM_IDENTITY && i != &self.identity);
                             AGENT_ACTIVE_SPEAKER.store(is_agent, Ordering::SeqCst);
+                            // Feed ScriptRuntime's silence/agent_speaking gates
+                            // (contract path was deaf — run 005: only
+                            // caller-step-0 fired). Same latch the freestyle
+                            // pump reads via AGENT_ACTIVE_SPEAKER.
+                            if let Some(st) = &self.script_state {
+                                let mut sc = st.lock().await;
+                                sc.agent_is_active_speaker = is_agent;
+                                if is_agent {
+                                    sc.agent_has_spoken = true;
+                                }
+                            }
                         }
                         Ok(SimRoomEvent::TrackSubscribed { track_sid, participant_identity }) => {
                             // room.track_subscribed (port of observer.py _on_track).
@@ -1425,6 +1436,17 @@ impl OpenAiCallerBridge {
                                 .iter()
                                 .any(|i| i != Self::SIM_IDENTITY && i != &self.identity);
                             AGENT_ACTIVE_SPEAKER.store(is_agent, Ordering::SeqCst);
+                            // Feed ScriptRuntime's silence/agent_speaking gates
+                            // (contract path was deaf — run 005: only
+                            // caller-step-0 fired). Same latch the freestyle
+                            // pump reads via AGENT_ACTIVE_SPEAKER.
+                            if let Some(st) = &self.script_state {
+                                let mut sc = st.lock().await;
+                                sc.agent_is_active_speaker = is_agent;
+                                if is_agent {
+                                    sc.agent_has_spoken = true;
+                                }
+                            }
                         }
                         Ok(SimRoomEvent::TrackSubscribed { track_sid, participant_identity }) => {
                             let mut w = writer_obs.lock().await;
