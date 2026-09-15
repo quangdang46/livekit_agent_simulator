@@ -1011,13 +1011,13 @@ pub async fn execute_scenario_parsed(
     // `CONTRACT_DO_FAILED` is the side channel that carries it here (port of
     // driver.py's BEHAVIOR_TIMEOUT/CALLER_BEHAVIOR_VIOLATION ending the run
     // with error).
-    let contract_do_failure = if crate::script::CONTRACT_DO_FAILED.load(std::sync::atomic::Ordering::SeqCst)
-    {
-        status = "failed";
-        Some(crate::script::CONTRACT_DO_FAILURE_REASON.lock().clone())
-    } else {
-        None
-    };
+    let contract_do_failure =
+        if crate::script::CONTRACT_DO_FAILED.load(std::sync::atomic::Ordering::SeqCst) {
+            status = "failed";
+            Some(crate::script::CONTRACT_DO_FAILURE_REASON.lock().clone())
+        } else {
+            None
+        };
 
     let mut w = writer_arc.lock().await;
     let duration_ms = w.t0_mono().elapsed().as_millis() as i64;

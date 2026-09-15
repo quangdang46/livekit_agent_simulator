@@ -572,9 +572,14 @@ impl ScriptRuntime {
     ) -> Result<(), RunError> {
         let behavior = Self::step_str(step, "behavior", "");
         if behavior.trim().is_empty() {
-            return Err(RunError(format!("contract_do step {id:?}: missing behavior")));
+            return Err(RunError(format!(
+                "contract_do step {id:?}: missing behavior"
+            )));
         }
-        let target = step.get("target").and_then(|v| v.as_str()).map(String::from);
+        let target = step
+            .get("target")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let constraints_raw = step
             .get("constraints")
             .and_then(|v| v.as_object())
@@ -742,8 +747,7 @@ impl ScriptRuntime {
                 crate::callers::openai::AGENT_FINAL_SEQ.load(std::sync::atomic::Ordering::SeqCst);
             let deadline = Instant::now() + Duration::from_secs(30);
             let agent_text = loop {
-                if crate::callers::openai::AGENT_FINAL_SEQ
-                    .load(std::sync::atomic::Ordering::SeqCst)
+                if crate::callers::openai::AGENT_FINAL_SEQ.load(std::sync::atomic::Ordering::SeqCst)
                     > baseline
                 {
                     break Some(crate::callers::openai::AGENT_FINAL_TEXT.lock().clone());
@@ -781,9 +785,15 @@ impl ScriptRuntime {
             });
             agent_latest = Some(agent_text.clone());
 
-            let verdict =
-                lks_core::caller_contract::evaluate_behavior(&behavior, target.as_deref(), &agent_text);
-            if matches!(verdict, lks_core::caller_contract::EvaluatorVerdict::Satisfied) {
+            let verdict = lks_core::caller_contract::evaluate_behavior(
+                &behavior,
+                target.as_deref(),
+                &agent_text,
+            );
+            if matches!(
+                verdict,
+                lks_core::caller_contract::EvaluatorVerdict::Satisfied
+            ) {
                 return Ok(());
             }
             // Not satisfied: loop back to check_max_turns at the top — the

@@ -11,7 +11,9 @@
 
 use serde_json::{json, Map, Value as Json};
 
-use crate::caller_contract::{BehaviorContract, CandidateUtterance, ContractConstraints, GenerationIdentity};
+use crate::caller_contract::{
+    BehaviorContract, CandidateUtterance, ContractConstraints, GenerationIdentity,
+};
 use crate::caller_dsl::DEFAULT_BEHAVIOR_CATALOG;
 
 pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
@@ -80,7 +82,11 @@ pub fn parse_do_constraints(raw: Option<&Map<String, Json>>) -> ContractConstrai
 /// Build the `BehaviorContract` a `do:` CallerAction represents (mirrors
 /// how driver.py constructs BehaviorContract(behavior, target, constraints)
 /// from the parsed CallerAction).
-pub fn contract_from_do_payload(behavior: &str, target: Option<&str>, raw: &Map<String, Json>) -> BehaviorContract {
+pub fn contract_from_do_payload(
+    behavior: &str,
+    target: Option<&str>,
+    raw: &Map<String, Json>,
+) -> BehaviorContract {
     BehaviorContract {
         behavior: behavior.to_string(),
         target: target.map(|s| s.to_string()),
@@ -107,7 +113,9 @@ pub fn build_context(
     recent_turns_cap: usize,
 ) -> Json {
     let capped: Vec<&DoTurn> = if recent_turns.len() > recent_turns_cap {
-        recent_turns[recent_turns.len() - recent_turns_cap..].iter().collect()
+        recent_turns[recent_turns.len() - recent_turns_cap..]
+            .iter()
+            .collect()
     } else {
         recent_turns.iter().collect()
     };
@@ -141,7 +149,10 @@ fn strip_fence(raw: &str) -> &str {
 /// `language_adapter.py::_parse_backend_response`). Required keys: act,
 /// utterance (a missing/empty required key is a backend error, never a
 /// silently-defaulted candidate).
-pub fn parse_backend_response(raw_text: &str, identity: GenerationIdentity) -> Result<CandidateUtterance, String> {
+pub fn parse_backend_response(
+    raw_text: &str,
+    identity: GenerationIdentity,
+) -> Result<CandidateUtterance, String> {
     let stripped = strip_fence(raw_text);
     let parsed: Json = serde_json::from_str(stripped)
         .map_err(|e| format!("backend did not return valid JSON: {e}"))?;
@@ -158,7 +169,9 @@ pub fn parse_backend_response(raw_text: &str, identity: GenerationIdentity) -> R
         missing.push("utterance");
     }
     if !missing.is_empty() {
-        return Err(format!("backend response missing required field(s): {missing:?}"));
+        return Err(format!(
+            "backend response missing required field(s): {missing:?}"
+        ));
     }
     let slots = match obj.get("slots") {
         Some(Json::Object(m)) => m.clone().into_iter().collect(),
@@ -167,7 +180,10 @@ pub fn parse_backend_response(raw_text: &str, identity: GenerationIdentity) -> R
     };
     Ok(CandidateUtterance {
         act: act.to_string(),
-        target: obj.get("target").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        target: obj
+            .get("target")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         slots,
         utterance: utterance.to_string(),
         identity,
@@ -217,9 +233,13 @@ pub async fn generate_do_candidate(
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format!("do: backend HTTP {status}: {}", text.chars().take(500).collect::<String>()));
+        return Err(format!(
+            "do: backend HTTP {status}: {}",
+            text.chars().take(500).collect::<String>()
+        ));
     }
-    let envelope: Json = serde_json::from_str(&text).map_err(|e| format!("do: backend response not JSON: {e}"))?;
+    let envelope: Json =
+        serde_json::from_str(&text).map_err(|e| format!("do: backend response not JSON: {e}"))?;
     let content = envelope
         .get("choices")
         .and_then(|c| c.get(0))
@@ -273,7 +293,10 @@ mod tests {
             },
         };
         let turns: Vec<DoTurn> = (0..10)
-            .map(|i| DoTurn { speaker: "caller".into(), text: format!("turn {i}") })
+            .map(|i| DoTurn {
+                speaker: "caller".into(),
+                text: format!("turn {i}"),
+            })
             .collect();
         let ctx = build_context(&contract, 2, Some("hello"), &[], &turns, 6);
         let recent = ctx.get("recent_turns").and_then(|v| v.as_array()).unwrap();
