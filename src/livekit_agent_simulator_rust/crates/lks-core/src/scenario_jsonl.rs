@@ -338,12 +338,7 @@ pub fn parse_scenario_jsonl(path: &PathBuf) -> Result<Scenario, ScenarioError> {
                     })?;
                 scenario.caller_actions =
                     crate::caller_dsl::parse_steps(steps, &path.display().to_string())
-                        .map_err(|e| {
-                            ScenarioError(format!(
-                                "{}:{line_no}: {e}",
-                                path.display()
-                            ))
-                        })?;
+                        .map_err(|e| ScenarioError(format!("{}:{line_no}: {e}", path.display())))?;
             }
             _ => {
                 return Err(ScenarioError(format!(

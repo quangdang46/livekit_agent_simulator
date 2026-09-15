@@ -32,7 +32,8 @@ const SIM_TRANSCRIPT_SOURCES: [&str; 2] = ["sim.gemini", "sim.openai"];
 /// Lower index = higher priority when deduping finals from multiple sources
 /// (observer.py:35-36) — do not unify/reorder.
 const USER_FINAL_PRIORITY: [&str; 4] = ["sim.gemini", "sim.openai", "data", TOPIC_LK_TRANSCRIPTION];
-const AGENT_FINAL_PRIORITY: [&str; 4] = ["data", TOPIC_LK_TRANSCRIPTION, "sim.gemini", "sim.openai"];
+const AGENT_FINAL_PRIORITY: [&str; 4] =
+    ["data", TOPIC_LK_TRANSCRIPTION, "sim.gemini", "sim.openai"];
 
 const BACKCHANNEL_GRACE_MS_DEFAULT: i64 = 700;
 const BACKCHANNEL_MAX_WORDS_DEFAULT: usize = 6;
@@ -81,7 +82,10 @@ fn source_priority_rank(source: &str, role: &str) -> usize {
         &AGENT_FINAL_PRIORITY
     };
     let canonical = canonical_source(source);
-    order.iter().position(|s| *s == canonical).unwrap_or(order.len())
+    order
+        .iter()
+        .position(|s| *s == canonical)
+        .unwrap_or(order.len())
 }
 
 /// Config knobs `Observer` needs from the full `ObserveConfig` — kept small
@@ -185,7 +189,8 @@ impl Observer {
             return false;
         }
         let key = (role.to_string(), norm);
-        let window = std::time::Duration::from_millis(self.cfg.transcript_dedupe_window_ms.max(0) as u64);
+        let window =
+            std::time::Duration::from_millis(self.cfg.transcript_dedupe_window_ms.max(0) as u64);
         if let Some((prev_source, prev_mono)) = self.dedupe_entries.get(&key) {
             if now.saturating_duration_since(*prev_mono) <= window
                 && source_priority_rank(source, role) >= source_priority_rank(prev_source, role)
@@ -238,7 +243,15 @@ impl Observer {
             if self.role_has_final(role) {
                 return;
             }
-            w.emit(&format!("transcript.{role}.interim"), Some(&spec), source, None, None, true, None);
+            w.emit(
+                &format!("transcript.{role}.interim"),
+                Some(&spec),
+                source,
+                None,
+                None,
+                true,
+                None,
+            );
             return;
         }
 
@@ -249,7 +262,15 @@ impl Observer {
             self.last_interim_key = Some(interim_key);
             let mut interim_spec = spec.clone();
             interim_spec.insert("final".into(), Json::Bool(false));
-            w.emit(&format!("transcript.{role}.interim"), Some(&interim_spec), source, None, None, true, None);
+            w.emit(
+                &format!("transcript.{role}.interim"),
+                Some(&interim_spec),
+                source,
+                None,
+                None,
+                true,
+                None,
+            );
         }
 
         // (6) Dedupe gate.
@@ -281,7 +302,8 @@ impl Observer {
             return;
         }
 
-        let mut merge_as_same_turn = self.last_user_final_mono.is_some() && !self.agent_replied_this_turn;
+        let mut merge_as_same_turn =
+            self.last_user_final_mono.is_some() && !self.agent_replied_this_turn;
         if !merge_as_same_turn {
             if let (Some(last_user), Some(last_agent)) =
                 (self.last_user_final_mono, self.last_agent_final_mono)
@@ -306,7 +328,15 @@ impl Observer {
         if merge_as_same_turn {
             let mut merged_spec = spec;
             merged_spec.insert("same_turn".into(), Json::Bool(true));
-            w.emit("transcript.user.final", Some(&merged_spec), source, None, None, true, None);
+            w.emit(
+                "transcript.user.final",
+                Some(&merged_spec),
+                source,
+                None,
+                None,
+                true,
+                None,
+            );
             self.agent_replied_this_turn = false;
             return;
         }
@@ -319,7 +349,15 @@ impl Observer {
         self.last_user_final_mono = Some(now_mono);
         self.agent_replied_this_turn = false;
         self.finalized_roles.insert("user".to_string());
-        w.emit("transcript.user.final", Some(&spec), source, None, None, true, None);
+        w.emit(
+            "transcript.user.final",
+            Some(&spec),
+            source,
+            None,
+            None,
+            true,
+            None,
+        );
     }
 
     /// (8) AGENT branch (observer.py:560-591).
@@ -338,7 +376,15 @@ impl Observer {
                 "note".into(),
                 Json::String("agent spoke before user; not counted as a turn".into()),
             );
-            w.emit("transcript.agent.preamble", Some(&spec), source, None, None, true, None);
+            w.emit(
+                "transcript.agent.preamble",
+                Some(&spec),
+                source,
+                None,
+                None,
+                true,
+                None,
+            );
             return;
         }
         if self.turn == 0 {
@@ -357,7 +403,15 @@ impl Observer {
         self.last_agent_final_mono = Some(now_mono);
         self.last_agent_final_text = Some(text.to_string());
         self.finalized_roles.insert("agent".to_string());
-        w.emit("transcript.agent.final", Some(&spec), source, None, None, true, None);
+        w.emit(
+            "transcript.agent.final",
+            Some(&spec),
+            source,
+            None,
+            None,
+            true,
+            None,
+        );
     }
 }
 
@@ -408,7 +462,10 @@ mod parity_tests {
         if let Some(v) = cfg.get("first_speaker").and_then(|v| v.as_str()) {
             oc.first_speaker = v.to_string();
         }
-        if let Some(v) = cfg.get("transcript_dedupe_window_ms").and_then(|v| v.as_i64()) {
+        if let Some(v) = cfg
+            .get("transcript_dedupe_window_ms")
+            .and_then(|v| v.as_i64())
+        {
             oc.transcript_dedupe_window_ms = v;
         }
         Observer::new(oc)
@@ -432,34 +489,70 @@ mod parity_tests {
                 let at_mono_ms = step["at_mono_ms"].as_i64().unwrap_or(0).max(0) as u64;
                 let segment_id = step.get("segment_id").and_then(|v| v.as_str());
                 let now_mono = base + Duration::from_millis(at_mono_ms);
-                obs.on_transcript(&mut w, role, text, final_, segment_id, source, now_mono, at_mono_ms as i64);
+                obs.on_transcript(
+                    &mut w,
+                    role,
+                    text,
+                    final_,
+                    segment_id,
+                    source,
+                    now_mono,
+                    at_mono_ms as i64,
+                );
             }
 
             if let Some(expect_events) = case.get("expect_events").and_then(|v| v.as_array()) {
                 for expected in expect_events {
                     let kind = expected["kind"].as_str().expect("expect_events[].kind");
-                    let matches: Vec<_> = w.events().iter().filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some(kind)).collect();
-                    assert!(!matches.is_empty(), "case {name}: expected at least one {kind} event, found none");
-                    if let Some(spec_contains) = expected.get("spec_contains").and_then(|v| v.as_object()) {
+                    let matches: Vec<_> = w
+                        .events()
+                        .iter()
+                        .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some(kind))
+                        .collect();
+                    assert!(
+                        !matches.is_empty(),
+                        "case {name}: expected at least one {kind} event, found none"
+                    );
+                    if let Some(spec_contains) =
+                        expected.get("spec_contains").and_then(|v| v.as_object())
+                    {
                         let found = matches.iter().any(|e| {
                             let spec = e.get("spec").and_then(|s| s.as_object());
-                            spec_contains.iter().all(|(k, v)| spec.and_then(|s| s.get(k)) == Some(v))
+                            spec_contains
+                                .iter()
+                                .all(|(k, v)| spec.and_then(|s| s.get(k)) == Some(v))
                         });
-                        assert!(found, "case {name}: no {kind} event matched spec_contains {spec_contains:?}");
+                        assert!(
+                            found,
+                            "case {name}: no {kind} event matched spec_contains {spec_contains:?}"
+                        );
                     }
                 }
             }
 
             if let Some(counts) = case.get("expect_event_counts").and_then(|v| v.as_object()) {
                 for (kind, expected_count) in counts {
-                    let expected_count = expected_count.as_i64().expect("expect_event_counts[] value");
-                    let actual = w.events().iter().filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some(kind.as_str())).count() as i64;
-                    assert_eq!(actual, expected_count, "case {name}: expected {expected_count} {kind} event(s), found {actual}");
+                    let expected_count = expected_count
+                        .as_i64()
+                        .expect("expect_event_counts[] value");
+                    let actual = w
+                        .events()
+                        .iter()
+                        .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some(kind.as_str()))
+                        .count() as i64;
+                    assert_eq!(
+                        actual, expected_count,
+                        "case {name}: expected {expected_count} {kind} event(s), found {actual}"
+                    );
                 }
             }
 
             if let Some(expected_turn) = case.get("expect_final_turn").and_then(|v| v.as_i64()) {
-                assert_eq!(obs.turn(), expected_turn, "case {name}: final turn mismatch");
+                assert_eq!(
+                    obs.turn(),
+                    expected_turn,
+                    "case {name}: final turn mismatch"
+                );
             }
 
             let _ = fs::remove_dir_all(&dir);

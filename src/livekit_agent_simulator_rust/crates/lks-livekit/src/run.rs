@@ -695,7 +695,12 @@ pub async fn execute_scenario_parsed(
             .with_silent_mode(silent)
             .with_observe(cfg.observe.clone())
             .with_speech_conditions(persona_sc)
-            .with_cue_rx(cue_rx);
+            .with_cue_rx(cue_rx)
+            // Fix (lksr hardcoded 45s slice cap): run_spec() resolves
+            // Execute.timeout_s || Simulator.timeout_s (default 120s, see
+            // lks-core::scenario::SimulatorSpec) instead of the caller
+            // bridge's own historical 45s constant.
+            .with_slice_cap_secs(run_spec.timeout_s);
             Box::pin(async move { bridge.run(end_rx).await })
         }
     };

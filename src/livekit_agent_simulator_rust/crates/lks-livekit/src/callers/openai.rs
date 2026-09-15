@@ -60,6 +60,13 @@ pub struct OpenAiCallerBridge {
     cue_rx: parking_lot::Mutex<Option<crate::script::CueRx>>,
     /// observe.* knobs for data-topic/session observation (Python parity).
     observe: ObserveConfig,
+    /// Fix (lksr hardcoded 45s slice cap): the hard per-run timer used to be
+    /// a bare `Duration::from_secs(45)` regardless of scenario config.
+    /// Sourced from `Scenario::run_spec().timeout_s` (Execute overrides
+    /// Simulator, default 120s — see lks-core::scenario) by run.rs; falls
+    /// back to the historical 45s when unset (`with_slice_cap_secs` not
+    /// called), matching prior behavior for any caller that doesn't opt in.
+    slice_cap_secs: u64,
 }
 
 impl OpenAiCallerBridge {
@@ -90,12 +97,22 @@ impl OpenAiCallerBridge {
             persona_speech_conditions: Default::default(),
             cue_rx: parking_lot::Mutex::new(None),
             observe: ObserveConfig::default(),
+            slice_cap_secs: 45,
         }
     }
 
     /// Builder: observe config for data-topic + lk.agent.session observation.
     pub fn with_observe(mut self, observe: ObserveConfig) -> Self {
         self.observe = observe;
+        self
+    }
+
+    /// Builder: hard per-run slice cap in seconds (fix: was hardcoded 45s —
+    /// see `slice_cap_secs` field doc). Non-positive values fall back to the
+    /// 45s default rather than disabling the cap or panicking on Duration
+    /// construction.
+    pub fn with_slice_cap_secs(mut self, secs: i64) -> Self {
+        self.slice_cap_secs = if secs > 0 { secs as u64 } else { 45 };
         self
     }
 
@@ -608,9 +625,12 @@ impl OpenAiCallerBridge {
         let mut data_router = crate::observe::DataRouter::new(self.observe.clone());
         let writer_obs = self.writer.clone();
         let mut disconnect_rx = end_rx.resubscribe();
-        // Hard cap: single immutable timer so it actually fires after 45s (a
-        // sleep recreated per iteration resets it and the cap never triggers).
-        let cap = tokio::time::sleep(std::time::Duration::from_secs(45));
+        // Hard cap: single immutable timer so it actually fires after
+        // `slice_cap_secs` (a sleep recreated per iteration resets it and the
+        // cap never triggers). Fix: this was a bare `from_secs(45)` — now
+        // sourced from Scenario::run_spec().timeout_s via with_slice_cap_secs
+        // (run.rs), falling back to the historical 45s when unset.
+        let cap = tokio::time::sleep(std::time::Duration::from_secs(self.slice_cap_secs));
         tokio::pin!(cap);
         // Cue consumer: ScriptRuntime Speak/Dtmf commands (port of
         // bridge.inject_cue). Speak = verbatim user-turn text item +
@@ -856,7 +876,7 @@ impl OpenAiCallerBridge {
                     }
                 }
                 _ = &mut cap => {
-                    eprintln!("[lksr] slice cap reached (45s) — ending run");
+                    eprintln!("[lksr] slice cap reached ({}s) — ending run", self.slice_cap_secs);
                     break;
                 }
             }

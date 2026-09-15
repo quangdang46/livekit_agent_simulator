@@ -367,6 +367,94 @@ impl Scenario {
     }
 }
 
+/// Port of the `caller_steps` → `script_steps` projection described above
+/// (fix: caller_steps ignored / freestyle-only driver). Each `CallerAction`
+/// becomes a raw ScriptStep dict (same field names `crate::script::parse`
+/// already validates); kinds without a ScriptStep equivalent in this slice
+/// (`do`, `interrupt`, `silence` — behavior-catalog / rate-based cues, not
+/// timed caller cues) are skipped rather than erroring, since they carry no
+/// runtime effect on the legacy driver either way.
+fn caller_actions_to_script_steps(actions: &[crate::caller_dsl::CallerAction]) -> Vec<Json> {
+    let mut out = Vec::with_capacity(actions.len());
+    for (i, action) in actions.iter().enumerate() {
+        let mut step = Map::new();
+        step.insert("id".into(), Json::String(format!("caller-step-{i}")));
+        let trigger = action.get("trigger").and_then(|v| v.as_object());
+        match action.kind.as_str() {
+            "say" => {
+                let Some(text) = action.get("say").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                step.insert("action".into(), Json::String("speak".into()));
+                step.insert("say".into(), Json::String(text.to_string()));
+                if let Some(bi) = action.get("barge_in") {
+                    step.insert("barge_in".into(), bi.clone());
+                }
+                insert_trigger_fields(&mut step, trigger);
+            }
+            "wait" => {
+                let Some(ms) = action.get("wait").and_then(|v| v.as_i64()) else {
+                    continue;
+                };
+                step.insert("action".into(), Json::String("wait".into()));
+                step.insert("trigger".into(), Json::String("time".into()));
+                step.insert("delay_ms".into(), Json::Number(ms.into()));
+            }
+            "dtmf" => {
+                let Some(digits) = action.get("dtmf").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                step.insert("action".into(), Json::String("dtmf".into()));
+                step.insert("trigger".into(), Json::String("time".into()));
+                step.insert("digits".into(), Json::String(digits.to_string()));
+            }
+            "end" | "hangup" => {
+                step.insert("action".into(), Json::String("hang_up".into()));
+                step.insert("trigger".into(), Json::String("time".into()));
+            }
+            "play_audio" => {
+                let Some(spec) = action.get("play_audio").and_then(|v| v.as_object()) else {
+                    continue;
+                };
+                step.insert("action".into(), Json::String("speak".into()));
+                step.insert("delivery".into(), Json::String("room_pcm".into()));
+                if let Some(asset) = spec.get("asset") {
+                    step.insert("asset".into(), asset.clone());
+                }
+                if let Some(gain) = spec.get("gain") {
+                    step.insert("gain".into(), gain.clone());
+                }
+                if let Some(l) = spec.get("loop") {
+                    step.insert("loop".into(), l.clone());
+                }
+                insert_trigger_fields(&mut step, trigger);
+            }
+            // "do" / "interrupt" / "silence": no ScriptStep equivalent yet —
+            // dropped (parse-only surface for these predates a driver on
+            // either side; see caller_dsl.rs module docs).
+            _ => continue,
+        }
+        out.push(Json::Object(step));
+    }
+    out
+}
+
+/// Flatten a caller_dsl `trigger: {kind, delay_ms, min_agent_active_ms}`
+/// object onto the flat ScriptStep fields it maps to (trigger is a plain
+/// string there, sibling to top-level delay_ms/min_agent_active_ms keys).
+fn insert_trigger_fields(step: &mut Map<String, Json>, trigger: Option<&Map<String, Json>>) {
+    let Some(trigger) = trigger else { return };
+    if let Some(kind) = trigger.get("kind") {
+        step.insert("trigger".into(), kind.clone());
+    }
+    if let Some(delay) = trigger.get("delay_ms") {
+        step.insert("delay_ms".into(), delay.clone());
+    }
+    if let Some(min_active) = trigger.get("min_agent_active_ms") {
+        step.insert("min_agent_active_ms".into(), min_active.clone());
+    }
+}
+
 /// `_parse_hold_timeout`: clamp [5.0, 300.0] inclusive; `:g` formatting in error.
 pub fn parse_hold_timeout(raw: Option<f64>, where_: &str) -> Result<Option<f64>, String> {
     let Some(value) = raw else {
@@ -567,11 +655,37 @@ pub fn scenario_from_dict(
     // a silent fallback to the legacy script path).
     let mut caller_actions = Vec::new();
     if let Some(raw_steps) = data.get("caller_steps") {
-        let arr = raw_steps.as_array().ok_or_else(|| {
-            ScenarioError(format!("{path_label}: caller_steps must be an array"))
-        })?;
-        caller_actions =
-            crate::caller_dsl::parse_steps(arr, path_label)?;
+        let arr = raw_steps
+            .as_array()
+            .ok_or_else(|| ScenarioError(format!("{path_label}: caller_steps must be an array")))?;
+        caller_actions = crate::caller_dsl::parse_steps(arr, path_label)?;
+    }
+
+    // Fix (lksr caller_steps ignored): the Rust caller bridges only ever
+    // drove the legacy `script_steps` list (ScriptRuntime, see
+    // crate::script), never `caller_actions` — a scenario authored purely
+    // with `caller_steps:` ran freestyle-only. `caller_actions` and
+    // `ScriptStep` share the same trigger vocabulary (time/agent_speaking/
+    // silence, delay_ms, min_agent_active_ms) and action set (say/wait/
+    // dtmf/end), so the minimal, low-risk fix is to project caller_actions
+    // onto the same ScriptStep JSON shape ScriptRuntime already drives —
+    // no new driver/timer machinery, and legacy `script:` scenarios (whose
+    // script_steps is already populated above) are completely unaffected.
+    if script_steps.is_empty() && !caller_actions.is_empty() {
+        let raw = caller_actions_to_script_steps(&caller_actions);
+        if !raw.is_empty() {
+            let mut spec = Map::new();
+            spec.insert("steps".into(), Json::Array(raw));
+            match crate::script::parse::parse_script_steps(&spec, path_label) {
+                Ok(typed) => {
+                    script_steps = typed
+                        .iter()
+                        .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
+                        .collect();
+                }
+                Err(e) => return Err(ScenarioError(e)),
+            }
+        }
     }
 
     let persona = data
