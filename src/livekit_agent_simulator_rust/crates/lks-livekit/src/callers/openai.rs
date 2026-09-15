@@ -1557,7 +1557,19 @@ impl OpenAiCallerBridge {
                                 // run_plumbing has no persona WS whose
                                 // input_audio_transcription.completed would
                                 // otherwise bump it via emit_agent_final.
-                                if final_ {
+                                //
+                                // BUG FIX (run 008-dealer-live-full): this used
+                                // to bump on ANY final_ (agent OR user), so the
+                                // CALLER's own re-finalized speech (lk STT
+                                // often re-emits a "user final" a few seconds
+                                // after we TTS'd it) overwrote AGENT_FINAL_TEXT
+                                // with our own line and reset the do-driver's
+                                // quiet-window collector — evaluate_behavior
+                                // then judged a garbled/wrong string and the
+                                // do:arrange_visit step burned all 5 turns
+                                // despite the agent giving a satisfying reply.
+                                // Scope the bump to genuine agent finals only.
+                                if final_ && role == "agent" {
                                     *crate::callers::openai::AGENT_FINAL_TEXT.lock() =
                                         text.trim().to_string();
                                     crate::callers::openai::AGENT_FINAL_SEQ.fetch_add(
