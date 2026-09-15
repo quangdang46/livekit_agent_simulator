@@ -771,14 +771,23 @@ impl OpenAiCallerBridge {
                                 match tts_result {
                                     Ok(pcm) => {
                                         let frames = pcm.len() / 2;
-                                        if let Some(mic) = &tts_mic {
-                                            let shared: crate::script::SharedMicSource =
-                                                Arc::new(tokio::sync::Mutex::new(Some(
-                                                    mic.clone(),
-                                                )));
+                                        // Play into the SHARED mic handle (the
+                                        // same Arc run.rs handed to both the
+                                        // bridge and ScriptRuntime) — NOT a
+                                        // throwaway wrapper. A fresh wrapper
+                                        // around a clone only mirrors the
+                                        // Option<Arc> POINTER at wrap time;
+                                        // if the bridge's source was replaced
+                                        // later (re-publish), the wrapper
+                                        // still points at the stale source and
+                                        // the agent hears nothing (run 010:
+                                        // TTS synthesized fine but zero agent
+                                        // reply — playback went nowhere the
+                                        // agent subscribes to).
+                                        if let Some(shared) = &self.shared_mic {
                                             if let Err(e) =
                                                 crate::script::play_pcm_to_source(
-                                                    &shared, &pcm, OPENAI_OUT_RATE,
+                                                    shared, &pcm, OPENAI_OUT_RATE,
                                                 )
                                                 .await
                                             {
@@ -794,6 +803,18 @@ impl OpenAiCallerBridge {
                                                 );
                                                 continue;
                                             }
+                                        } else if tts_mic.is_some() {
+                                            let mut w = writer_cue.lock().await;
+                                            w.emit(
+                                                "sim.script.tts_error",
+                                                Some(&serde_json::json!({"label": tts_label, "error": "shared_mic not wired — TTS has no mic to play into"}).as_object().cloned().unwrap_or_default()),
+                                                "sim.script",
+                                                None,
+                                                None,
+                                                false,
+                                                None,
+                                            );
+                                            continue;
                                         }
                                         let mut w = writer_cue.lock().await;
                                         w.emit(
