@@ -1,0 +1,13 @@
+{
+  "id": "backchannel",
+  "toc": "Backchannel",
+  "title": "Backchannel",
+  "color": "#67e8f9",
+  "copy": "The caller says uh-huh while the agent talks. The agent keeps going and it is not counted as an interruption.",
+  "chips": [
+    [
+      "not counted as interruption",
+      "pass"
+    ]
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "run_id": "demo-noise",
+  "scenario_id": "billing-stress",
+  "persona": {
+    "name": "Alex"
+  },
+  "window_s": [
+    8.0,
+    18.0
+  ],
+  "duration_ms": 10000
+}

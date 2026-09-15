@@ -1,0 +1,67 @@
+{
+  "run_id": "demo-silence",
+  "scenario_id": "billing-stress",
+  "audio": {
+    "file": "conversation.wav",
+    "duration_ms": 13000,
+    "channels": {
+      "left": "sim",
+      "right": "agent"
+    }
+  },
+  "cues": [
+    {
+      "role": "user",
+      "start_ms": 8000,
+      "end_ms": 12000,
+      "text": "Sure, take your time — go ahead.",
+      "source": "demo"
+    }
+  ],
+  "markers": [
+    {
+      "type": "silence",
+      "start_ms": 2000,
+      "end_ms": 6000,
+      "label": "Silence held 4s",
+      "detail": "",
+      "step_id": null,
+      "say": null
+    }
+  ],
+  "marker_counts": {
+    "silence": 1
+  },
+  "script_verify": {
+    "pass": true
+  },
+  "assert_verify": {
+    "pass": true,
+    "checks": []
+  },
+  "caller": null,
+  "behavior_summary": {
+    "marker_counts": {
+      "silence": 1
+    }
+  },
+  "tool_events": [],
+  "tool_summary": {
+    "tool_count": 0,
+    "tool_errors": 0
+  },
+  "session_summary": null,
+  "chat_history": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "text": "Sure, take your time — go ahead."
+        }
+      ]
+    }
+  ],
+  "caller_contract": null,
+  "observe_gaps": []
+}

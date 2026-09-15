@@ -1,0 +1,13 @@
+{
+  "id": "silence",
+  "toc": "Silence",
+  "title": "Silence",
+  "color": "#f59e0b",
+  "copy": "The caller goes quiet for 4 seconds. The agent waits instead of hanging up.",
+  "chips": [
+    [
+      "no hangup",
+      "pass"
+    ]
+  ]
+}

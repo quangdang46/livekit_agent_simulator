@@ -1,0 +1,13 @@
+{
+  "id": "barge-in",
+  "toc": "Barge-in",
+  "title": "Barge-in recovery",
+  "color": "#f87171",
+  "copy": "The caller cuts in mid-answer. The agent stops, listens, then answers the new question.",
+  "chips": [
+    [
+      "recovered in 1.8s",
+      "pass"
+    ]
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "run_id": "demo-noise",
+  "scenario_id": "billing-stress",
+  "audio": {
+    "file": "conversation.wav",
+    "duration_ms": 10000,
+    "channels": {
+      "left": "sim",
+      "right": "agent"
+    }
+  },
+  "cues": [
+    {
+      "role": "agent",
+      "start_ms": 1800,
+      "end_ms": 8000,
+      "text": "Your invoice is due Friday — [noise @0:12 ignored] — shall I email the receipt?",
+      "source": "demo"
+    }
+  ],
+  "markers": [
+    {
+      "type": "noise",
+      "start_ms": 4000,
+      "end_ms": 4600,
+      "label": "Noise burst @0:12 (false_interrupt)",
+      "detail": "",
+      "step_id": null,
+      "say": null
+    }
+  ],
+  "marker_counts": {
+    "noise": 1
+  },
+  "script_verify": {
+    "pass": true
+  },
+  "assert_verify": {
+    "pass": true,
+    "checks": []
+  },
+  "caller": null,
+  "behavior_summary": {
+    "marker_counts": {
+      "noise": 1
+    }
+  },
+  "tool_events": [],
+  "tool_summary": {
+    "tool_count": 0,
+    "tool_errors": 0
+  },
+  "session_summary": null,
+  "chat_history": [
+    {
+      "type": "message",
+      "role": "agent",
+      "content": [
+        {
+          "text": "Your invoice is due Friday — [noise @0:12 ignored] — shall I email the receipt?"
+        }
+      ]
+    }
+  ],
+  "caller_contract": null,
+  "observe_gaps": []
+}

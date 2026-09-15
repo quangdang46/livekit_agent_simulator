@@ -1,0 +1,39 @@
+{
+  "cases": [
+    {
+      "id": "backchannel",
+      "toc": "Backchannel",
+      "duration_ms": 12000
+    },
+    {
+      "id": "barge-in",
+      "toc": "Barge-in",
+      "duration_ms": 22000
+    },
+    {
+      "id": "dtmf",
+      "toc": "DTMF",
+      "duration_ms": 14000
+    },
+    {
+      "id": "noise",
+      "toc": "Noise",
+      "duration_ms": 10000
+    },
+    {
+      "id": "silence",
+      "toc": "Silence",
+      "duration_ms": 13000
+    },
+    {
+      "id": "tools",
+      "toc": "Tools",
+      "duration_ms": 48000
+    },
+    {
+      "id": "verify",
+      "toc": "Verify",
+      "duration_ms": 10000
+    }
+  ]
+}

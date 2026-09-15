@@ -1,0 +1,13 @@
+{
+  "id": "noise",
+  "toc": "Noise",
+  "title": "Background noise",
+  "color": "#94a3b8",
+  "copy": "A loud noise bursts mid-speech. It is classified as background noise and the agent keeps talking.",
+  "chips": [
+    [
+      "agent kept speaking",
+      "pass"
+    ]
+  ]
+}

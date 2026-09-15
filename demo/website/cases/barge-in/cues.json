@@ -1,0 +1,155 @@
+{
+  "run_id": "demo-barge-in",
+  "scenario_id": "billing-stress",
+  "audio": {
+    "file": "conversation.wav",
+    "duration_ms": 22000,
+    "channels": {
+      "left": "sim",
+      "right": "agent"
+    }
+  },
+  "cues": [
+    {
+      "role": "agent",
+      "start_ms": 1800,
+      "end_ms": 6000,
+      "text": "Yes — I can help with billing. We have three plans…",
+      "source": "demo"
+    },
+    {
+      "role": "user",
+      "start_ms": 6500,
+      "end_ms": 8500,
+      "text": "Wait — I meant next Friday!",
+      "source": "demo",
+      "speech_origin": "script_barge",
+      "script_step_id": "barge-1",
+      "script_overlay": "fixture"
+    },
+    {
+      "role": "agent",
+      "start_ms": 9000,
+      "end_ms": 13000,
+      "text": "Sorry, go ahead — next Friday it is. Anything else?",
+      "source": "demo"
+    },
+    {
+      "role": "user",
+      "start_ms": 17000,
+      "end_ms": 21000,
+      "text": "Nothing urgent, I'll call back later. Thanks!",
+      "source": "demo"
+    }
+  ],
+  "markers": [
+    {
+      "type": "tool",
+      "start_ms": 2000,
+      "end_ms": 3500,
+      "label": "Tool: lookup_account",
+      "detail": "",
+      "step_id": null,
+      "say": null
+    },
+    {
+      "type": "barge_in",
+      "start_ms": 6500,
+      "end_ms": 8500,
+      "label": "Barge-in: caller cut in @0:14.5",
+      "detail": "",
+      "step_id": null,
+      "say": null
+    },
+    {
+      "type": "recovery",
+      "start_ms": 9000,
+      "end_ms": 10800,
+      "label": "Recovery: agent re-spoke in 1.8s",
+      "detail": "",
+      "step_id": null,
+      "say": null
+    }
+  ],
+  "marker_counts": {
+    "tool": 1,
+    "barge_in": 1,
+    "recovery": 1
+  },
+  "script_verify": {
+    "pass": true
+  },
+  "assert_verify": {
+    "pass": true,
+    "checks": []
+  },
+  "caller": null,
+  "behavior_summary": {
+    "marker_counts": {
+      "tool": 1,
+      "barge_in": 1,
+      "recovery": 1
+    }
+  },
+  "tool_events": [
+    {
+      "name": "lookup_account",
+      "start_ms": 2000,
+      "end_ms": 3500,
+      "duration_ms": 1500,
+      "arguments": "{\"topic\":\"billing\"}",
+      "output": "{\"account\":\"ok\"}",
+      "is_error": false,
+      "error": null,
+      "call_id": null,
+      "turn": null,
+      "source": null,
+      "parent_event_id": null
+    }
+  ],
+  "tool_summary": {
+    "tool_count": 1,
+    "tool_errors": 0
+  },
+  "session_summary": null,
+  "chat_history": [
+    {
+      "type": "message",
+      "role": "agent",
+      "content": [
+        {
+          "text": "Yes — I can help with billing. We have three plans…"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "text": "Wait — I meant next Friday!"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "agent",
+      "content": [
+        {
+          "text": "Sorry, go ahead — next Friday it is. Anything else?"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "text": "Nothing urgent, I'll call back later. Thanks!"
+        }
+      ]
+    }
+  ],
+  "caller_contract": null,
+  "observe_gaps": []
+}

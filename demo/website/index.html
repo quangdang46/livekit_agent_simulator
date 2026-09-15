@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiveKit Agent Simulator — hear how voice agents handle interruptions</title>
+<link href="https://db.onlinewebfonts.com/c/0e6de1ec911a2e267ff136bbdd384a44?family=Helvetica+Neue+Light" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Oswald:wght@500&family=Montserrat:wght@700&family=Roboto+Slab:wght@600&family=Raleway:wght@700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        brand: {
+          dark: '#2d3a2e',
+          green: '#3d5a3e',
+          light: '#f5f3ef',
+          cream: '#faf8f5',
+        },
+      },
+      fontFamily: {
+        'helvetica-neue': ['"Helvetica Neue Light"', 'Helvetica', 'Arial', 'sans-serif'],
+        'playfair': ['"Playfair Display"', 'serif'],
+        'oswald': ['"Oswald"', 'sans-serif'],
+        'montserrat': ['"Montserrat"', 'sans-serif'],
+        'roboto-slab': ['"Roboto Slab"', 'serif'],
+        'raleway': ['"Raleway"', 'sans-serif'],
+      },
+    },
+  },
+};
+</script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { font-family: 'Helvetica Neue Light', Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-down {
+  from { opacity: 0; transform: translateY(-12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up   { animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-fade-down { animation: fade-down 0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.stagger-1 { animation-delay: 0ms; }
+.stagger-2 { animation-delay: 120ms; }
+.stagger-3 { animation-delay: 240ms; }
+.stagger-4 { animation-delay: 360ms; }
+.stagger-5 { animation-delay: 480ms; }
+.stagger-6 { animation-delay: 600ms; }
+/* showcase (own structure, not the web player clone) */
+.cap-timeline { position: relative; height: 34px; border-radius: 8px; overflow: hidden; cursor: pointer; background: rgba(45,58,46,0.08); border: 1px solid rgba(45,58,46,0.15); }
+.cap-band { position: absolute; top: 5px; bottom: 5px; border-radius: 4px; opacity: .9; min-width: 3px; border: 0; padding: 0; cursor: pointer; }
+.cap-band:hover { opacity: 1; outline: 1px solid #2d3a2e; }
+.cap-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #2d3a2e; pointer-events: none; }
+.cap-row { display: grid; grid-template-columns: 1fr; gap: 8px; }
+@media (min-width: 768px) { .cap-row { grid-template-columns: 1fr 200px 1fr; } .cap-row.agent .cap-bubble { grid-column: 1; } .cap-row.user .cap-bubble { grid-column: 3; } .cap-row.mid .cap-bubble { grid-column: 2; } }
+.cap-bubble { border: 1px solid rgba(45,58,46,0.18); border-radius: 10px; padding: 10px 12px; background: #fff; min-width: 0; }
+.cap-bubble.active { border-color: #2d3a2e; box-shadow: 0 0 0 2px rgba(45,58,46,0.2); }
+</style>
+</head>
+<body>
+<div id="app" class="font-helvetica-neue">
+
+  <!-- 1) Navbar -->
+  <nav id="navbar" class="fixed top-0 left-0 right-0 z-50 transition-all duration-300 bg-transparent">
+    <div class="max-w-7xl mx-auto px-6 lg:px-8">
+      <div class="relative flex items-center h-16 md:h-20">
+
+        <!-- Desktop left links -->
+        <div class="hidden md:flex items-center gap-8 animate-fade-down stagger-1">
+          <a href="#groups" class="text-sm text-brand-dark tracking-wide uppercase hover:opacity-70 transition-opacity">Calls</a>
+          <a href="#cap-barge-in" class="text-sm text-brand-dark tracking-wide uppercase hover:opacity-70 transition-opacity">Barge-in</a>
+          <a href="#cap-tools" class="text-sm text-brand-dark tracking-wide uppercase hover:opacity-70 transition-opacity">Tools</a>
+        </div>
+
+        <!-- Center logo -->
+        <a href="#top" class="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 animate-fade-down stagger-2">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#2d3a2e" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-brand-dark fill-brand-dark"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/></svg>
+          <span class="text-xl text-brand-dark tracking-tight font-helvetica-neue">LiveKit Agent Simulator</span>
+        </a>
+
+        <!-- Desktop CTA -->
+        <div class="hidden md:inline-flex items-center ml-auto gap-2 animate-fade-down stagger-3">
+          <a href="https://github.com/quangdang46/livekit_agent_simulator" target="_blank" rel="noopener" aria-label="GitHub" class="inline-flex items-center justify-center w-10 h-10 rounded-full border border-brand-dark/20 text-brand-dark hover:bg-white/70 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-2.15c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.21.67.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+          </a>
+          <a href="#groups" class="inline-flex items-center px-5 py-2.5 bg-brand-dark text-white text-sm tracking-wide uppercase rounded-full hover:bg-brand-green transition-colors">Listen to calls</a>
+        </div>
+
+        <!-- Mobile hamburger -->
+        <button id="hamburger" aria-label="Toggle menu" class="md:hidden ml-auto z-50 w-10 h-10 relative">
+          <span id="bar-top" class="absolute left-1/2 -translate-x-1/2 top-[6px] block w-6 h-[2px] bg-brand-dark rounded transition-all duration-300 ease-[cubic-bezier(0.68,-0.6,0.32,1.6)]"></span>
+          <span id="bar-bottom" class="absolute left-1/2 -translate-x-1/2 top-[13px] block w-6 h-[2px] bg-brand-dark rounded transition-all duration-300 ease-[cubic-bezier(0.68,-0.6,0.32,1.6)]"></span>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Mobile overlay -->
+  <div id="overlay" class="md:hidden fixed inset-0 bg-brand-cream z-40 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] opacity-0 pointer-events-none">
+    <div id="overlay-inner" class="flex flex-col items-center justify-center h-full gap-8 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] delay-100 -translate-y-8 opacity-0">
+      <a href="#groups" class="menu-link text-3xl text-brand-dark tracking-tight">Calls</a>
+      <a href="#cap-barge-in" class="menu-link text-3xl text-brand-dark tracking-tight">Barge-in</a>
+      <a href="#cap-tools" class="menu-link text-3xl text-brand-dark tracking-tight">Tools</a>
+      <a href="#groups" class="menu-link mt-4 inline-flex items-center px-8 py-3.5 bg-brand-dark text-white text-lg tracking-wide rounded-full">Listen to calls</a>
+      <a href="https://github.com/quangdang46/livekit_agent_simulator" target="_blank" rel="noopener" class="menu-link inline-flex items-center gap-2 text-base text-brand-dark/70 tracking-wide">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-2.15c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.21.67.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+
+  <!-- 2) Hero -->
+  <section class="relative w-full h-screen min-h-[700px] overflow-hidden bg-brand-cream">
+    <div class="absolute inset-0">
+      <video
+        src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260820_010308_b1636845-4c15-4ab6-b0c9-9a29bfb0c6e3.mp4"
+        autoplay muted loop playsinline
+        class="w-full h-full object-cover object-bottom"></video>
+    </div>
+
+    <div class="relative z-10 flex flex-col items-start max-w-7xl mx-auto pt-28 md:pt-36 px-6 lg:px-8">
+      <a href="#groups" class="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-brand-dark/15 bg-white/60 backdrop-blur-sm hover:bg-white/80 transition-colors mb-5 md:mb-6 animate-fade-up stagger-3">
+        <span class="text-sm text-brand-dark">7 recorded calls below — press play on each one.</span>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5 text-brand-dark"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      </a>
+
+      <h1 class="text-left text-3xl sm:text-4xl md:text-5xl lg:text-6xl text-brand-dark leading-[1.05] tracking-tight max-w-4xl font-helvetica-neue animate-fade-up stagger-4">Hear how voice agents<br class="hidden sm:block"> handle real interruptions</h1>
+
+      <!-- 3) Stats -->
+      <div class="w-full mt-8 md:mt-10 animate-fade-up stagger-5">
+        <p class="text-left text-xs tracking-[0.25em] uppercase text-brand-dark/50 mb-6 md:mb-8 font-helvetica-neue">Covered in this demo</p>
+        <div class="flex flex-wrap items-center justify-start gap-6 md:gap-12 lg:gap-16 animate-fade-up stagger-6">
+          <span class="text-lg md:text-xl lg:text-2xl text-brand-dark/80 whitespace-nowrap font-playfair">Barge-in</span>
+          <span class="text-lg md:text-xl lg:text-2xl text-brand-dark/80 whitespace-nowrap font-oswald uppercase">Noise</span>
+          <span class="text-lg md:text-xl lg:text-2xl text-brand-dark/80 whitespace-nowrap font-montserrat">DTMF</span>
+          <span class="text-lg md:text-xl lg:text-2xl text-brand-dark/80 whitespace-nowrap font-roboto-slab uppercase">Tools</span>
+          <span class="text-lg md:text-xl lg:text-2xl text-brand-dark/80 whitespace-nowrap font-raleway">Silence</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4) Showcase: runs register (manifest + per-case folder) -->
+  <section class="w-full bg-brand-cream">
+    <div class="max-w-7xl mx-auto px-6 lg:px-8 py-16 md:py-24">
+      <p class="text-left text-xs tracking-[0.25em] uppercase text-brand-dark/50 mb-4 font-helvetica-neue animate-fade-up">What it catches</p>
+      <h2 class="text-left text-2xl sm:text-3xl md:text-4xl text-brand-dark leading-[1.05] tracking-tight max-w-3xl font-helvetica-neue animate-fade-up">Every call, stress-tested.<br class="hidden sm:block"> Press play on each moment.</h2>
+      <nav id="tour" class="flex flex-wrap gap-2 mt-8" aria-label="Capability tour"></nav>
+      <div id="groups" class="mt-10 flex flex-col gap-12"></div>
+    </div>
+  </section>
+
+</div>
+<script>
+(function () {
+  var navbar = document.getElementById('navbar');
+  function onScroll() {
+    if (window.scrollY > 20) {
+      navbar.classList.remove('bg-transparent');
+      navbar.classList.add('bg-brand-cream/90', 'backdrop-blur-md', 'shadow-sm');
+    } else {
+      navbar.classList.add('bg-transparent');
+      navbar.classList.remove('bg-brand-cream/90', 'backdrop-blur-md', 'shadow-sm');
+    }
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  var hamburger = document.getElementById('hamburger');
+  var overlay = document.getElementById('overlay');
+  var inner = document.getElementById('overlay-inner');
+  var barTop = document.getElementById('bar-top');
+  var barBottom = document.getElementById('bar-bottom');
+  var open = false;
+
+  function setMenu(next) {
+    open = next;
+    if (open) {
+      overlay.classList.remove('opacity-0', 'pointer-events-none');
+      overlay.classList.add('opacity-100', 'pointer-events-auto');
+      inner.classList.remove('-translate-y-8', 'opacity-0');
+      inner.classList.add('translate-y-0', 'opacity-100');
+      barTop.classList.add('rotate-45', 'translate-y-[5px]');
+      barBottom.classList.add('-rotate-45');
+      document.body.style.overflow = 'hidden';
+    } else {
+      overlay.classList.add('opacity-0', 'pointer-events-none');
+      overlay.classList.remove('opacity-100', 'pointer-events-auto');
+      inner.classList.add('-translate-y-8', 'opacity-0');
+      inner.classList.remove('translate-y-0', 'opacity-100');
+      barTop.classList.remove('rotate-45', 'translate-y-[5px]');
+      barBottom.classList.remove('-rotate-45');
+      document.body.style.overflow = '';
+    }
+  }
+
+  hamburger.addEventListener('click', function () { setMenu(!open); });
+  overlay.querySelectorAll('.menu-link').forEach(function (a) {
+    a.addEventListener('click', function () { setMenu(false); });
+  });
+
+  /* ---- showcase: manifest register + per-case cues.json (own layout) ---- */
+  var TITLES = { barge_in: 'Barge-in', recovery: 'Agent recovery', silence: 'Silence detected', silence_wait: 'User pause', backchannel: 'Backchannel', false_interrupt: 'False interrupt', noise: 'Noise', dtmf: 'DTMF', script_cue: 'Script cue', interruption: 'Interruption', tool: 'Tool call', tool_error: 'Tool error', audio_onset: 'Agent audio onset', user_audio_source: 'Caller audio source' };
+  var COLORS = { barge_in: '#f87171', recovery: '#34d399', silence: '#f59e0b', silence_wait: '#f59e0b', backchannel: '#67e8f9', false_interrupt: '#94a3b8', noise: '#e879f9', dtmf: '#60a5fa', tool: '#8b5cf6', tool_error: '#f87171', script_cue: '#a78bfa', interruption: '#fb923c', audio_onset: '#22d3ee', user_audio_source: '#34d399' };
+  function fmt(ms) { var s = Math.max(0, ms) / 1e3, m = Math.floor(s / 60), r = (s % 60).toFixed(1); return m + ':' + (r < 10 ? '0' : '') + r; }
+  function seekTo(audio, ms) { try { audio.currentTime = ms / 1e3; audio.play().catch(function () {}); } catch (e) {} }
+
+  function bubble(audio, cls, meta, text, detail, start, json) {
+    var li = document.createElement('div');
+    li.className = 'cap-bubble ' + cls;
+    li.dataset.start = start; li.dataset.end = start + 1500;
+    li.innerHTML = '<div class="text-xs text-brand-dark/50 mb-1 flex gap-2 flex-wrap">' + meta + '</div><div class="text-sm md:text-[15px] text-brand-dark leading-relaxed"></div>' + (detail ? '<div class="text-xs text-brand-dark/60 mt-1"></div>' : '') + (json ? '<pre class="text-[11px] bg-brand-cream rounded-md p-2 mt-2 overflow-auto max-h-[120px]"></pre>' : '');
+    li.querySelector('div:nth-child(2)').textContent = text;
+    if (detail) li.querySelector('div:nth-child(3)').textContent = detail;
+    if (json) li.querySelector('pre').textContent = json;
+    if (cls === 'agent' || cls === 'user' || cls === 'script') li.addEventListener('click', function () { seekTo(audio, start); });
+    return li;
+  }
+
+  function cueLabel(c) {
+    if (c.speech_origin === 'script_barge') return ['script', '<span>Caller (prompted)</span><span>' + fmt(c.start_ms) + ' – ' + fmt(c.end_ms) + '</span>', c.text, ''];
+    var who = c.role === 'agent' ? ['agent', '<span>Agent</span><span>' + fmt(c.start_ms) + ' – ' + fmt(c.end_ms) + '</span>'] : ['user', '<span>Caller</span><span>' + fmt(c.start_ms) + ' – ' + fmt(c.end_ms) + '</span>'];
+    return [who[0], who[1], c.text, ''];
+  }
+
+  function renderCase(host, toc, id, cmeta, payload) {
+    var dur = payload.audio.duration_ms || 1;
+    var sec = document.createElement('section');
+    sec.id = 'cap-' + id;
+    sec.className = 'scroll-mt-28';
+    sec.innerHTML = '<div class="flex gap-3 items-start mb-2"><span class="w-3 h-3 rounded mt-1.5 flex-none" style="background:' + cmeta.color + '"></span><div><h3 class="text-xl md:text-2xl text-brand-dark tracking-tight font-helvetica-neue">' + cmeta.title + '</h3><p class="text-sm text-brand-dark/60 mt-1 max-w-2xl leading-relaxed">' + cmeta.copy + '</p></div></div>'
+      + '<div class="flex flex-wrap gap-2 my-3">' + (cmeta.chips || []).map(function (c) { return '<span class="text-xs px-3 py-1.5 rounded-full border border-brand-dark/20 text-brand-dark bg-white/60">' + c[0] + '</span>'; }).join('') + '</div>';
+    var card = document.createElement('div');
+    card.className = 'rounded-xl border border-brand-dark/15 bg-white/70 p-4 md:p-5';
+    card.innerHTML = '<div class="text-xs text-brand-dark/50 mb-3">' + fmt(dur) + ' · ' + (payload.cues || []).length + ' turns</div>';
+    var audio = document.createElement('audio');
+    audio.controls = true; audio.preload = 'metadata';
+    audio.src = 'cases/' + id + '/conversation.wav';
+    audio.className = 'w-full mb-3';
+    var tl = document.createElement('div');
+    tl.className = 'cap-timeline mb-4'; tl.title = 'Click to seek';
+    var ph = document.createElement('div');
+    ph.className = 'cap-playhead'; ph.style.left = '0';
+    (payload.markers || []).concat((payload.tool_events || []).map(function (t) { return { type: t.is_error ? 'tool_error' : 'tool', start_ms: t.start_ms, end_ms: t.end_ms, label: 'Tool: ' + t.name }; })).forEach(function (m) {
+      var d = document.createElement('button');
+      d.type = 'button'; d.className = 'cap-band';
+      d.style.left = (m.start_ms / dur * 100) + '%';
+      d.style.width = Math.max(0.4, (m.end_ms - m.start_ms) / dur * 100) + '%';
+      d.style.background = COLORS[m.type] || '#2d3a2e';
+      d.title = (TITLES[m.type] || m.type) + ': ' + (m.label || '');
+      d.addEventListener('click', function (ev) { ev.stopPropagation(); seekTo(audio, m.start_ms); });
+      tl.appendChild(d);
+    });
+    tl.appendChild(ph);
+    var els = [];
+    function tick() {
+      var t = (audio.currentTime || 0) * 1e3;
+      els.forEach(function (li) { var s = +li.dataset.start, e = +li.dataset.end; li.classList.toggle('active', t >= s && t < e); });
+      if (dur > 0) ph.style.left = Math.min(100, Math.max(0, t / dur * 100)) + '%';
+    }
+    audio.addEventListener('timeupdate', tick);
+    audio.addEventListener('seeked', tick);
+    tl.addEventListener('click', function (e) { if (e.target !== tl) return; var r = tl.getBoundingClientRect(); seekTo(audio, (e.clientX - r.left) / r.width * dur); });
+    card.appendChild(audio); card.appendChild(tl);
+    var items = [];
+    (payload.cues || []).forEach(function (c) { items.push({ s: c.start_ms, kind: 'cue', c: c }); });
+    (payload.markers || []).forEach(function (m) { items.push({ s: m.start_ms, kind: 'marker', m: m }); });
+    (payload.tool_events || []).forEach(function (t) { items.push({ s: t.start_ms, kind: 'tool', t: t }); });
+    items.sort(function (a, b) { return a.s - b.s; });
+    var list = document.createElement('div');
+    list.className = 'flex flex-col gap-2 mt-2';
+    items.forEach(function (it) {
+      var row = document.createElement('div'); var li;
+      if (it.kind === 'cue') { var r = cueLabel(it.c); row.className = 'cap-row ' + (r[0] === 'user' ? 'user' : 'agent'); li = bubble(audio, r[0], r[1], r[2], r[3], it.c.start_ms); }
+      else if (it.kind === 'marker') { var m = it.m; row.className = 'cap-row mid'; li = bubble(audio, 'marker', '<span>' + (TITLES[m.type] || m.type) + '</span><span>' + fmt(m.start_ms) + ' – ' + fmt(m.end_ms) + '</span>', m.label, m.detail || '', m.start_ms); }
+      else { var t = it.t; row.className = 'cap-row mid'; li = bubble(audio, 'tool', '<span>🔧 ' + t.name + '</span><span>' + fmt(t.start_ms) + ' – ' + fmt(t.end_ms) + '</span>', t.arguments || '', t.output ? ('→ ' + t.output) : '', t.start_ms, (t.arguments || '') + (t.output ? '\n→ ' + t.output : '')); }
+      row.appendChild(li); list.appendChild(row); els.push(li);
+    });
+    card.appendChild(list);
+    sec.appendChild(card);
+    host.appendChild(sec);
+    var a = document.createElement('a');
+    a.href = '#cap-' + id; a.textContent = cmeta.toc || cmeta.title;
+    a.className = 'text-xs px-4 py-2 rounded-full border border-brand-dark/20 text-brand-dark bg-white/60 hover:bg-white transition-colors';
+    toc.appendChild(a);
+  }
+
+  var toc = document.getElementById('tour'), host = document.getElementById('groups');
+  var CASES=[{"id": "backchannel", "meta": {"id": "backchannel", "toc": "Backchannel", "title": "Backchannel", "color": "#67e8f9", "copy": "The caller says uh-huh while the agent talks. The agent keeps going and it is not counted as an interruption.", "chips": [["not counted as interruption", "pass"]]}, "cues": {"run_id": "demo-backchannel", "scenario_id": "billing-stress", "audio": {"file": "conversation.wav", "duration_ms": 12000, "channels": {"left": "sim", "right": "agent"}}, "cues": [{"role": "user", "start_ms": 2000, "end_ms": 6000, "text": "uh-huh… yeah, okay.", "source": "demo", "detail": "backchannel sustain · not a full turn"}, {"role": "agent", "start_ms": 7000, "end_ms": 11000, "text": "Great — receipt sent. Anything else?", "source": "demo"}], "markers": [{"type": "backchannel", "start_ms": 2000, "end_ms": 6000, "label": "Backchannel uh-huh ×5", "detail": "", "step_id": null, "say": null}], "marker_counts": {"backchannel": 1}, "script_verify": {"pass": true}, "assert_verify": {"pass": true, "checks": []}, "caller": null, "behavior_summary": {"marker_counts": {"backchannel": 1}}, "tool_events": [], "tool_summary": {"tool_count": 0, "tool_errors": 0}, "session_summary": null, "chat_history": [{"type": "message", "role": "user", "content": [{"text": "uh-huh… yeah, okay."}]}, {"type": "message", "role": "agent", "content": [{"text": "Great — receipt sent. Anything else?"}]}], "caller_contract": null, "observe_gaps": []}}, {"id": "barge-in", "meta": {"id": "barge-in", "toc": "Barge-in", "title": "Barge-in recovery", "color": "#f87171", "copy": "The caller cuts in mid-answer. The agent stops, listens, then answers the new question.", "chips": [["recovered in 1.8s", "pass"]]}, "cues": {"run_id": "demo-barge-in", "scenario_id": "billing-stress", "audio": {"file": "conversation.wav", "duration_ms": 22000, "channels": {"left": "sim", "right": "agent"}}, "cues": [{"role": "agent", "start_ms": 1800, "end_ms": 6000, "text": "Yes — I can help with billing. We have three plans…", "source": "demo"}, {"role": "user", "start_ms": 6500, "end_ms": 8500, "text": "Wait — I meant next Friday!", "source": "demo", "speech_origin": "script_barge", "script_step_id": "barge-1", "script_overlay": "fixture"}, {"role": "agent", "start_ms": 9000, "end_ms": 13000, "text": "Sorry, go ahead — next Friday it is. Anything else?", "source": "demo"}, {"role": "user", "start_ms": 17000, "end_ms": 21000, "text": "Nothing urgent, I'll call back later. Thanks!", "source": "demo"}], "markers": [{"type": "tool", "start_ms": 2000, "end_ms": 3500, "label": "Tool: lookup_account", "detail": "", "step_id": null, "say": null}, {"type": "barge_in", "start_ms": 6500, "end_ms": 8500, "label": "Barge-in: caller cut in @0:14.5", "detail": "", "step_id": null, "say": null}, {"type": "recovery", "start_ms": 9000, "end_ms": 10800, "label": "Recovery: agent re-spoke in 1.8s", "detail": "", "step_id": null, "say": null}], "marker_counts": {"tool": 1, "barge_in": 1, "recovery": 1}, "script_verify": {"pass": true}, "assert_verify": {"pass": true, "checks": []}, "caller": null, "behavior_summary": {"marker_counts": {"tool": 1, "barge_in": 1, "recovery": 1}}, "tool_events": [{"name": "lookup_account", "start_ms": 2000, "end_ms": 3500, "duration_ms": 1500, "arguments": "{\"topic\":\"billing\"}", "output": "{\"account\":\"ok\"}", "is_error": false, "error": null, "call_id": null, "turn": null, "source": null, "parent_event_id": null}], "tool_summary": {"tool_count": 1, "tool_errors": 0}, "session_summary": null, "chat_history": [{"type": "message", "role": "agent", "content": [{"text": "Yes — I can help with billing. We have three plans…"}]}, {"type": "message", "role": "user", "content": [{"text": "Wait — I meant next Friday!"}]}, {"type": "message", "role": "agent", "content": [{"text": "Sorry, go ahead — next Friday it is. Anything else?"}]}, {"type": "message", "role": "user", "content": [{"text": "Nothing urgent, I'll call back later. Thanks!"}]}], "caller_contract": null, "observe_gaps": []}}, {"id": "dtmf", "meta": {"id": "dtmf", "toc": "DTMF", "title": "DTMF keypress", "color": "#60a5fa", "copy": "The caller presses phone keys on an IVR menu. The keypress is logged and routed to billing.", "chips": [["routed to billing", "info"]]}, "cues": {"run_id": "demo-dtmf", "scenario_id": "billing-stress", "audio": {"file": "conversation.wav", "duration_ms": 14000, "channels": {"left": "sim", "right": "agent"}}, "cues": [{"role": "agent", "start_ms": 2000, "end_ms": 6000, "text": "Press 1 for billing, 2 for support…", "source": "demo"}, {"role": "user", "start_ms": 7000, "end_ms": 8400, "text": "[DTMF 1·2·3]", "source": "demo"}, {"role": "agent", "start_ms": 9000, "end_ms": 13000, "text": "Billing — got it. One moment…", "source": "demo"}], "markers": [{"type": "dtmf", "start_ms": 7000, "end_ms": 8400, "label": "DTMF 1·2·3", "detail": "", "step_id": null, "say": null}], "marker_counts": {"dtmf": 1}, "script_verify": {"pass": true}, "assert_verify": {"pass": true, "checks": []}, "caller": null, "behavior_summary": {"marker_counts": {"dtmf": 1}}, "tool_events": [], "tool_summary": {"tool_count": 0, "tool_errors": 0}, "session_summary": null, "chat_history": [{"type": "message", "role": "agent", "content": [{"text": "Press 1 for billing, 2 for support…"}]}, {"type": "message", "role": "user", "content": [{"text": "[DTMF 1·2·3]"}]}, {"type": "message", "role": "agent", "content": [{"text": "Billing — got it. One moment…"}]}], "caller_contract": null, "observe_gaps": []}}, {"id": "noise", "meta": {"id": "noise", "toc": "Noise", "title": "Background noise", "color": "#94a3b8", "copy": "A loud noise bursts mid-speech. It is classified as background noise and the agent keeps talking.", "chips": [["agent kept speaking", "pass"]]}, "cues": {"run_id": "demo-noise", "scenario_id": "billing-stress", "audio": {"file": "conversation.wav", "duration_ms": 10000, "channels": {"left": "sim", "right": "agent"}}, "cues": [{"role": "agent", "start_ms": 1800, "end_ms": 8000, "text": "Your invoice is due Friday — [noise @0:12 ignored] — shall I email the receipt?", "source": "demo"}], "markers": [{"type": "noise", "start_ms": 4000, "end_ms": 4600, "label": "Noise burst @0:12 (false_interrupt)", "detail": "", "step_id": null, "say": null}], "marker_counts": {"noise": 1}, "script_verify": {"pass": true}, "assert_verify": {"pass": true, "checks": []}, "caller": null, "behavior_summary": {"marker_counts": {"noise": 1}}, "tool_events": [], "tool_summary": {"tool_count": 0, "tool_errors": 0}, "session_summary": null, "chat_history": [{"type": "message", "role": "agent", "content": [{"text": "Your invoice is due Friday — [noise @0:12 ignored] — shall I email the receipt?"}]}], "caller_contract": null, "observe_gaps": []}}, {"id": "silence", "meta": {"id": "silence", "toc": "Silence", "title": "Silence", "color": "#f59e0b", "copy": "The caller goes quiet for 4 seconds. The agent waits instead of hanging up.", "chips": [["no hangup", "pass"]]}, "cues": {"run_id": "demo-silence", "scenario_id": "billing-stress", "audio": {"file": "conversation.wav", "duration_ms": 13000, "channels": {"left": "sim", "right": "agent"}}, "cues": [{"role": "user", "start_ms": 8000, "end_ms": 12000, "text": "Sure, take your time — go ahead.", "source": "demo"}], "markers": [{"type": "silence", "start_ms": 2000, "end_ms": 6000, "label": "Silence held 4s", "detail": "", "step_id": null, "say": null}], "marker_counts": {"silence": 1}, "script_verify": {"pass": true}, "assert_verify": {"pass": true, "checks": []}, "caller": null, "behavior_summary": {"marker_counts": {"silence": 1}}, "tool_events": [], "tool_summary": {"tool_count": 0, "tool_errors": 0}, "session_summary": null, "chat_history": [{"type": "message", "role": "user", "content": [{"text": "Sure, take your time — go ahead."}]}], "caller_contract": null, "observe_gaps": []}}, {"id": "tools", "meta": {"id": "tools", "toc": "Tools", "title": "Tool calls", "color": "#8b5cf6", "copy": "The agent calls backend tools. Arguments, outputs and durations are captured on the timeline.", "chips": [["2 tools captured", "tool"], ["0 errors", "pass"]]}, "cues": {"run_id": "demo-tools", "scenario_id": "billing-stress", "audio": {"file": "conversation.wav", "duration_ms": 48000, "channels": {"left": "sim", "right": "agent"}}, "cues": [], "markers": [{"type": "tool", "start_ms": 2000, "end_ms": 3500, "label": "Tool: lookup_account", "detail": "", "step_id": null, "say": null}, {"type": "tool", "start_ms": 42000, "end_ms": 46000, "label": "Tool: book_appointment", "detail": "", "step_id": null, "say": null}], "marker_counts": {"tool": 2}, "script_verify": {"pass": true}, "assert_verify": {"pass": true, "checks": []}, "caller": null, "behavior_summary": {"marker_counts": {"tool": 2}}, "tool_events": [{"name": "lookup_account", "start_ms": 2000, "end_ms": 3500, "duration_ms": 1500, "arguments": "{\"topic\":\"billing\"}", "output": "{\"account\":\"ok\"}", "is_error": false, "error": null, "call_id": null, "turn": null, "source": null, "parent_event_id": null}, {"name": "book_appointment", "start_ms": 42000, "end_ms": 46000, "duration_ms": 4000, "arguments": "{\"date\":\"next Friday\",\"dept\":\"billing\"}", "output": "{\"slot\":\"Fri 10:00\"}", "is_error": false, "error": null, "call_id": null, "turn": null, "source": null, "parent_event_id": null}], "tool_summary": {"tool_count": 2, "tool_errors": 0}, "session_summary": null, "chat_history": [], "caller_contract": null, "observe_gaps": []}}, {"id": "verify", "meta": {"id": "verify", "toc": "Verify", "title": "Pass / fail checks", "color": "#34d399", "copy": "Every run ends with checks: did the script steps fire, and did the agent behave? Either can fail CI.", "chips": [["script pass", "pass"], ["assert pass", "pass"]]}, "cues": {"run_id": "demo-verify", "scenario_id": "billing-stress", "audio": {"file": "conversation.wav", "duration_ms": 10000, "channels": {"left": "sim", "right": "agent"}}, "cues": [{"role": "agent", "start_ms": 1000, "end_ms": 4500, "text": "Hello! Thanks for calling Acme Corp, how can I help you today?", "source": "demo"}, {"role": "user", "start_ms": 5200, "end_ms": 9000, "text": "Hi — billing question, then I'll call back. Thanks!", "source": "demo"}], "markers": [], "marker_counts": {}, "script_verify": {"pass": true}, "assert_verify": {"pass": true, "checks": [{"check": "script ✓ pass", "pass": true}, {"check": "assert ✓ pass", "pass": true}]}, "caller": null, "behavior_summary": {"marker_counts": {}}, "tool_events": [], "tool_summary": {"tool_count": 0, "tool_errors": 0}, "session_summary": null, "chat_history": [{"type": "message", "role": "agent", "content": [{"text": "Hello! Thanks for calling Acme Corp, how can I help you today?"}]}, {"type": "message", "role": "user", "content": [{"text": "Hi — billing question, then I'll call back. Thanks!"}]}], "caller_contract": null, "observe_gaps": []}}];
+  function renderAll(list) {
+    host.innerHTML = '';
+    list.forEach(function (entry) { renderCase(host, toc, entry.id, entry.meta, entry.cues); });
+  }
+  if (typeof CASES !== 'undefined' && CASES.length) {
+    renderAll(CASES);
+  } else {
+    fetch('cases/manifest.json').then(function (r) { if (!r.ok) throw new Error('manifest ' + r.status); return r.json(); }).then(function (manifest) {
+      var seq = (manifest.cases || []).reduce(function (p, entry) {
+        return p.then(function () {
+          return Promise.all([
+            fetch('cases/' + entry.id + '/case.json').then(function (r) { return r.json(); }),
+            fetch('cases/' + entry.id + '/cues.json').then(function (r) { return r.json(); })
+          ]).then(function (pair) { renderCase(host, toc, entry.id, pair[0], pair[1]); });
+        });
+      }, Promise.resolve());
+      host.innerHTML = '';
+      return seq;
+    }).catch(function (err) {
+      host.innerHTML = '<p class="text-sm text-brand-dark/60">Could not load cases/ (' + err.message + '). Serve with <code>cd demo/website && python -m http.server 8080</code>.</p>';
+    });
+  }
+})();
+</script>
+</body>
+</html>

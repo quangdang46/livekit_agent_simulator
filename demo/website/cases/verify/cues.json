@@ -1,0 +1,78 @@
+{
+  "run_id": "demo-verify",
+  "scenario_id": "billing-stress",
+  "audio": {
+    "file": "conversation.wav",
+    "duration_ms": 10000,
+    "channels": {
+      "left": "sim",
+      "right": "agent"
+    }
+  },
+  "cues": [
+    {
+      "role": "agent",
+      "start_ms": 1000,
+      "end_ms": 4500,
+      "text": "Hello! Thanks for calling Acme Corp, how can I help you today?",
+      "source": "demo"
+    },
+    {
+      "role": "user",
+      "start_ms": 5200,
+      "end_ms": 9000,
+      "text": "Hi — billing question, then I'll call back. Thanks!",
+      "source": "demo"
+    }
+  ],
+  "markers": [],
+  "marker_counts": {},
+  "script_verify": {
+    "pass": true
+  },
+  "assert_verify": {
+    "pass": true,
+    "checks": [
+      {
+        "check": "script ✓ pass",
+        "pass": true
+      },
+      {
+        "check": "assert ✓ pass",
+        "pass": true
+      }
+    ]
+  },
+  "caller": null,
+  "behavior_summary": {
+    "marker_counts": {}
+  },
+  "tool_events": [],
+  "tool_summary": {
+    "tool_count": 0,
+    "tool_errors": 0
+  },
+  "session_summary": null,
+  "chat_history": [
+    {
+      "type": "message",
+      "role": "agent",
+      "content": [
+        {
+          "text": "Hello! Thanks for calling Acme Corp, how can I help you today?"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "text": "Hi — billing question, then I'll call back. Thanks!"
+        }
+      ]
+    }
+  ],
+  "caller_contract": null,
+  "observe_gaps": []
+}
