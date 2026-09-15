@@ -1422,7 +1422,20 @@ async fn pump_openai_events(
                         // final transcript (port of openai.py _on_response_done
                         // flush — without this a caller-final utterance whose
                         // `.done` never arrived would strand un-finalized).
-                        OpenAiCallerBridge::emit_agent_final(&writer, &observer, &agent_text).await;
+                        //
+                        // Buffer-ownership guard (live run
+                        // verify-lksr-alive/002): `.completed` (line ~1383)
+                        // above already emits the agent final AND clears this
+                        // buffer — emitting unconditionally here re-logs the
+                        // SAME text a second time. Worse, between clear() and
+                        // this handler the deltas of the NEXT turn may already
+                        // have accumulated, so the duplicate arrives under a
+                        // new turn number and corrupts turn framing (the run
+                        // showed the same agent line twice + ghost "Yeah,"/"Mm."
+                        // fragments). Skip when the buffer is empty.
+                        if !agent_text.trim().is_empty() {
+                            OpenAiCallerBridge::emit_agent_final(&writer, &observer, &agent_text).await;
+                        }
                         // max_turns reached after the agent replied — end the
                         // run (port of run_orchestrator.py:769 "max_turns").
                         if max_turns > 0 {
