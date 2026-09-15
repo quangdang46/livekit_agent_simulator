@@ -743,8 +743,29 @@ impl OpenAiCallerBridge {
                             if contract_mode {
                                 // TTS→mic (contract path): synthesize, then
                                 // play PCM into the shared mic the agent hears.
+                                // Speak steps are sized for live delivery: if
+                                // the mic isn't published yet (agent hasn't
+                                // joined / track not up), fail LOUDLY with a
+                                // tts_error event instead of hanging forever
+                                // inside play_pcm_to_source's mutex wait (run
+                                // 006: TTS fired before mic publish → the cue
+                                // future never resolved → run sat until the
+                                // 300s slice cap with zero dialogue).
                                 let tts_label = label.clone();
                                 let tts_text = text.clone();
+                                if tts_mic.is_none() {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.tts_error",
+                                        Some(&serde_json::json!({"label": tts_label, "error": "sim mic not published yet — TTS before agent-join track publish"}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                    continue;
+                                }
                                 let tts_result =
                                     synthesize_caller_speech(&tts_key, &tts_voice, &tts_text).await;
                                 match tts_result {
