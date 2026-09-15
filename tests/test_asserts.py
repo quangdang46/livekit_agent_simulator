@@ -56,6 +56,38 @@ def test_tool_args_contains():
     assert bad["pass"] is False
 
 
+def test_tool_args_contains_json_string_arguments():
+    # Live regression (dealer-live-full run 008): the agent-session observer
+    # emits FunctionCall.arguments as a RAW JSON STRING (protobuf passthrough),
+    # not a dict — args_contains must parse it instead of matching nothing.
+    events = [
+        {
+            "kind": "tool.start",
+            "spec": {"name": "check_inventory", "arguments": '{"make":"Toyota","model":"Hilux"}'},
+        }
+    ]
+    ok = evaluate_asserts(
+        events,
+        AssertSpec(tools=[ToolExpect(name="check_inventory", args_contains={"make": "Toyota"})]),
+    )
+    bad = evaluate_asserts(
+        events,
+        AssertSpec(tools=[ToolExpect(name="check_inventory", args_contains={"make": "Honda"})]),
+    )
+    non_json = evaluate_asserts(
+        [
+            {
+                "kind": "tool.start",
+                "spec": {"name": "check_inventory", "arguments": "not-json{{{ "},
+            }
+        ],
+        AssertSpec(tools=[ToolExpect(name="check_inventory", args_contains={"make": "Toyota"})]),
+    )
+    assert ok["pass"] is True
+    assert bad["pass"] is False
+    assert non_json["pass"] is False
+
+
 def test_transcript_contains_and_forbidden():
     events = [
         {"kind": "transcript.agent.final", "spec": {"text": "Hello, how can I help?"}},

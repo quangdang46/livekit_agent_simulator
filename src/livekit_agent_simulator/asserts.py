@@ -5,6 +5,7 @@ Portable: no consumer-specific tool names baked into core — scenarios declare 
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -309,15 +310,34 @@ def parse_assert_spec(spec: dict[str, Any], path_label: str = "Assert") -> Asser
 
 
 def _tool_args_blob(spec: dict[str, Any]) -> dict[str, Any]:
+    # The agent-session observer emits FunctionCall.arguments as a RAW JSON
+    # STRING (protobuf `string arguments`, never parsed at emission —
+    # agent_session_observer._function_call_spec passes call.arguments
+    # through verbatim). _dict_contains needs a dict, so parse JSON strings
+    # here instead of silently matching nothing (run dealer-live-full/008:
+    # args_contains {make: Toyota} vs arguments '{"make":"Toyota",...}').
+    def _coerce(value: object) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
     payload = spec.get("payload")
     if isinstance(payload, dict):
         for key in ("args", "arguments", "input", "params"):
-            if isinstance(payload.get(key), dict):
-                return payload[key]
+            coerced = _coerce(payload.get(key))
+            if coerced is not None:
+                return coerced
         return payload
     for key in ("args", "arguments"):
-        if isinstance(spec.get(key), dict):
-            return spec[key]
+        coerced = _coerce(spec.get(key))
+        if coerced is not None:
+            return coerced
     return {}
 
 
