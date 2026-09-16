@@ -1100,8 +1100,19 @@ impl OpenAiCallerBridge {
     /// byte-identical for review. The shared pieces (room connect, mic
     /// publish, dispatch, agent-join, observer config) mirror run()'s steps
     /// 1–2 verbatim; only the session/pumps half is replaced by the cue loop.
-    async fn run_plumbing(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
-        let (_end_tx, end_rx) = broadcast::channel::<()>(1);
+    async fn run_plumbing(&self, end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+        // BUG FIX (run 016-dealer-live-full): this used to be `_end_call`
+        // (leading underscore = intentionally unused) and built its OWN
+        // local broadcast pair (`_end_tx`/`end_rx`) that nobody ever sent
+        // on. ScriptRuntime::fail_contract_do signals failure via a
+        // COMPLETELY DIFFERENT end_tx (the one run.rs wires into
+        // ScriptRuntime), so that signal never reached this loop's
+        // disconnect_rx — after a `do:` failure the room just sat open
+        // until the agent itself hung up ("connection issue, goodbye")
+        // or the slice cap fired, minutes later. Use the real parameter
+        // (the SAME broadcast end_rx run.rs hands to ScriptRuntime) so a
+        // contract_do failure ends this loop immediately.
+        let end_rx = end_call;
         let livekit_cfg = &self.livekit;
 
         // 1. Room: connect as the sim caller, publish mic (same as run()).
@@ -1549,6 +1560,27 @@ impl OpenAiCallerBridge {
                                                 1,
                                                 std::sync::atomic::Ordering::SeqCst,
                                             );
+                                            // Same feed for ScriptRuntime's
+                                            // trigger gates (the TextStream
+                                            // arm below does this for its
+                                            // path): mark has_spoken +
+                                            // replied_this_turn + latch text
+                                            // so the post-cue gap and
+                                            // silence/agent_speaking gates see
+                                            // data-channel agent replies too
+                                            // (run 002-main-repo: posting the
+                                            // SEQ bump alone left the trigger
+                                            // gates deaf to this path —
+                                            // contract.attempt_verdict showed
+                                            // LOW_CONFIDENCE while the agent
+                                            // had already answered).
+                                            if let Some(st) = &self.script_state {
+                                                let mut s = st.lock().await;
+                                                s.agent_has_spoken = true;
+                                                s.agent_replied_this_turn = true;
+                                                s.last_agent_final_text =
+                                                    t.text.trim().to_string();
+                                            }
                                         }
                                         let mut w = writer_obs.lock().await;
                                         let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();

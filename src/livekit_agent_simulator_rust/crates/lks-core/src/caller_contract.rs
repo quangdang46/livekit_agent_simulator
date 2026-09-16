@@ -342,11 +342,33 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 "arrange a time",
                 "check out",
                 "in person",
+                // BUG FIX (parity with Python semantic.py, live runs
+                // 005-006 dealer-live-full): the generator's natural
+                // test-drive phrasing — "schedule/book a test drive (for
+                // ...) tomorrow morning" — was missing from this port.
+                // Scoped narrowly (literal "test drive" noun) so bare
+                // "schedule"/day-names never decide the act, same as
+                // Python's grounding comment.
+                "test drive",
             ],
         ),
         (
             "end",
-            &["goodbye", "bye", "thanks, that's all", "have a good day"],
+            // BUG FIX (run 015-dealer-live-full): this array was missing
+            // the thank-you closings present in the Python source
+            // (semantic.py) — "Thank you for your help!" scored 0 hits here
+            // and failed LOW_CONFIDENCE ×3, exactly the port-gap the Python
+            // side's grounding comment on these three entries already
+            // documents (run 007). Ported verbatim to keep parity.
+            &[
+                "goodbye",
+                "bye",
+                "thanks, that's all",
+                "have a good day",
+                "thank you",
+                "thanks for your help",
+                "thanks for the help",
+            ],
         ),
     ]
 }

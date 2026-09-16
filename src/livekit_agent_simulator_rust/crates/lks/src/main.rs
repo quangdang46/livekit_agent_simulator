@@ -607,11 +607,23 @@ fn main() -> anyhow::Result<()> {
                 profile,
                 environment,
             };
-            let mut result = rt.block_on(lks_livekit::run::execute_scenario(
+            // BUG FIX (run 012-dealer-live-full): a hard error here (e.g.
+            // agent-join-timeout) used to propagate via `?`, which returns
+            // from main() and lets Rust's normal shutdown drop the tokio
+            // runtime — the same straggler-thread hang documented below on
+            // the gate-fail/success paths, just reached from a different
+            // branch. Print + hard-exit here too instead of propagating.
+            let mut result = match rt.block_on(lks_livekit::run::execute_scenario(
                 std::path::Path::new(&root),
                 &scenario_id,
                 &opts,
-            ))?;
+            )) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
             // CLI adds the CI gate (Python cli.py execute: evaluate_run_result
             // with strict_judge) + exits 1 on hard fail.
             let gate = lks_core::suite::evaluate_run_result(&result, strict_judge);
