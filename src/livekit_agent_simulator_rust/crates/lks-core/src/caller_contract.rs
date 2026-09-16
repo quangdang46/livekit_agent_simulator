@@ -350,6 +350,17 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 // "schedule"/day-names never decide the act, same as
                 // Python's grounding comment.
                 "test drive",
+                // Run 008-main-repo (dealer-live-full): the generator
+                // phrases turn-0 booking as "schedule a visit" — neither
+                // "schedule a time" (needs the literal word "time") nor
+                // bare "visit" survives the provide tie-break baseline.
+                // The Run 055 grounding above already teaches that
+                // schedule/book + booking-noun ("time") marks the booking
+                // shape; "schedule a visit" is the same shape with the
+                // visit noun. Scoped to the two-word pair so bare
+                // "schedule"/"visit" alone never decides the act.
+                "schedule a visit",
+                "book a visit",
             ],
         ),
         (

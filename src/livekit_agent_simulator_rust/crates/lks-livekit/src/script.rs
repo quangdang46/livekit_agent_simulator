@@ -44,6 +44,60 @@ pub struct ScriptObserverState {
     pub last_agent_final_text: String,
 }
 
+/// One settled caller/agent line (mirrors `caller_contract.Turn` /
+/// `contract_do.DoTurn`). The history replay below rebuilds the
+/// `recent_turns` context Python passes as `log` — the exact
+/// pre-`do:` dialogue including verbatim `say:` lines and real agent
+/// replies — instead of leaving `run_contract_do` with only its own
+/// intra-`do:` lines. Locks are never held when waking waiters; the
+/// history handle itself is sync (parking_lot) so TranscriptHistory::push
+/// is callable from the async bridge emit sites without awaiting.
+#[derive(Debug, Default, Clone)]
+pub struct TurnHistoryEntry {
+    pub speaker: String,
+    pub text: String,
+}
+
+#[derive(Debug, Default)]
+pub struct TranscriptHistory {
+    inner: parking_lot::Mutex<Vec<TurnHistoryEntry>>,
+}
+
+impl TranscriptHistory {
+    pub fn new() -> Self {
+        Self {
+            inner: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn push(&self, speaker: &str, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let mut guard = self.inner.lock();
+        // Adjacent-duplicate guard: the same line often arrives from BOTH
+        // the bridge emit (sim.script) and the lk.transcription re-final of
+        // our own TTS'd speech seconds later — keep one copy so the
+        // generator prompt does not see doubled caller lines.
+        if let Some(last) = guard.last() {
+            if last.speaker == speaker && last.text.trim() == text {
+                return;
+            }
+        }
+        guard.push(TurnHistoryEntry {
+            speaker: speaker.to_string(),
+            text: text.to_string(),
+        });
+    }
+
+    pub fn snapshot(&self) -> Vec<TurnHistoryEntry> {
+        self.inner.lock().clone()
+    }
+}
+
+pub type SharedTranscriptHistory = std::sync::Arc<TranscriptHistory>;
+
 /// What the runtime asks the bridge to do.
 pub enum ScriptAction {
     Speak {
@@ -98,6 +152,9 @@ pub struct ScriptRuntime {
     /// run_spec.first_speaker ("agent"|"user") — gates the legacy
     /// require_agent_spoke_first silence assumption (see trigger gate).
     first_speaker: String,
+    /// Full pre-`do:` dialogue replay (verbatim `say:` lines + real agent
+    /// replies), shared with the bridge emit sites — see TranscriptHistory.
+    history: SharedTranscriptHistory,
 }
 
 impl ScriptRuntime {
@@ -111,6 +168,7 @@ impl ScriptRuntime {
         locale: String,
         do_api_key: String,
         first_speaker: String,
+        history: SharedTranscriptHistory,
     ) -> Self {
         Self {
             steps,
@@ -122,6 +180,7 @@ impl ScriptRuntime {
             locale,
             do_api_key,
             first_speaker,
+            history,
         }
     }
 
@@ -671,7 +730,28 @@ impl ScriptRuntime {
         let mut validator = lks_core::caller_contract::ContractValidator::new(None);
         let mut orchestrator = lks_core::caller_contract::OrchestratorState::new();
         orchestrator.start_behavior();
-        let mut log: Vec<lks_core::contract_do::DoTurn> = Vec::new();
+        // Seed `log` with the full pre-`do:` dialogue replay (mirrors
+        // Python passing the live `log` into `_run_behavior`): verbatim
+        // `say:` lines + genuine agent replies the bridge pushed into the
+        // shared TranscriptHistory. Without this the generator only ever
+        // saw `agent_latest` (ONE line) and its own intra-`do:` turns —
+        // no test-drive topic, no booking context, no name ("Alex" was
+        // never in the prompt) — so `do:` candidates drifted off-topic
+        // and burned the whole retry budget on LOW_CONFIDENCE (runs
+        // 001-005 on the main-repo path). Capped at
+        // DEFAULT_RECENT_TURNS_CAP exactly like build_context caps.
+        let mut log: Vec<lks_core::contract_do::DoTurn> = self
+            .history
+            .snapshot()
+            .into_iter()
+            .rev()
+            .take(lks_core::contract_do::DEFAULT_RECENT_TURNS_CAP)
+            .rev()
+            .map(|e| lks_core::contract_do::DoTurn {
+                speaker: e.speaker,
+                text: e.text,
+            })
+            .collect();
         let mut agent_latest: Option<String> = None;
 
         loop {
@@ -721,6 +801,14 @@ impl ScriptRuntime {
                 let verdict = validator.validate(&cand, &contract);
                 {
                     let mut w = self.writer.lock().await;
+                    // Include the attempted utterance (truncated): run 009
+                    // proved a verdict-only trail is not diagnosable — the
+                    // same behavior can VALID once then MISMATCH 3×, and
+                    // without the text there is no way to know what the
+                    // model generated on the failing attempts (generator
+                    // drift vs lexicon gap — opposite fixes).
+                    let attempted: String =
+                        cand.utterance.chars().take(160).collect();
                     w.emit(
                         "contract.attempt_verdict",
                         Some(
@@ -729,6 +817,7 @@ impl ScriptRuntime {
                                 "verdict": verdict.verdict.as_str(),
                                 "reason": verdict.reason.clone(),
                                 "attempt": attempt,
+                                "utterance": attempted,
                             })
                             .as_object()
                             .cloned()

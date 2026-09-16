@@ -61,6 +61,13 @@ pub struct OpenAiCallerBridge {
     /// the BehaviorContract instead". run() with this set skips straight to
     /// run_plumbing() after dispatch.agent_joined.
     contract_only: bool,
+    /// Full pre-`do:` dialogue replay for the `do:` generator context —
+    /// same Arc run.rs hands to ScriptRuntime::new (see
+    /// with_transcript_history + TranscriptHistory in script.rs). The
+    /// TTS→mic emit sites push caller lines here; both agent-final arms
+    /// (TextStream + data-channel) push genuine agent replies. Mirrors
+    /// Python passing the live `log` into `_run_behavior`.
+    transcript_history: Option<crate::script::SharedTranscriptHistory>,
     recorder: Option<crate::script::SharedRecorder>,
     /// Scenario Dispatch.metadata || config default (None = empty string).
     dispatch_metadata: Option<String>,
@@ -105,6 +112,7 @@ impl OpenAiCallerBridge {
             writer,
             shared_mic: None,
             script_state: None,
+            transcript_history: None,
             contract_only: false,
             recorder: None,
             dispatch_metadata: None,
@@ -148,6 +156,17 @@ impl OpenAiCallerBridge {
     /// `!scenario.caller_actions.is_empty()`.
     pub fn with_contract_only(mut self, contract_only: bool) -> Self {
         self.contract_only = contract_only;
+        self
+    }
+
+    /// Builder: shared pre-`do:` dialogue replay (see transcript_history
+    /// field + TranscriptHistory in script.rs). Wired by run.rs from the
+    /// same Arc handed to ScriptRuntime::new.
+    pub fn with_transcript_history(
+        mut self,
+        history: crate::script::SharedTranscriptHistory,
+    ) -> Self {
+        self.transcript_history = Some(history);
         self
     }
 
@@ -817,6 +836,16 @@ impl OpenAiCallerBridge {
                                             false,
                                             None,
                                         );
+                                        // Pre-`do:` dialogue replay: same
+                                        // caller-line push as the plumbing
+                                        // arm below — BOTH arms own this only
+                                        // through their own emit site (the
+                                        // adjacent-duplicate guard in
+                                        // TranscriptHistory::push dedupes if
+                                        // both fire for one cue).
+                                        if let Some(h) = &self.transcript_history {
+                                            h.push("caller", tts_text.trim());
+                                        }
                                     }
                                     Err(e) => {
                                         eprintln!("[lksr] TTS error ({label}): {e}");
@@ -1394,6 +1423,15 @@ impl OpenAiCallerBridge {
                                         false,
                                         None,
                                     );
+                                    // Pre-`do:` dialogue replay (see
+                                    // transcript_history field): the spoken
+                                    // caller line enters the shared history
+                                    // here — the single owner of caller
+                                    // lines (NOT the lk.transcription
+                                    // re-final of our own TTS echo).
+                                    if let Some(h) = &self.transcript_history {
+                                        h.push("caller", text.trim());
+                                    }
                                 }
                                 Err(e) => {
                                     let mut w = writer_cue.lock().await;
@@ -1581,6 +1619,14 @@ impl OpenAiCallerBridge {
                                                 s.last_agent_final_text =
                                                     t.text.trim().to_string();
                                             }
+                                            // Pre-`do:` dialogue replay (see
+                                            // transcript_history field):
+                                            // genuine agent replies land in
+                                            // the shared history for the
+                                            // `do:` generator context.
+                                            if let Some(h) = &self.transcript_history {
+                                                h.push("agent", t.text.trim());
+                                            }
                                         }
                                         let mut w = writer_obs.lock().await;
                                         let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
@@ -1642,6 +1688,18 @@ impl OpenAiCallerBridge {
                                     } else if role == "user" && final_ {
                                         s.user_has_spoken = true;
                                         s.agent_replied_this_turn = false;
+                                    }
+                                }
+                                // Pre-`do:` dialogue replay (same as the
+                                // data-channel arm above): agent finals from
+                                // lk.transcription land in the shared history
+                                // too. Caller echo is NOT pushed — only the
+                                // bridge TTS emit sites own caller lines (a
+                                // seconds-late "user final" re-transcription
+                                // of our own TTS would double them).
+                                if final_ && role == "agent" {
+                                    if let Some(h) = &self.transcript_history {
+                                        h.push("agent", text.trim());
                                     }
                                 }
                                 let mut w = writer_obs.lock().await;

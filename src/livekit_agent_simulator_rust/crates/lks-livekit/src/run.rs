@@ -453,6 +453,14 @@ pub async fn execute_scenario_parsed(
     let script_writer = writer_arc.clone();
     let script_state2 = script_state.clone();
     let end_tx2 = end_tx.clone();
+    // Full pre-`do:` dialogue replay for the `do:` generator context
+    // (mirrors Python's `log` passed into `_run_behavior`): verbatim
+    // `say:` lines (pushed by the TTS→mic emit sites in the bridge) plus
+    // genuine agent finals (pushed by both TextStream and data-channel
+    // arms). Same Arc is handed to ScriptRuntime::new and the bridge
+    // builder below — see with_transcript_history.
+    let transcript_history: crate::script::SharedTranscriptHistory =
+        std::sync::Arc::new(crate::script::TranscriptHistory::new());
 
     // Cue channel: ScriptRuntime → caller bridge (real delivery, port of
     // Python `bridge.inject_cue`). The bridge consumes Speak/Dtmf commands
@@ -585,6 +593,7 @@ pub async fn execute_scenario_parsed(
             locale,
             do_api_key,
             run_spec.first_speaker.clone(),
+            transcript_history.clone(),
         );
         Some(tokio::spawn(
             async move { runtime.run(end_rx_script).await },
@@ -722,6 +731,9 @@ pub async fn execute_scenario_parsed(
             .with_observe(cfg.observe.clone())
             .with_speech_conditions(persona_sc)
             .with_cue_rx(cue_rx)
+            // Pre-`do:` dialogue replay for the `do:` generator context —
+            // same Arc handed to ScriptRuntime::new above (TranscriptHistory).
+            .with_transcript_history(transcript_history.clone())
             // Contract path (caller_steps non-empty): plumbing-only bridge —
             // no persona Realtime session, no freestyle generation.
             // Port of run_orchestrator.py: the contract path "never opens a
