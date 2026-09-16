@@ -3,7 +3,7 @@
 //! std::sync::Mutex for captured state — never tokio locks.
 
 use lks_core::logging::event::EventWriter;
-use lks_livekit::script::{ScriptAction, ScriptObserverState, ScriptRuntime};
+use lks_livekit::script::{ScriptAction, ScriptObserverState, ScriptRuntime, TranscriptHistory};
 use serde_json::json;
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{broadcast, Mutex as TokioMutex};
@@ -42,6 +42,7 @@ async fn time_trigger_fires_speak_after_delay() {
         "en".into(),
         "test-api-key".into(),
         "user".into(),
+        Arc::new(TranscriptHistory::new()),
     );
     let started = std::time::Instant::now();
     runtime.run(end_rx).await.unwrap();
@@ -77,6 +78,7 @@ async fn silence_trigger_waits_for_agent_to_speak_first() {
         "en".into(),
         "test-api-key".into(),
         "user".into(),
+        Arc::new(TranscriptHistory::new()),
     );
     // Spawn the runtime; agent hasn't spoken → silence trigger must not fire.
     let rx = end_rx.resubscribe();
@@ -131,6 +133,7 @@ async fn hang_up_ends_run() {
         "en".into(),
         "test-api-key".into(),
         "user".into(),
+        Arc::new(TranscriptHistory::new()),
     );
     let _ = end_tx;
     runtime.run(end_rx).await.unwrap();
