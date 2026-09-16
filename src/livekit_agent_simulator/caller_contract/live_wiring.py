@@ -140,12 +140,23 @@ def _synthesize(text: str) -> bytes:
     if not pcm:
         # No OS TTS on this machine (e.g. Linux CI): deterministic offline
         # sine blip so the publish/drain path still exercises end to end.
+        # NOTE: math.sin returns float — struct.pack "<h" needs int, so
+        # truncate explicitly (dcf21f3 shipped the float straight in and
+        # every CI run failed with "required argument is not an integer").
         import math as _math
         import struct as _struct
 
         _dur_s = max(0.2, min(2.0, 0.15 + 0.02 * len(text.split())))
         _n = int(TARGET_RATE * _dur_s)
-        pcm = bytes(_struct.pack(f"<{_n}h", *[_math.sin(2 * _math.pi * 440 * i / TARGET_RATE) * 8000 for i in range(_n)]))
+        pcm = bytes(
+            _struct.pack(
+                f"<{_n}h",
+                *[
+                    int(_math.sin(2 * _math.pi * 440 * i / TARGET_RATE) * 8000)
+                    for i in range(_n)
+                ],
+            )
+        )
         _TTS_BRANCH = "synthetic"
     return pcm
 
