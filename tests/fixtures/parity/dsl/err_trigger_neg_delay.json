@@ -1,0 +1,13 @@
+{
+  "id": "err_trigger_neg_delay",
+  "steps": [
+    {
+      "say": "Hi.",
+      "trigger": {
+        "kind": "time",
+        "delay_ms": -1
+      }
+    }
+  ],
+  "expect": "error"
+}

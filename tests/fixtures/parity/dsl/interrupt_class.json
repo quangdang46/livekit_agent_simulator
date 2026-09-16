@@ -1,0 +1,15 @@
+{
+  "id": "interrupt_class",
+  "steps": [
+    {
+      "interrupt": true,
+      "interaction": {
+        "interrupt_class": "backchannel"
+      }
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "interrupt"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "say_silence",
+  "steps": [
+    {
+      "say": "Hello?",
+      "trigger": {
+        "kind": "silence",
+        "delay_ms": 700
+      }
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "say"
+  ]
+}

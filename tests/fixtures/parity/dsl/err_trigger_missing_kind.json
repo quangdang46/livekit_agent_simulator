@@ -1,0 +1,12 @@
+{
+  "id": "err_trigger_missing_kind",
+  "steps": [
+    {
+      "say": "Hi.",
+      "trigger": {
+        "delay_ms": 5
+      }
+    }
+  ],
+  "expect": "error"
+}

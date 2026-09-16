@@ -1,0 +1,25 @@
+{
+  "id": "validator_end_call_not_allowed",
+  "use_semantic_verifier": false,
+  "contract": {
+    "behavior": "negotiate",
+    "target": "price",
+    "constraints": {
+      "max_turns": 3,
+      "max_budget": 30000,
+      "max_words": null,
+      "max_duration_s": null,
+      "forbidden_intents": ["financing", "trade_in", "vehicle_change"],
+      "must_not": ["invent_facts", "end_call"]
+    }
+  },
+  "candidate": {
+    "act": "negotiate",
+    "target": "price",
+    "slots": {},
+    "utterance": "Thanks, that's all I needed. Goodbye.",
+    "identity": {"behavior_id": "b2", "turn_id": 1, "generation_id": 1, "context_version": 0}
+  },
+  "expected_verdict": "INVALID",
+  "expected_reason": "END_CALL_NOT_ALLOWED"
+}

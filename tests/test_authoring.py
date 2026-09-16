@@ -230,3 +230,43 @@ def test_authoring_tier_helper():
         )
         == "exploratory"
     )
+
+
+# ---------------------------------------------------------------------------
+# Interaction shaping keys the delivery layer cannot apply.
+#
+# plan_speak computes pace/hesitation/stumble and only pre_delay_ms is used:
+# the contract path synthesizes the EXACT validated utterance, so inserting a
+# token after validation would put unvalidated words on the wire. The DSL
+# still accepts the keys, so an author would reasonably assume speech is
+# being shaped — warn instead of staying silent.
+# ---------------------------------------------------------------------------
+
+
+def _interaction_scenario(interaction):
+    action = SimpleNamespace(kind="say", interaction=interaction)
+    return _scenario(caller_actions=[action])
+
+
+def _codes(scenario):
+    return {f.code for f in collect_authoring_findings(scenario)}
+
+
+def test_interaction_hesitation_and_stumble_warn_as_not_applied():
+    interaction = SimpleNamespace(pace=None, hesitation="low", stumble="low", pre_delay_ms=300)
+    assert "interaction_shaping_not_applied" in _codes(_interaction_scenario(interaction))
+
+
+def test_interaction_pace_warns_as_not_applied():
+    interaction = SimpleNamespace(pace="slow", hesitation=None, stumble=None, pre_delay_ms=200)
+    assert "interaction_shaping_not_applied" in _codes(_interaction_scenario(interaction))
+
+
+def test_interaction_pre_delay_only_does_not_warn():
+    """pre_delay_ms IS applied, so it must not be flagged."""
+    interaction = SimpleNamespace(pace=None, hesitation=None, stumble=None, pre_delay_ms=200)
+    assert "interaction_shaping_not_applied" not in _codes(_interaction_scenario(interaction))
+
+
+def test_scenario_without_caller_actions_does_not_warn():
+    assert "interaction_shaping_not_applied" not in _codes(_scenario())

@@ -1,0 +1,20 @@
+{
+  "id": "wait_dtmf_end",
+  "steps": [
+    {
+      "wait": 100
+    },
+    {
+      "dtmf": "123"
+    },
+    {
+      "end": true
+    }
+  ],
+  "expect": "ok",
+  "expected_kinds": [
+    "wait",
+    "dtmf",
+    "end"
+  ]
+}

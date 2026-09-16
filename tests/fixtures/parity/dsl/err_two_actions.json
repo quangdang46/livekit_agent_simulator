@@ -1,0 +1,10 @@
+{
+  "id": "err_two_actions",
+  "steps": [
+    {
+      "say": "Hi.",
+      "wait": 1
+    }
+  ],
+  "expect": "error"
+}

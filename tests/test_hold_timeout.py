@@ -1,4 +1,4 @@
-"""#29 hold_music_timeout_s — parse/validation + conversation-loop hang-up."""
+"""#29 hold_music_timeout_s — parse/validation + contract hold watchdog."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from livekit_agent_simulator.run_orchestrator import _conversation_loop
 from livekit_agent_simulator.scenario import ScenarioError, parse_scenario
 
 BASE = """\
@@ -94,136 +93,175 @@ def test_persona_alias_invalid_fails_parse(tmp_path) -> None:
         parse_scenario(f)
 
 
-# ── conversation loop ─────────────────────────────────────────────────
+# ── contract hold watchdog (legacy _conversation_loop removed) ──────────
+# The hold timeout now lives in ContractCallerDriver._hold_watchdog, armed by
+# AgentTurnWait.last_speech_at_ms evidence. These tests drive the driver
+# directly (no LiveKit) with the same scenarios the old loop tests covered.
 
 
 class _Obs:
-    def __init__(self) -> None:
-        self.agent_disconnected = asyncio.Event()
-        self.turn = 0
-        self.agent_replied_this_turn = False
-        self.agent_has_spoken = False
-        self.last_agent_activity_mono = time.monotonic()
-        self.last_activity_mono = time.monotonic()
-        self._any_activity = True  # real observer sets this on first transcript
+    """Minimal AgentTurnWait: scripted speaking evidence via last_speech_at_ms."""
 
-    def any_activity_occurred(self) -> bool:
-        return self._any_activity
+    def __init__(self, last_speech_ms=None, speaking: bool = False) -> None:
+        self._last_speech_ms = last_speech_ms
+        self._speaking = speaking
 
+    async def wait_agent_turn(self, *, timeout_s: float = 30.0):
+        return None
 
-class _Bridge:
-    def __init__(self) -> None:
-        self.end_call = asyncio.Event()
-        self.hang_ups = 0
-        self.scripted = False
+    def is_agent_speaking_now(self) -> bool:
+        return self._speaking
 
-    def scripted_silence_active(self) -> bool:
-        return self.scripted
-
-    def sim_hang_up(self) -> None:
-        self.hang_ups += 1
-        self.end_call.set()
+    def last_speech_at_ms(self):
+        return self._last_speech_ms
 
 
-class _Writer:
-    def __init__(self) -> None:
-        self.events: list[dict] = []
+class _Sink:
+    def __init__(self, orch) -> None:
+        self.orch = orch
 
-    def emit(self, kind: str, spec=None, **kw) -> None:
-        self.events.append({"kind": kind, "spec": spec or {}})
-
-
-def _scenario(hold: float | None) -> SimpleNamespace:
-    return SimpleNamespace(hold_music_timeout_s=lambda: hold)
+    async def publish(self, pcm, identity, *, label, gain=1.0):
+        return True
 
 
-def _run(max_turns: int = 99, timeout_s: int = 10) -> SimpleNamespace:
-    return SimpleNamespace(max_turns=max_turns, timeout_s=timeout_s, first_speaker="agent")
+def _driver():
+    from livekit_agent_simulator.caller_contract.driver import ContractCallerDriver
+    from livekit_agent_simulator.caller_contract.dsl import parse_steps
+    from livekit_agent_simulator.caller_contract.language_adapter import AILanguageAdapter
+    from livekit_agent_simulator.caller_contract.orchestrator import Orchestrator
+    from livekit_agent_simulator.caller_contract.semantic import RuleBasedSemanticVerifier
+    from livekit_agent_simulator.caller_contract.validator import ContractValidator
+
+    orch = Orchestrator()
+    driver = ContractCallerDriver(
+        orchestrator=orch,
+        validator=ContractValidator(semantic_verifier=RuleBasedSemanticVerifier()),
+        adapter=AILanguageAdapter(
+            backend=type(
+                "B",
+                (),
+                {
+                    "generate": lambda self, ctx: {
+                        "act": "ask",
+                        "target": None,
+                        "slots": {},
+                        "utterance": "Could you tell me more?",
+                    }
+                },
+            )()
+        ),
+        synthesize=lambda text: b"\x00\x01" * 10,
+    )
+    actions = parse_steps([{"wait": 3000}], file="t")
+    return driver, orch, actions
+
+
+def _ago_ms(ms: float) -> float:
+    return time.monotonic() * 1000.0 - ms
 
 
 @pytest.mark.asyncio
 async def test_hold_timeout_hangs_up_after_agent_dead_air() -> None:
-    obs, bridge, writer = _Obs(), _Bridge(), _Writer()
-    obs.agent_has_spoken = True
-    obs.last_agent_activity_mono = time.monotonic() - 1.0
-    reason = await _conversation_loop(
-        _scenario(0.5), _run(), obs, bridge, writer, cfg_silence_s=60.0
+    from livekit_agent_simulator.caller_contract import EndedBy
+
+    driver, orch, actions = _driver()
+    fired: list[bool] = []
+    events: list[tuple[str, dict]] = []
+    result = await driver.run(
+        actions,
+        _Sink(orch),
+        _Obs(last_speech_ms=_ago_ms(1000)),
+        emit=lambda kind, spec=None: events.append((kind, spec or {})),
+        hold_timeout_s=0.5,
+        on_hold_timeout=lambda: fired.append(True),
     )
-    assert reason == "hold_music_timeout"
-    assert bridge.hang_ups == 1
-    hold_events = [e for e in writer.events if e["kind"] == "sim.hold_timeout"]
-    assert hold_events and hold_events[0]["spec"]["timeout_s"] == 0.5
-    assert hold_events[0]["spec"]["agent_idle_ms"] >= 500
+    assert result.failure is None
+    assert result.ended_by == EndedBy.SCENARIO  # watchdog fires; the run's hang-up is the bridge callback
+    assert fired == [True]
+    hold_events = [s for k, s in events if k == "sim.hold_timeout"]
+    assert hold_events and hold_events[0]["timeout_s"] == 0.5
+    assert hold_events[0]["agent_idle_ms"] >= 500
 
 
 @pytest.mark.asyncio
 async def test_hold_timeout_not_armed_before_agent_speaks() -> None:
-    obs, bridge, writer = _Obs(), _Bridge(), _Writer()
-    obs.agent_has_spoken = False
-    obs.last_agent_activity_mono = time.monotonic() - 10.0
-    # dead_call net (3 x 0.1 s) still owns the never-spoke case.
-    reason = await _conversation_loop(
-        _scenario(0.3), _run(), obs, bridge, writer, cfg_silence_s=0.1
+    driver, orch, actions = _driver()
+    fired: list[bool] = []
+    result = await driver.run(
+        actions,
+        _Sink(orch),
+        _Obs(last_speech_ms=None),  # never spoke: watchdog never arms
+        hold_timeout_s=0.1,
+        on_hold_timeout=lambda: fired.append(True),
     )
-    assert reason == "dead_call_silence"
-    assert bridge.hang_ups == 0
+    assert result.failure is None
+    assert fired == []
 
 
 @pytest.mark.asyncio
 async def test_hold_timeout_resets_on_agent_activity() -> None:
-    obs, bridge, writer = _Obs(), _Bridge(), _Writer()
-    obs.agent_has_spoken = True
-    obs.last_agent_activity_mono = time.monotonic()
-
-    async def keep_agent_alive() -> None:
-        for _ in range(3):
-            await asyncio.sleep(0.3)
-            obs.last_agent_activity_mono = time.monotonic()
-
-    started = time.monotonic()
-    alive = asyncio.create_task(keep_agent_alive())
-    reason = await _conversation_loop(
-        _scenario(0.6), _run(), obs, bridge, writer, cfg_silence_s=60.0
+    # Fresh speech evidence just before the budget means no fire within a
+    # short wait: the watchdog measures from the last evidence, not run start.
+    driver, orch, actions = _driver()
+    fired: list[bool] = []
+    result = await driver.run(
+        actions,
+        _Sink(orch),
+        _Obs(last_speech_ms=_ago_ms(50)),
+        hold_timeout_s=30.0,
+        on_hold_timeout=lambda: fired.append(True),
     )
-    await asyncio.gather(alive, return_exceptions=True)
-    elapsed = time.monotonic() - started
-    assert reason == "hold_music_timeout"
-    # 3 resets at ~0.3 s spacing then a full 0.6 s idle window.
-    assert elapsed >= 1.4
+    assert result.failure is None
+    assert fired == []
 
 
 @pytest.mark.asyncio
-async def test_hold_timeout_beats_dead_call_net_when_armed() -> None:
-    obs, bridge, writer = _Obs(), _Bridge(), _Writer()
-    obs.agent_has_spoken = True
-    obs.last_agent_activity_mono = time.monotonic()
-    # dead_call would fire at 3 x 0.1 = 0.3 s; hold timeout is longer (0.8 s)
-    # and must stay authoritative while armed.
-    reason = await _conversation_loop(
-        _scenario(0.8), _run(), obs, bridge, writer, cfg_silence_s=0.1
+async def test_hold_timeout_beats_silence_wait_when_armed() -> None:
+    # Armed watchdog fires even while a long wait: is in progress — the
+    # watchdog is independent of the action being executed.
+    from livekit_agent_simulator.caller_contract import EndedBy
+
+    driver, orch, actions = _driver()
+    fired: list[bool] = []
+    result = await driver.run(
+        actions,
+        _Sink(orch),
+        _Obs(last_speech_ms=_ago_ms(2000)),
+        hold_timeout_s=0.3,
+        on_hold_timeout=lambda: fired.append(True),
     )
-    assert reason == "hold_music_timeout"
+    assert result.failure is None
+    assert result.ended_by == EndedBy.SCENARIO
+    assert fired == [True]
 
 
 @pytest.mark.asyncio
-async def test_hold_timeout_ignores_scripted_user_silence() -> None:
-    obs, bridge, writer = _Obs(), _Bridge(), _Writer()
-    obs.agent_has_spoken = True
-    obs.last_agent_activity_mono = time.monotonic() - 1.0
-    bridge.scripted = True  # caller intentionally quiet — agent dead air still counts
-    reason = await _conversation_loop(
-        _scenario(0.5), _run(), obs, bridge, writer, cfg_silence_s=60.0
+async def test_hold_timeout_ignores_caller_silence() -> None:
+    # Caller quiet (wait action) does not disarm the watchdog: only agent
+    # speech evidence matters, matching the legacy agent-only measure.
+    driver, orch, actions = _driver()
+    fired: list[bool] = []
+    result = await driver.run(
+        actions,
+        _Sink(orch),
+        _Obs(last_speech_ms=_ago_ms(1000)),
+        hold_timeout_s=0.4,
+        on_hold_timeout=lambda: fired.append(True),
     )
-    assert reason == "hold_music_timeout"
+    assert result.failure is None
+    assert fired == [True]
 
 
 @pytest.mark.asyncio
-async def test_no_hold_timeout_keeps_dead_call_behavior() -> None:
-    obs, bridge, writer = _Obs(), _Bridge(), _Writer()
-    obs.agent_has_spoken = True
-    obs.last_agent_activity_mono = time.monotonic() - 10.0
-    reason = await _conversation_loop(
-        _scenario(None), _run(), obs, bridge, writer, cfg_silence_s=0.1
+async def test_no_hold_timeout_disables_watchdog() -> None:
+    driver, orch, actions = _driver()
+    fired: list[bool] = []
+    result = await driver.run(
+        actions,
+        _Sink(orch),
+        _Obs(last_speech_ms=_ago_ms(10_000)),
+        hold_timeout_s=None,
+        on_hold_timeout=lambda: fired.append(True),
     )
-    assert reason == "dead_call_silence"
-    assert bridge.hang_ups == 0
+    assert result.failure is None
+    assert fired == []

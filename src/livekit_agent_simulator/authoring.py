@@ -330,7 +330,51 @@ def collect_authoring_findings(scenario: Any) -> list[AuthoringWarning]:
             )
         )
 
+    findings.extend(_interaction_shaping_findings(scenario))
+
     return findings
+
+
+# Interaction keys the DSL accepts but the delivery layer cannot apply.
+#
+# The planner computes them (interaction_planner.plan_speak) and the driver
+# deliberately uses only ``pre_delay_ms``: the contract path synthesizes the
+# exact validated utterance string, so a hesitation/stumble token inserted
+# AFTER validation would put unvalidated words on the wire and break the
+# "PCM is byte-identical to the validated text" property (see
+# ContractCallerDriver's do: branch and docs/contract-caller-wiring.md).
+# ``pace`` has no PCM-level implementation at all.
+#
+# Instead of removing the keys (a breaking DSL change) or staying silent (an
+# author would reasonably assume the simulator is shaping speech), warn.
+_UNWIRED_SHAPING_KEYS = ("pace", "hesitation", "stumble")
+
+
+def _interaction_shaping_findings(scenario: Any) -> list[AuthoringWarning]:
+    """Warn when a step sets interaction keys that have no delivery effect."""
+    seen: list[str] = []
+    for action in getattr(scenario, "caller_actions", None) or []:
+        interaction = getattr(action, "interaction", None)
+        if interaction is None:
+            continue
+        for key in _UNWIRED_SHAPING_KEYS:
+            if getattr(interaction, key, None):
+                seen.append(key)
+    if not seen:
+        return []
+
+    keys = sorted(set(seen))
+    return [
+        AuthoringWarning(
+            code="interaction_shaping_not_applied",
+            message=(
+                f"interaction {', '.join(keys)} set but has no delivery effect: the "
+                "contract path synthesizes the exact validated utterance, and these "
+                "keys would insert words after validation. Only pre_delay_ms applies. "
+                "Remove them, or express timing via pre_delay_ms / trigger:."
+            ),
+        )
+    ]
 
 
 def collect_authoring_warnings(scenario: Any) -> list[str]:

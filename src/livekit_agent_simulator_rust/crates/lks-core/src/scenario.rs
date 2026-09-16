@@ -16,7 +16,7 @@ use crate::errors::ScenarioError;
 
 pub const API_VERSION: &str = "agent-sim/v1";
 
-pub const KNOWN_KINDS: [&str; 12] = [
+pub const KNOWN_KINDS: [&str; 13] = [
     "Persona",
     "Context",
     "Simulator",
@@ -29,6 +29,7 @@ pub const KNOWN_KINDS: [&str; 12] = [
     "Assert",
     "Caller",
     "Telephony",
+    "CallerSteps",
 ];
 
 pub const CALLER_MODES: [&str; 5] = [
@@ -299,6 +300,10 @@ pub struct Scenario {
     pub pass_criteria_mode: String,
     pub script_steps: Vec<Json>,
     pub script_verify: Option<Json>,
+    /// Parsed caller_steps (contract path). Raw-validated CallerAction
+    /// payloads — mirrors Python Scenario.caller_actions (parse only;
+    /// no driver/orchestrator in this crate).
+    pub caller_actions: Vec<crate::caller_dsl::CallerAction>,
     pub plugin_modules: Vec<String>,
     pub asserts: Option<Json>,
     pub behavior_spec: Option<Map<String, Json>>,
@@ -359,6 +364,224 @@ impl Scenario {
             }
         }
         config_default
+    }
+}
+
+// Port of `driver.py::_INTERRUPT_LINES` (caller_contract/driver.py:1110):
+// fixed cut-in lines per interrupt class. Author-fixed text (like `say`):
+// never AI-generated, never validator-gated, and always published
+// immediately (barge delivery) — an interrupt that waits for silence would
+// be a contradiction. Classes mirror the legacy interrupt_class vocabulary
+// (correction|backchannel); unknown classes fall back to "correction".
+const INTERRUPT_LINE_CORRECTION: &str = "Wait — one second.";
+const INTERRUPT_LINE_BACKCHANNEL: &str = "Mhm.";
+
+/// Port of `driver.py::_interrupt_text`/`_interrupt_class`: resolve the
+/// fixed cut-in line for an `interrupt:` CallerAction from its optional
+/// `interaction.interrupt_class` (default "correction").
+fn interrupt_text(action: &crate::caller_dsl::CallerAction) -> (&'static str, &'static str) {
+    let cls = action
+        .get("interaction")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.get("interrupt_class"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_lowercase());
+    match cls.as_deref() {
+        Some("backchannel") => ("backchannel", INTERRUPT_LINE_BACKCHANNEL),
+        _ => ("correction", INTERRUPT_LINE_CORRECTION),
+    }
+}
+
+/// Port of the `caller_steps` → `script_steps` projection described above
+/// (fix: caller_steps ignored / freestyle-only driver). Each `CallerAction`
+/// becomes a raw ScriptStep dict (same field names `crate::script::parse`
+/// already validates); kinds without a ScriptStep equivalent in this slice
+/// (`silence` — a control action the legacy driver has no cue for) are
+/// skipped rather than erroring, since they carry no runtime effect on the
+/// legacy driver either way.
+///
+/// `do:` steps are emitted as raw `action: "contract_do"` objects that
+/// deliberately do NOT go through `crate::script::parse::parse_script_steps`
+/// (the typed `ScriptStep` mirror has no slot for behavior/target/
+/// constraints/interaction) — see `project_caller_actions_to_script_steps`
+/// below, which splices these back in by original index after the
+/// typed-parseable steps round-trip through the validator.
+fn caller_actions_to_script_steps(actions: &[crate::caller_dsl::CallerAction]) -> Vec<Json> {
+    let mut out = Vec::with_capacity(actions.len());
+    for (i, action) in actions.iter().enumerate() {
+        let mut step = Map::new();
+        step.insert("id".into(), Json::String(format!("caller-step-{i}")));
+        let trigger = action.get("trigger").and_then(|v| v.as_object());
+        match action.kind.as_str() {
+            "say" => {
+                let Some(text) = action.get("say").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                step.insert("action".into(), Json::String("speak".into()));
+                step.insert("say".into(), Json::String(text.to_string()));
+                if let Some(bi) = action.get("barge_in") {
+                    step.insert("barge_in".into(), bi.clone());
+                }
+                // Trigger-less say: fire IMMEDIATELY (Python dsl: "trigger
+                // gates WHEN a say fires (None = immediately, legacy say
+                // behavior)"). The runtime defaults a missing trigger to
+                // agent_speaking — correct for legacy scripts (agent greets
+                // first) but a deadlock on user-first contract runs (run
+                // dbg-beat: step 1 opener sat arming 60s waiting for agent
+                // speech that comes AFTER our opener). Emit time/0 explicitly.
+                if trigger.is_none() {
+                    step.insert("trigger".into(), Json::String("time".into()));
+                    step.insert("delay_ms".into(), Json::Number(0.into()));
+                } else {
+                    insert_trigger_fields(&mut step, trigger);
+                }
+            }
+            "wait" => {
+                let Some(ms) = action.get("wait").and_then(|v| v.as_i64()) else {
+                    continue;
+                };
+                step.insert("action".into(), Json::String("wait".into()));
+                step.insert("trigger".into(), Json::String("time".into()));
+                step.insert("delay_ms".into(), Json::Number(ms.into()));
+            }
+            "dtmf" => {
+                let Some(digits) = action.get("dtmf").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                step.insert("action".into(), Json::String("dtmf".into()));
+                step.insert("trigger".into(), Json::String("time".into()));
+                step.insert("digits".into(), Json::String(digits.to_string()));
+            }
+            "end" | "hangup" => {
+                step.insert("action".into(), Json::String("hang_up".into()));
+                step.insert("trigger".into(), Json::String("time".into()));
+            }
+            "play_audio" => {
+                let Some(spec) = action.get("play_audio").and_then(|v| v.as_object()) else {
+                    continue;
+                };
+                step.insert("action".into(), Json::String("speak".into()));
+                step.insert("delivery".into(), Json::String("room_pcm".into()));
+                if let Some(asset) = spec.get("asset") {
+                    step.insert("asset".into(), asset.clone());
+                }
+                if let Some(gain) = spec.get("gain") {
+                    step.insert("gain".into(), gain.clone());
+                }
+                if let Some(l) = spec.get("loop") {
+                    step.insert("loop".into(), l.clone());
+                }
+                insert_trigger_fields(&mut step, trigger);
+            }
+            "interrupt" => {
+                // Fixed cut-in line, immediate barge (never validator-gated,
+                // never waits for silence) — port of driver.py `_interrupt_text`.
+                let (cls, text) = interrupt_text(action);
+                step.insert("action".into(), Json::String("speak".into()));
+                step.insert("say".into(), Json::String(text.to_string()));
+                step.insert("barge_in".into(), Json::Bool(true));
+                step.insert("trigger".into(), Json::String("agent_speaking".into()));
+                step.insert("class".into(), Json::String(cls.to_string()));
+            }
+            "do" => {
+                // Raw (non-typed) marker step — spliced back post-parse by
+                // `project_caller_actions_to_script_steps`. Carries behavior/
+                // target/constraints/interaction verbatim for the do-driver
+                // (lks-livekit `contract_do`).
+                step.insert("action".into(), Json::String("contract_do".into()));
+                // Runs in-order as soon as it is armed (delay_ms: 0) — the
+                // do-driver itself waits for agent silence before publishing
+                // (port of driver.py `_wait_agent_silence`), same as `say:`.
+                step.insert("trigger".into(), Json::String("time".into()));
+                step.insert("delay_ms".into(), Json::Number(0.into()));
+                if let Some(b) = action.get("behavior") {
+                    step.insert("behavior".into(), b.clone());
+                }
+                if let Some(t) = action.get("target") {
+                    step.insert("target".into(), t.clone());
+                }
+                if let Some(c) = action.get("constraints") {
+                    step.insert("constraints".into(), c.clone());
+                }
+                if let Some(inter) = action.get("interaction") {
+                    step.insert("interaction".into(), inter.clone());
+                }
+            }
+            // "silence": no ScriptStep equivalent yet — dropped (parse-only
+            // surface predates a driver on either side).
+            _ => continue,
+        }
+        out.push(Json::Object(step));
+    }
+    out
+}
+
+/// Wraps `caller_actions_to_script_steps` + `parse_script_steps`: the typed
+/// parser has no field slot for `contract_do` steps' behavior/target/
+/// constraints/interaction, so those steps are pulled out before the typed
+/// round-trip and spliced back (by their original relative order) after —
+/// this keeps `parse_script_steps` byte-parity with the Python-mirrored
+/// `ScriptStep` shape while still letting `do:`/`interrupt:` ride the same
+/// ordered step list the runtime already walks.
+fn project_caller_actions_to_script_steps(
+    actions: &[crate::caller_dsl::CallerAction],
+    path_label: &str,
+) -> Result<Vec<Json>, ScenarioError> {
+    let raw = caller_actions_to_script_steps(actions);
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut typed_input = Vec::new();
+    // position -> raw contract_do step, so it can be reinserted at the same
+    // relative slot once the typed steps come back (typed_input omits them).
+    let mut do_steps: Vec<(usize, Json)> = Vec::new();
+    for (i, step) in raw.into_iter().enumerate() {
+        let is_do = step
+            .get("action")
+            .and_then(|v| v.as_str())
+            .map(|a| a == "contract_do")
+            .unwrap_or(false);
+        if is_do {
+            do_steps.push((i, step));
+        } else {
+            typed_input.push((i, step));
+        }
+    }
+    let mut spec = Map::new();
+    spec.insert(
+        "steps".into(),
+        Json::Array(typed_input.iter().map(|(_, s)| s.clone()).collect()),
+    );
+    let typed = crate::script::parse::parse_script_steps(&spec, path_label)
+        .map_err(ScenarioError)?
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
+        .collect::<Vec<_>>();
+    // Re-merge in original order: (original_index, step_json) pairs from
+    // both lists, sorted back by original_index.
+    let mut merged: Vec<(usize, Json)> = typed_input
+        .into_iter()
+        .map(|(idx, _)| idx)
+        .zip(typed)
+        .collect();
+    merged.extend(do_steps);
+    merged.sort_by_key(|(idx, _)| *idx);
+    Ok(merged.into_iter().map(|(_, s)| s).collect())
+}
+
+/// Flatten a caller_dsl `trigger: {kind, delay_ms, min_agent_active_ms}`
+/// object onto the flat ScriptStep fields it maps to (trigger is a plain
+/// string there, sibling to top-level delay_ms/min_agent_active_ms keys).
+fn insert_trigger_fields(step: &mut Map<String, Json>, trigger: Option<&Map<String, Json>>) {
+    let Some(trigger) = trigger else { return };
+    if let Some(kind) = trigger.get("kind") {
+        step.insert("trigger".into(), kind.clone());
+    }
+    if let Some(delay) = trigger.get("delay_ms") {
+        step.insert("delay_ms".into(), delay.clone());
+    }
+    if let Some(min_active) = trigger.get("min_agent_active_ms") {
+        step.insert("min_agent_active_ms".into(), min_active.clone());
     }
 }
 
@@ -556,6 +779,35 @@ pub fn scenario_from_dict(
         script_verify = script.get("verify").cloned();
     }
 
+    // caller_steps (contract path): strict parse via caller_dsl — same
+    // rejections as Python dsl.parse_steps (unknown keys fail loudly).
+    // NOTE: a present-but-unparseable caller_steps is a hard error (never
+    // a silent fallback to the legacy script path).
+    let mut caller_actions = Vec::new();
+    if let Some(raw_steps) = data.get("caller_steps") {
+        let arr = raw_steps
+            .as_array()
+            .ok_or_else(|| ScenarioError(format!("{path_label}: caller_steps must be an array")))?;
+        caller_actions = crate::caller_dsl::parse_steps(arr, path_label)?;
+    }
+
+    // Fix (lksr caller_steps ignored): the Rust caller bridges only ever
+    // drove the legacy `script_steps` list (ScriptRuntime, see
+    // crate::script), never `caller_actions` — a scenario authored purely
+    // with `caller_steps:` ran freestyle-only. `caller_actions` and
+    // `ScriptStep` share the same trigger vocabulary (time/agent_speaking/
+    // silence, delay_ms, min_agent_active_ms) and action set (say/wait/
+    // dtmf/end), so the minimal, low-risk fix is to project caller_actions
+    // onto the same ScriptStep JSON shape ScriptRuntime already drives —
+    // no new driver/timer machinery, and legacy `script:` scenarios (whose
+    // script_steps is already populated above) are completely unaffected.
+    if script_steps.is_empty() && !caller_actions.is_empty() {
+        let projected = project_caller_actions_to_script_steps(&caller_actions, path_label)?;
+        if !projected.is_empty() {
+            script_steps = projected;
+        }
+    }
+
     let persona = data
         .get("persona")
         .and_then(|v| v.as_object())
@@ -662,6 +914,7 @@ pub fn scenario_from_dict(
         pass_judges,
         script_steps,
         script_verify,
+        caller_actions,
         plugin_modules,
         asserts,
         behavior_spec,
@@ -702,13 +955,53 @@ pub fn apply_behavior_compile(
     // Typed parse of the raw script section (steps + verify) so
     // apply_caller_behavior can merge/compile; the raw section is reconstructed
     // from the typed steps for the compile call.
+    //
+    // `contract_do` steps (from caller_steps' `do:` — see
+    // project_caller_actions_to_script_steps) have no ScriptStep type slot
+    // for behavior/target/constraints/interaction and would fail
+    // parse_script_steps here exactly like at the first call site. Unlike
+    // there, this pass has no splice-by-index seam (apply_caller_behavior
+    // may merge/reorder steps by id), so each contract_do step is swapped
+    // for a placeholder ("wait", 0ms — a genuine no-op ScriptStep, never
+    // executed since ScriptRuntime special-cases action=="contract_do"
+    // before dispatch) that carries the SAME id, parsed/compiled normally,
+    // then swapped back to the original contract_do JSON by id afterward —
+    // preserving whatever position/merge behavior apply_caller_behavior
+    // gives it without this function needing to model that merge itself.
     let mut typed_steps: Vec<crate::script::ScriptStep> = Vec::new();
     let mut typed_verify: Option<crate::script::ScriptVerifySpec> = None;
     let script_raw = scenario.script_steps.clone();
-    if !script_raw.is_empty() {
+    let mut contract_do_by_id: std::collections::HashMap<String, Json> =
+        std::collections::HashMap::new();
+    let placeholder_raw: Vec<Json> = script_raw
+        .into_iter()
+        .map(|step| {
+            let is_do = step
+                .get("action")
+                .and_then(|v| v.as_str())
+                .map(|a| a == "contract_do")
+                .unwrap_or(false);
+            if !is_do {
+                return step;
+            }
+            let id = step
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            contract_do_by_id.insert(id.clone(), step);
+            let mut placeholder = Map::new();
+            placeholder.insert("id".into(), Json::String(id));
+            placeholder.insert("action".into(), Json::String("wait".into()));
+            placeholder.insert("trigger".into(), Json::String("time".into()));
+            placeholder.insert("delay_ms".into(), Json::Number(0.into()));
+            Json::Object(placeholder)
+        })
+        .collect();
+    if !placeholder_raw.is_empty() {
         // Wrap the raw steps in a {steps: [...]} spec the parser expects.
         let mut spec = Map::new();
-        spec.insert("steps".into(), Json::Array(script_raw));
+        spec.insert("steps".into(), Json::Array(placeholder_raw));
         typed_steps = parse_script_steps(&spec, path_label).map_err(ScenarioError)?;
     }
     if let Some(sv) = &scenario.script_verify {
@@ -727,6 +1020,10 @@ pub fn apply_behavior_compile(
     scenario.script_steps = compiled_steps
         .iter()
         .map(|s| serde_json::to_value(s).unwrap_or(Json::Null))
+        .map(|s| {
+            let id = s.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+            contract_do_by_id.remove(id).unwrap_or(s)
+        })
         .collect();
     scenario.script_verify = compiled_verify.map(|v| serde_json::to_value(v).unwrap_or(Json::Null));
     Ok(scenario)

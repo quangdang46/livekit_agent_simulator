@@ -134,3 +134,15 @@ class CallerBridge(Protocol):
     async def drain_persona_speech(self, *, timeout_s: float = 4.0) -> None:
         """Wait for queued sim speech to leave the mic (goodbye playout)."""
         ...
+
+    # -- caller_contract single-path publish --------------------------------
+    def publish_validated_pcm(self, pcm: bytes, *, gain: float = 1.0) -> bool:
+        """Push already-validated PCM straight to the mic mixer.
+
+        The ONLY publish path for the caller_contract ``ContractCallerDriver``
+        (say AND do use this) — no Realtime/AI session is involved. Returns
+        False when the mixer is not ready (never raises, so a dropped publish
+        does not crash the run; the caller_contract PublishSink treats a
+        False return the same as a stale-identity drop).
+        """
+        ...

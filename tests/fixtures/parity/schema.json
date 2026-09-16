@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CallerContract",
+  "type": "object",
+  "definitions": {
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "max_turns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_budget": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_words": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "max_duration_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "forbidden_intents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "must_not": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "behavior_id",
+        "turn_id",
+        "generation_id"
+      ],
+      "properties": {
+        "behavior_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turn_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generation_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "context_version": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "properties": {
+    "behavior": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "constraints": {
+      "$ref": "#/definitions/constraints"
+    },
+    "candidate": {
+      "type": "object",
+      "required": [
+        "act",
+        "utterance",
+        "identity"
+      ],
+      "properties": {
+        "act": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "slots": {
+          "type": "object"
+        },
+        "utterance": {
+          "type": "string",
+          "minLength": 1
+        },
+        "identity": {
+          "$ref": "#/definitions/identity"
+        }
+      }
+    }
+  }
+}

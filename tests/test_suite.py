@@ -129,3 +129,36 @@ def test_suite_matrix(tmp_path: Path) -> None:
     row0 = report["matrix"][0]
     assert row0.get("turn_p50_ms") == 800
     assert row0.get("ttfw_ms") == 400
+
+
+# ---------------------------------------------------------------------------
+# script.verify on the caller_contract path
+#
+# evaluate_script_log matches step_ids against the LEGACY sim.script.cue
+# vocabulary. The contract path emits contract.* instead, so it reports every
+# step as "not fired" and script_verify lands in hard_reasons — failing CI for
+# runs whose caller actually behaved correctly.
+# ---------------------------------------------------------------------------
+
+
+def test_script_verify_fail_is_a_hard_gate_reason() -> None:
+    """Baseline: a real script.verify failure DOES block CI (so the skip
+    below is doing something, not papering over a soft signal)."""
+    r = _ok_result()
+    r["summary"]["script_verify"] = {"pass": False, "checks": []}
+    gate = evaluate_run_result(r)
+    assert gate["ok"] is False
+    assert "script_verify" in gate["hard_reasons"]
+
+
+def test_script_verify_skipped_does_not_block_ci() -> None:
+    """The contract path marks script.verify skipped: not applicable is not
+    a failure — matching the existing assert_verify 'skipped' convention."""
+    r = _ok_result()
+    r["summary"]["script_verify"] = {
+        "skipped": True,
+        "reason": "caller_steps drives the contract path",
+    }
+    gate = evaluate_run_result(r)
+    assert gate["ok"] is True
+    assert "script_verify" not in gate["hard_reasons"]

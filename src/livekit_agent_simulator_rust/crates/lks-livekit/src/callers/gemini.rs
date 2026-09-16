@@ -30,6 +30,8 @@ pub struct GeminiCallerBridge {
     room_name: String,
     identity: String,
     writer: Arc<Mutex<EventWriter>>,
+    /// Shared conversation recorder (sim+agent → conversation.wav).
+    recorder: Option<crate::script::SharedRecorder>,
     /// Scenario Dispatch.metadata || config default (None = empty string).
     dispatch_metadata: Option<String>,
     /// Persona.speech_conditions.silent_mode — mute injects + no farewell
@@ -58,11 +60,20 @@ impl GeminiCallerBridge {
             room_name,
             identity,
             writer,
+            recorder: None,
             dispatch_metadata: None,
             silent_mode: false,
             persona_speech_conditions: Default::default(),
             observe: ObserveConfig::default(),
         }
+    }
+
+    /// Share the conversation recorder so the pumps feed it audio
+    /// (port of Python gemini.py `recorder=` — sim via mic pump, agent via
+    /// room-audio pump; stereo conversation.wav like the OpenAI bridge).
+    pub fn with_recorder(mut self, rec: crate::script::SharedRecorder) -> Self {
+        self.recorder = Some(rec);
+        self
     }
 
     /// Builder: observe config for data-topic + lk.agent.session observation.
@@ -103,8 +114,13 @@ impl GeminiCallerBridge {
             &self.identity,
             &self.room_name,
         )?;
-        let (room, room_events) = connect_room(&livekit_cfg.url, &token, &self.room_name).await?;
-        let source = super::openai::publish_mic_shared(&room)?;
+        let observe_gate = crate::room::RoomObserveGate {
+            lk_transcription: self.observe.lk_transcription,
+            lk_agent_session: self.observe.lk_agent_session,
+        };
+        let (room, room_events) =
+            connect_room(&livekit_cfg.url, &token, &self.room_name, observe_gate).await?;
+        let source = super::openai::publish_mic_shared(&room).await?;
         let source = Arc::new(source);
 
         // 2. Dispatch the agent.
@@ -203,16 +219,34 @@ impl GeminiCallerBridge {
             let sc = &self.persona_speech_conditions;
             crate::degradation::resolve_audio_effects(sc.get("effects")).unwrap_or_default()
         };
+        let rec_sim = self.recorder.clone();
         let mic_task = tokio::spawn(super::openai::pump_mic_shared(
             out_rx,
             source.clone(),
-            None,
+            rec_sim,
             mic_effects,
+        ));
+
+        // Shared Observer (lks-core::observer) — the single chokepoint for
+        // every transcript source, matching Python's Observer.on_transcript.
+        // GeminiCallerBridge has no tracked agent identity or first_speaker
+        // today (pre-existing gap, not introduced here) — role is inferred
+        // by exclusion elsewhere (see the room-events loop below), and
+        // first_speaker defaults to "agent".
+        let observer_cfg = lks_core::observer::ObserverConfig {
+            agent_identity: String::new(),
+            sim_identity: self.identity.clone(),
+            transcript_dedupe_window_ms: self.observe.transcript_dedupe_window_ms,
+            ..Default::default()
+        };
+        let observer = std::sync::Arc::new(tokio::sync::Mutex::new(
+            lks_core::observer::Observer::new(observer_cfg),
         ));
 
         // Gemini events → mic + transcripts.
         let writer = self.writer.clone();
         let session_rx = session.clone();
+        let observer_gemini = observer.clone();
         let gemini_task = tokio::spawn(async move {
             let mut agent_text = String::new();
             let mut caller_text = String::new();
@@ -247,23 +281,26 @@ impl GeminiCallerBridge {
                         }
                     }
                     ServerEvent::TurnComplete => {
+                        // Phase 3: converge onto the shared Observer, matching
+                        // Python's Observer.on_transcript (see
+                        // docs/plans/PLAN-20260813-rust-full-port.md Appendix F).
+                        // NOTE: gemini.rs has no caller-final path today (no
+                        // InputTranscription finalization/turn advance) — a
+                        // pre-existing gap, not introduced by this migration;
+                        // only the existing agent-final path is ported here.
                         let t = agent_text.trim().to_string();
                         if !t.is_empty() {
+                            let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
                             let mut w = writer.lock().await;
-                            w.update_dialogue("agent", &t, true, None);
-                            w.emit(
-                                "transcript.agent.final",
-                                Some(
-                                    &serde_json::json!({"text": t})
-                                        .as_object()
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                ),
+                            observer_gemini.lock().await.on_transcript(
+                                &mut w,
+                                "agent",
+                                &t,
+                                true,
+                                None,
                                 "sim.gemini",
-                                None,
-                                None,
-                                false,
-                                None,
+                                std::time::Instant::now(),
+                                now_wall_ms,
                             );
                         }
                         agent_text.clear();
@@ -299,10 +336,12 @@ impl GeminiCallerBridge {
         // Agent room audio → Gemini session (24k PCM). The room-events
         // broadcast is shared with the end loop below (resubscribe).
         let session_tx = session.clone();
+        let rec_agent = self.recorder.clone();
         let agent_audio_task = tokio::spawn(pump_agent_audio_gemini(
             room.clone(),
             room_events.resubscribe(),
             session_tx,
+            rec_agent,
         ));
 
         // Wait for end_call, the agent leaving, or a hard slice cap. Emits
@@ -318,10 +357,6 @@ impl GeminiCallerBridge {
         // lk.agent.session + data-topic observation (Python observer parity).
         let mut session_observer = crate::observe::SessionObserver::new();
         let mut data_router = crate::observe::DataRouter::new(self.observe.clone());
-        data_router.on_transcript = Some(Box::new(|_role, _text, _source| {
-            // Consumed per Python; model-session transcript pipeline drives
-            // turn tracking in this build.
-        }));
         let writer_obs = self.writer.clone();
         loop {
             tokio::select! {
@@ -392,9 +427,69 @@ impl GeminiCallerBridge {
                                 let mut w = writer_obs.lock().await;
                                 crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
                             } else {
-                                let mut w = writer_obs.lock().await;
-                                data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                // Data-topic transcript_turn → shared Observer
+                                // (final=true, source=topic), Python parity with
+                                // observer.py `_handle_data_topic`. Staged by
+                                // the sync router, fed here where the async
+                                // observer lock is available.
+                                let staged = {
+                                    let mut w = writer_obs.lock().await;
+                                    data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                    data_router.take_transcript()
+                                };
+                                if let Some(t) = staged {
+                                    if !t.text.trim().is_empty() {
+                                        let mut w = writer_obs.lock().await;
+                                        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                        observer.lock().await.on_transcript(
+                                            &mut w,
+                                            &t.role,
+                                            &t.text,
+                                            true,
+                                            None,
+                                            &t.source,
+                                            std::time::Instant::now(),
+                                            now_wall_ms,
+                                        );
+                                    }
+                                }
                             }
+                        }
+                        Ok(SimRoomEvent::TextStream { participant_identity, text, final_, segment_id, .. }) => {
+                            // lk.transcription path through the shared Observer
+                            // (dedup/backchannel/preamble ported from observer.py,
+                            // see lks-core::observer). gemini.rs has no tracked
+                            // agent_identity today, so infer role by exclusion
+                            // (the sim's own identity is the only non-agent
+                            // participant).
+                            if !text.trim().is_empty() {
+                                let role = if participant_identity == self.identity { "user" } else { "agent" };
+                                let mut w = writer_obs.lock().await;
+                                let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                observer.lock().await.on_transcript(
+                                    &mut w,
+                                    role,
+                                    &text,
+                                    final_,
+                                    segment_id.as_deref(),
+                                    "lk.transcription",
+                                    std::time::Instant::now(),
+                                    now_wall_ms,
+                                );
+                            }
+                        }
+                        Ok(SimRoomEvent::ByteStream { data, .. }) => {
+                            // Pure wiring into the already-correct decoder/dispatcher
+                            // (SessionObserver::handle_event via handle_session_bytes).
+                            let mut w = writer_obs.lock().await;
+                            crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                        }
+                        Ok(SimRoomEvent::StreamError { topic, error }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("where".into(), serde_json::Value::String(topic.clone()));
+                            spec_m.insert("error".into(), serde_json::Value::String(error));
+                            w.emit("observer.error", Some(&spec_m), &topic, None, None, false, None);
                         }
                         _ => {}
                     }
@@ -420,6 +515,7 @@ async fn pump_agent_audio_gemini(
     room: Arc<livekit::Room>,
     mut room_events: broadcast::Receiver<SimRoomEvent>,
     session: Arc<Mutex<Session>>,
+    recorder: Option<crate::script::SharedRecorder>,
 ) {
     // Wait for the agent's audio track.
     let track: Option<livekit::webrtc::audio_track::RtcAudioTrack> = loop {
@@ -444,6 +540,13 @@ async fn pump_agent_audio_gemini(
     while let Some(frame) = stream.next().await {
         let pcm: &[i16] = frame.data.as_ref();
         let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        // Agent channel → conversation.wav (Python gemini.py fallback parity;
+        // recorder resamples 24k → 16k stereo internally).
+        if let Some(rec) = &recorder {
+            if let Ok(mut r) = rec.lock() {
+                r.push_agent(&bytes, GEMINI_RATE);
+            }
+        }
         let s = session.lock().await;
         if s.send_audio(&bytes).await.is_err() {
             return;

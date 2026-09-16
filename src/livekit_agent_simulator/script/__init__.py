@@ -1,8 +1,12 @@
-"""Script domain: timed caller cues, runtime runner, log verify, behavior summary.
+"""Script domain: step models, log verify, behavior summary.
 
-Public re-exports (prefer importing from here or legacy ``script_runner``):
-  ScriptStep, ScriptVerifySpec, ScriptRunner, SUPPORTED_*, evaluate_script_log,
-  build_caller_behavior_summary
+Public re-exports: ScriptStep, ScriptVerifySpec, SUPPORTED_*,
+evaluate_script_log, build_caller_behavior_summary.
+
+NOTE: the legacy ScriptRunner engine (script/runtime.py) was removed —
+the contract path (caller_steps → caller_contract driver) is the only
+caller path. Only the helpers below (still used by asserts/metrics and
+the legacy-verify stub) are kept.
 """
 
 from __future__ import annotations
@@ -19,7 +23,6 @@ from .models import (
     effective_overlay,
     normalize_interrupt_class,
 )
-from .runtime import ScriptRunner
 from .summary import build_caller_behavior_summary
 from .verify import evaluate_script_log
 
@@ -31,7 +34,6 @@ __all__ = [
     "SUPPORTED_TRIGGERS",
     "ScriptStep",
     "ScriptVerifySpec",
-    "ScriptRunner",
     "build_caller_behavior_summary",
     "counts_for_recovery_barge",
     "effective_overlay",

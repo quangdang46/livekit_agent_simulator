@@ -185,6 +185,17 @@ class ParallelMicMixer:
             if not self._speech_turn_active and not self._speech:
                 self._speech_turn_active = True
                 self._speech_playing = False
+            # Run 058: a push that lands while the PREVIOUS turn's tail is
+            # still queued concatenates gaplessly on the wire, and the
+            # agent's STT merges both turns into one (the previous drain
+            # returned on an empty-not-yet-emitting queue, see
+            # publish_sink._drain). Separate turns with a short silence gap
+            # so the agent's VAD/STT always sees a turn boundary, even when
+            # the caller publishes back-to-back. 200ms is below the agent's
+            # turn-detection silence thresholds (which treat it as a pause,
+            # not a hangup) but well above STT merge windows.
+            if self._speech:
+                self._speech.extend(array.array("h", [0] * (self.sample_rate // 5)))
             self._speech.extend(samples)
             self._speech_samples_in += len(samples)
 

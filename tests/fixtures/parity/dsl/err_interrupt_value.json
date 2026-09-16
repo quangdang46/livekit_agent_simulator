@@ -1,0 +1,9 @@
+{
+  "id": "err_interrupt_value",
+  "steps": [
+    {
+      "interrupt": "now"
+    }
+  ],
+  "expect": "error"
+}

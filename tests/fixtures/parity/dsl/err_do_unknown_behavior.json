@@ -1,0 +1,9 @@
+{
+  "id": "err_do_unknown_behavior",
+  "steps": [
+    {
+      "do": "teleport"
+    }
+  ],
+  "expect": "error"
+}

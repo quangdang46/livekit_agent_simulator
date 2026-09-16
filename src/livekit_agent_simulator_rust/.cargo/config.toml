@@ -7,7 +7,12 @@
 #   Or combine: CARGO_TARGET_DIR=C:/t/lksr CFLAGS=/MT CXXFLAGS=/MT cargo build
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+# /STACK:64MB — the `lksr execute` future tree (tokio runtime block_on on the
+# main thread + livekit/gemini session state machines) exceeds the default 8MB
+# main-thread stack and dies with "thread 'main' has overflowed its stack"
+# before emitting anything past run.started (repro: any execute-dict/execute
+# against a real room, 2026-09-12). Harmless for all other subcommands.
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-args=/STACK:67108864"]
 
 # macOS: the prebuilt libwebrtc uses ObjC categories that need -ObjC at link
 # time (livekit/rust-sdks#340, #795 — "+[NSString stringForAbslStringView:]

@@ -1,0 +1,351 @@
+{
+  "id": "orchestrator_evaluator",
+  "description": "Orchestrator/evaluator pure-logic parity (orchestrator.py): BehaviorEvaluator patterns, classify_agent_silence 4-way split, TurnDetector state machine, Orchestrator identity/timeout counters. Exact-substring semantics are load-bearing — e.g. 'yes, that's fine' (with comma+contraction) SATISFIES but 'yes, that is fine' does NOT; 'okay, that's' SATISFIES but 'okay, that is great' does NOT.",
+  "evaluator_cases": [
+    {
+      "text": "Sure, that works for me",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "We can do Tuesday",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "The price is $30,000",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "The price is $30,000",
+      "contract_target": null,
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "Let me check and get back",
+      "contract_target": "price",
+      "expected": "PARTIAL",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "Probably might work",
+      "contract_target": "price",
+      "expected": "PARTIAL",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "Possibly next week",
+      "contract_target": "price",
+      "expected": "PARTIAL",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "I will try my best",
+      "contract_target": "price",
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "Yes, that is fine",
+      "contract_target": "price",
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "Okay, that is great",
+      "contract_target": "price",
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "I can do that for you",
+      "contract_target": null,
+      "expected": "SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "Hello there",
+      "contract_target": null,
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "The mileage is high",
+      "contract_target": "price",
+      "expected": "NOT_SATISFIED",
+      "contract_behavior": "negotiate",
+      "source": "authored"
+    },
+    {
+      "text": "Yep, the 2022 Honda CR-V is listed at $25,800.",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "source": "run 019 agent transcript verbatim",
+      "contract_behavior": "negotiate"
+    },
+    {
+      "text": "The car is priced at twenty five thousand.",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "source": "neighbor probe of run-021 gap",
+      "contract_behavior": "negotiate"
+    },
+    {
+      "text": "The price is $25,800 drive-away.",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "source": "neighbor probe of run-021 gap",
+      "contract_behavior": "negotiate"
+    },
+    {
+      "text": "I hear you, mate. But we've already brought that one down as far as we can, and it's basically",
+      "contract_behavior": "negotiate",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "source": "run 030 agent transcript verbatim"
+    },
+    {
+      "text": "We've already brought that CR-V down to a very competitive, basically private sale level.",
+      "contract_behavior": "negotiate",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "source": "run 030 agent transcript verbatim"
+    },
+    {
+      "text": "We can't go lower than $25,800, that's our best price.",
+      "contract_behavior": "negotiate",
+      "contract_target": "price",
+      "expected": "SATISFIED",
+      "source": "neighbor probe of run-030 gap"
+    },
+    {
+      "text": "We've already brought that one down as far as we can.",
+      "contract_behavior": "ask",
+      "contract_target": "price",
+      "expected": "NOT_SATISFIED",
+      "source": "scope guard: refusal needs behavior==negotiate"
+    },
+    {
+      "text": "Which make and model were you looking at?",
+      "contract_behavior": "negotiate",
+      "contract_target": "price",
+      "expected": "NOT_SATISFIED",
+      "source": "deflection still not satisfied (run 029)"
+    },
+    {
+      "text": "Awesome, we can definitely organise that. Would tomorrow morning around 10am work for you, or are you free to pop in today before 7?",
+      "contract_behavior": "arrange_visit",
+      "contract_target": null,
+      "expected": "SATISFIED",
+      "source": "run 041 agent transcript (verbatim)"
+    },
+    {
+      "text": "No worries at all. I'll line that up and flick you a text with the details now. Cheers, talk soon!",
+      "contract_behavior": "arrange_visit",
+      "contract_target": null,
+      "expected": "SATISFIED",
+      "source": "run 041 agent transcript (verbatim)"
+    },
+    {
+      "text": "Awesome, we can definitely organise that. Would tomorrow morning around 10am work for you?",
+      "contract_behavior": "ask",
+      "contract_target": "price",
+      "expected": "NOT_SATISFIED",
+      "source": "scope guard: visit-confirm needs behavior==arrange_visit"
+    }
+  ],
+  "silence_cases": [
+    {
+      "elapsed_ms": 5000,
+      "turn_timeout_ms": 10000,
+      "agent_hung_up": false,
+      "transport_lost": false,
+      "expected": "PROCESSING"
+    },
+    {
+      "elapsed_ms": 10000,
+      "turn_timeout_ms": 10000,
+      "agent_hung_up": false,
+      "transport_lost": false,
+      "expected": "TIMEOUT"
+    },
+    {
+      "elapsed_ms": 9999,
+      "turn_timeout_ms": 10000,
+      "agent_hung_up": false,
+      "transport_lost": false,
+      "expected": "PROCESSING"
+    },
+    {
+      "elapsed_ms": 5000,
+      "turn_timeout_ms": 10000,
+      "agent_hung_up": true,
+      "transport_lost": false,
+      "expected": "HANGUP"
+    },
+    {
+      "elapsed_ms": 5000,
+      "turn_timeout_ms": 10000,
+      "agent_hung_up": false,
+      "transport_lost": true,
+      "expected": "TRANSPORT_ERROR"
+    },
+    {
+      "elapsed_ms": 5000,
+      "turn_timeout_ms": 10000,
+      "agent_hung_up": true,
+      "transport_lost": true,
+      "expected": "TRANSPORT_ERROR"
+    }
+  ],
+  "turn_detector_script": {
+    "silence_debounce_ms": 300,
+    "steps": [
+      {
+        "op": "poll",
+        "at_ms": 0,
+        "expected_state": "WAITING_FOR_AGENT"
+      },
+      {
+        "op": "started",
+        "at_ms": 100
+      },
+      {
+        "op": "poll",
+        "at_ms": 150,
+        "expected_state": "AGENT_SPEAKING"
+      },
+      {
+        "op": "stopped",
+        "at_ms": 200
+      },
+      {
+        "op": "poll",
+        "at_ms": 300,
+        "expected_state": "POSSIBLE_END"
+      },
+      {
+        "op": "poll",
+        "at_ms": 500,
+        "expected_state": "AGENT_TURN_COMPLETE"
+      },
+      {
+        "op": "started",
+        "at_ms": 600
+      },
+      {
+        "op": "stopped",
+        "at_ms": 700
+      },
+      {
+        "op": "poll",
+        "at_ms": 950,
+        "expected_state": "POSSIBLE_END"
+      },
+      {
+        "op": "poll",
+        "at_ms": 1000,
+        "expected_state": "AGENT_TURN_COMPLETE"
+      },
+      {
+        "op": "begin_caller_turn"
+      },
+      {
+        "op": "poll",
+        "at_ms": 1100,
+        "expected_state": "CALLER_TURN"
+      },
+      {
+        "op": "reset"
+      },
+      {
+        "op": "poll",
+        "at_ms": 1200,
+        "expected_state": "WAITING_FOR_AGENT"
+      }
+    ]
+  },
+  "orchestrator_script": {
+    "steps": [
+      {
+        "op": "identity",
+        "expected": {
+          "behavior_id": "b0",
+          "turn_id": 0,
+          "generation_id": 0
+        }
+      },
+      {
+        "op": "advance_caller_turn"
+      },
+      {
+        "op": "identity",
+        "expected": {
+          "behavior_id": "b0",
+          "turn_id": 1,
+          "generation_id": 0
+        }
+      },
+      {
+        "op": "advance_behavior_turn"
+      },
+      {
+        "op": "advance_behavior_turn"
+      },
+      {
+        "op": "check_max_turns",
+        "max_turns": 2,
+        "expected": "FAILED_MAX_TURNS"
+      },
+      {
+        "op": "check_max_turns",
+        "max_turns": 3,
+        "expected": "CONTINUE"
+      },
+      {
+        "op": "new_generation"
+      },
+      {
+        "op": "identity",
+        "expected": {
+          "behavior_id": "b0",
+          "turn_id": 1,
+          "generation_id": 1
+        }
+      },
+      {
+        "op": "start_behavior"
+      },
+      {
+        "op": "identity",
+        "expected": {
+          "behavior_id": "b1",
+          "turn_id": 1,
+          "generation_id": 1
+        }
+      },
+      {
+        "op": "check_max_turns",
+        "max_turns": 1,
+        "expected": "CONTINUE"
+      }
+    ]
+  }
+}

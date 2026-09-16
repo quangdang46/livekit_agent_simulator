@@ -1,0 +1,24 @@
+{
+  "behavior": "ask",
+  "target": "price",
+  "constraints": {
+    "max_turns": 1,
+    "max_budget": null,
+    "max_words": 15,
+    "max_duration_s": 6.0,
+    "forbidden_intents": [],
+    "must_not": ["invent_facts", "end_call"]
+  },
+  "candidate": {
+    "act": "ask",
+    "target": "price",
+    "slots": {},
+    "utterance": "Could you tell me the asking price?",
+    "identity": {
+      "behavior_id": "b1",
+      "turn_id": 0,
+      "generation_id": 0,
+      "context_version": 0
+    }
+  }
+}

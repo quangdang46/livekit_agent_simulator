@@ -1,0 +1,20 @@
+{
+  "id": "should_interrupt",
+  "description": "Seeded interruption policy parity (P0-8 extension): the same (scenario_id, seed, agent_turn_index) must decide identically in Python and Rust. None interaction or absent rate means never. Expected values computed from the Python reference (hashlib.sha256, first 8 bytes big-endian / 2^64, thresholds low=0.15 medium=0.35 high=0.6).",
+  "none_interaction_expected": false,
+  "no_rate_expected": false,
+  "cases": [
+    {"scenario_id": "s", "seed": 3, "turn": 0, "rate": "high", "expected": true},
+    {"scenario_id": "s", "seed": 3, "turn": 1, "rate": "high", "expected": true},
+    {"scenario_id": "s", "seed": 3, "turn": 2, "rate": "high", "expected": false},
+    {"scenario_id": "s", "seed": 3, "turn": 3, "rate": "high", "expected": true},
+    {"scenario_id": "s", "seed": 3, "turn": 4, "rate": "high", "expected": true},
+    {"scenario_id": "s", "seed": 3, "turn": 5, "rate": "high", "expected": true},
+    {"scenario_id": "s", "seed": 3, "turn": 6, "rate": "high", "expected": false},
+    {"scenario_id": "s", "seed": 3, "turn": 7, "rate": "high", "expected": false},
+    {"scenario_id": "interrupt-rate-medium", "seed": 0, "turn": 0, "rate": "medium", "expected": false},
+    {"scenario_id": "interrupt-rate-medium", "seed": 1, "turn": 0, "rate": "medium", "expected": true},
+    {"scenario_id": "interrupt-rate-medium", "seed": 0, "turn": 0, "rate": "low", "expected": false},
+    {"scenario_id": "interrupt-rate-medium", "seed": 1, "turn": 0, "rate": "low", "expected": false}
+  ]
+}

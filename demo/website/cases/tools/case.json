@@ -1,0 +1,17 @@
+{
+  "id": "tools",
+  "toc": "Tools",
+  "title": "Tool calls",
+  "color": "#8b5cf6",
+  "copy": "The agent calls backend tools. Arguments, outputs and durations are captured on the timeline.",
+  "chips": [
+    [
+      "2 tools captured",
+      "tool"
+    ],
+    [
+      "0 errors",
+      "pass"
+    ]
+  ]
+}

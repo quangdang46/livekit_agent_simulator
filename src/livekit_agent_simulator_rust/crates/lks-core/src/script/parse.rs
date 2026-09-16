@@ -188,16 +188,20 @@ pub fn parse_script_steps(
             .or_else(|| raw_map.get("text"))
             .map(as_str)
             .unwrap_or_default();
-        if action == "speak" && say.trim().is_empty() {
-            return Err(format!(
-                "{path_label}: Script step {step_id:?}: say/text required when action=speak"
-            ));
-        }
         let delivery = as_str(
             raw_map
                 .get("delivery")
                 .unwrap_or(&Json::String("gemini_text".into())),
         );
+        // room_pcm speak steps are ambient audio beds (play_audio: projection —
+        // see caller_actions_to_script_steps), never an utterance: no say/text
+        // is required or expected. Only the gemini_text (spoken) delivery path
+        // needs say/text to synthesize.
+        if action == "speak" && delivery != "room_pcm" && say.trim().is_empty() {
+            return Err(format!(
+                "{path_label}: Script step {step_id:?}: say/text required when action=speak"
+            ));
+        }
         if delivery != "gemini_text" && delivery != "room_pcm" {
             return Err(format!(
                 "{path_label}: Script step {step_id:?}: delivery must be gemini_text or room_pcm"

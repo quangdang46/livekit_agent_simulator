@@ -457,3 +457,36 @@ def test_export_dict_preserves_caller_telephony_sip() -> None:
     assert s2.caller and s2.caller.mode == "inbound_sip"
     assert s2.telephony and s2.telephony.dial_in == "+15551234567"
     assert s2.asserts and s2.asserts.sip
+
+
+def test_template_caller_steps_roundtrip() -> None:
+    """Every template with caller_steps exports + re-parses to the same
+    kinds (say/do/wait/interrupt/play_audio/end) with trigger/barge_in
+    preserved — no silent field drops on the authoring round-trip."""
+    from livekit_agent_simulator.caller_contract.dsl import parse_steps
+    from livekit_agent_simulator.scenario_from_dict import scenario_from_dict
+    from livekit_agent_simulator.scenario_yaml import scenario_to_dict
+
+    checked = 0
+    for p in sorted((TEMPLATES / "examples").glob("*.yaml")):
+        s = parse_scenario(p)
+        if not s.caller_actions:
+            continue
+        d = scenario_to_dict(s)
+        assert "caller_steps" in d, p.name
+        s2 = scenario_from_dict(dict(d), path=p, path_label=str(p))
+        assert [a.kind for a in s2.caller_actions] == [
+            a.kind for a in s.caller_actions
+        ], p.name
+        for a, b in zip(s.caller_actions, s2.caller_actions):
+            assert (a.trigger.kind if a.trigger else None) == (
+                b.trigger.kind if b.trigger else None
+            ), p.name
+            assert a.barge_in == b.barge_in, p.name
+        # Full re-parse through parse_steps (strictness both directions).
+        reparsed = parse_steps(d["caller_steps"], file=str(p))
+        assert [a.kind for a in reparsed] == [
+            a.kind for a in s.caller_actions
+        ], p.name
+        checked += 1
+    assert checked >= 10, f"expected many migrated templates, got {checked}"

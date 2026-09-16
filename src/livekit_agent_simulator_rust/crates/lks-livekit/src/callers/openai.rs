@@ -48,6 +48,26 @@ pub struct OpenAiCallerBridge {
     identity: String,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
     shared_mic: Option<crate::script::SharedMicSource>,
+    /// Shared ScriptObserverState (see with_script_state) — run_plumbing()'s
+    /// observation loop writes agent/user speech here; ScriptRuntime's
+    /// trigger gates read it. Without this the contract path is deaf (run
+    /// 004: only caller-step-0 fired, run ended on timeout).
+    script_state: Option<Arc<tokio::sync::Mutex<crate::script::ScriptObserverState>>>,
+    /// Contract path (caller_steps non-empty): the bridge is mic/mixer +
+    /// observation plumbing ONLY — no OpenAI Realtime persona session, no
+    /// freestyle generation. Port of run_orchestrator.py: the contract path
+    /// "never opens a session — run() has no call sites (the bridge is used
+    /// only for publish_mic); the contract AI adapter builds its prompt from
+    /// the BehaviorContract instead". run() with this set skips straight to
+    /// run_plumbing() after dispatch.agent_joined.
+    contract_only: bool,
+    /// Full pre-`do:` dialogue replay for the `do:` generator context —
+    /// same Arc run.rs hands to ScriptRuntime::new (see
+    /// with_transcript_history + TranscriptHistory in script.rs). The
+    /// TTS→mic emit sites push caller lines here; both agent-final arms
+    /// (TextStream + data-channel) push genuine agent replies. Mirrors
+    /// Python passing the live `log` into `_run_behavior`.
+    transcript_history: Option<crate::script::SharedTranscriptHistory>,
     recorder: Option<crate::script::SharedRecorder>,
     /// Scenario Dispatch.metadata || config default (None = empty string).
     dispatch_metadata: Option<String>,
@@ -60,6 +80,13 @@ pub struct OpenAiCallerBridge {
     cue_rx: parking_lot::Mutex<Option<crate::script::CueRx>>,
     /// observe.* knobs for data-topic/session observation (Python parity).
     observe: ObserveConfig,
+    /// Fix (lksr hardcoded 45s slice cap): the hard per-run timer used to be
+    /// a bare `Duration::from_secs(45)` regardless of scenario config.
+    /// Sourced from `Scenario::run_spec().timeout_s` (Execute overrides
+    /// Simulator, default 120s — see lks-core::scenario) by run.rs; falls
+    /// back to the historical 45s when unset (`with_slice_cap_secs` not
+    /// called), matching prior behavior for any caller that doesn't opt in.
+    slice_cap_secs: u64,
 }
 
 impl OpenAiCallerBridge {
@@ -84,18 +111,31 @@ impl OpenAiCallerBridge {
             identity,
             writer,
             shared_mic: None,
+            script_state: None,
+            transcript_history: None,
+            contract_only: false,
             recorder: None,
             dispatch_metadata: None,
             silent_mode: false,
             persona_speech_conditions: Default::default(),
             cue_rx: parking_lot::Mutex::new(None),
             observe: ObserveConfig::default(),
+            slice_cap_secs: 45,
         }
     }
 
     /// Builder: observe config for data-topic + lk.agent.session observation.
     pub fn with_observe(mut self, observe: ObserveConfig) -> Self {
         self.observe = observe;
+        self
+    }
+
+    /// Builder: hard per-run slice cap in seconds (fix: was hardcoded 45s —
+    /// see `slice_cap_secs` field doc). Non-positive values fall back to the
+    /// 45s default rather than disabling the cap or panicking on Duration
+    /// construction.
+    pub fn with_slice_cap_secs(mut self, secs: i64) -> Self {
+        self.slice_cap_secs = if secs > 0 { secs as u64 } else { 45 };
         self
     }
 
@@ -108,6 +148,38 @@ impl OpenAiCallerBridge {
     /// Builder: Persona.speech_conditions.silent_mode.
     pub fn with_silent_mode(mut self, silent: bool) -> Self {
         self.silent_mode = silent;
+        self
+    }
+
+    /// Builder: contract-only plumbing mode (caller_steps drives the run —
+    /// no persona Realtime session). Set by run.rs from
+    /// `!scenario.caller_actions.is_empty()`.
+    pub fn with_contract_only(mut self, contract_only: bool) -> Self {
+        self.contract_only = contract_only;
+        self
+    }
+
+    /// Builder: shared pre-`do:` dialogue replay (see transcript_history
+    /// field + TranscriptHistory in script.rs). Wired by run.rs from the
+    /// same Arc handed to ScriptRuntime::new.
+    pub fn with_transcript_history(
+        mut self,
+        history: crate::script::SharedTranscriptHistory,
+    ) -> Self {
+        self.transcript_history = Some(history);
+        self
+    }
+
+    /// Builder: shared ScriptObserverState handle so run_plumbing()'s
+    /// observation loop can feed agent/user speech back to ScriptRuntime's
+    /// trigger gates (silence/agent_speaking) and reply tracking. None =
+    /// triggers never fire (same as the unwired legacy state). Wired by
+    /// run.rs from the same Arc handed to ScriptRuntime::new.
+    pub fn with_script_state(
+        mut self,
+        state: Arc<tokio::sync::Mutex<crate::script::ScriptObserverState>>,
+    ) -> Self {
+        self.script_state = Some(state);
         self
     }
 
@@ -134,59 +206,68 @@ impl OpenAiCallerBridge {
     pub const SIM_IDENTITY: &str = "lks-caller";
     pub const SIM_NAME: &str = "Agent Simulator Caller";
 
-    /// Port of Python observer on_transcript user arm: each caller final
-    /// advances the turn counter BEFORE it is emitted (observer.py:521
-    /// `self.turn += 1; self.writer.begin_turn(self.turn)`). This is what
-    /// drives the max_turns end condition — the turn count is the number of
-    /// caller turns, not agent replies.
-    async fn begin_user_turn(writer: &Arc<tokio::sync::Mutex<EventWriter>>) {
+    /// Phase 3: caller finals (sim.openai) now converge onto the shared
+    /// `lks-core::observer::Observer` chokepoint instead of a private
+    /// begin_turn/turn_taking_ms tracker — matching Python, where
+    /// `Observer.on_transcript` is the SAME entry point for provider-native
+    /// deltas and `lk.transcription`, so cross-source dedup priority
+    /// actually functions (see docs/plans/PLAN-20260813-rust-full-port.md
+    /// Appendix F, `_accept_final`). `on_transcript` performs the dialogue
+    /// update, turn framing/advance, and `transcript.user.final` emission
+    /// that `begin_user_turn` + a manual emit previously duplicated.
+    async fn emit_user_final(
+        writer: &Arc<tokio::sync::Mutex<EventWriter>>,
+        observer: &Arc<tokio::sync::Mutex<lks_core::observer::Observer>>,
+        text: &str,
+    ) {
+        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
         let mut w = writer.lock().await;
-        let next = w.current_turn() + 1;
-        w.begin_turn(next);
+        observer.lock().await.on_transcript(
+            &mut w,
+            "user",
+            text,
+            true,
+            None,
+            "sim.openai",
+            std::time::Instant::now(),
+            now_wall_ms,
+        );
     }
 
-    /// Port of Python observer on_transcript turn framing: an agent final that
-    /// follows a caller final carries `turn_taking_ms` (monotonic gap), and
-    /// `begin_turn` advances the turn counter. Without it the report shows
-    /// turn_taking_ms nulls/0 and turns never advance.
+    /// Phase 3: same convergence for agent finals — `on_transcript` performs
+    /// the dialogue update, turn framing (opens turn 1 if needed,
+    /// `turn_taking_ms` when this is the first reply of the turn), and
+    /// `transcript.agent.final` emission that `emit_agent_final`'s manual
+    /// logic previously duplicated. The `sim.heard_agent` mirror + activity
+    /// timestamp are openai-bridge-specific side effects, kept here.
     async fn emit_agent_final(
         writer: &Arc<tokio::sync::Mutex<EventWriter>>,
+        observer: &Arc<tokio::sync::Mutex<lks_core::observer::Observer>>,
         text: &str,
-        last_user_final_mono: &mut Option<std::time::Instant>,
-        agent_replied_this_turn: &mut bool,
     ) {
         let t = text.trim().to_string();
         if t.is_empty() {
             return;
         }
-        let mut w = writer.lock().await;
-        // Observer turn framing: the first agent final after a caller turn
-        // opens turn 1 and advances the counter (port of observer.py
-        // on_transcript agent arm — begin_turn(turn)). All events must carry
-        // a real turn, or the web player groups transcripts under turn 0 and
-        // the agent lines never show.
-        let turn = w.current_turn();
-        if turn == 0 {
-            w.begin_turn(1);
+        // contract_do driver signal: bump seq + latch text BEFORE the
+        // dialogue update below, so a `do:` turn already polling can never
+        // observe the new seq without the matching text.
+        *crate::callers::openai::AGENT_FINAL_TEXT.lock() = t.clone();
+        crate::callers::openai::AGENT_FINAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+        {
+            let mut w = writer.lock().await;
+            observer.lock().await.on_transcript(
+                &mut w,
+                "agent",
+                &t,
+                true,
+                None,
+                "sim.openai",
+                std::time::Instant::now(),
+                now_wall_ms,
+            );
         }
-        let mut spec_m = serde_json::Map::new();
-        spec_m.insert("text".into(), json!(t));
-        if let Some(lu) = *last_user_final_mono {
-            if !*agent_replied_this_turn {
-                let ttm = lu.elapsed().as_millis() as i64;
-                spec_m.insert("turn_taking_ms".into(), json!(ttm));
-            }
-        }
-        w.update_dialogue("agent", &t, true, None);
-        w.emit(
-            "transcript.agent.final",
-            Some(&spec_m),
-            "sim.openai",
-            None,
-            None,
-            false,
-            None,
-        );
         crate::callers::openai::LAST_ANY_ACTIVITY_MS.store(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -194,7 +275,6 @@ impl OpenAiCallerBridge {
                 .unwrap_or(0),
             std::sync::atomic::Ordering::SeqCst,
         );
-        drop(w);
         // sim.heard_agent (port of openai.py:1202).
         let mut w = writer.lock().await;
         w.emit(
@@ -211,7 +291,6 @@ impl OpenAiCallerBridge {
             false,
             None,
         );
-        *agent_replied_this_turn = true;
     }
     pub fn with_shared_mic(mut self, shared: crate::script::SharedMicSource) -> Self {
         self.shared_mic = Some(shared);
@@ -258,7 +337,16 @@ impl OpenAiCallerBridge {
 
     /// Run the caller: connect room → dispatch agent → open OpenAI WS →
     /// pump audio both ways until `end_call`.
+    ///
+    /// Contract-only mode (`contract_only`, set by run.rs when the scenario
+    /// carries caller_actions): skip the persona Realtime session entirely —
+    /// no WS, no pumps, no bootstrap. The bridge is mic/mixer + observation
+    /// plumbing; ScriptRuntime drives speech via the TTS→mic path. Port of
+    /// run_orchestrator.py: the contract path "never opens a session".
     pub async fn run(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+        if self.contract_only {
+            return self.run_plumbing(_end_call).await;
+        }
         // Internal end signal so the cap can shut the pumps down gracefully.
         let (end_tx, end_rx) = broadcast::channel::<()>(1);
         // True while the OpenAI server has an in-flight response (Python's
@@ -276,7 +364,12 @@ impl OpenAiCallerBridge {
             &self.identity,
             &self.room_name,
         )?;
-        let (room, room_events) = connect_room(&livekit_cfg.url, &token, &self.room_name).await?;
+        let observe_gate = crate::room::RoomObserveGate {
+            lk_transcription: self.observe.lk_transcription,
+            lk_agent_session: self.observe.lk_agent_session,
+        };
+        let (room, room_events) =
+            connect_room(&livekit_cfg.url, &token, &self.room_name, observe_gate).await?;
         // sim.connected (port of webrtc.py sim_leg connect).
         {
             let mut w = self.writer.lock().await;
@@ -305,7 +398,7 @@ impl OpenAiCallerBridge {
         }
 
         // Publish a 24 kHz mono audio source as the caller mic.
-        let source = publish_mic_shared(&room)?;
+        let source = publish_mic_shared(&room).await?;
         let source = Arc::new(source);
         // Expose the source to the script runtime for room_pcm playback.
         if let Some(shared) = &self.shared_mic {
@@ -390,6 +483,22 @@ impl OpenAiCallerBridge {
         // AgentJoinTimeout on deadline).
         let agent_identity =
             crate::dispatch::wait_for_agent_join(&api_host, livekit_cfg, &self.room_name).await?;
+        // Shared Observer (lks-core::observer) — the single chokepoint for
+        // every transcript source (sim.openai deltas AND lk.transcription),
+        // matching Python's Observer.on_transcript. Constructed here (agent
+        // identity known) so it can be threaded into both pump_openai_events
+        // (sim.openai turns) and the room-events select loop below
+        // (lk.transcription turns).
+        let observer_cfg = lks_core::observer::ObserverConfig {
+            agent_identity: agent_identity.clone(),
+            sim_identity: self.identity.clone(),
+            first_speaker: self.first_speaker.clone(),
+            transcript_dedupe_window_ms: self.observe.transcript_dedupe_window_ms,
+            ..Default::default()
+        };
+        let observer = std::sync::Arc::new(tokio::sync::Mutex::new(
+            lks_core::observer::Observer::new(observer_cfg),
+        ));
         {
             let mut w = self.writer.lock().await;
             let mut spec_m = serde_json::Map::new();
@@ -555,6 +664,7 @@ impl OpenAiCallerBridge {
             out_tx.clone(),
             ws_msg_tx.clone(),
             self.writer.clone(),
+            observer.clone(),
             end_rx.resubscribe(),
             response_in_flight.clone(),
             end_tx.clone(),
@@ -582,24 +692,51 @@ impl OpenAiCallerBridge {
         // lk.agent.session + data-topic observation (Python observer parity).
         let mut session_observer = crate::observe::SessionObserver::new();
         let mut data_router = crate::observe::DataRouter::new(self.observe.clone());
-        data_router.on_transcript = Some(Box::new(|_role, _text, _source| {
-            // Transcript payloads published on data topics are consumed (not
-            // data.message) per Python; the model-session transcript pipeline
-            // already drives turn tracking in this build.
-        }));
         let writer_obs = self.writer.clone();
         let mut disconnect_rx = end_rx.resubscribe();
-        // Hard cap: single immutable timer so it actually fires after 45s (a
-        // sleep recreated per iteration resets it and the cap never triggers).
-        let cap = tokio::time::sleep(std::time::Duration::from_secs(45));
+        // Hard cap: single immutable timer so it actually fires after
+        // `slice_cap_secs` (a sleep recreated per iteration resets it and the
+        // cap never triggers). Fix: this was a bare `from_secs(45)` — now
+        // sourced from Scenario::run_spec().timeout_s via with_slice_cap_secs
+        // (run.rs), falling back to the historical 45s when unset.
+        let cap = tokio::time::sleep(std::time::Duration::from_secs(self.slice_cap_secs));
         tokio::pin!(cap);
         // Cue consumer: ScriptRuntime Speak/Dtmf commands (port of
-        // bridge.inject_cue). Speak = verbatim user-turn text item +
-        // response.create; Dtmf = LiveKit publish_dtmf data packet.
+        // bridge.inject_cue).
+        //
+        // Contract-only mode: Speak = OpenAI TTS (mp3 → 24k PCM) played into
+        // the SHARED mic (TTS→mic, the Python BridgePublishSink equivalent —
+        // mic audio, never a Realtime text item; there is no persona session
+        // to inject into). Freestyle mode (legacy): Speak = verbatim
+        // user-turn text item + response.create into the persona session.
+        // Dtmf = LiveKit publish_dtmf data packet in both modes.
+        //
+        // TTS voice follows the scenario's sim voice when it names an OpenAI
+        // TTS voice, else the OpenAI default ("alloy"); contract do:/say:
+        // text is what the agent TRANSCRIBES (STT-side), so voice identity
+        // never affects assertions — parity with Python (sherpa/SAPI voice
+        // is equally arbitrary there).
         let mut cue_rx: Option<crate::script::CueRx> = self.cue_rx.lock().take();
         let room_for_dtmf = room.clone();
         let ws_tx_cue = ws_tx.clone();
         let writer_cue = self.writer.clone();
+        let contract_mode = self.contract_only;
+        // TTS voice allowlist is the audio/speech enum ONLY (nova, shimmer,
+        // echo, onyx, fable, alloy, ash, sage, coral) — Realtime voices
+        // (marin, cedar, ballad, verse...) 400 here. Map unknown → alloy;
+        // voice identity never affects assertions (agent transcribes STT-side).
+        // (run verify-fresh: marin → HTTP 400 on all 3 Speak cues.)
+        let tts_voice = {
+            let v = sim_cfg.voice.voice.trim().to_lowercase();
+            match v.as_str() {
+                "alloy" | "ash" | "sage" | "coral" | "echo" | "shimmer" | "nova" | "onyx"
+                | "fable" => v,
+                _ => "alloy".to_string(),
+            }
+        };
+        let tts_key = sim_cfg.api_key.clone();
+        let _ = &source;
+        let _ = contract_mode;
         loop {
             tokio::select! {
                 _ = disconnect_rx.recv() => break,
@@ -622,6 +759,108 @@ impl OpenAiCallerBridge {
                                     false,
                                     None,
                                 );
+                                continue;
+                            }
+                            if contract_mode {
+                                // TTS→mic (contract path): synthesize, then
+                                // play PCM into the shared mic the agent hears.
+                                // Speak steps are sized for live delivery: if
+                                // the mic isn't published yet (agent hasn't
+                                // joined / track not up), fail LOUDLY with a
+                                // tts_error event instead of hanging forever
+                                // inside play_pcm_to_source's mutex wait (run
+                                // 006: TTS fired before mic publish → the cue
+                                // future never resolved → run sat until the
+                                // 300s slice cap with zero dialogue).
+                                let tts_label = label.clone();
+                                let tts_text = text.clone();
+                                let Some(shared) = &self.shared_mic else {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.tts_error",
+                                        Some(&serde_json::json!({"label": tts_label, "error": "shared_mic not wired — TTS has no mic to play into"}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                    continue;
+                                };
+                                let tts_result =
+                                    synthesize_caller_speech(&tts_key, &tts_voice, &tts_text).await;
+                                match tts_result {
+                                    Ok(pcm) => {
+                                        let frames = pcm.len() / 2;
+                                        eprintln!("[lksr] TTS ok ({label}): {frames} frames, playing to mic");
+                                        // Play into the SHARED mic handle (the
+                                        // same Arc run.rs handed to both the
+                                        // bridge and ScriptRuntime) — NOT a
+                                        // throwaway wrapper (run 010: wrapper
+                                        // clone pointed at a stale source the
+                                        // agent never subscribed to).
+                                        if let Err(e) =
+                                            crate::script::play_pcm_to_source(
+                                                shared, &pcm, OPENAI_OUT_RATE,
+                                            )
+                                            .await
+                                        {
+                                            let mut w = writer_cue.lock().await;
+                                            w.emit(
+                                                "sim.script.tts_error",
+                                                Some(&serde_json::json!({"label": tts_label, "error": e}).as_object().cloned().unwrap_or_default()),
+                                                "sim.script",
+                                                None,
+                                                None,
+                                                false,
+                                                None,
+                                            );
+                                            continue;
+                                        }
+                                        let mut w = writer_cue.lock().await;
+                                        w.emit(
+                                            "transcript.user.final",
+                                            Some(&serde_json::json!({"text": tts_text, "final": true}).as_object().cloned().unwrap_or_default()),
+                                            "sim.script",
+                                            None,
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                        w.emit(
+                                            "sim.script_inject",
+                                            Some(&serde_json::json!({"label": tts_label, "delivery": "tts_mic", "frames": frames}).as_object().cloned().unwrap_or_default()),
+                                            "sim.script",
+                                            None,
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                        // Pre-`do:` dialogue replay: same
+                                        // caller-line push as the plumbing
+                                        // arm below — BOTH arms own this only
+                                        // through their own emit site (the
+                                        // adjacent-duplicate guard in
+                                        // TranscriptHistory::push dedupes if
+                                        // both fire for one cue).
+                                        if let Some(h) = &self.transcript_history {
+                                            h.push("caller", tts_text.trim());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[lksr] TTS error ({label}): {e}");
+                                        let mut w = writer_cue.lock().await;
+                                        w.emit(
+                                            "sim.script.tts_error",
+                                            Some(&serde_json::json!({"label": tts_label, "error": e}).as_object().cloned().unwrap_or_default()),
+                                            "sim.script",
+                                            None,
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                    }
+                                }
                                 continue;
                             }
                             let item = serde_json::json!({
@@ -753,6 +992,17 @@ impl OpenAiCallerBridge {
                                 .iter()
                                 .any(|i| i != Self::SIM_IDENTITY && i != &self.identity);
                             AGENT_ACTIVE_SPEAKER.store(is_agent, Ordering::SeqCst);
+                            // Feed ScriptRuntime's silence/agent_speaking gates
+                            // (contract path was deaf — run 005: only
+                            // caller-step-0 fired). Same latch the freestyle
+                            // pump reads via AGENT_ACTIVE_SPEAKER.
+                            if let Some(st) = &self.script_state {
+                                let mut sc = st.lock().await;
+                                sc.agent_is_active_speaker = is_agent;
+                                if is_agent {
+                                    sc.agent_has_spoken = true;
+                                }
+                            }
                         }
                         Ok(SimRoomEvent::TrackSubscribed { track_sid, participant_identity }) => {
                             // room.track_subscribed (port of observer.py _on_track).
@@ -770,15 +1020,88 @@ impl OpenAiCallerBridge {
                                 let mut w = writer_obs.lock().await;
                                 crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
                             } else {
-                                let mut w = writer_obs.lock().await;
-                                data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                // Data-topic transcript_turn → shared Observer
+                                // (final=true, source=topic), Python parity with
+                                // observer.py `_handle_data_topic`. Staged by
+                                // the sync router, fed here where the async
+                                // observer lock is available.
+                                let staged = {
+                                    let mut w = writer_obs.lock().await;
+                                    data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                    data_router.take_transcript()
+                                };
+                                if let Some(t) = staged {
+                                    if !t.text.trim().is_empty() {
+                                        let mut w = writer_obs.lock().await;
+                                        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                        observer.lock().await.on_transcript(
+                                            &mut w,
+                                            &t.role,
+                                            &t.text,
+                                            true,
+                                            None,
+                                            &t.source,
+                                            std::time::Instant::now(),
+                                            now_wall_ms,
+                                        );
+                                    }
+                                }
                             }
+                        }
+                        Ok(SimRoomEvent::TextStream { participant_identity, text, final_, segment_id, .. }) => {
+                            // lk.transcription path through the shared Observer
+                            // (dedup/backchannel/preamble ported from observer.py,
+                            // see lks-core::observer). sim.openai-sourced turns
+                            // converge onto the same instance (Phase 3), so
+                            // cross-source dedup priority functions as designed.
+                            //
+                            // do-driver signal (same as the run_plumbing arm
+                            // below): bump AGENT_FINAL_SEQ on agent finals so
+                            // run_contract_do's satisfaction wait sees replies
+                            // even when they arrive via lk.transcription
+                            // rather than the persona WS transcription path.
+                            if !text.trim().is_empty() && final_ && participant_identity == agent_identity {
+                                *crate::callers::openai::AGENT_FINAL_TEXT.lock() =
+                                    text.trim().to_string();
+                                crate::callers::openai::AGENT_FINAL_SEQ.fetch_add(
+                                    1,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                );
+                            }
+                            if !text.trim().is_empty() {
+                                let role = if participant_identity == agent_identity { "agent" } else { "user" };
+                                let mut w = writer_obs.lock().await;
+                                let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                observer.lock().await.on_transcript(
+                                    &mut w,
+                                    role,
+                                    &text,
+                                    final_,
+                                    segment_id.as_deref(),
+                                    "lk.transcription",
+                                    std::time::Instant::now(),
+                                    now_wall_ms,
+                                );
+                            }
+                        }
+                        Ok(SimRoomEvent::ByteStream { data, .. }) => {
+                            // Pure wiring into the already-correct decoder/dispatcher
+                            // (SessionObserver::handle_event via handle_session_bytes).
+                            let mut w = writer_obs.lock().await;
+                            crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                        }
+                        Ok(SimRoomEvent::StreamError { topic, error }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("where".into(), json!(topic));
+                            spec_m.insert("error".into(), json!(error));
+                            w.emit("observer.error", Some(&spec_m), &topic, None, None, false, None);
                         }
                         _ => {}
                     }
                 }
                 _ = &mut cap => {
-                    eprintln!("[lksr] slice cap reached (45s) — ending run");
+                    eprintln!("[lksr] slice cap reached ({}s) — ending run", self.slice_cap_secs);
                     break;
                 }
             }
@@ -793,9 +1116,752 @@ impl OpenAiCallerBridge {
         let _ = (audio_tx, out_tx, dispatch_id);
         Ok(())
     }
+
+    /// Contract-only plumbing run: room connect → mic publish → dispatch →
+    /// agent-join wait → observation event loop with the cue consumer
+    /// (TTS→mic Speak + DTMF). No persona Realtime session, no freestyle
+    /// generation, no pumps. Port of run_orchestrator.py: the contract path
+    /// "never opens a session — run() has no call sites (the bridge is used
+    /// only for publish_mic)".
+    ///
+    /// Code is deliberately factored out of run() (not interleaved with
+    /// `if contract_only` branches) so the legacy freestyle body stays
+    /// byte-identical for review. The shared pieces (room connect, mic
+    /// publish, dispatch, agent-join, observer config) mirror run()'s steps
+    /// 1–2 verbatim; only the session/pumps half is replaced by the cue loop.
+    async fn run_plumbing(&self, end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+        // BUG FIX (run 016-dealer-live-full): this used to be `_end_call`
+        // (leading underscore = intentionally unused) and built its OWN
+        // local broadcast pair (`_end_tx`/`end_rx`) that nobody ever sent
+        // on. ScriptRuntime::fail_contract_do signals failure via a
+        // COMPLETELY DIFFERENT end_tx (the one run.rs wires into
+        // ScriptRuntime), so that signal never reached this loop's
+        // disconnect_rx — after a `do:` failure the room just sat open
+        // until the agent itself hung up ("connection issue, goodbye")
+        // or the slice cap fired, minutes later. Use the real parameter
+        // (the SAME broadcast end_rx run.rs hands to ScriptRuntime) so a
+        // contract_do failure ends this loop immediately.
+        let end_rx = end_call;
+        let livekit_cfg = &self.livekit;
+
+        // 1. Room: connect as the sim caller, publish mic (same as run()).
+        let token = make_token(
+            &livekit_cfg.api_key,
+            &livekit_cfg.api_secret,
+            &self.identity,
+            &self.room_name,
+        )?;
+        let observe_gate = crate::room::RoomObserveGate {
+            lk_transcription: self.observe.lk_transcription,
+            lk_agent_session: self.observe.lk_agent_session,
+        };
+        let (room, room_events) =
+            connect_room(&livekit_cfg.url, &token, &self.room_name, observe_gate).await?;
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "identity".into(),
+                serde_json::Value::String(self.identity.clone()),
+            );
+            spec_m.insert(
+                "room".into(),
+                serde_json::Value::String(self.room_name.clone()),
+            );
+            spec_m.insert(
+                "mode".into(),
+                serde_json::Value::String("webrtc_sim".into()),
+            );
+            w.emit(
+                "sim.connected",
+                Some(&spec_m),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+        let source = publish_mic_shared(&room).await?;
+        let source = Arc::new(source);
+        if let Some(shared) = &self.shared_mic {
+            let mut guard = shared.lock().await;
+            *guard = Some(source.clone());
+        }
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "sample_rate".into(),
+                serde_json::Value::Number(OPENAI_OUT_RATE.into()),
+            );
+            spec_m.insert("mixer".into(), serde_json::Value::String("parallel".into()));
+            spec_m.insert(
+                "provider".into(),
+                serde_json::Value::String("openai".into()),
+            );
+            w.emit(
+                "sim.mic_published",
+                Some(&spec_m),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+        {
+            let mut w = self.writer.lock().await;
+            w.emit(
+                "sim.contract_only",
+                Some(
+                    &serde_json::json!({"mode": "plumbing", "note": "no persona Realtime session; ScriptRuntime drives speech via TTS->mic"})
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+                "sim",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+
+        // 2. Dispatch the agent (server API) + wait for join (same as run()).
+        let api_host = livekit_cfg
+            .url
+            .replace("wss://", "https://")
+            .replace("ws://", "https://");
+        let dispatch_id = crate::dispatch::create_dispatch(
+            &api_host,
+            &livekit_cfg.api_key,
+            &livekit_cfg.api_secret,
+            &self.room_name,
+            &livekit_cfg.agent_name,
+            self.dispatch_metadata.as_deref(),
+        )
+        .await?;
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "room".into(),
+                serde_json::Value::String(self.room_name.clone()),
+            );
+            spec_m.insert(
+                "agent_name".into(),
+                serde_json::Value::String(livekit_cfg.agent_name.clone()),
+            );
+            spec_m.insert(
+                "dispatch_id".into(),
+                serde_json::Value::String(dispatch_id.clone()),
+            );
+            spec_m.insert(
+                "metadata_set".into(),
+                serde_json::Value::Bool(self.dispatch_metadata.is_some()),
+            );
+            spec_m.insert(
+                "mode".into(),
+                serde_json::Value::String("webrtc_sim".into()),
+            );
+            w.emit(
+                "dispatch.created",
+                Some(&spec_m),
+                "mcp",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+        let agent_identity =
+            crate::dispatch::wait_for_agent_join(&api_host, livekit_cfg, &self.room_name).await?;
+        let observer_cfg = lks_core::observer::ObserverConfig {
+            agent_identity: agent_identity.clone(),
+            sim_identity: self.identity.clone(),
+            first_speaker: self.first_speaker.clone(),
+            transcript_dedupe_window_ms: self.observe.transcript_dedupe_window_ms,
+            ..Default::default()
+        };
+        let observer = std::sync::Arc::new(tokio::sync::Mutex::new(
+            lks_core::observer::Observer::new(observer_cfg),
+        ));
+        {
+            let mut w = self.writer.lock().await;
+            let mut spec_m = serde_json::Map::new();
+            spec_m.insert(
+                "identity".into(),
+                serde_json::Value::String(agent_identity.clone()),
+            );
+            spec_m.insert(
+                "mode".into(),
+                serde_json::Value::String("webrtc_sim".into()),
+            );
+            w.emit(
+                "dispatch.agent_joined",
+                Some(&spec_m),
+                "mcp",
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+
+        // 3. Observation + cue loop (no persona WS). The room-events arms are
+        // the same handlers as run()'s select loop (observer.py parity);
+        // Speak cues go TTS→mic (see the contract_mode arm below).
+        let mut room_events_watch = room_events;
+        let mut session_observer = crate::observe::SessionObserver::new();
+        let mut data_router = crate::observe::DataRouter::new(self.observe.clone());
+        let writer_obs = self.writer.clone();
+        let mut disconnect_rx = end_rx.resubscribe();
+        let cap = tokio::time::sleep(std::time::Duration::from_secs(self.slice_cap_secs));
+        tokio::pin!(cap);
+        let mut cue_rx: Option<crate::script::CueRx> = self.cue_rx.lock().take();
+        let room_for_dtmf = room.clone();
+        let writer_cue = self.writer.clone();
+        // Same audio/speech-only allowlist as the freestyle cue loop
+        // above (Realtime voices 400 here) — see comment there.
+        let tts_voice = {
+            let v = self.sim.voice.voice.trim().to_lowercase();
+            match v.as_str() {
+                "alloy" | "ash" | "sage" | "coral" | "echo" | "shimmer" | "nova" | "onyx"
+                | "fable" => v,
+                _ => "alloy".to_string(),
+            }
+        };
+        let tts_key = self.sim.api_key.clone();
+        let _ = &source;
+        loop {
+            tokio::select! {
+                _ = disconnect_rx.recv() => break,
+                cue = async {
+                    match cue_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match cue {
+                        Some(crate::script::CueCommand::Speak { text, label }) => {
+                            if self.silent_mode {
+                                let mut w = writer_cue.lock().await;
+                                w.emit(
+                                    "sim.silent_mode_skip_inject",
+                                    Some(&serde_json::json!({"label": label, "delivery": "tts_mic", "text": text.chars().take(120).collect::<String>()}).as_object().cloned().unwrap_or_default()),
+                                    "sim",
+                                    None,
+                                    None,
+                                    false,
+                                    None,
+                                );
+                                continue;
+                            }
+                            eprintln!("[lksr] TTS speak ({label}): {text}");
+                            match synthesize_caller_speech(&tts_key, &tts_voice, &text).await {
+                                Ok(pcm) => {
+                                    let frames = pcm.len() / 2;
+                                    // Play into the SHARED mic handle (same fix
+                                    // as the freestyle-path cue loop above —
+                                    // a wrapper clone points at a stale source
+                                    // the agent does not subscribe to).
+                                    let Some(shared) = &self.shared_mic else {
+                                        let mut w = writer_cue.lock().await;
+                                        w.emit(
+                                            "sim.script.tts_error",
+                                            Some(&serde_json::json!({"label": label, "error": "shared_mic not wired — TTS has no mic to play into"}).as_object().cloned().unwrap_or_default()),
+                                            "sim.script",
+                                            None,
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                        continue;
+                                    };
+                                    if let Err(e) = crate::script::play_pcm_to_source(
+                                        shared, &pcm, OPENAI_OUT_RATE,
+                                    )
+                                    .await
+                                    {
+                                        let mut w = writer_cue.lock().await;
+                                        w.emit(
+                                            "sim.script.tts_error",
+                                            Some(&serde_json::json!({"label": label, "error": e}).as_object().cloned().unwrap_or_default()),
+                                            "sim.script",
+                                            None,
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                        continue;
+                                    }
+                                    // New caller turn: clear the replied latch so
+                                    // the post-cue gap (script.rs) waits for
+                                    // the agent's answer to THIS turn.
+                                    if let Some(st) = &self.script_state {
+                                        let mut s = st.lock().await;
+                                        s.user_has_spoken = true;
+                                        s.agent_replied_this_turn = false;
+                                    }
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "transcript.user.final",
+                                        Some(&serde_json::json!({"text": text, "final": true}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                    w.emit(
+                                        "sim.script_inject",
+                                        Some(&serde_json::json!({"label": label, "delivery": "tts_mic", "frames": frames}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                    // Pre-`do:` dialogue replay (see
+                                    // transcript_history field): the spoken
+                                    // caller line enters the shared history
+                                    // here — the single owner of caller
+                                    // lines (NOT the lk.transcription
+                                    // re-final of our own TTS echo).
+                                    if let Some(h) = &self.transcript_history {
+                                        h.push("caller", text.trim());
+                                    }
+                                }
+                                Err(e) => {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.tts_error",
+                                        Some(&serde_json::json!({"label": label, "error": e}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                        Some(crate::script::CueCommand::Dtmf { digits }) => {
+                            const DMAP: &[(&str, u32)] = &[
+                                ("0", 0), ("1", 1), ("2", 2), ("3", 3), ("4", 4),
+                                ("5", 5), ("6", 6), ("7", 7), ("8", 8), ("9", 9),
+                                ("*", 10), ("#", 11),
+                            ];
+                            let lp = room_for_dtmf.local_participant();
+                            for ch in digits.chars() {
+                                if ch == 'w' {
+                                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                                    continue;
+                                }
+                                let Some((_, code)) = DMAP.iter().find(|(d, _)| *d == ch.to_string()) else {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.dtmf_error",
+                                        Some(&serde_json::json!({"error": format!("unknown DTMF char {ch:?}")}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                    break;
+                                };
+                                let dtmf = livekit::SipDTMF {
+                                    code: *code,
+                                    digit: ch.to_string(),
+                                    ..Default::default()
+                                };
+                                if let Err(e) = lp.publish_dtmf(dtmf).await {
+                                    let mut w = writer_cue.lock().await;
+                                    w.emit(
+                                        "sim.script.dtmf_error",
+                                        Some(&serde_json::json!({"error": format!("publish_dtmf: {e}")}).as_object().cloned().unwrap_or_default()),
+                                        "sim.script",
+                                        None,
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                ev = room_events_watch.recv() => {
+                    match ev {
+                        Ok(SimRoomEvent::ParticipantConnected { identity, name }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("identity".into(), serde_json::Value::String(identity.clone()));
+                            spec_m.insert("name".into(), serde_json::Value::String(name));
+                            spec_m.insert("kind".into(), serde_json::Value::String("Remote".into()));
+                            w.emit("room.participant_connected", Some(&spec_m), "room", None, None, false, None);
+                            drop(w);
+                        }
+                        Ok(SimRoomEvent::ParticipantDisconnected { identity }) => {
+                            {
+                                let mut w = writer_obs.lock().await;
+                                let mut spec_m = serde_json::Map::new();
+                                spec_m.insert("identity".into(), serde_json::Value::String(identity.clone()));
+                                w.emit("room.participant_disconnected", Some(&spec_m), "room", None, None, false, None);
+                            }
+                            eprintln!("[lksr] agent disconnected ({identity}) — ending run");
+                            break;
+                        }
+                        Ok(SimRoomEvent::Disconnected) => {
+                            let mut w = writer_obs.lock().await;
+                            w.emit("room.disconnected", None, "room", None, None, false, None);
+                            drop(w);
+                            break;
+                        }
+                        Ok(SimRoomEvent::ActiveSpeakersChanged { identities }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("identities".into(), serde_json::Value::Array(
+                                identities.iter().map(|i| serde_json::Value::String(i.clone())).collect(),
+                            ));
+                            w.emit(
+                                "room.active_speakers",
+                                Some(&spec_m),
+                                "room",
+                                None,
+                                None,
+                                false,
+                                None,
+                            );
+                            drop(w);
+                            let is_agent = identities
+                                .iter()
+                                .any(|i| i != Self::SIM_IDENTITY && i != &self.identity);
+                            AGENT_ACTIVE_SPEAKER.store(is_agent, Ordering::SeqCst);
+                            // Feed ScriptRuntime's silence/agent_speaking gates
+                            // (contract path was deaf — run 005: only
+                            // caller-step-0 fired). Same latch the freestyle
+                            // pump reads via AGENT_ACTIVE_SPEAKER.
+                            if let Some(st) = &self.script_state {
+                                let mut sc = st.lock().await;
+                                sc.agent_is_active_speaker = is_agent;
+                                if is_agent {
+                                    sc.agent_has_spoken = true;
+                                }
+                            }
+                        }
+                        Ok(SimRoomEvent::TrackSubscribed { track_sid, participant_identity }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("identity".into(), serde_json::Value::String(participant_identity));
+                            spec_m.insert("kind".into(), serde_json::Value::String("audio".into()));
+                            spec_m.insert("sid".into(), serde_json::Value::String(track_sid));
+                            w.emit("room.track_subscribed", Some(&spec_m), "room", None, None, false, None);
+                            drop(w);
+                        }
+                        Ok(SimRoomEvent::DataReceived { topic, data, sender }) => {
+                            if self.observe.lk_agent_session && topic == crate::observe::TOPIC_SESSION_MESSAGES {
+                                let mut w = writer_obs.lock().await;
+                                crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                            } else {
+                                let staged = {
+                                    let mut w = writer_obs.lock().await;
+                                    data_router.handle_data(&topic, &data, sender.as_deref(), &mut w);
+                                    data_router.take_transcript()
+                                };
+                                if let Some(t) = staged {
+                                    if !t.text.trim().is_empty() {
+                                        // BUG FIX (run 011-dealer-live-full):
+                                        // the do-driver's AGENT_FINAL_SEQ/TEXT
+                                        // was only bumped from the
+                                        // lk.transcription TextStream arm
+                                        // below. This scenario's agent
+                                        // replies landed via the custom
+                                        // voice_ai.transcript DATA CHANNEL
+                                        // instead (same as the freestyle
+                                        // path's dedup priority — both
+                                        // sources race, either can win), so
+                                        // AGENT_FINAL_SEQ never advanced and
+                                        // run_contract_do hit
+                                        // contract.agent_timeout after 30s
+                                        // even though the agent had already
+                                        // replied twice. Bump here too, on
+                                        // genuine agent finals only.
+                                        if t.role == "agent" {
+                                            *crate::callers::openai::AGENT_FINAL_TEXT.lock() =
+                                                t.text.trim().to_string();
+                                            crate::callers::openai::AGENT_FINAL_SEQ.fetch_add(
+                                                1,
+                                                std::sync::atomic::Ordering::SeqCst,
+                                            );
+                                            // Same feed for ScriptRuntime's
+                                            // trigger gates (the TextStream
+                                            // arm below does this for its
+                                            // path): mark has_spoken +
+                                            // replied_this_turn + latch text
+                                            // so the post-cue gap and
+                                            // silence/agent_speaking gates see
+                                            // data-channel agent replies too
+                                            // (run 002-main-repo: posting the
+                                            // SEQ bump alone left the trigger
+                                            // gates deaf to this path —
+                                            // contract.attempt_verdict showed
+                                            // LOW_CONFIDENCE while the agent
+                                            // had already answered).
+                                            if let Some(st) = &self.script_state {
+                                                let mut s = st.lock().await;
+                                                s.agent_has_spoken = true;
+                                                s.agent_replied_this_turn = true;
+                                                s.last_agent_final_text =
+                                                    t.text.trim().to_string();
+                                            }
+                                            // Pre-`do:` dialogue replay (see
+                                            // transcript_history field):
+                                            // genuine agent replies land in
+                                            // the shared history for the
+                                            // `do:` generator context.
+                                            if let Some(h) = &self.transcript_history {
+                                                h.push("agent", t.text.trim());
+                                            }
+                                        }
+                                        let mut w = writer_obs.lock().await;
+                                        let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                        observer.lock().await.on_transcript(
+                                            &mut w,
+                                            &t.role,
+                                            &t.text,
+                                            true,
+                                            None,
+                                            &t.source,
+                                            std::time::Instant::now(),
+                                            now_wall_ms,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Ok(SimRoomEvent::TextStream { participant_identity, text, final_, segment_id, .. }) => {
+                            if !text.trim().is_empty() {
+                                let role = if participant_identity == agent_identity { "agent" } else { "user" };
+                                // Feed ScriptRuntime's trigger gates (run 004:
+                                // contract path was deaf — only caller-step-0
+                                // fired, run timed out). user finals mark
+                                // user_has_spoken; agent finals mark
+                                // has_spoken + replied_this_turn + latch text.
+                                //
+                                // do-driver signal (run verify-voice): the
+                                // contract_do satisfaction wait polls
+                                // AGENT_FINAL_SEQ — bump it here too, since
+                                // run_plumbing has no persona WS whose
+                                // input_audio_transcription.completed would
+                                // otherwise bump it via emit_agent_final.
+                                //
+                                // BUG FIX (run 008-dealer-live-full): this used
+                                // to bump on ANY final_ (agent OR user), so the
+                                // CALLER's own re-finalized speech (lk STT
+                                // often re-emits a "user final" a few seconds
+                                // after we TTS'd it) overwrote AGENT_FINAL_TEXT
+                                // with our own line and reset the do-driver's
+                                // quiet-window collector — evaluate_behavior
+                                // then judged a garbled/wrong string and the
+                                // do:arrange_visit step burned all 5 turns
+                                // despite the agent giving a satisfying reply.
+                                // Scope the bump to genuine agent finals only.
+                                if final_ && role == "agent" {
+                                    *crate::callers::openai::AGENT_FINAL_TEXT.lock() =
+                                        text.trim().to_string();
+                                    crate::callers::openai::AGENT_FINAL_SEQ.fetch_add(
+                                        1,
+                                        std::sync::atomic::Ordering::SeqCst,
+                                    );
+                                }
+                                if let Some(st) = &self.script_state {
+                                    let mut s = st.lock().await;
+                                    if role == "agent" && final_ {
+                                        s.agent_has_spoken = true;
+                                        s.agent_replied_this_turn = true;
+                                        s.last_agent_final_text = text.trim().to_string();
+                                    } else if role == "user" && final_ {
+                                        s.user_has_spoken = true;
+                                        s.agent_replied_this_turn = false;
+                                    }
+                                }
+                                // Pre-`do:` dialogue replay (same as the
+                                // data-channel arm above): agent finals from
+                                // lk.transcription land in the shared history
+                                // too. Caller echo is NOT pushed — only the
+                                // bridge TTS emit sites own caller lines (a
+                                // seconds-late "user final" re-transcription
+                                // of our own TTS would double them).
+                                if final_ && role == "agent" {
+                                    if let Some(h) = &self.transcript_history {
+                                        h.push("agent", text.trim());
+                                    }
+                                }
+                                let mut w = writer_obs.lock().await;
+                                let now_wall_ms = jiff::Zoned::now().timestamp().as_millisecond();
+                                observer.lock().await.on_transcript(
+                                    &mut w,
+                                    role,
+                                    &text,
+                                    final_,
+                                    segment_id.as_deref(),
+                                    "lk.transcription",
+                                    std::time::Instant::now(),
+                                    now_wall_ms,
+                                );
+                            }
+                        }
+                        Ok(SimRoomEvent::ByteStream { data, .. }) => {
+                            let mut w = writer_obs.lock().await;
+                            crate::observe::handle_session_bytes(&mut session_observer, &data, &mut w);
+                        }
+                        Ok(SimRoomEvent::StreamError { topic, error }) => {
+                            let mut w = writer_obs.lock().await;
+                            let mut spec_m = serde_json::Map::new();
+                            spec_m.insert("where".into(), json!(topic));
+                            spec_m.insert("error".into(), json!(error));
+                            w.emit("observer.error", Some(&spec_m), &topic, None, None, false, None);
+                        }
+                        _ => {}
+                    }
+                }
+                _ = &mut cap => {
+                    eprintln!("[lksr] slice cap reached ({}s) — ending run", self.slice_cap_secs);
+                    break;
+                }
+            }
+        }
+        let _ = dispatch_id;
+        Ok(())
+    }
 }
 
-pub fn publish_mic_shared(
+/// Contract-path TTS: OpenAI audio/speech → mp3 bytes → 24 kHz mono PCM16.
+///
+/// Port of live_wiring.py `_synthesize` (contract path speaks through TTS,
+/// never through a persona Realtime session). MP3 decode needs no new dep:
+/// the `hound` crate (already a dependency) only writes WAV, so this parses
+/// MP3 frames minimally — no. MP3 decode is non-trivial without a decoder
+/// crate, so request `wav` output format from the API instead (supported:
+/// mp3/opus/aac/flac/wav/pcm) and parse the 44-byte RIFF header directly.
+/// Falls back to 24 kHz resample-free playback: requests 24 kHz explicitly
+/// (`response_format=wav` has no rate param — OpenAI returns the model's
+/// native rate, resampled below when it differs).
+async fn synthesize_caller_speech(
+    api_key: &str,
+    voice: &str,
+    text: &str,
+) -> Result<Vec<i16>, String> {
+    // reqwest with rustls (no default features) — mirrors the blocking-free
+    // async style used by lks-core::contract_do::generate_do_candidate.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("tts client: {e}"))?;
+    let resp = client
+        .post("https://api.openai.com/v1/audio/speech")
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": "tts-1",
+            "input": text,
+            "voice": voice,
+            "response_format": "wav",
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("tts request: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let clipped: String = body.chars().take(200).collect();
+        return Err(format!("tts HTTP {status}: {clipped}"));
+    }
+    let bytes = resp.bytes().await.map_err(|e| format!("tts body: {e}"))?;
+    wav_bytes_to_pcm16_24k(&bytes)
+}
+
+/// Parse a WAV (44-byte RIFF header, 16-bit PCM mono) into samples,
+/// resampling to 24 kHz when the file rate differs (linear interpolation —
+/// TTS speech tolerates it; avoids pulling a resampling crate for one call).
+fn wav_bytes_to_pcm16_24k(bytes: &[u8]) -> Result<Vec<i16>, String> {
+    if bytes.len() < 44 {
+        return Err(format!("tts wav too short: {} bytes", bytes.len()));
+    }
+    if &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err("tts response is not a WAV file".to_string());
+    }
+    // Walk chunks to find "fmt " and "data" (fmt may not be first).
+    let mut pos = 12usize;
+    let mut fmt_rate = 0u32;
+    let mut fmt_channels = 0u16;
+    let mut fmt_bits = 0u16;
+    let mut data: &[u8] = &[];
+    while pos + 8 <= bytes.len() {
+        let id = &bytes[pos..pos + 4];
+        let size = u32::from_le_bytes(
+            bytes[pos + 4..pos + 8]
+                .try_into()
+                .map_err(|_| "wav truncated chunk header".to_string())?,
+        ) as usize;
+        let body_start = pos + 8;
+        let body_end = (body_start + size).min(bytes.len());
+        if id == b"fmt " {
+            if size < 16 {
+                return Err("tts wav fmt chunk too small".to_string());
+            }
+            let audio_fmt =
+                u16::from_le_bytes(bytes[body_start..body_start + 2].try_into().unwrap());
+            if audio_fmt != 1 {
+                return Err(format!("tts wav not PCM (format {audio_fmt})"));
+            }
+            fmt_channels =
+                u16::from_le_bytes(bytes[body_start + 2..body_start + 4].try_into().unwrap());
+            fmt_rate =
+                u32::from_le_bytes(bytes[body_start + 4..body_start + 8].try_into().unwrap());
+            fmt_bits =
+                u16::from_le_bytes(bytes[body_start + 14..body_start + 16].try_into().unwrap());
+        } else if id == b"data" {
+            data = &bytes[body_start..body_end];
+        }
+        pos = body_end + (size % 2);
+    }
+    if fmt_rate == 0 || data.is_empty() {
+        return Err("tts wav missing fmt/data chunks".to_string());
+    }
+    if fmt_bits != 16 {
+        return Err(format!("tts wav not 16-bit (bits {fmt_bits})"));
+    }
+    // Mono: pairs of LE bytes. Stereo (unexpected): take left channel.
+    let stride = fmt_channels.max(1) as usize;
+    let mut samples: Vec<i16> = data
+        .chunks_exact(2 * stride)
+        .map(|f| i16::from_le_bytes([f[0], f[1]]))
+        .collect();
+    if fmt_rate != OPENAI_OUT_RATE {
+        // Linear resample to 24 kHz.
+        let ratio = OPENAI_OUT_RATE as f64 / fmt_rate as f64;
+        let out_len = ((samples.len() as f64) * ratio) as usize;
+        let mut out = Vec::with_capacity(out_len);
+        for i in 0..out_len {
+            let src = i as f64 / ratio;
+            let lo = src.floor() as usize;
+            let hi = (lo + 1).min(samples.len() - 1);
+            let frac = (src - lo as f64) as f32;
+            let a = samples[lo.min(samples.len() - 1)] as f32;
+            let b = samples[hi] as f32;
+            out.push((a + (b - a) * frac) as i16);
+        }
+        samples = out;
+    }
+    Ok(samples)
+}
+
+pub async fn publish_mic_shared(
     room: &Arc<livekit::Room>,
 ) -> Result<livekit::webrtc::audio_source::native::NativeAudioSource, RunError> {
     use livekit::prelude::*;
@@ -815,16 +1881,18 @@ pub fn publish_mic_shared(
         ..Default::default()
     };
     // Publish the mic track so the agent hears the caller.
+    //
+    // AWAIT the publish (do not fire-and-forget): contract-path TTS cues
+    // (and room_pcm beds) play into this source via the shared handle, and
+    // a publish that silently fails/races leaves playback with nowhere to
+    // go — the agent hears nothing and the run sits until the slice cap
+    // (run 001-final-lksr: ambient bed fired, then 300s of silence). A loud
+    // error here fails fast instead.
     let room = room.clone();
-    tokio::spawn(async move {
-        if let Err(e) = room
-            .local_participant()
-            .publish_track(LocalTrack::Audio(track), options)
-            .await
-        {
-            log::warn!("mic publish failed: {e}");
-        }
-    });
+    room.local_participant()
+        .publish_track(LocalTrack::Audio(track), options)
+        .await
+        .map_err(|e| RunError(format!("mic publish failed: {e}")))?;
     Ok(source)
 }
 
@@ -1033,6 +2101,12 @@ pub static LAST_ANY_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 pub static AGENT_HAS_SPOKEN: AtomicBool = AtomicBool::new(false);
 /// True while a script step with mute_persona=true is active — suppress freestyle audio.
 pub static MUTE_PERSONA_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Bumped every time `emit_agent_final` fires — read by the `contract_do`
+/// driver (`crate::script`) to detect a NEW agent reply (vs. a stale one
+/// from before it published) without polling the shared Observer directly.
+pub static AGENT_FINAL_SEQ: AtomicI64 = AtomicI64::new(0);
+/// Text of the most recent agent final (paired with `AGENT_FINAL_SEQ`).
+pub static AGENT_FINAL_TEXT: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
 
 pub fn find_subscribed_audio(
     room: &Arc<livekit::Room>,
@@ -1060,15 +2134,13 @@ async fn pump_openai_events(
     out_tx: mpsc::Sender<Vec<i16>>,
     ws_tx: mpsc::Sender<Message>,
     writer: Arc<tokio::sync::Mutex<EventWriter>>,
+    observer: Arc<tokio::sync::Mutex<lks_core::observer::Observer>>,
     _end_call: broadcast::Receiver<()>,
     response_in_flight: Arc<AtomicBool>,
     end_tx: broadcast::Sender<()>,
     max_turns: i64,
 ) {
     let mut agent_text = String::new();
-    // Observer turn framing state (port of observer.py on_transcript).
-    let mut last_user_final_mono: Option<std::time::Instant> = None;
-    let mut agent_replied_this_turn = false;
     let mut caller_text = String::new();
     let end_tx = end_tx.clone();
     loop {
@@ -1137,24 +2209,12 @@ async fn pump_openai_events(
                         let farewell = end_call::contains_farewell_signal(&caller_text);
                         let clean = end_call::strip_end_call_signal(&t);
                         if !clean.is_empty() {
-                            last_user_final_mono = Some(std::time::Instant::now());
-                            agent_replied_this_turn = false;
-                            OpenAiCallerBridge::begin_user_turn(&writer).await;
-                            let mut w = writer.lock().await;
-                            w.update_dialogue("user", &clean, true, None);
-                            w.emit(
-                                "transcript.user.final",
-                                spec(serde_json::json!({"text": clean})).as_ref(),
-                                "sim.openai",
-                                None,
-                                None,
-                                false,
-                                None,
-                            );
+                            OpenAiCallerBridge::emit_user_final(&writer, &observer, &clean).await;
                             crate::callers::openai::LAST_ANY_ACTIVITY_MS.store(
                                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
                                 std::sync::atomic::Ordering::SeqCst,
                             );
+                            let mut w = writer.lock().await;
                             let mut src = serde_json::Map::new();
                             src.insert("provider".into(), json!("openai"));
                             src.insert("voice_gain".into(), json!(1.0));
@@ -1214,27 +2274,13 @@ async fn pump_openai_events(
                         // uses strip_end_call_signal when not script-pending).
                         let clean = end_call::strip_end_call_signal(&t);
                         if !clean.is_empty() {
-                            // Observer turn framing: a caller final opens a new
-                            // turn (port of observer.py on_transcript user arm).
-                            last_user_final_mono = Some(std::time::Instant::now());
-                            agent_replied_this_turn = false;
-                            OpenAiCallerBridge::begin_user_turn(&writer).await;
-                            let mut w = writer.lock().await;
-                            w.update_dialogue("user", &clean, true, None);
-                            w.emit(
-                                "transcript.user.final",
-                                spec(serde_json::json!({"text": clean})).as_ref(),
-                                "sim.openai",
-                                None,
-                                None,
-                                false,
-                                None,
-                            );
+                            OpenAiCallerBridge::emit_user_final(&writer, &observer, &clean).await;
                             crate::callers::openai::LAST_ANY_ACTIVITY_MS.store(
                                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
                                 std::sync::atomic::Ordering::SeqCst,
                             );
                             // sim.caller.audio_source_start once per utterance.
+                            let mut w = writer.lock().await;
                             let mut src = serde_json::Map::new();
                             src.insert("provider".into(), json!("openai"));
                             src.insert("voice_gain".into(), json!(1.0));
@@ -1304,13 +2350,7 @@ async fn pump_openai_events(
                         // (port of openai.py _on_agent_transcript_done).
                         let t = (event.get("transcript").and_then(|v| v.as_str()).unwrap_or("")).trim().to_string();
                         if !t.is_empty() {
-                            OpenAiCallerBridge::emit_agent_final(
-                                &writer,
-                                &t,
-                                &mut last_user_final_mono,
-                                &mut agent_replied_this_turn,
-                            )
-                            .await;
+                            OpenAiCallerBridge::emit_agent_final(&writer, &observer, &t).await;
                             // max_turns reached after the agent replied — end the
                             // run (port of run_orchestrator.py:769 "max_turns").
                             if max_turns > 0 {
@@ -1347,13 +2387,20 @@ async fn pump_openai_events(
                         // final transcript (port of openai.py _on_response_done
                         // flush — without this a caller-final utterance whose
                         // `.done` never arrived would strand un-finalized).
-                        OpenAiCallerBridge::emit_agent_final(
-                            &writer,
-                            &agent_text,
-                            &mut last_user_final_mono,
-                            &mut agent_replied_this_turn,
-                        )
-                        .await;
+                        //
+                        // Buffer-ownership guard (live run
+                        // verify-lksr-alive/002): `.completed` (line ~1383)
+                        // above already emits the agent final AND clears this
+                        // buffer — emitting unconditionally here re-logs the
+                        // SAME text a second time. Worse, between clear() and
+                        // this handler the deltas of the NEXT turn may already
+                        // have accumulated, so the duplicate arrives under a
+                        // new turn number and corrupts turn framing (the run
+                        // showed the same agent line twice + ghost "Yeah,"/"Mm."
+                        // fragments). Skip when the buffer is empty.
+                        if !agent_text.trim().is_empty() {
+                            OpenAiCallerBridge::emit_agent_final(&writer, &observer, &agent_text).await;
+                        }
                         // max_turns reached after the agent replied — end the
                         // run (port of run_orchestrator.py:769 "max_turns").
                         if max_turns > 0 {

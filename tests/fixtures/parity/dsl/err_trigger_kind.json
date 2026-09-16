@@ -1,0 +1,12 @@
+{
+  "id": "err_trigger_kind",
+  "steps": [
+    {
+      "say": "Hi.",
+      "trigger": {
+        "kind": "banana"
+      }
+    }
+  ],
+  "expect": "error"
+}

@@ -1,0 +1,99 @@
+{
+  "run_id": "demo-dtmf",
+  "scenario_id": "billing-stress",
+  "audio": {
+    "file": "conversation.wav",
+    "duration_ms": 14000,
+    "channels": {
+      "left": "sim",
+      "right": "agent"
+    }
+  },
+  "cues": [
+    {
+      "role": "agent",
+      "start_ms": 2000,
+      "end_ms": 6000,
+      "text": "Press 1 for billing, 2 for support…",
+      "source": "demo"
+    },
+    {
+      "role": "user",
+      "start_ms": 7000,
+      "end_ms": 8400,
+      "text": "[DTMF 1·2·3]",
+      "source": "demo"
+    },
+    {
+      "role": "agent",
+      "start_ms": 9000,
+      "end_ms": 13000,
+      "text": "Billing — got it. One moment…",
+      "source": "demo"
+    }
+  ],
+  "markers": [
+    {
+      "type": "dtmf",
+      "start_ms": 7000,
+      "end_ms": 8400,
+      "label": "DTMF 1·2·3",
+      "detail": "",
+      "step_id": null,
+      "say": null
+    }
+  ],
+  "marker_counts": {
+    "dtmf": 1
+  },
+  "script_verify": {
+    "pass": true
+  },
+  "assert_verify": {
+    "pass": true,
+    "checks": []
+  },
+  "caller": null,
+  "behavior_summary": {
+    "marker_counts": {
+      "dtmf": 1
+    }
+  },
+  "tool_events": [],
+  "tool_summary": {
+    "tool_count": 0,
+    "tool_errors": 0
+  },
+  "session_summary": null,
+  "chat_history": [
+    {
+      "type": "message",
+      "role": "agent",
+      "content": [
+        {
+          "text": "Press 1 for billing, 2 for support…"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "text": "[DTMF 1·2·3]"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "agent",
+      "content": [
+        {
+          "text": "Billing — got it. One moment…"
+        }
+      ]
+    }
+  ],
+  "caller_contract": null,
+  "observe_gaps": []
+}

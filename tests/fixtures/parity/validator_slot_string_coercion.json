@@ -1,0 +1,26 @@
+{
+  "id": "validator_slot_string_coercion",
+  "description": "Slot float() coercion parity (validator.py step 4): a numeric STRING max_budget claim ('45000') coerces and violates the 30000 ceiling exactly like a JSON number. Mirrors Python float(claimed_budget).",
+  "use_semantic_verifier": false,
+  "contract": {
+    "behavior": "negotiate",
+    "target": "price",
+    "constraints": {
+      "max_turns": 3,
+      "max_budget": 30000,
+      "max_words": null,
+      "max_duration_s": null,
+      "forbidden_intents": [],
+      "must_not": ["invent_facts", "end_call"]
+    }
+  },
+  "candidate": {
+    "act": "negotiate",
+    "target": "price",
+    "slots": {"max_budget": "45000"},
+    "utterance": "Could you do $45,000?",
+    "identity": {"behavior_id": "b2", "turn_id": 1, "generation_id": 1, "context_version": 0}
+  },
+  "expected_verdict": "INVALID",
+  "expected_reason": "SLOT_VIOLATION"
+}

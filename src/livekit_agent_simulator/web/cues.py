@@ -109,6 +109,18 @@ def build_cues_payload(report_dir: Path) -> dict[str, Any]:
         from ..script import build_caller_behavior_summary
 
         behavior_summary = build_caller_behavior_summary(events)
+    # Caller-contract evidence (§11): prefer the summary block written at
+    # finalize; recompute from events for older reports without it.
+    caller_contract = summary.get("caller_contract") if isinstance(summary, dict) else None
+    if not isinstance(caller_contract, dict) and events:
+        try:
+            from ..caller_contract.contract_summary import (
+                build_caller_contract_summary,
+            )
+
+            caller_contract = build_caller_contract_summary(events=events)
+        except Exception:  # noqa: BLE001 — cues must never break the player
+            caller_contract = None
 
     counts: dict[str, int] = {}
     for m in markers:
@@ -141,6 +153,7 @@ def build_cues_payload(report_dir: Path) -> dict[str, Any]:
         "assert_verify": assert_verify,
         "caller": {"behavior_summary": behavior_summary} if behavior_summary is not None else None,
         "behavior_summary": behavior_summary,
+        "caller_contract": caller_contract,
         "tool_events": tool_events,
         "tool_summary": tool_summary,
         "session_summary": _build_session_summary(events, t0, duration_ms),

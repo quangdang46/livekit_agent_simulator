@@ -13,6 +13,7 @@ gemini-live = { path = "../gemini-live" }
 
 livekit = { version = "0.8.3", features = ["rustls-tls-webpki-roots"] }
 livekit-api = { version = "0.6.3", features = ["rustls-tls-webpki-roots"] }
+livekit-data-stream = "0.1.2"
 livekit-protocol = "0.7.12"
 tokio = { version = "1.48.0", features = ["full"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
@@ -27,6 +28,10 @@ regex = "1.13.1"
 rand = { workspace = true }
 jiff = { workspace = true }
 parking_lot = "0.12"
+# Contract-path TTS (OpenAI audio/speech) + do: text backend reuse the same
+# reqwest shape lks-core already uses (default-features off, rustls) — no
+# new TLS stack, no new dep family.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-no-provider"] }
 
 [features]
 # Passthrough so `cargo build -p lks --features lks-core/python-plugins`
