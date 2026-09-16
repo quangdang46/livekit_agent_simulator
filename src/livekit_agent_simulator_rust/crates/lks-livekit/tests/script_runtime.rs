@@ -77,7 +77,10 @@ async fn silence_trigger_waits_for_agent_to_speak_first() {
         }),
         "en".into(),
         "test-api-key".into(),
-        "user".into(),
+        // first_speaker="agent": the require_agent_spoke_first gate applies
+        // (fa4f2ec intentionally skips this gate on first_speaker="user"
+        // runs, so "user" here would fire immediately and defeat the test).
+        "agent".into(),
         Arc::new(TranscriptHistory::new()),
     );
     // Spawn the runtime; agent hasn't spoken → silence trigger must not fire.
