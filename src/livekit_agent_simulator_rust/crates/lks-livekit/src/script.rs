@@ -807,8 +807,7 @@ impl ScriptRuntime {
                     // without the text there is no way to know what the
                     // model generated on the failing attempts (generator
                     // drift vs lexicon gap — opposite fixes).
-                    let attempted: String =
-                        cand.utterance.chars().take(160).collect();
+                    let attempted: String = cand.utterance.chars().take(160).collect();
                     w.emit(
                         "contract.attempt_verdict",
                         Some(
@@ -943,7 +942,11 @@ impl ScriptRuntime {
                     }
                 }
                 if Instant::now() >= deadline {
-                    break if collected.is_empty() { None } else { Some(collected) };
+                    break if collected.is_empty() {
+                        None
+                    } else {
+                        Some(collected)
+                    };
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             };
