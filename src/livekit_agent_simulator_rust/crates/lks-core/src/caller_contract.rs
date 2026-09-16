@@ -1048,7 +1048,7 @@ const EVALUATOR_PRICE_STATEMENT_PATTERNS: [&str; 5] = [
 // Run 041 (Phase D): a confirmed booking answers an arrange_visit
 // behavior — same grounding comment as Python orchestrator.py. Scoped to
 // behavior=="arrange_visit" at the call site.
-const EVALUATOR_ARRANGE_VISIT_CONFIRM_PATTERNS: [&str; 12] = [
+const EVALUATOR_ARRANGE_VISIT_CONFIRM_PATTERNS: [&str; 16] = [
     "we can definitely organise that",
     "we can definitely organize that",
     "would tomorrow morning",
@@ -1061,6 +1061,13 @@ const EVALUATOR_ARRANGE_VISIT_CONFIRM_PATTERNS: [&str; 12] = [
     "pop in today",
     "come in today",
     "free to pop in",
+    // Run 022 (dealer-live-full enriched): same shape as run 041, different
+    // wording — "pencil you in"/"lock that in" booking confirms. Same
+    // grounding comment as Python orchestrator.py.
+    "pencil you in",
+    "pencil that in",
+    "lock that in",
+    "i'll lock that in",
 ];
 
 // Run 030 (Phase D): a reasoned refusal answers a negotiate behavior —
@@ -2696,5 +2703,40 @@ mod parity_tests {
             result.reason
         );
         assert!(validator.take_verifier_failure().is_some());
+    }
+
+    #[test]
+    fn evaluator_satisfied_on_pencil_lock_booking_confirm() {
+        // Run 022 (dealer-live-full enriched): "I'll pencil you in for a
+        // test drive at 10 tomorrow morning" / "I'll lock that in" are
+        // confirmed bookings — same shape as run 041, different wording.
+        // Parity with test_behavior_evaluator_satisfied_on_pencil_lock_
+        // booking_confirm in tests/test_orchestrator_turns.py.
+        assert!(matches!(
+            super::evaluate_behavior(
+                "arrange_visit",
+                None,
+                "10 a.m. works fine. I'll pencil you in for a test drive \
+                 at 10 tomorrow morning.",
+            ),
+            super::EvaluatorVerdict::Satisfied
+        ));
+        assert!(matches!(
+            super::evaluate_behavior(
+                "arrange_visit",
+                None,
+                "Yep, 10 a.m. is perfect. I'll lock that in.",
+            ),
+            super::EvaluatorVerdict::Satisfied
+        ));
+        // Scoped to behavior=="arrange_visit": must not satisfy ask.
+        assert!(!matches!(
+            super::evaluate_behavior(
+                "ask",
+                None,
+                "I'll pencil you in for tomorrow morning.",
+            ),
+            super::EvaluatorVerdict::Satisfied
+        ));
     }
 }

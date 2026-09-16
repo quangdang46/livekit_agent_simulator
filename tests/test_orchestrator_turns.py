@@ -339,6 +339,34 @@ def test_behavior_evaluator_satisfied_on_bare_price_quote() -> None:
     assert verdict == EvaluatorVerdict.SATISFIED
 
 
+def test_behavior_evaluator_satisfied_on_pencil_lock_booking_confirm() -> None:
+    # Run 022 (dealer-live-full enriched): "I'll pencil you in for a test
+    # drive at 10 tomorrow morning" / "I'll lock that in" are confirmed
+    # bookings — same shape as run 041, different wording. Scoped to
+    # behavior=="arrange_visit" (must not satisfy other behaviors).
+    evaluator = BehaviorEvaluator()
+    contract = BehaviorContract(behavior="arrange_visit", target=None)
+    assert (
+        evaluator.evaluate(
+            contract,
+            "10 a.m. works fine. I'll pencil you in for a test drive "
+            "at 10 tomorrow morning.",
+        )
+        == EvaluatorVerdict.SATISFIED
+    )
+    assert (
+        evaluator.evaluate(
+            contract, "Yep, 10 a.m. is perfect. I'll lock that in."
+        )
+        == EvaluatorVerdict.SATISFIED
+    )
+    other = BehaviorContract(behavior="ask", target=None)
+    assert (
+        evaluator.evaluate(other, "I'll pencil you in for tomorrow morning.")
+        == EvaluatorVerdict.NOT_SATISFIED
+    )
+
+
 def test_behavior_evaluator_is_a_distinct_object_from_validator() -> None:
     """Structural proof that BehaviorEvaluator and ContractValidator are
     separate mechanisms answering different questions (§28.5(25))."""

@@ -220,6 +220,16 @@ _ARRANGE_VISIT_CONFIRM_PATTERNS = (
     "pop in today",
     "come in today",
     "free to pop in",
+    # Run 022 (dealer-live-full enriched): the agent confirmed the booking
+    # twice ("I'll pencil you in for a test drive at 10 tomorrow morning..."
+    # / "I'll lock that in and we'll see you then...") and the evaluator
+    # scored both NOT_SATISFIED — same shape as run 041, different wording:
+    # a pencilled/locked-in booking IS an answer to arrange_visit. Scoped
+    # to behavior=="arrange_visit" at the call site (same guard as above).
+    "pencil you in",
+    "pencil that in",
+    "lock that in",
+    "i'll lock that in",
 )
 
 
