@@ -2731,11 +2731,7 @@ mod parity_tests {
         ));
         // Scoped to behavior=="arrange_visit": must not satisfy ask.
         assert!(!matches!(
-            super::evaluate_behavior(
-                "ask",
-                None,
-                "I'll pencil you in for tomorrow morning.",
-            ),
+            super::evaluate_behavior("ask", None, "I'll pencil you in for tomorrow morning.",),
             super::EvaluatorVerdict::Satisfied
         ));
     }
