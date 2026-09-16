@@ -70,9 +70,9 @@ telephony:
 
 ## Scenario examples
 
-- Human pickup: `templates/outbound-human-pickup.jsonl` — `Caller.mode: outbound_human_pickup` + `Telephony.call_to` (real phone)
-- Gemini callee hairpin: `templates/outbound-callee-sim.jsonl` — `Caller.mode: outbound_sim_callee`
-- Inbound: `templates/inbound-caller-sim.jsonl`
+- Human pickup: `templates/outbound-human-pickup.yaml` — `Caller.mode: outbound_human_pickup` + `Telephony.call_to` (real phone)
+- Gemini callee hairpin: `templates/outbound-callee-sim.yaml` — `Caller.mode: outbound_sim_callee`
+- Inbound: `templates/inbound-caller-sim.yaml`
 
 ### Inbound room discovery
 
