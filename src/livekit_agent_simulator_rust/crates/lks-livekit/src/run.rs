@@ -473,9 +473,12 @@ pub async fn execute_scenario_parsed(
         let shared_mic_closure = shared_mic.clone();
         let cue_tx_script = cue_tx.clone();
         let locale = cfg.simulator.language.clone();
-        // `do:` text backend reuses the simulator's own OpenAI key (port of
-        // `live_wiring.py::_build_text_backend` — no separate credential).
+        // `do:` text backend reuses the simulator's own key + provider
+        // (port of `live_wiring.py::_build_text_backend` — no separate
+        // credential; provider selects OpenAI chat-completions vs Gemini
+        // generateContent in run_contract_do).
         let do_api_key = cfg.simulator.api_key.clone();
+        let do_provider = cfg.simulator.provider.clone();
         let runtime = crate::script::ScriptRuntime::new(
             scenario.script_steps.clone(),
             script_writer,
@@ -592,6 +595,7 @@ pub async fn execute_scenario_parsed(
             }),
             locale,
             do_api_key,
+            do_provider,
             run_spec.first_speaker.clone(),
             transcript_history.clone(),
         );

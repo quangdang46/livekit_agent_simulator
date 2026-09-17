@@ -41,6 +41,7 @@ async fn time_trigger_fires_speak_after_delay() {
         }),
         "en".into(),
         "test-api-key".into(),
+        "openai".into(),
         "user".into(),
         Arc::new(TranscriptHistory::new()),
     );
@@ -77,9 +78,15 @@ async fn silence_trigger_waits_for_agent_to_speak_first() {
         }),
         "en".into(),
         "test-api-key".into(),
+        "openai".into(),
         // first_speaker="agent": the require_agent_spoke_first gate applies
         // (fa4f2ec intentionally skips this gate on first_speaker="user"
         // runs, so "user" here would fire immediately and defeat the test).
+        // NOTE: arg order is (do_api_key, do_provider, first_speaker,
+        // history) — do_provider ("openai") comes BEFORE first_speaker
+        // ("agent"); swapping them silently disables the gate (a bare
+        // "agent" string in the provider slot never equals "google", and
+        // "openai" in the first_speaker slot never equals "agent").
         "agent".into(),
         Arc::new(TranscriptHistory::new()),
     );
@@ -135,6 +142,7 @@ async fn hang_up_ends_run() {
         }),
         "en".into(),
         "test-api-key".into(),
+        "openai".into(),
         "user".into(),
         Arc::new(TranscriptHistory::new()),
     );

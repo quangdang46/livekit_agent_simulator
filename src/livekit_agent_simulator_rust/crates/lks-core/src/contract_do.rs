@@ -17,6 +17,11 @@ use crate::caller_contract::{
 use crate::caller_dsl::DEFAULT_BEHAVIOR_CATALOG;
 
 pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
+/// Gemini text-backend default (mirrors Python
+/// `text_backends.py::GeminiTextBackend` — `gemini-flash-latest` working
+/// alias; `gemini-2.0-flash` 404s).
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-flash-latest";
+pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 pub const DEFAULT_TEMPERATURE: f64 = 0.4;
 pub const DEFAULT_TIMEOUT_S: u64 = 20;
 /// Port of `driver.py::self.max_retries` default (2) applied to the `do:`
@@ -188,6 +193,75 @@ pub fn parse_backend_response(
         utterance: utterance.to_string(),
         identity,
     })
+}
+
+/// One stateless Gemini generateContent round trip (mirrors
+/// `text_backends.py::GeminiTextBackend.generate` — text-only
+/// `gemini-flash-latest`, NOT the Live/Realtime audio API).
+pub async fn generate_do_candidate_gemini(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    temperature: f64,
+    timeout_s: u64,
+    context: &Json,
+    identity: GenerationIdentity,
+) -> Result<CandidateUtterance, String> {
+    let endpoint = format!(
+        "{}/models/{}:generateContent?key={}",
+        base_url.trim_end_matches('/'),
+        model,
+        api_key
+    );
+    let body = json!({
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{"role": "user", "parts": [{"text": serde_json::to_string(context).unwrap_or_default()}]}],
+        "generationConfig": {
+            "temperature": temperature,
+            "responseMimeType": "application/json",
+        },
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_s))
+        .build()
+        .map_err(|e| format!("reqwest build: {e}"))?;
+    let resp = client
+        .post(&endpoint)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .body(serde_json::to_string(&body).unwrap_or_default())
+        .send()
+        .await
+        .map_err(|e| format!("do: backend unreachable: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "do: backend HTTP {status}: {}",
+            text.chars().take(500).collect::<String>()
+        ));
+    }
+    let envelope: Json =
+        serde_json::from_str(&text).map_err(|e| format!("do: backend response not JSON: {e}"))?;
+    // generateContent shape: candidates[0].content.parts[].text (concatenate
+    // text parts; the model returns the JSON object as text).
+    let content = envelope
+        .get("candidates")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.get("parts"))
+        .and_then(|p| p.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|v| v.as_str()))
+                .collect::<String>()
+        })
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            "do: backend response missing candidates[0].content.parts[].text".to_string()
+        })?;
+    parse_backend_response(&content, identity)
 }
 
 /// One stateless OpenAI chat-completions round trip (mirrors
