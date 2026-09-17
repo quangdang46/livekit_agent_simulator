@@ -145,10 +145,14 @@ pub struct ScriptRuntime {
     /// Locale for the default hang-up farewell text (from config).
     #[allow(dead_code)]
     locale: String,
-    /// OpenAI API key for the `do:` text backend (same key the caller
-    /// bridge's Realtime session uses — `cfg.simulator.api_key`; port of
+    /// API key for the `do:` text backend (same key the caller bridge
+    /// uses — `cfg.simulator.api_key`; port of
     /// `live_wiring.py::_build_text_backend`, no separate credential).
     do_api_key: String,
+    /// `do:` text-backend provider ("openai"|"google" — mirrors
+    /// `cfg.simulator.provider`; port of `_build_text_backend` provider
+    /// selection in `live_wiring.py`).
+    do_provider: String,
     /// run_spec.first_speaker ("agent"|"user") — gates the legacy
     /// require_agent_spoke_first silence assumption (see trigger gate).
     first_speaker: String,
@@ -167,6 +171,7 @@ impl ScriptRuntime {
         on_action: Box<dyn Fn(ScriptAction) -> Result<(), String> + Send + Sync>,
         locale: String,
         do_api_key: String,
+        do_provider: String,
         first_speaker: String,
         history: SharedTranscriptHistory,
     ) -> Self {
@@ -179,6 +184,7 @@ impl ScriptRuntime {
             defer_state: parking_lot::Mutex::new(None),
             locale,
             do_api_key,
+            do_provider,
             first_speaker,
             history,
         }
@@ -781,16 +787,32 @@ impl ScriptRuntime {
             let mut last_reason = String::from("no attempts");
             for attempt in 0..=lks_core::contract_do::DEFAULT_MAX_RETRIES {
                 let identity = orchestrator.new_generation();
-                let attempt_result = lks_core::contract_do::generate_do_candidate(
-                    &self.do_api_key,
-                    "https://api.openai.com/v1",
-                    lks_core::contract_do::DEFAULT_MODEL,
-                    lks_core::contract_do::DEFAULT_TEMPERATURE,
-                    lks_core::contract_do::DEFAULT_TIMEOUT_S,
-                    &context,
-                    identity,
-                )
-                .await;
+                // Provider-aware text backend (mirrors Python
+                // `live_wiring.py::_build_text_backend`): google/Gemini via
+                // generateContent, everything else via OpenAI chat-completions.
+                let attempt_result = if self.do_provider.trim().to_lowercase() == "google" {
+                    lks_core::contract_do::generate_do_candidate_gemini(
+                        &self.do_api_key,
+                        lks_core::contract_do::DEFAULT_GEMINI_BASE_URL,
+                        lks_core::contract_do::DEFAULT_GEMINI_MODEL,
+                        lks_core::contract_do::DEFAULT_TEMPERATURE,
+                        lks_core::contract_do::DEFAULT_TIMEOUT_S,
+                        &context,
+                        identity,
+                    )
+                    .await
+                } else {
+                    lks_core::contract_do::generate_do_candidate(
+                        &self.do_api_key,
+                        "https://api.openai.com/v1",
+                        lks_core::contract_do::DEFAULT_MODEL,
+                        lks_core::contract_do::DEFAULT_TEMPERATURE,
+                        lks_core::contract_do::DEFAULT_TIMEOUT_S,
+                        &context,
+                        identity,
+                    )
+                    .await
+                };
                 let cand = match attempt_result {
                     Ok(c) => c,
                     Err(e) => {

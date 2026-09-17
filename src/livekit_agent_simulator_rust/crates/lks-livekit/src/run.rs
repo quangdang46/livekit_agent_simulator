@@ -473,9 +473,12 @@ pub async fn execute_scenario_parsed(
         let shared_mic_closure = shared_mic.clone();
         let cue_tx_script = cue_tx.clone();
         let locale = cfg.simulator.language.clone();
-        // `do:` text backend reuses the simulator's own OpenAI key (port of
-        // `live_wiring.py::_build_text_backend` — no separate credential).
+        // `do:` text backend reuses the simulator's own key + provider
+        // (port of `live_wiring.py::_build_text_backend` — no separate
+        // credential; provider selects OpenAI chat-completions vs Gemini
+        // generateContent in run_contract_do).
         let do_api_key = cfg.simulator.api_key.clone();
+        let do_provider = cfg.simulator.provider.clone();
         let runtime = crate::script::ScriptRuntime::new(
             scenario.script_steps.clone(),
             script_writer,
@@ -592,6 +595,7 @@ pub async fn execute_scenario_parsed(
             }),
             locale,
             do_api_key,
+            do_provider,
             run_spec.first_speaker.clone(),
             transcript_history.clone(),
         );
@@ -699,15 +703,23 @@ pub async fn execute_scenario_parsed(
                 cfg.livekit.clone(),
                 cfg.simulator.clone(),
                 persona_prompt.clone(),
+                run_spec.first_speaker.clone(),
+                run_spec.max_turns,
                 room_name,
                 identity,
                 writer_arc.clone(),
             )
+            .with_shared_mic(shared_mic.clone())
+            .with_script_state(script_state.clone())
             .with_recorder(recorder.clone())
             .with_dispatch_metadata(dispatch_meta)
             .with_silent_mode(silent)
             .with_observe(cfg.observe.clone())
-            .with_speech_conditions(persona_sc.clone());
+            .with_speech_conditions(persona_sc.clone())
+            .with_cue_rx(cue_rx)
+            .with_transcript_history(transcript_history.clone())
+            .with_contract_only(!scenario.caller_actions.is_empty())
+            .with_slice_cap_secs(run_spec.timeout_s);
             Box::pin(async move { bridge.run(end_rx.resubscribe()).await })
         } else {
             let bridge = OpenAiCallerBridge::new(
