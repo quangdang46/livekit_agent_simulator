@@ -659,19 +659,20 @@ impl GeminiCallerBridge {
         &self,
         end_call: broadcast::Receiver<()>,
     ) -> Result<(), RunError> {
-        // TTS + do: keys: OpenAI-profile key FIRST (audio/speech endpoint),
-        // falling back to the bridge's own key (same shape as the OpenAI
-        // path, which uses its own profile key unconditionally).
+        // TTS key: the SIBLING openai profile's key from the SAME
+        // config.yaml (provider-agnostic OpenAI audio/speech endpoint —
+        // never the Gemini key, which 401s there; run 034 proved the
+        // fallback-to-own-key shape silently sends "AQ.Ab8..." to
+        // api.openai.com). Resolution order: OPENAI_API_KEY env, then the
+        // openai profile in config.yaml, then fail LOUD (same fail-loud
+        // contract as the OpenAI path — never sit silent to the slice cap).
         let openai_key = std::env::var("OPENAI_API_KEY")
             .ok()
-            .filter(|k| !k.trim().is_empty());
-        let tts_key = openai_key.or_else(|| {
-            let k = self.sim.api_key.clone();
-            (!k.trim().is_empty()).then_some(k)
-        });
-        let Some(tts_key) = tts_key else {
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| Self::openai_profile_key());
+        let Some(tts_key) = openai_key else {
             return Err(RunError(
-                "contract path TTS needs an OpenAI API key (OPENAI_API_KEY env or simulator api_key) — none configured".to_string(),
+                "contract path TTS needs an OpenAI API key (OPENAI_API_KEY env or the openai profile in config.yaml) — none configured".to_string(),
             ));
         };
         let mut sim_cfg = self.sim.clone();
@@ -709,5 +710,48 @@ impl GeminiCallerBridge {
             bridge = bridge.with_cue_rx(rx);
         }
         bridge.run_plumbing(end_call).await
+    }
+
+    /// Read the sibling `openai` profile's api_key from the same
+    /// config.yaml (via OPENAI-profile load, not the active google
+    /// profile). Returns None when the file/profile/key is absent —
+    /// the caller fails loud instead of sending the Gemini key to
+    /// api.openai.com (HTTP 401, run 034).
+    fn openai_profile_key() -> Option<String> {
+        let cwd = std::env::current_dir().ok()?;
+        let text = std::fs::read_to_string(cwd.join(".agent-sim").join("config.yaml")).ok()?;
+        // Minimal parse: find the `openai:` profile block and its api_key.
+        // (Full YAML profile resolution lives in lks-core::config; here we
+        // only need one sibling key, so a targeted scan avoids threading
+        // project_root through the bridge.)
+        let mut openai_indent: Option<usize> = None;
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - trimmed.len();
+            if let Some(base) = openai_indent {
+                if indent <= base && !trimmed.starts_with('-') {
+                    break;
+                }
+                if trimmed.starts_with("api_key:") {
+                    let v = trimmed
+                        .trim_start_matches("api_key:")
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('\'');
+                    if !v.is_empty() {
+                        return Some(v.to_string());
+                    }
+                    return None;
+                }
+                continue;
+            }
+            if trimmed == "openai:" && indent > 0 {
+                openai_indent = Some(indent);
+            }
+        }
+        None
     }
 }
