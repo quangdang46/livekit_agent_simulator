@@ -27,6 +27,8 @@ pub struct GeminiCallerBridge {
     livekit: LiveKitConfig,
     sim: SimulatorConfig,
     persona_prompt: String,
+    first_speaker: String,
+    max_turns: i64,
     room_name: String,
     identity: String,
     writer: Arc<Mutex<EventWriter>>,
@@ -41,6 +43,17 @@ pub struct GeminiCallerBridge {
     persona_speech_conditions: serde_json::Map<String, serde_json::Value>,
     /// observe.* knobs for data-topic/session observation (Python parity).
     observe: ObserveConfig,
+    /// Contract-path plumbing (mirrors OpenAiCallerBridge fields of the
+    /// same name — run 031-gemini proved the Gemini bridge had NONE of
+    /// this wiring: ScriptRuntime fired cues into a channel nobody polled,
+    /// no TTS played (Gemini key 401s on OpenAI audio/speech), the trigger
+    /// gates were deaf, and the run sat until the hardcoded 45s cap).
+    shared_mic: Option<crate::script::SharedMicSource>,
+    script_state: Option<Arc<tokio::sync::Mutex<crate::script::ScriptObserverState>>>,
+    transcript_history: Option<crate::script::SharedTranscriptHistory>,
+    contract_only: bool,
+    cue_rx: parking_lot::Mutex<Option<crate::script::CueRx>>,
+    slice_cap_secs: u64,
 }
 
 impl GeminiCallerBridge {
@@ -49,6 +62,8 @@ impl GeminiCallerBridge {
         livekit: LiveKitConfig,
         sim: SimulatorConfig,
         persona_prompt: String,
+        first_speaker: String,
+        max_turns: i64,
         room_name: String,
         identity: String,
         writer: Arc<Mutex<EventWriter>>,
@@ -57,6 +72,8 @@ impl GeminiCallerBridge {
             livekit,
             sim,
             persona_prompt,
+            first_speaker,
+            max_turns,
             room_name,
             identity,
             writer,
@@ -65,6 +82,12 @@ impl GeminiCallerBridge {
             silent_mode: false,
             persona_speech_conditions: Default::default(),
             observe: ObserveConfig::default(),
+            shared_mic: None,
+            script_state: None,
+            transcript_history: None,
+            contract_only: false,
+            cue_rx: parking_lot::Mutex::new(None),
+            slice_cap_secs: 45,
         }
     }
 
@@ -103,7 +126,77 @@ impl GeminiCallerBridge {
         self
     }
 
-    pub async fn run(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+    /// Builder: shared mic handle for TTS→mic playback (mirrors
+    /// OpenAiCallerBridge::with_shared_mic).
+    pub fn with_shared_mic(mut self, shared: crate::script::SharedMicSource) -> Self {
+        self.shared_mic = Some(shared);
+        self
+    }
+
+    /// Builder: shared ScriptObserverState for trigger gates (mirrors
+    /// OpenAiCallerBridge::with_script_state).
+    pub fn with_script_state(
+        mut self,
+        state: Arc<tokio::sync::Mutex<crate::script::ScriptObserverState>>,
+    ) -> Self {
+        self.script_state = Some(state);
+        self
+    }
+
+    /// Builder: shared pre-`do:` dialogue replay (mirrors
+    /// OpenAiCallerBridge::with_transcript_history).
+    pub fn with_transcript_history(
+        mut self,
+        history: crate::script::SharedTranscriptHistory,
+    ) -> Self {
+        self.transcript_history = Some(history);
+        self
+    }
+
+    /// Builder: contract-only plumbing mode (mirrors
+    /// OpenAiCallerBridge::with_contract_only).
+    pub fn with_contract_only(mut self, contract_only: bool) -> Self {
+        self.contract_only = contract_only;
+        self
+    }
+
+    /// Builder: mid-call cue channel receiver (mirrors
+    /// OpenAiCallerBridge::with_cue_rx).
+    pub fn with_cue_rx(self, rx: crate::script::CueRx) -> Self {
+        *self.cue_rx.lock() = Some(rx);
+        self
+    }
+
+    /// Builder: hard per-run slice cap in seconds (mirrors
+    /// OpenAiCallerBridge::with_slice_cap_secs).
+    pub fn with_slice_cap_secs(mut self, secs: i64) -> Self {
+        self.slice_cap_secs = if secs > 0 { secs as u64 } else { 45 };
+        self
+    }
+
+    pub async fn run(&self, end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+        // Contract path (caller_steps non-empty): delegate to the shared
+        // OpenAI-bridge plumbing (room + mic + dispatch + agent-join +
+        // observation/cue loop). The Gemini bridge owns no contract
+        // machinery of its own: TTS is provider-agnostic OpenAI audio/speech
+        // (same key/voice allowlist as the OpenAI path — voice identity
+        // never affects assertions, agent transcribes STT-side) and the
+        // do: text backend is provider-aware via do_provider. The freestyle
+        // Live session body below is kept for provider=google runs WITHOUT
+        // caller_steps.
+        //
+        // NOTE on the OpenAI key below: contract-path TTS always uses the
+        // OPENAI-profile key, never the Gemini key. Rationale, stated
+        // plainly: lksr has no Gemini-native TTS (no Cloud TTS dep, no
+        // sherpa port); the OpenAI audio/speech endpoint is the only
+        // WAV-output TTS available. Voice identity is assertion-irrelevant
+        // (agent transcribes STT-side). If no OpenAI key is configured the
+        // run fails LOUDLY at the first Speak cue (tts_error event) instead
+        // of sitting silent until the slice cap — same fail-loud contract
+        // as the OpenAI path.
+        if self.contract_only {
+            return self.run_contract_via_openai_plumbing(end_call).await;
+        }
         let livekit_cfg = &self.livekit;
         let sim_cfg = &self.sim;
 
@@ -551,5 +644,70 @@ async fn pump_agent_audio_gemini(
         if s.send_audio(&bytes).await.is_err() {
             return;
         }
+    }
+}
+
+impl GeminiCallerBridge {
+    /// Contract-only run via the shared OpenAI-bridge plumbing.
+    ///
+    /// Builds a fully-wired `OpenAiCallerBridge` from this bridge's own
+    /// config + the contract handles run.rs already attached
+    /// (shared_mic, script_state, cue_rx, transcript_history, contract_only,
+    /// slice_cap) and runs its `run_plumbing`. Single implementation of the
+    /// contract loop — the Gemini bridge never duplicates it.
+    async fn run_contract_via_openai_plumbing(
+        &self,
+        end_call: broadcast::Receiver<()>,
+    ) -> Result<(), RunError> {
+        // TTS + do: keys: OpenAI-profile key FIRST (audio/speech endpoint),
+        // falling back to the bridge's own key (same shape as the OpenAI
+        // path, which uses its own profile key unconditionally).
+        let openai_key = std::env::var("OPENAI_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty());
+        let tts_key = openai_key.or_else(|| {
+            let k = self.sim.api_key.clone();
+            (!k.trim().is_empty()).then_some(k)
+        });
+        let Some(tts_key) = tts_key else {
+            return Err(RunError(
+                "contract path TTS needs an OpenAI API key (OPENAI_API_KEY env or simulator api_key) — none configured".to_string(),
+            ));
+        };
+        let mut sim_cfg = self.sim.clone();
+        sim_cfg.api_key = tts_key;
+        let mut bridge = super::openai::OpenAiCallerBridge::new(
+            self.livekit.clone(),
+            sim_cfg,
+            self.persona_prompt.clone(),
+            self.first_speaker.clone(),
+            self.max_turns,
+            self.room_name.clone(),
+            self.identity.clone(),
+            self.writer.clone(),
+        )
+        .with_recorder_option(self.recorder.clone())
+        .with_dispatch_metadata(self.dispatch_metadata.clone())
+        .with_silent_mode(self.silent_mode)
+        .with_observe(self.observe.clone())
+        .with_speech_conditions(self.persona_speech_conditions.clone())
+        .with_contract_only(true)
+        .with_slice_cap_secs(self.slice_cap_secs as i64);
+        if let Some(shared) = &self.shared_mic {
+            bridge = bridge.with_shared_mic(shared.clone());
+        }
+        if let Some(st) = &self.script_state {
+            bridge = bridge.with_script_state(st.clone());
+        }
+        if let Some(h) = &self.transcript_history {
+            bridge = bridge.with_transcript_history(h.clone());
+        }
+        // cue_rx lives behind a Mutex<Option<>> — take it here since this
+        // bridge will never poll it itself on the contract path.
+        let cue_rx = self.cue_rx.lock().take();
+        if let Some(rx) = cue_rx {
+            bridge = bridge.with_cue_rx(rx);
+        }
+        bridge.run_plumbing(end_call).await
     }
 }

@@ -303,6 +303,15 @@ impl OpenAiCallerBridge {
         self
     }
 
+    /// Option-variant (mirrors with_recorder): no-op when None. Used by the
+    /// Gemini bridge's contract delegation, which holds Option<recorder>.
+    pub fn with_recorder_option(mut self, rec: Option<crate::script::SharedRecorder>) -> Self {
+        if let Some(r) = rec {
+            self.recorder = Some(r);
+        }
+        self
+    }
+
     /// Nudge hook: commit the agent audio + response.create (non-audible).
     pub fn nudge_freestyle_answer(&self, _agent_hint: &str) -> Result<(), String> {
         Ok(())
@@ -1129,7 +1138,13 @@ impl OpenAiCallerBridge {
     /// byte-identical for review. The shared pieces (room connect, mic
     /// publish, dispatch, agent-join, observer config) mirror run()'s steps
     /// 1–2 verbatim; only the session/pumps half is replaced by the cue loop.
-    async fn run_plumbing(&self, end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+    ///
+    /// `pub(crate)` (not private): the Gemini bridge's contract path
+    /// delegates here instead of duplicating the loop — one implementation.
+    pub(crate) async fn run_plumbing(
+        &self,
+        end_call: broadcast::Receiver<()>,
+    ) -> Result<(), RunError> {
         // BUG FIX (run 016-dealer-live-full): this used to be `_end_call`
         // (leading underscore = intentionally unused) and built its OWN
         // local broadcast pair (`_end_tx`/`end_rx`) that nobody ever sent
