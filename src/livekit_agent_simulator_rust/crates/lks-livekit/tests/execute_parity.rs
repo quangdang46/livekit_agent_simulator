@@ -104,3 +104,64 @@ fn execute_options_defaults() {
     assert!(o.optimized.is_none());
     assert!(o.profile.is_none());
 }
+
+/// Dead-endpoint run fails as an ENVELOPE, fast, with no livekit server.
+///
+/// Regression gate for PR #109/#110 (12 CI attempts): a scenario whose
+/// config points at a non-existent LiveKit server must resolve to
+/// {executed:true, status:"failed", error: <connect/dispatch failure>}
+/// — never a hang, never an Err that a caller would have to map into a
+/// protocol error. Runs DIRECTLY against execute_scenario (no stdio hop):
+/// the MCP stdio transport cannot flush a tool response after livekit's
+/// native webrtc machinery wedges the child's runtime, so the MCP harness
+/// deliberately does NOT cover this path — this test is its home.
+/// Bounded at 150s (15s room + 15s dispatch + 15s list_participants +
+/// bridge ceiling headroom); the pre-fix shape hung past the 45-minute
+/// runner timeout, so any regression is unmistakable.
+#[tokio::test]
+async fn dead_endpoint_fails_fast_as_envelope() {
+    let dir = tmp_root();
+    // Scaffold a VALID scenario so the run reaches the bridge (not the
+    // validation early-return above).
+    std::fs::write(
+        dir.path()
+            .join(".agent-sim")
+            .join("scenarios")
+            .join("smoke.yaml"),
+        "apiVersion: agent-sim/v1\nkind: Scenario\nmetadata:\n  id: smoke\npersona:\n  brief: Test caller brief\n  goals:\n    - Say hello\n",
+    )
+    .unwrap();
+    // Point at a dead local endpoint: connection refused (not DNS hang),
+    // so the failure is deterministic and fast.
+    std::fs::write(
+        dir.path().join(".agent-sim").join("config.yaml"),
+        "livekit:\n  url: ws://127.0.0.1:9\n  api_key: test-key-0123456789abcdef\n  api_secret: test-secret-0123456789abcdef\n  agent_name: test-agent\nsimulator:\n  provider: openai\n  mode: realtime\n  api_key: sk-test-key-1234567890\n",
+    )
+    .unwrap();
+    let opts = ExecuteOptions::single();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(150),
+        execute_scenario(dir.path(), "smoke", &opts),
+    )
+    .await
+    .expect("dead-endpoint run must resolve within 150s (regression: PR #109/#110 hang)");
+    let envelope = result.expect("dead-endpoint run is an envelope, not Err");
+    let rendered = serde_json::to_string(&envelope).unwrap_or_default();
+    assert_eq!(
+        envelope.get("executed").and_then(|v| v.as_bool()),
+        Some(true),
+        "envelope marks executed: {rendered}"
+    );
+    assert_eq!(
+        envelope.get("status").and_then(|v| v.as_str()),
+        Some("failed"),
+        "dead endpoint fails: {rendered}"
+    );
+    assert!(
+        rendered.contains("timed out")
+            || rendered.contains("connect failed")
+            || rendered.contains("dispatch failed")
+            || rendered.contains("Connection refused"),
+        "error names the dead endpoint: {rendered}"
+    );
+}
