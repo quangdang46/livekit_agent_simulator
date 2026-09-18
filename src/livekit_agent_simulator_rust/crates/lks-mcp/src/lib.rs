@@ -426,14 +426,36 @@ impl SimServer {
         // finished LOUDLY (PR #110 CI: child logged the connect error
         // instantly, yet the parent still hung 60s waiting for a reply —
         // the error-as-protocol-error never resolves into result.content).
-        match lks_livekit::run::execute_scenario(root(&p.project_root), &p.scenario_id, &opts).await
-        {
+        //
+        // The blocking run executes on a dedicated multi-thread worker so a
+        // wedged native/webrtc await inside execute_scenario can never park
+        // the single-threaded stdio server loop (which must stay responsive
+        // to flush the tool response). Bounded by the bridge ceiling inside
+        // the run itself plus headroom here; expiry is itself a failure
+        // envelope, never a silent hang.
+        let project_root = root(&p.project_root).to_path_buf();
+        let scenario_id = p.scenario_id.clone();
+        let run_result = tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("run worker runtime: {e}"))?;
+            rt.block_on(lks_livekit::run::execute_scenario(
+                &project_root,
+                &scenario_id,
+                &opts,
+            ))
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| internal_error(format!("run worker join: {e}")))?;
+        match run_result {
             Ok(result) => ok_json(result),
             Err(e) => ok_json(serde_json::json!({
                 "executed": true,
                 "run_id": null,
                 "status": "failed",
-                "error": e.to_string(),
+                "error": e,
             })),
         }
     }
