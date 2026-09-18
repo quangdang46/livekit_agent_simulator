@@ -84,13 +84,16 @@ const TOPIC_AGENT_SESSION: &str = "lk.agent.session";
 const ATTR_TRANSCRIPTION_FINAL: &str = "lk.transcription_final";
 const ATTR_SEGMENT_ID: &str = "lk.segment_id";
 
-/// Hard ceiling on `Room::connect` — the SDK's connect has no built-in
-/// timeout, and against a dead endpoint (e.g. `ws://localhost:7880` with no
-/// server, as used by the MCP harness temp configs) it can block effectively
-/// forever (incident: PR #109 ubuntu/macos Rust CI, 2026-09-18 — 40+ minutes
-/// of dead air inside the MCP harness's `execute_scenario`, killing the whole
-/// job at the 45-minute runner timeout with no diagnostic). Bounded here so
-/// a bad endpoint is a fast, loud connect error instead.
+/// Hard ceiling on `Room::connect`. The SDK DOES have an internal
+/// signal-connect timeout (`SIGNAL_CONNECT_TIMEOUT`, threaded through
+/// `RoomOptions.connect_timeout`) plus `join_retries: 3` — but its
+/// `livekit_runtime::spawn`ed session tasks and retry/backoff machinery can
+/// still park a dead-endpoint attempt (e.g. `ws://localhost:7880` with no
+/// server, as used by the MCP harness temp configs) well past those bounds.
+/// This outer ceiling (incident: PR #109/#110 ubuntu/macos Rust CI,
+/// 2026-09-18 — silent multi-minute stalls inside the MCP harness's
+/// `execute_scenario`) bounds the whole attempt so a bad endpoint is a
+/// fast, loud connect error instead of dead air.
 pub const ROOM_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Connect to a LiveKit room and return (room handle, event receiver).
