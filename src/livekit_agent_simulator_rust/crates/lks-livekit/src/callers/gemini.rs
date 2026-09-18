@@ -669,7 +669,7 @@ impl GeminiCallerBridge {
         let openai_key = std::env::var("OPENAI_API_KEY")
             .ok()
             .filter(|k| !k.trim().is_empty())
-            .or_else(|| Self::openai_profile_key());
+            .or_else(Self::openai_profile_key);
         let Some(tts_key) = openai_key else {
             return Err(RunError(
                 "contract path TTS needs an OpenAI API key (OPENAI_API_KEY env or the openai profile in config.yaml) — none configured".to_string(),
