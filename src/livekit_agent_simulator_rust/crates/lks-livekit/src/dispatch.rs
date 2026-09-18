@@ -30,10 +30,12 @@ pub async fn create_dispatch(
     // (PR #109 ubuntu/macos Rust CI, 2026-09-18): the 40-minute hang was
     // here, inside create_dispatch — not inside room connect. Bounded so a
     // dead endpoint is a fast, loud error instead of dead air.
-    let resp = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        client.create_dispatch(req),
-    )
+    // Same lazy-future rule as connect_room (see its NOTE): the client call
+    // must be constructed INSIDE the timeout's async block, not evaluated
+    // eagerly as the timeout argument.
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        client.create_dispatch(req).await
+    })
     .await
     .map_err(|_| RunError(format!("create dispatch timed out after 15s to {api_url}")))?
     .map_err(|e| RunError(format!("create dispatch failed: {e}")))?;

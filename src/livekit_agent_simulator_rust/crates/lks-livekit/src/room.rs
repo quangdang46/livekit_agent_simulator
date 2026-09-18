@@ -100,10 +100,19 @@ pub async fn connect_room(
     _room_name: &str,
     observe_gate: RoomObserveGate,
 ) -> Result<(Arc<Room>, broadcast::Receiver<SimRoomEvent>), RunError> {
-    let (room, mut events) = tokio::time::timeout(
-        ROOM_CONNECT_TIMEOUT,
-        Room::connect(url, token, RoomOptions::default()),
-    )
+    // NOTE: `Room::connect(...)` is evaluated EAGERLY here as the future
+    // argument — by the time tokio::time::timeout wraps it, the SDK has
+    // already started its internal connection machinery *outside* any
+    // timeout. If that machinery parks (e.g. DNS/WS handshake against a
+    // dead endpoint never resolving NOR erroring — PR #110 CI: room
+    // connect + dispatch bounded yet execute_scenario still hung >60s),
+    // the outer timeout fires but the leaked inner task keeps the runtime
+    // (and the run) alive. `async { ... }` defers construction until first
+    // poll — strictly INSIDE the timeout — so expiry drops the whole
+    // attempt. Both shapes compile; only the lazy one actually bounds.
+    let (room, mut events) = tokio::time::timeout(ROOM_CONNECT_TIMEOUT, async {
+        Room::connect(url, token, RoomOptions::default()).await
+    })
     .await
     .map_err(|_| {
         RunError(format!(
