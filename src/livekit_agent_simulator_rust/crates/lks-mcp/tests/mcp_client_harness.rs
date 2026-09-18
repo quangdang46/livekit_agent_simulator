@@ -38,22 +38,48 @@ fn lksr_bin() -> PathBuf {
 }
 
 /// Spawn `lksr mcp` and return (child, stdin writer, stdout reader).
+/// The child's stderr is piped (not nulled) and drained on a background
+/// thread into a channel: on an RPC timeout the test prints the child's
+/// last stderr lines, which is the ONLY window into where the wedged run
+/// actually sits (the child logs every dispatch/connect/TTS step there via
+/// eprintln!). PR #110 CI: six attempts failed with zero child-side
+/// diagnostic because stderr went to /dev/null.
 fn spawn_mcp() -> (
     Child,
     std::process::ChildStdin,
     BufReader<std::process::ChildStdout>,
+    mpsc::Receiver<String>,
 ) {
     let bin = lksr_bin();
     let mut child = Command::new(&bin)
         .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
+        .env("RUST_BACKTRACE", "1")
         .spawn()
         .expect("spawn lksr mcp");
     let stdin = child.stdin.take().expect("child stdin");
     let stdout = child.stdout.take().expect("child stdout");
-    (child, stdin, BufReader::new(stdout))
+    let stderr = child.stderr.take().expect("child stderr");
+    // Drain stderr so (a) the child never blocks on a full pipe buffer and
+    // (b) the last lines are available for the timeout diagnostic below.
+    let (err_tx, err_rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if err_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    (child, stdin, BufReader::new(stdout), err_rx)
 }
 
 /// Minimal JSON-RPC client over the pipes.
@@ -66,12 +92,15 @@ struct RpcClient {
     // wedged child process (or a real run that never resolves its connect)
     // silently eats the whole CI job budget instead of failing fast.
     lines_rx: mpsc::Receiver<String>,
+    // Drained child-stderr lines (see spawn_mcp): printed on RPC timeout so
+    // the panic message shows WHERE the child wedged, not just that it did.
+    err_rx: mpsc::Receiver<String>,
     next_id: u64,
 }
 
 impl RpcClient {
     fn new() -> Self {
-        let (child, stdin, mut stdout) = spawn_mcp();
+        let (child, stdin, mut stdout, err_rx) = spawn_mcp();
         let (tx, lines_rx) = mpsc::channel::<String>();
         std::thread::spawn(move || loop {
             let mut line = String::new();
@@ -88,6 +117,7 @@ impl RpcClient {
             _child: child,
             stdin,
             lines_rx,
+            err_rx,
             next_id: 1,
         };
         c.request(
@@ -129,9 +159,22 @@ impl RpcClient {
         self.lines_rx
             .recv_timeout(RPC_READ_TIMEOUT)
             .unwrap_or_else(|_| {
+                // Collect whatever the child logged before wedging — this is
+                // the actual diagnostic (last step reached, e.g. dispatch
+                // created vs connect started vs TTS called).
+                let mut tail: Vec<String> = Vec::new();
+                while let Ok(line) = self.err_rx.try_recv() {
+                    tail.push(line);
+                    if tail.len() > 60 {
+                        tail.remove(0);
+                    }
+                }
+                let tail = tail.join("");
                 panic!(
                     "MCP server did not respond within {RPC_READ_TIMEOUT:?} to '{method}' \
-                 (child wedged or exited without a reply — see RPC_READ_TIMEOUT doc comment)"
+                 (child wedged or exited without a reply — see RPC_READ_TIMEOUT doc comment)\n\
+                 --- child stderr tail (last ~60 lines) ---\n{tail}\
+                 --- end child stderr ---"
                 )
             })
     }
