@@ -23,10 +23,20 @@ pub async fn create_dispatch(
         ..Default::default()
     };
 
-    let resp = client
-        .create_dispatch(req)
-        .await
-        .map_err(|e| RunError(format!("create dispatch failed: {e}")))?;
+    // Server-API HTTP calls have no built-in timeout: against a dead
+    // endpoint (e.g. `ws://localhost:7880` → https in the MCP harness temp
+    // configs, with no server listening) the `.await` below blocks
+    // effectively forever. Same incident as ROOM_CONNECT_TIMEOUT
+    // (PR #109 ubuntu/macos Rust CI, 2026-09-18): the 40-minute hang was
+    // here, inside create_dispatch — not inside room connect. Bounded so a
+    // dead endpoint is a fast, loud error instead of dead air.
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        client.create_dispatch(req),
+    )
+    .await
+    .map_err(|_| RunError(format!("create dispatch timed out after 15s to {api_url}")))?
+    .map_err(|e| RunError(format!("create dispatch failed: {e}")))?;
     Ok(resp.id)
 }
 
