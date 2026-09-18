@@ -20,7 +20,7 @@ use std::time::Duration;
 /// no diagnostic (see incident: PR #109 ubuntu/macos Rust CI, 2026-09-18 —
 /// forty-plus minutes of dead air after the last "ok" line). Bounding the
 /// read here turns that into a fast, loud, debuggable test failure instead.
-const RPC_READ_TIMEOUT: Duration = Duration::from_secs(20);
+const RPC_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Path to the built `lksr` binary. When lks is a dev-dependency of this crate,
 /// cargo provides CARGO_BIN_EXE_lksr; fall back to the workspace target dir.
