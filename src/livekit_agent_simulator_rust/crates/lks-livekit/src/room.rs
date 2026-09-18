@@ -94,6 +94,18 @@ const ATTR_SEGMENT_ID: &str = "lk.segment_id";
 /// 2026-09-18 — silent multi-minute stalls inside the MCP harness's
 /// `execute_scenario`) bounds the whole attempt so a bad endpoint is a
 /// fast, loud connect error instead of dead air.
+///
+/// HANG CLASS (proven over 15 CI attempts): `tokio::time::timeout` only
+/// stops POLLING the inner future — it cannot abort work the SDK already
+/// spawned onto the executor (`livekit_runtime::spawn` session/signal
+/// tasks, native webrtc threads) or a native await that never resolves.
+/// Those stragglers keep the RUNTIME alive: on a multi-thread runtime the
+/// test's own timeout future eventually gets a worker and fires, but on a
+/// single-thread/current_thread runtime the one thread is parked inside
+/// the wedged await and the timeout itself never gets polled. Timeouts
+/// bound well-behaved futures; they do NOT bound leaked native work.
+/// The only hard guarantee is process exit (the CLI's shape) or never
+/// starting the doomed attempt (preflight gate).
 pub const ROOM_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Connect to a LiveKit room and return (room handle, event receiver).
