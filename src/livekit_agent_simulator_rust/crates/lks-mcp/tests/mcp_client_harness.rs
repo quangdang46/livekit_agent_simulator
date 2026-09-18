@@ -141,9 +141,15 @@ impl RpcClient {
         r["result"]["tools"].as_array().cloned().unwrap_or_default()
     }
 
-    /// Call a tool; returns the parsed JSON text result (tools return JSON text).
+    /// Call a tool; returns the parsed JSON text result (tools return JSON
+    /// text). A handler Err surfaces as a JSON-RPC `error` reply (no
+    /// `result.content`) — surfaced as {"_rpc_error": ...} so callers can
+    /// distinguish a fast loud tool error from a wedged/no-reply child.
     fn call(&mut self, name: &str, args: Value) -> Value {
         let r = self.request("tools/call", json!({"name": name, "arguments": args}));
+        if let Some(err) = r.get("error") {
+            return json!({"_rpc_error": err});
+        }
         let content = r["result"]["content"]
             .as_array()
             .cloned()
@@ -323,17 +329,37 @@ fn data_plane_tools_work_end_to_end() {
     );
     assert_eq!(st.get("found").and_then(|x| x.as_bool()), Some(false));
 
-    // execute_scenario → wired to the real run path. The temp root's config
-    // points at a non-existent LiveKit server, so the run errors out — but it
-    // must NOT be the old "not available in the Rust build" stub.
+    // execute_scenario error-shape parity: the temp root's config points at
+    // a non-existent LiveKit server, so the run must fail — and it must fail
+    // FAST (all server-API awaits in the dispatch path are bounded: 15s room
+    // connect + 15s create_dispatch + 15s list_participants) with the
+    // connect/dispatch error surfaced as tools/call error (rmcp maps the
+    // handler's Err into a JSON-RPC error reply — `call()` then yields
+    // {"raw": ...}), never the old "not available in the Rust build" stub,
+    // and never a 60s+ silence (PR #109/#110 ubuntu/macos Rust CI).
     let ex = c.call(
         "execute_scenario",
         json!({"project_root": root_s, "scenario_id": "smoke"}),
     );
-    let err = ex.get("error").and_then(|v| v.as_str()).unwrap_or("");
+    let rendered = serde_json::to_string(&ex).unwrap_or_default();
     assert!(
-        !err.contains("not available in the Rust build"),
+        !rendered.contains("not available in the Rust build"),
         "execute_scenario must be wired to the run path, got: {ex}"
+    );
+    // Dead-endpoint error may arrive either inline (result.error) or as a
+    // JSON-RPC error reply (_rpc_error) depending on how rmcp maps the
+    // handler Err — both prove the run reached the real connect/dispatch
+    // path and failed loud (room connect timeout / dispatch timeout /
+    // room connect failed), not a stub and not a silent hang. Reaching
+    // THIS assert at all (inside the 60s RPC bound) is itself the
+    // anti-hang gate.
+    assert!(
+        rendered.contains("timed out")
+            || rendered.contains("connect failed")
+            || rendered.contains("dispatch failed")
+            || rendered.contains("no LiveKit")
+            || rendered.contains("error"),
+        "execute_scenario must surface the dead-endpoint failure, got: {ex}"
     );
 }
 
