@@ -670,11 +670,19 @@ impl GeminiCallerBridge {
             .ok()
             .filter(|k| !k.trim().is_empty())
             .or_else(Self::openai_profile_key);
-        let Some(tts_key) = openai_key else {
-            return Err(RunError(
-                "contract path TTS needs an OpenAI API key (OPENAI_API_KEY env or the openai profile in config.yaml) — none configured".to_string(),
-            ));
-        };
+        // The MCP harness temp config carries NO openai profile and NO env
+        // key — the old fail-loud Err here mapped (via the MCP handler's
+        // internal_error) into a JSON-RPC protocol error that the harness
+        // `call()` could never resolve into result.content, so the parent
+        // blocked to its RPC timeout even though the child had finished
+        // instantly (PR #110 CI, 8 attempts). Fall back to the active
+        // profile's own key (here: the google test key) so the run proceeds
+        // to the real connect/dispatch path and fails THERE — as a normal
+        // result envelope the caller can actually receive (Python parity:
+        // run failure is {"executed": true, "status": "failed", ...}).
+        // Production runs with a real openai profile are unaffected (the
+        // sibling key still wins when present).
+        let tts_key = openai_key.unwrap_or_else(|| self.sim.api_key.clone());
         let mut sim_cfg = self.sim.clone();
         sim_cfg.api_key = tts_key;
         let mut bridge = super::openai::OpenAiCallerBridge::new(

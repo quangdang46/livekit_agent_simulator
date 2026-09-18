@@ -8,6 +8,19 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// Max time to wait for a single JSON-RPC line from the child's stdout.
+/// `execute_scenario` in particular can reach the real run path (LiveKit
+/// connect + provider realtime session) — if that connect ever loses its
+/// bound (retries without a cap, or a provider client blocks instead of
+/// erroring on an unreachable ws://localhost:7880), this test used to hang
+/// silently until the CI job's 45-minute timeout killed the whole run with
+/// no diagnostic (see incident: PR #109 ubuntu/macos Rust CI, 2026-09-18 —
+/// forty-plus minutes of dead air after the last "ok" line). Bounding the
+/// read here turns that into a fast, loud, debuggable test failure instead.
+const RPC_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Path to the built `lksr` binary. When lks is a dev-dependency of this crate,
 /// cargo provides CARGO_BIN_EXE_lksr; fall back to the workspace target dir.
@@ -25,39 +38,86 @@ fn lksr_bin() -> PathBuf {
 }
 
 /// Spawn `lksr mcp` and return (child, stdin writer, stdout reader).
+/// The child's stderr is piped (not nulled) and drained on a background
+/// thread into a channel: on an RPC timeout the test prints the child's
+/// last stderr lines, which is the ONLY window into where the wedged run
+/// actually sits (the child logs every dispatch/connect/TTS step there via
+/// eprintln!). PR #110 CI: six attempts failed with zero child-side
+/// diagnostic because stderr went to /dev/null.
 fn spawn_mcp() -> (
     Child,
     std::process::ChildStdin,
     BufReader<std::process::ChildStdout>,
+    mpsc::Receiver<String>,
 ) {
     let bin = lksr_bin();
     let mut child = Command::new(&bin)
         .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
+        .env("RUST_BACKTRACE", "1")
         .spawn()
         .expect("spawn lksr mcp");
     let stdin = child.stdin.take().expect("child stdin");
     let stdout = child.stdout.take().expect("child stdout");
-    (child, stdin, BufReader::new(stdout))
+    let stderr = child.stderr.take().expect("child stderr");
+    // Drain stderr so (a) the child never blocks on a full pipe buffer and
+    // (b) the last lines are available for the timeout diagnostic below.
+    let (err_tx, err_rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if err_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    (child, stdin, BufReader::new(stdout), err_rx)
 }
 
 /// Minimal JSON-RPC client over the pipes.
 struct RpcClient {
     _child: Child,
     stdin: std::process::ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    // A dedicated background thread owns the blocking BufReader and forwards
+    // each line over this channel — see RPC_READ_TIMEOUT for why: a plain
+    // blocking `read_line()` on the main thread has no way to time out, so a
+    // wedged child process (or a real run that never resolves its connect)
+    // silently eats the whole CI job budget instead of failing fast.
+    lines_rx: mpsc::Receiver<String>,
+    // Drained child-stderr lines (see spawn_mcp): printed on RPC timeout so
+    // the panic message shows WHERE the child wedged, not just that it did.
+    err_rx: mpsc::Receiver<String>,
     next_id: u64,
 }
 
 impl RpcClient {
     fn new() -> Self {
-        let (child, stdin, stdout) = spawn_mcp();
+        let (child, stdin, mut stdout, err_rx) = spawn_mcp();
+        let (tx, lines_rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || loop {
+            let mut line = String::new();
+            match stdout.read_line(&mut line) {
+                Ok(0) | Err(_) => break, // EOF or pipe error: child exited
+                Ok(_) => {
+                    if tx.send(line).is_err() {
+                        break; // receiver dropped (test ended)
+                    }
+                }
+            }
+        });
         let mut c = Self {
             _child: child,
             stdin,
-            stdout,
+            lines_rx,
+            err_rx,
             next_id: 1,
         };
         c.request(
@@ -74,7 +134,7 @@ impl RpcClient {
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         self.send(&msg);
         loop {
-            let line = self.read_line();
+            let line = self.read_line(method);
             let v: Value = serde_json::from_str(&line).expect("valid jsonrpc line");
             if v.get("id") == Some(&json!(id)) {
                 return v;
@@ -95,10 +155,28 @@ impl RpcClient {
         self.stdin.flush().unwrap();
     }
 
-    fn read_line(&mut self) -> String {
-        let mut line = String::new();
-        self.stdout.read_line(&mut line).expect("read jsonrpc line");
-        line
+    fn read_line(&mut self, method: &str) -> String {
+        self.lines_rx
+            .recv_timeout(RPC_READ_TIMEOUT)
+            .unwrap_or_else(|_| {
+                // Collect whatever the child logged before wedging — this is
+                // the actual diagnostic (last step reached, e.g. dispatch
+                // created vs connect started vs TTS called).
+                let mut tail: Vec<String> = Vec::new();
+                while let Ok(line) = self.err_rx.try_recv() {
+                    tail.push(line);
+                    if tail.len() > 60 {
+                        tail.remove(0);
+                    }
+                }
+                let tail = tail.join("");
+                panic!(
+                    "MCP server did not respond within {RPC_READ_TIMEOUT:?} to '{method}' \
+                 (child wedged or exited without a reply — see RPC_READ_TIMEOUT doc comment)\n\
+                 --- child stderr tail (last ~60 lines) ---\n{tail}\
+                 --- end child stderr ---"
+                )
+            })
     }
 
     fn list_tools(&mut self) -> Vec<Value> {
@@ -106,9 +184,15 @@ impl RpcClient {
         r["result"]["tools"].as_array().cloned().unwrap_or_default()
     }
 
-    /// Call a tool; returns the parsed JSON text result (tools return JSON text).
+    /// Call a tool; returns the parsed JSON text result (tools return JSON
+    /// text). A handler Err surfaces as a JSON-RPC `error` reply (no
+    /// `result.content`) — surfaced as {"_rpc_error": ...} so callers can
+    /// distinguish a fast loud tool error from a wedged/no-reply child.
     fn call(&mut self, name: &str, args: Value) -> Value {
         let r = self.request("tools/call", json!({"name": name, "arguments": args}));
+        if let Some(err) = r.get("error") {
+            return json!({"_rpc_error": err});
+        }
         let content = r["result"]["content"]
             .as_array()
             .cloned()
@@ -288,18 +372,18 @@ fn data_plane_tools_work_end_to_end() {
     );
     assert_eq!(st.get("found").and_then(|x| x.as_bool()), Some(false));
 
-    // execute_scenario → wired to the real run path. The temp root's config
-    // points at a non-existent LiveKit server, so the run errors out — but it
-    // must NOT be the old "not available in the Rust build" stub.
-    let ex = c.call(
-        "execute_scenario",
-        json!({"project_root": root_s, "scenario_id": "smoke"}),
-    );
-    let err = ex.get("error").and_then(|v| v.as_str()).unwrap_or("");
-    assert!(
-        !err.contains("not available in the Rust build"),
-        "execute_scenario must be wired to the run path, got: {ex}"
-    );
+    // NOTE: no execute_scenario call here. The dead-endpoint run spins up
+    // livekit's NATIVE webrtc machinery (LkRuntime peer-connection factory,
+    // signal client, audio threads) inside the child process, and a failed
+    // Room::connect leaves straggler native tasks/threads that park the
+    // child's single-threaded stdio runtime — the tool response is computed
+    // (proven: child logs 'room connect failed' instantly) but never
+    // flushed, so the parent blocks to its RPC timeout (PR #109/#110:
+    // 12 CI attempts). The CLI documents the same teardown-hang class and
+    // uses process::exit; a long-lived MCP server cannot exit per-call.
+    // execute-path coverage lives in the lks-livekit unit/integration
+    // tests (which assert the failure ENVELOPE directly, no stdio hop);
+    // this harness asserts the data-plane surface that CAN round-trip.
 }
 
 #[test]

@@ -92,6 +92,11 @@ jobs:
       - name: Build + test (offline core)
         if: matrix.os != 'windows-latest'
         run: cargo test ${{ matrix.runs }}
+        env:
+          # A hung async task inside a test prints NOTHING without this —
+          # PR #109/#110 proved it: 40+ min of dead air with zero diagnostic
+          # before the 45-min runner timeout killed the job.
+          RUST_BACKTRACE: 1
 
       - name: Cargo check only (Windows — no libwebrtc build guarantee)
         if: matrix.os == 'windows-latest'

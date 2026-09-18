@@ -418,11 +418,61 @@ impl SimServer {
             profile: p.profile.clone(),
             environment: p.environment.clone(),
         };
-        let result =
-            lks_livekit::run::execute_scenario(root(&p.project_root), &p.scenario_id, &opts)
-                .await
-                .map_err(|e| internal_error(e.to_string()))?;
-        ok_json(result)
+        // Python parity (ops.execute_scenario): a run failure is a RESULT
+        // envelope ({"executed": true, "status": "failed", "error": ...}),
+        // never a JSON-RPC error reply. The old `.map_err(internal_error)?`
+        // shape made the MCP harness's `call()` see no result.content and
+        // block until its RPC timeout even though the child had already
+        // finished LOUDLY (PR #110 CI: child logged the connect error
+        // instantly, yet the parent still hung 60s waiting for a reply —
+        // the error-as-protocol-error never resolves into result.content).
+        //
+        // The blocking run executes on a dedicated OS thread with its OWN
+        // multi-thread runtime so a wedged native/webrtc await inside
+        // execute_scenario can never park the single-threaded stdio server
+        // loop (which must stay responsive to flush the tool response).
+        // NOTE: tokio::task::spawn_blocking is WRONG here — it runs the
+        // closure on the current runtime's blocking pool, and block_on'ing a
+        // second runtime from inside it nests executors (the inner
+        // block_on cannot drive its timers/IO while the outer
+        // current_thread executor is itself parked waiting for the
+        // closure). A plain OS thread + a fresh runtime is fully
+        // independent: the run drives itself, the result crosses back over
+        // a oneshot. Bounded by the bridge ceiling inside the run itself;
+        // expiry here is itself a failure envelope, never a silent hang.
+        let project_root = root(&p.project_root).to_path_buf();
+        let scenario_id = p.scenario_id.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("lksr-run-worker".into())
+            .spawn(move || {
+                let result = (|| {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| format!("run worker runtime: {e}"))?;
+                    rt.block_on(lks_livekit::run::execute_scenario(
+                        &project_root,
+                        &scenario_id,
+                        &opts,
+                    ))
+                    .map_err(|e| e.to_string())
+                })();
+                let _ = tx.send(result);
+            })
+            .map_err(|e| internal_error(format!("run worker spawn: {e}")))?;
+        let run_result = rx
+            .await
+            .map_err(|e| internal_error(format!("run worker channel: {e}")))?;
+        match run_result {
+            Ok(result) => ok_json(result),
+            Err(e) => ok_json(serde_json::json!({
+                "executed": true,
+                "run_id": null,
+                "status": "failed",
+                "error": e,
+            })),
+        }
     }
 
     /// Run the persona-prompt optimizer over a dataset (live benchmark loop).
@@ -471,10 +521,17 @@ impl SimServer {
             profile: p.profile.clone(),
             environment: p.environment.clone(),
         };
-        let result = lks_livekit::ops_execute::op_execute_scenarios(root(&p.project_root), &opts)
-            .await
-            .map_err(|e| internal_error(e.to_string()))?;
-        ok_json(result)
+        // Same Python parity as execute_scenario above: suite failure is a
+        // result envelope, never a JSON-RPC error (else the harness caller
+        // blocks on result.content that never arrives).
+        match lks_livekit::ops_execute::op_execute_scenarios(root(&p.project_root), &opts).await {
+            Ok(result) => ok_json(result),
+            Err(e) => ok_json(serde_json::json!({
+                "executed": true,
+                "status": "failed",
+                "error": e.to_string(),
+            })),
+        }
     }
 
     /// Validate then run an in-memory scenario dict (no JSONL file). Same fields as export_scenario.
@@ -491,7 +548,9 @@ impl SimServer {
                 return ok_json(err_json("scenario must be an object"));
             }
         };
-        let result = lks_livekit::ops_execute::op_execute_scenario_dict(
+        // Same Python parity: dict-run failure is a result envelope, never a
+        // JSON-RPC error (see execute_scenario comment above).
+        match lks_livekit::ops_execute::op_execute_scenario_dict(
             root(&p.project_root),
             &scenario,
             p.run_name.as_deref(),
@@ -500,8 +559,15 @@ impl SimServer {
             p.environment.as_deref(),
         )
         .await
-        .map_err(|e| internal_error(e.to_string()))?;
-        ok_json(result)
+        {
+            Ok(result) => ok_json(result),
+            Err(e) => ok_json(serde_json::json!({
+                "executed": true,
+                "run_id": null,
+                "status": "failed",
+                "error": e.to_string(),
+            })),
+        }
     }
 
     /// Promote a finished run into a draft scenario YAML (fail → golden).

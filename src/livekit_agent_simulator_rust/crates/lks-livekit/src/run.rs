@@ -1033,7 +1033,24 @@ pub async fn execute_scenario_parsed(
     };
 
     // The slice ends on the bridge's internal cap (agent hangup later).
-    let run_result = bridge_future.await;
+    // Outer ceiling on the WHOLE bridge future: any single wedged await
+    // inside the bridge (room connect, dispatch HTTP, publish, TTS, cue
+    // channel, event pump — bounded individually, but a NEW unbounded site
+    // can appear with any commit) must not park the run forever. The bound
+    // is the scenario timeout + headroom for finalize, so a genuinely slow
+    // (not wedged) run still completes; a wedged one fails loud with the
+    // elapsed time in the error instead of dead air to the CI runner
+    // timeout (PR #109/#110: MCP harness execute_scenario hung 40m→60s
+    // across 9 CI attempts while each individual site looked bounded).
+    let bridge_ceiling = std::time::Duration::from_secs((run_spec.timeout_s.max(30) + 60) as u64);
+    let run_result = match tokio::time::timeout(bridge_ceiling, bridge_future).await {
+        Ok(r) => r,
+        Err(_) => Err(lks_core::errors::RunError(format!(
+            "bridge run exceeded {bridge_ceiling:?} ceiling (scenario timeout {}s + 60s headroom) — \
+             a bridge-internal await is wedged; see run events for the last completed step",
+            run_spec.timeout_s,
+        ))),
+    };
     if let Some(t) = script_task {
         t.abort();
     }
