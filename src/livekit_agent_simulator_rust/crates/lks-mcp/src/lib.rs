@@ -427,28 +427,43 @@ impl SimServer {
         // instantly, yet the parent still hung 60s waiting for a reply —
         // the error-as-protocol-error never resolves into result.content).
         //
-        // The blocking run executes on a dedicated multi-thread worker so a
-        // wedged native/webrtc await inside execute_scenario can never park
-        // the single-threaded stdio server loop (which must stay responsive
-        // to flush the tool response). Bounded by the bridge ceiling inside
-        // the run itself plus headroom here; expiry is itself a failure
-        // envelope, never a silent hang.
+        // The blocking run executes on a dedicated OS thread with its OWN
+        // multi-thread runtime so a wedged native/webrtc await inside
+        // execute_scenario can never park the single-threaded stdio server
+        // loop (which must stay responsive to flush the tool response).
+        // NOTE: tokio::task::spawn_blocking is WRONG here — it runs the
+        // closure on the current runtime's blocking pool, and block_on'ing a
+        // second runtime from inside it nests executors (the inner
+        // block_on cannot drive its timers/IO while the outer
+        // current_thread executor is itself parked waiting for the
+        // closure). A plain OS thread + a fresh runtime is fully
+        // independent: the run drives itself, the result crosses back over
+        // a oneshot. Bounded by the bridge ceiling inside the run itself;
+        // expiry here is itself a failure envelope, never a silent hang.
         let project_root = root(&p.project_root).to_path_buf();
         let scenario_id = p.scenario_id.clone();
-        let run_result = tokio::task::spawn_blocking(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| format!("run worker runtime: {e}"))?;
-            rt.block_on(lks_livekit::run::execute_scenario(
-                &project_root,
-                &scenario_id,
-                &opts,
-            ))
-            .map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| internal_error(format!("run worker join: {e}")))?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("lksr-run-worker".into())
+            .spawn(move || {
+                let result = (|| {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| format!("run worker runtime: {e}"))?;
+                    rt.block_on(lks_livekit::run::execute_scenario(
+                        &project_root,
+                        &scenario_id,
+                        &opts,
+                    ))
+                    .map_err(|e| e.to_string())
+                })();
+                let _ = tx.send(result);
+            })
+            .map_err(|e| internal_error(format!("run worker spawn: {e}")))?;
+        let run_result = rx
+            .await
+            .map_err(|e| internal_error(format!("run worker channel: {e}")))?;
         match run_result {
             Ok(result) => ok_json(result),
             Err(e) => ok_json(serde_json::json!({
