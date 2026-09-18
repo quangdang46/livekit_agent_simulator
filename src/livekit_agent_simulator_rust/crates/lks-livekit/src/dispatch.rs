@@ -53,16 +53,32 @@ pub async fn wait_for_agent_join(
     let timeout_ms = cfg.agent_join_timeout_ms.max(1);
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
     loop {
-        match client.list_participants(room_name).await {
-            Ok(resp) => {
+        // Same dead-endpoint rule as create_dispatch above: each HTTP poll
+        // is bounded (15s) so an unreachable server API fails fast instead
+        // of parking the whole run on a single .await (PR #110 CI:
+        // harness execute_scenario hung >60s past room-connect + dispatch
+        // timeouts, here in the list_participants loop with no server at
+        // ws://localhost:7880).
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            client.list_participants(room_name),
+        )
+        .await
+        {
+            Ok(Ok(resp)) => {
                 for p in resp {
                     if p.identity.starts_with("agent-") {
                         return Ok(p.identity);
                     }
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 return Err(RunError(format!("wait_for_agent list_participants: {e}")));
+            }
+            Err(_) => {
+                return Err(RunError(format!(
+                    "wait_for_agent list_participants timed out after 15s to {api_url}"
+                )));
             }
         }
         if std::time::Instant::now() > deadline {
