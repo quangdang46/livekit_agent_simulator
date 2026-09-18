@@ -5,6 +5,7 @@
 //! bridge. Dispatch (AgentDispatchClient) lives in `dispatch.rs`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use livekit::prelude::*;
 use livekit_data_stream::api::StreamReader;
@@ -83,6 +84,15 @@ const TOPIC_AGENT_SESSION: &str = "lk.agent.session";
 const ATTR_TRANSCRIPTION_FINAL: &str = "lk.transcription_final";
 const ATTR_SEGMENT_ID: &str = "lk.segment_id";
 
+/// Hard ceiling on `Room::connect` — the SDK's connect has no built-in
+/// timeout, and against a dead endpoint (e.g. `ws://localhost:7880` with no
+/// server, as used by the MCP harness temp configs) it can block effectively
+/// forever (incident: PR #109 ubuntu/macos Rust CI, 2026-09-18 — 40+ minutes
+/// of dead air inside the MCP harness's `execute_scenario`, killing the whole
+/// job at the 45-minute runner timeout with no diagnostic). Bounded here so
+/// a bad endpoint is a fast, loud connect error instead.
+pub const ROOM_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Connect to a LiveKit room and return (room handle, event receiver).
 pub async fn connect_room(
     url: &str,
@@ -90,9 +100,17 @@ pub async fn connect_room(
     _room_name: &str,
     observe_gate: RoomObserveGate,
 ) -> Result<(Arc<Room>, broadcast::Receiver<SimRoomEvent>), RunError> {
-    let (room, mut events) = Room::connect(url, token, RoomOptions::default())
-        .await
-        .map_err(|e| RunError(format!("room connect failed: {e}")))?;
+    let (room, mut events) = tokio::time::timeout(
+        ROOM_CONNECT_TIMEOUT,
+        Room::connect(url, token, RoomOptions::default()),
+    )
+    .await
+    .map_err(|_| {
+        RunError(format!(
+            "room connect timed out after {ROOM_CONNECT_TIMEOUT:?} to {url}"
+        ))
+    })?
+    .map_err(|e| RunError(format!("room connect failed: {e}")))?;
     let room = Arc::new(room);
 
     let (tx, rx) = broadcast::channel(256);

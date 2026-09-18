@@ -8,6 +8,19 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// Max time to wait for a single JSON-RPC line from the child's stdout.
+/// `execute_scenario` in particular can reach the real run path (LiveKit
+/// connect + provider realtime session) — if that connect ever loses its
+/// bound (retries without a cap, or a provider client blocks instead of
+/// erroring on an unreachable ws://localhost:7880), this test used to hang
+/// silently until the CI job's 45-minute timeout killed the whole run with
+/// no diagnostic (see incident: PR #109 ubuntu/macos Rust CI, 2026-09-18 —
+/// forty-plus minutes of dead air after the last "ok" line). Bounding the
+/// read here turns that into a fast, loud, debuggable test failure instead.
+const RPC_READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Path to the built `lksr` binary. When lks is a dev-dependency of this crate,
 /// cargo provides CARGO_BIN_EXE_lksr; fall back to the workspace target dir.
@@ -47,17 +60,34 @@ fn spawn_mcp() -> (
 struct RpcClient {
     _child: Child,
     stdin: std::process::ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    // A dedicated background thread owns the blocking BufReader and forwards
+    // each line over this channel — see RPC_READ_TIMEOUT for why: a plain
+    // blocking `read_line()` on the main thread has no way to time out, so a
+    // wedged child process (or a real run that never resolves its connect)
+    // silently eats the whole CI job budget instead of failing fast.
+    lines_rx: mpsc::Receiver<String>,
     next_id: u64,
 }
 
 impl RpcClient {
     fn new() -> Self {
-        let (child, stdin, stdout) = spawn_mcp();
+        let (child, stdin, mut stdout) = spawn_mcp();
+        let (tx, lines_rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || loop {
+            let mut line = String::new();
+            match stdout.read_line(&mut line) {
+                Ok(0) | Err(_) => break, // EOF or pipe error: child exited
+                Ok(_) => {
+                    if tx.send(line).is_err() {
+                        break; // receiver dropped (test ended)
+                    }
+                }
+            }
+        });
         let mut c = Self {
             _child: child,
             stdin,
-            stdout,
+            lines_rx,
             next_id: 1,
         };
         c.request(
@@ -74,7 +104,7 @@ impl RpcClient {
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         self.send(&msg);
         loop {
-            let line = self.read_line();
+            let line = self.read_line(method);
             let v: Value = serde_json::from_str(&line).expect("valid jsonrpc line");
             if v.get("id") == Some(&json!(id)) {
                 return v;
@@ -95,10 +125,15 @@ impl RpcClient {
         self.stdin.flush().unwrap();
     }
 
-    fn read_line(&mut self) -> String {
-        let mut line = String::new();
-        self.stdout.read_line(&mut line).expect("read jsonrpc line");
-        line
+    fn read_line(&mut self, method: &str) -> String {
+        self.lines_rx
+            .recv_timeout(RPC_READ_TIMEOUT)
+            .unwrap_or_else(|_| {
+                panic!(
+                    "MCP server did not respond within {RPC_READ_TIMEOUT:?} to '{method}' \
+                 (child wedged or exited without a reply — see RPC_READ_TIMEOUT doc comment)"
+                )
+            })
     }
 
     fn list_tools(&mut self) -> Vec<Value> {
