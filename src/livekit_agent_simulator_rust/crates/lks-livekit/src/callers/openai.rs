@@ -1903,11 +1903,23 @@ pub async fn publish_mic_shared(
     // go — the agent hears nothing and the run sits until the slice cap
     // (run 001-final-lksr: ambient bed fired, then 300s of silence). A loud
     // error here fails fast instead.
+    //
+    // Bounded (15s, lazy future — same rule as connect_room): the SDK's
+    // publish waits on server-side track negotiation (add_track +
+    // create_sender round-trips) with no timeout of its own. Against a
+    // half-dead connection (signal up, media/negotiation stalled) this
+    // parks forever — PR #110, 14th attempt: room connect SUCCEEDED
+    // (refused-error gone, connect bound held) yet the run still never
+    // resolved; publish is the next unbounded await in the path.
     let room = room.clone();
-    room.local_participant()
-        .publish_track(LocalTrack::Audio(track), options)
-        .await
-        .map_err(|e| RunError(format!("mic publish failed: {e}")))?;
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        room.local_participant()
+            .publish_track(LocalTrack::Audio(track), options)
+            .await
+    })
+    .await
+    .map_err(|_| RunError("mic publish timed out after 15s (track negotiation stalled)".into()))?
+    .map_err(|e| RunError(format!("mic publish failed: {e}")))?;
     Ok(source)
 }
 
