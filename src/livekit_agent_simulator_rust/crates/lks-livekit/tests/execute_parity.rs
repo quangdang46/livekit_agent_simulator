@@ -118,7 +118,15 @@ fn execute_options_defaults() {
 /// Bounded at 150s (15s room + 15s dispatch + 15s list_participants +
 /// bridge ceiling headroom); the pre-fix shape hung past the 45-minute
 /// runner timeout, so any regression is unmistakable.
-#[tokio::test]
+///
+/// NOTE: multi_thread flavor is REQUIRED here, not optional. The run path
+/// awaits livekit's native webrtc machinery, whose straggler tasks must be
+/// polled by a *different* worker than the one parked on the outer future:
+/// on #[tokio::test]'s default current_thread runtime the executor has a
+/// single thread, and a wedged native await starves the very timeout meant
+/// to bound it (PR #110, 13th attempt: 150s outer timeout never fired).
+/// This flavor requirement IS the regression mechanism, not trivia.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dead_endpoint_fails_fast_as_envelope() {
     let dir = tmp_root();
     // Scaffold a VALID scenario so the run reaches the bridge (not the
