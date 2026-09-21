@@ -2996,10 +2996,7 @@ mod parity_tests {
         // goodbye — must not classify as end (run 080 scoping note).
         let contract = test_contract("arrange_visit");
         let v = super::RuleBasedSemanticVerifier;
-        let observed = v.classify_inherent(
-            "I need assistance scheduling a visit",
-            &contract,
-        );
+        let observed = v.classify_inherent("I need assistance scheduling a visit", &contract);
         assert_ne!(observed.act, "end");
     }
 
@@ -3071,12 +3068,11 @@ mod parity_tests {
         // + test_agent_gone_mid_behavior_ends_by_agent_not_timeout intent:
         // the gone latch starts false and flips on agent disconnect /
         // room disconnect, and never on unrelated participants.
-        let mut obs = super::super::observer::Observer::new(
-            super::super::observer::ObserverConfig {
+        let mut obs =
+            super::super::observer::Observer::new(super::super::observer::ObserverConfig {
                 agent_identity: "agent-1".to_string(),
                 ..Default::default()
-            },
-        );
+            });
         assert!(!obs.is_agent_gone());
         obs.on_agent_participant_disconnected("someone-else");
         assert!(!obs.is_agent_gone());

@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-sim-proto"
-version = "0.1.0-rust"
+version = "0.1.1-rust"
 dependencies = [
  "serde_json",
 ]
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "lks"
-version = "0.1.0-rust"
+version = "0.1.1-rust"
 dependencies = [
  "anyhow",
  "clap",
@@ -2022,7 +2022,7 @@ dependencies = [
 
 [[package]]
 name = "lks-core"
-version = "0.1.0-rust"
+version = "0.1.1-rust"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "lks-livekit"
-version = "0.1.0-rust"
+version = "0.1.1-rust"
 dependencies = [
  "agent-sim-proto",
  "anyhow",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "lks-mcp"
-version = "0.1.0-rust"
+version = "0.1.1-rust"
 dependencies = [
  "anyhow",
  "lks",
@@ -2092,14 +2092,14 @@ dependencies = [
 
 [[package]]
 name = "lks-plugins"
-version = "0.1.0-rust"
+version = "0.1.1-rust"
 dependencies = [
  "lks-core",
 ]
 
 [[package]]
 name = "lks-web"
-version = "0.1.0-rust"
+version = "0.1.1-rust"
 dependencies = [
  "anyhow",
  "axum",

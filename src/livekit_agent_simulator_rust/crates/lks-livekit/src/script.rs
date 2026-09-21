@@ -1067,8 +1067,7 @@ impl ScriptRuntime {
             // closing agent reply satisfies the end behavior; non-closing
             // replies (questions, new info, forward offers) still loop
             // the budget as before.
-            if lks_core::caller_contract::is_end_behavior_closing_reply(&behavior, &agent_text)
-            {
+            if lks_core::caller_contract::is_end_behavior_closing_reply(&behavior, &agent_text) {
                 {
                     let mut w = self.writer.lock().await;
                     w.emit(
