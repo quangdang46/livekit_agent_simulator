@@ -456,7 +456,63 @@
             "act": "arrange_visit",
             "target": null,
             "confidence_min": 0.5
+         },
+
+      {
+         "id": "act-end-thanks-for-booking-pass",
+         "category": "ACT",
+         "contract": {
+            "behavior": "end",
+            "target": null,
+            "constraints": {
+               "max_turns": 5,
+               "max_words": 20,
+               "must_not": [
+                  "end_call"
+               ]
+            }
+         },
+         "candidate_claim": {
+            "act": "end",
+            "target": null
+         },
+         "utterance": "Thank you for helping me schedule the test drive!",
+         "expected": {
+            "verdict": "valid",
+            "reason": null,
+            "act": "end",
+            "target": null,
+            "confidence_min": 0.5
          }
+      },
+      {
+         "id": "act-end-thanks-confirm-booking-pass",
+         "category": "ACT",
+         "contract": {
+            "behavior": "end",
+            "target": null,
+            "constraints": {
+               "max_turns": 5,
+               "max_words": 20,
+               "must_not": [
+                  "end_call"
+               ]
+            }
+         },
+         "candidate_claim": {
+            "act": "end",
+            "target": null
+         },
+         "utterance": "Thank you for confirming the test drive at 10 a.m. tomorrow!",
+         "expected": {
+            "verdict": "valid",
+            "reason": null,
+            "act": "end",
+            "target": null,
+            "confidence_min": 0.5
+         }
+      }
+
       }
    ]
 }

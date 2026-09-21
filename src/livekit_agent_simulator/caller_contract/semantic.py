@@ -249,8 +249,23 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
     # behaviors because no other behavior's generator output ends with a
     # bare thank-you (and the contract-behavior tie-break prefers the
     # contract act on ties).
+    # Runs 078/079 (dealer-live-full, openai caller): the generator thanked
+    # with the visit noun attached — "Thank you for helping me schedule the
+    # test drive!" — and arrange_visit outscored end 2-1 ("test drive" +
+    # "schedule" vs "thank you") → SEMANTIC_ACT_MISMATCH ×3. A thank-you
+    # that ALSO names the booking is still a closing (the caller is not
+    # asking to schedule anymore — arrange_visit already satisfied two
+    # turns earlier), so the end tier owns the same booking nouns. The
+    # count race is won by specificity: on an end contract these
+    # thanks-for-booking phrases outscore arrange_visit's generic nouns.
     "end": ("goodbye", "bye", "thanks, that's all", "have a good day",
-            "thank you", "thanks for your help", "thanks for the help"),
+            "thank you", "thanks for your help", "thanks for the help",
+            "thank you for helping me schedule",
+            "thank you for your help with scheduling",
+            "thank you for scheduling",
+            "thanks for scheduling",
+            "thank you for confirming the test drive",
+            "thank you for helping me schedule the test drive"),
 }
 
 # Confidence assigned when N keyword hits are found for the winning act.
