@@ -304,10 +304,7 @@ Python `lks` stays the default install; pass `--rust` / `-Rust` for the Rust bin
 curl -fsSL "https://github.com/quangdang46/livekit_agent_simulator/raw/main/install.sh" | bash -s -- --rust --verify
 ```
 
-```powershell
-irm "https://github.com/quangdang46/livekit_agent_simulator/raw/main/install.ps1" -OutFile install.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Rust -Verify
-```
+> **lksr is Linux/macOS-only.** `webrtc-sys` has no working Windows prebuilt, so there is no `lksr.exe` release asset. On Windows use Python `lks` (default install).
 
 ```bash
 cd src/livekit_agent_simulator_rust && cargo build -p lks && cargo test --workspace   # from source

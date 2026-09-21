@@ -24,11 +24,13 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: lksr-linux-x86_64.tar.gz
-          # Windows: webrtc-sys C++ may fail on this runner the same way
-          # macos-x86_64 did — unverified locally, CI will tell us.
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            asset: lksr-windows-x64.tar.gz
+          # Windows: NOT shipped — webrtc-sys v0.3.42 (via livekit 0.8.3)
+          # prebuilt win-x64-release-webrtc-51ef663 is missing its abseil
+          # headers on the Windows include path (fatal C1083
+          # absl/base/policy_checks.h, verified 2026-09-21 on
+          # windows-latest/MSVC 14.51). lksr is Linux/macOS-only until the
+          # livekit/webrtc-sys dependency is upgraded to a revision with a
+          # working Windows prebuilt. Windows users: use Python `lks`.
     defaults:
       run:
         working-directory: src/livekit_agent_simulator_rust

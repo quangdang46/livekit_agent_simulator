@@ -116,11 +116,10 @@ function Get-PortableAssetName {
 }
 
 function Get-RustAssetName {
-    $arch = $env:PROCESSOR_ARCHITECTURE
-    switch -Regex ($arch) {
-        '^(ARM64|arm64)$' { return "lksr-windows-arm64.tar.gz" }
-        default { return "lksr-windows-x64.tar.gz" }
-    }
+    # lksr is Linux/macOS-only: webrtc-sys v0.3.42 has no working Windows
+    # prebuilt (fatal C1083 absl headers, 2026-09-21). Fail fast with a
+    # clear message instead of a confusing "no asset" error.
+    throw "lksr has no Windows build (Linux/macOS only). On Windows use Python lks: install.ps1 -Verify (no -Rust)."
 }
 
 function Merge-JsonIntoFile {
