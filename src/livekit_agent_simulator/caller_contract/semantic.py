@@ -251,8 +251,13 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
                       # request; narrow enough that no other tier owns them
                       # (provide's patterns are "i want"/"i'd like to"/
                       # "i'm calling about", none of which overlap).
-                      "my name is", "phone number is", "contact number",
-                      "reach me at", "you can reach me"),
+                      # Run 089: "My FULL name is Alex Johnson." — the
+                      # literal "my name is" adjacency breaks on the
+                      # inserted adjective. "name is" (drop "my") still
+                      # cannot hijack elsewhere: no other tier's generator
+                      # output states "X is a name" outside a booking flow.
+                      "my name is", "name is", "phone number is",
+                      "contact number", "reach me at", "you can reach me"),
     # Live run 007 (dealer-live-full): the generator's natural goodbye —
     # "Thank you for your help!" — scored 0 hits (no goodbye/bye/thanks-
     # that's-all) → LOW_CONFIDENCE ×3. "thank you" + "thanks" mark polite
