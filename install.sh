@@ -2,7 +2,7 @@
 # Install lks from GitHub Releases (CI portable pack).
 # No uv/pip/build on the user machine - download zip + PATH.
 #
-#   curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/releases/download/v0.1.0/install.sh" | bash
+#   curl -fsSL "https://github.com/quangdang46/livekit_agent_simulator/releases/download/v0.1.0/install.sh" | bash
 #
 set -euo pipefail
 umask 022
@@ -11,7 +11,7 @@ BINARY_NAME="lks"
 MCP_SERVER_NAME="livekit-agent-simulator"
 PKG_NAME="livekit-agent-simulator"
 OWNER="quangdang46"
-REPO="livekit-agent-simulator"
+REPO="livekit_agent_simulator"
 DEST="${DEST:-$HOME/.local/bin}"
 INSTALL_ROOT="${INSTALL_ROOT:-$HOME/.local/share/lks}"
 CURRENT_DIR="$INSTALL_ROOT/current"

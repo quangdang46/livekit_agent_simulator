@@ -86,14 +86,14 @@ If `lks --help` already works, skip §2 install and go to §3 init.
 ### macOS / Linux
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh" \
   | bash -s -- --verify
 ```
 
 Pin a release (recommended for CI / reproducible agent setups):
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh" \
   | bash -s -- --ref v0.1.0 --verify
 ```
 
@@ -120,7 +120,7 @@ lks --help | head -20
 ### Windows PowerShell
 
 ```powershell
-irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+irm "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
 # Optional pin:
 # ... -File "$env:TEMP\lks-install.ps1" -Ref v0.1.0 -Verify
@@ -156,7 +156,7 @@ lks --help | Select-Object -First 20
 ### From source (only if user is developing the simulator package)
 
 ```bash
-git clone https://github.com/quangdang46/livekit-agent-simulator.git
+git clone https://github.com/quangdang46/livekit_agent_simulator.git
 cd livekit-agent-simulator
 uv sync --extra dev
 uv run lks --help
@@ -859,7 +859,7 @@ lks validate inbound-caller-sim --root "$TARGET_ROOT"
 ```
 
 Mode is **only** in scenario `Caller` — never in `config.yaml`.  
-Guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/telephony.md  
+Guide: https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/telephony.md  
 Ops detail: `lks guide` (templates/GUIDE.md).
 
 SIP asserts: `Assert.spec.sip.participant_present` / `dial_answered` / `call_status_any`.
@@ -907,7 +907,7 @@ TARGET_ROOT="$(pwd)"   # change if needed
 
 # 1) Install CLI (skip if already present)
 if ! command -v lks >/dev/null 2>&1; then
-  curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" \
+  curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh" \
     | bash -s -- --verify
   export PATH="$HOME/.local/bin:$PATH"
   hash -r 2>/dev/null || true
@@ -939,7 +939,7 @@ $TARGET_ROOT = (Get-Location).Path   # change if needed
 
 # 1) Install CLI (skip if already present)
 if (-not (Get-Command lks -ErrorAction SilentlyContinue; Get-Command lks -ErrorAction SilentlyContinue)) {
-  irm "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+  irm "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
   powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
   $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
 }
@@ -966,15 +966,15 @@ lks preflight --root $TARGET_ROOT
 
 | Resource | URL |
 |----------|-----|
-| Repo | https://github.com/quangdang46/livekit-agent-simulator |
-| Installer (macOS/Linux) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh |
-| Installer (Windows) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.ps1 |
-| This guide (raw) | https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/docs/guide/installation.md |
+| Repo | https://github.com/quangdang46/livekit_agent_simulator |
+| Installer (macOS/Linux) | https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh |
+| Installer (Windows) | https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.ps1 |
+| This guide (raw) | https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/docs/guide/installation.md |
 | Ops guide | package `lks guide` or `templates/GUIDE.md` (voice, cues, plugins) |
-| Plugins (verify + before_run / after_run) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md |
-| Portability | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md |
-| Telephony (SIP modes) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/telephony.md |
-| Smoke notes | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/smoke-test.md |
+| Plugins (verify + before_run / after_run) | https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/plugins.md |
+| Portability | https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/portability.md |
+| Telephony (SIP modes) | https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/telephony.md |
+| Smoke notes | https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/smoke-test.md |
 | L3 observer design | `docs/plans/PLAN-20260713-lk-agent-session-observer.md` |
 
 When instructions conflict: **this file + `lks guide`** beat outdated blog snippets. Prefer latest release unless the user pins a tag.

@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 
 // ── constants ──────────────────────────────────────────────────────────────
 
-const GITHUB_REPO: &str = "quangdang46/livekit-agent-simulator";
+const GITHUB_REPO: &str = "quangdang46/livekit_agent_simulator";
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 h
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 

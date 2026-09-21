@@ -12,13 +12,13 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 
 | Topic | URL |
 |-------|-----|
-| First-time install + `init` + preflight | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/guide/installation.md |
-| Plugins — verify + before_run / after_run (full API) | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md |
-| Consumer dispatch / data topics / tool patterns | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md |
-| Caller barge / silence / hang-up patterns | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/caller-pattern-plan.md |
-| Package rules for coding agents | https://github.com/quangdang46/livekit-agent-simulator/blob/main/AGENTS.md |
-| Telephony WebRTC / inbound / outbound SIP | https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/telephony.md |
-| WAV cue format | https://github.com/quangdang46/livekit-agent-simulator/blob/main/templates/cues/README.md |
+| First-time install + `init` + preflight | https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/guide/installation.md |
+| Plugins — verify + before_run / after_run (full API) | https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/plugins.md |
+| Consumer dispatch / data topics / tool patterns | https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/portability.md |
+| Caller barge / silence / hang-up patterns | https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/caller-pattern-plan.md |
+| Package rules for coding agents | https://github.com/quangdang46/livekit_agent_simulator/blob/main/AGENTS.md |
+| Telephony WebRTC / inbound / outbound SIP | https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/telephony.md |
+| WAV cue format | https://github.com/quangdang46/livekit_agent_simulator/blob/main/templates/cues/README.md |
 
 ---
 
@@ -34,8 +34,8 @@ Target-only data lives under `<target>/.agent-sim/` (config, scenarios, reports,
 8. If a run fails, promote it to a permanent test: ``scenario-from-run <run-id> --write``, review, add to suite.
 
 ```bash
-# Install once (optional) — full steps: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/guide/installation.md
-# curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit-agent-simulator/main/install.sh?$(date +%s)" | bash
+# Install once (optional) — full steps: https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/guide/installation.md
+# curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh" | bash
 # From anywhere; point --root at the target LiveKit agent repo
 lks guide
 lks init --root /path/to/target   # safe to re-run; does not overwrite existing config/scenarios
@@ -83,7 +83,7 @@ Created by `init`. **Gitignored.** Paste secrets here (no env substitution in v1
 **Opaque dispatch:** `dispatch_metadata` and scenario `Dispatch.spec.metadata` are passed through
 as JSON strings. Core **never** parses consumer keys (e.g. product agent ids). If the agent
 bootstraps from dispatch metadata, set `livekit.dispatch_metadata` or
-per-scenario `Dispatch` — see https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md .
+per-scenario `Dispatch` — see https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/portability.md .
 
 **Telephony modes** (scenario only): `webrtc_sim` (default) · `inbound_sip` · `outbound_human_pickup` · `outbound_sim_callee` · `agent_dials`.
 Templates: `outbound-human-pickup.yaml`, `outbound-callee-sim.yaml`, `inbound-caller-sim.yaml`. Full guide: `docs/telephony.md`.
@@ -191,7 +191,7 @@ observe:
   lk_transcription: true
   lk_agent_session: true # default; automatic for LiveKit Agents SDK sessions
   # Optional fallback for non-SDK custom events — see portability.md:
-  # https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md
+  # https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/portability.md
   # data_topics: ["myapp.flow"]
   # tool_event_patterns: []
 ```
@@ -300,7 +300,7 @@ Three silence concepts — do not mix them:
   - Example: `{"id":"no_transfer","type":"no_unplanned_handoff"}`
 - **Script action `hang_up`** → sim caller disconnects from room (cúp máy thật)
   - Example: `{"id":"hangup","action":"hang_up","trigger":"time","delay_ms":5000,"say":"Thôi em cúp đây"}`  
-- See https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/caller-pattern-plan.md and `templates/examples/character-impatient.yaml` (shipped in package after `init`)
+- See https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/caller-pattern-plan.md and `templates/examples/character-impatient.yaml` (shipped in package after `init`)
 
 ### PassCriteria (soft judge)
 
@@ -367,11 +367,11 @@ lks cues --root /path/to/target --resolve builtin:voice.barge_short
 # MCP: list_cues(project_root=…)
 ```
 
-WAV: **PCM16 mono @ 24 kHz**. Prefer `voice.*` for audible barge-in; noise for beds/bursts. Details: https://github.com/quangdang46/livekit-agent-simulator/blob/main/templates/cues/README.md
+WAV: **PCM16 mono @ 24 kHz**. Prefer `voice.*` for audible barge-in; noise for beds/bursts. Details: https://github.com/quangdang46/livekit_agent_simulator/blob/main/templates/cues/README.md
 
 ### Plugins (verify + lifecycle hooks)
 
-Three registration kinds (full API: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md):
+Three registration kinds (full API: https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/plugins.md):
 
 | Kind | When | Purpose |
 |------|------|---------|
@@ -424,7 +424,7 @@ lks plugins --root /path/to/target
 # MCP: list_plugins(project_root=…)
 ```
 
-Ship plugins from an installable package via `[project.entry-points."lks.plugins"]` — see https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/plugins.md
+Ship plugins from an installable package via `[project.entry-points."lks.plugins"]` — see https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/plugins.md
 
 ### Run
 
@@ -539,7 +539,7 @@ SIP asserts:
 ```
 
 Precedence: **scenario `Telephony.*` > config `telephony.*` > built-ins**.  
-Full guide: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/telephony.md
+Full guide: https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/telephony.md
 
 
 ---
@@ -738,8 +738,8 @@ No Node/Vite on the user machine. Player assets ship inside the wheel (built in 
 - **Customize in target** `.agent-sim/` only (config, scenarios, plugins).
 - **No legacy shims** in this package while pre-1.0 — one clear flag name.
 - Prefer `execute` / `execute_scenario` / `execute_scenario_dict` over custom Python runners.
-- Deep package rules + research loop: https://github.com/quangdang46/livekit-agent-simulator/blob/main/AGENTS.md
-- Consumer wiring examples only: https://github.com/quangdang46/livekit-agent-simulator/blob/main/docs/portability.md (load when setting up a target, not for core bugs).
+- Deep package rules + research loop: https://github.com/quangdang46/livekit_agent_simulator/blob/main/AGENTS.md
+- Consumer wiring examples only: https://github.com/quangdang46/livekit_agent_simulator/blob/main/docs/portability.md (load when setting up a target, not for core bugs).
 
 
 ## Machine / AMD-style sim presets (portable)

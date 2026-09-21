@@ -5,7 +5,7 @@
 # NOTE: the unified path is `install.sh --rust` (same logic); this file stays
 # fully working standalone for existing pinned URLs.
 #
-#   curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/releases/download/v0.1.0-rust/install-rust.sh" | bash
+#   curl -fsSL "https://github.com/quangdang46/livekit_agent_simulator/releases/download/v0.1.0-rust/install-rust.sh" | bash
 #   curl -fsSL "…/install-rust.sh" | bash -s -- --verify
 #
 set -euo pipefail
@@ -14,7 +14,7 @@ umask 022
 BINARY_NAME="lksr"
 PKG_NAME="livekit-agent-simulator"
 OWNER="quangdang46"
-REPO="livekit-agent-simulator"
+REPO="livekit_agent_simulator"
 DEST="${DEST:-$HOME/.local/bin}"
 GIT_REF="${LK_SIM_REF:-}"
 QUIET=0

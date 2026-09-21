@@ -37,7 +37,7 @@ from typing import Any
 
 from . import __version__ as _current_version
 
-GITHUB_REPO = "quangdang46/livekit-agent-simulator"
+GITHUB_REPO = "quangdang46/livekit_agent_simulator"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=100"
 CHECK_INTERVAL_SECONDS = 24 * 60 * 60  # 24 h
 REQUEST_TIMEOUT_SECONDS = 5

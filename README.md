@@ -21,7 +21,7 @@ Standalone MCP server + CLI (`lks`). Black-box testing: no imports from the agen
 <h3>Quick Install</h3>
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh" \
   | bash -s -- --verify
 ```
 
@@ -89,7 +89,7 @@ Voice agents fail in ways unit tests never see:
 
 ```bash
 # Install once
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh" \
   | bash -s -- --verify
 
 # In the repo you want to test (agent worker must already be running)
@@ -237,7 +237,7 @@ invariant evidence), [docs/caller-phase-d-acceptance.md](docs/caller-phase-d-acc
 
 ```bash
 # macOS / Linux
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh" \
   | bash -s -- --verify
 ```
 
@@ -301,11 +301,11 @@ See `web/README.md`.
 Python `lks` stays the default install; pass `--rust` / `-Rust` for the Rust binary:
 
 ```bash
-curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/raw/main/install.sh" | bash -s -- --rust --verify
+curl -fsSL "https://github.com/quangdang46/livekit_agent_simulator/raw/main/install.sh" | bash -s -- --rust --verify
 ```
 
 ```powershell
-irm "https://github.com/quangdang46/livekit-agent-simulator/raw/main/install.ps1" -OutFile install.ps1
+irm "https://github.com/quangdang46/livekit_agent_simulator/raw/main/install.ps1" -OutFile install.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Rust -Verify
 ```
 
@@ -619,7 +619,7 @@ lks web --root /path/to/target
 ```bash
 lks mcp   # must be what the host launches
 # or reinstall without --no-mcp
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh?$(date +%s)" \
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/livekit_agent_simulator/main/install.sh" \
   | bash -s -- --verify
 ```
 

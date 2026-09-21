@@ -158,14 +158,14 @@ jobs:
             ### Windows PowerShell
 
             ```powershell
-            irm "https://github.com/quangdang46/livekit-agent-simulator/releases/download/${{ github.ref_name }}/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
+            irm "https://github.com/quangdang46/livekit_agent_simulator/releases/download/${{ github.ref_name }}/install.ps1" -OutFile "$env:TEMP\lks-install.ps1"
             powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\lks-install.ps1" -Verify
             ```
 
             ### macOS / Linux
 
             ```bash
-            curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/releases/download/${{ github.ref_name }}/install.sh" | bash -s -- --verify
+            curl -fsSL "https://github.com/quangdang46/livekit_agent_simulator/releases/download/${{ github.ref_name }}/install.sh" | bash -s -- --verify
             ```
 
             ### Assets

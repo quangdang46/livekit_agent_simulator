@@ -1,7 +1,7 @@
 # Install lks from GitHub Releases (CI portable pack).
 # No uv, no pip, no build on the user machine - download zip + PATH.
 #
-#   irm "https://github.com/quangdang46/livekit-agent-simulator/releases/download/v0.1.0/install.ps1" -OutFile install.ps1
+#   irm "https://github.com/quangdang46/livekit_agent_simulator/releases/download/v0.1.0/install.ps1" -OutFile install.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Verify
 #
 #Requires -Version 5.1
@@ -22,7 +22,7 @@ $BinaryName = "lks"
 $McpServerName = "livekit-agent-simulator"
 $PkgName = "livekit-agent-simulator"
 $Owner = "quangdang46"
-$Repo = "livekit-agent-simulator"
+$Repo = "livekit_agent_simulator"
 # Install root: %LOCALAPPDATA%\lks\current (or %LOCALAPPDATA%\lksr\current with -Rust)
 if ($Rust) {
     $BinaryName = "lksr"
@@ -76,8 +76,14 @@ function Get-LatestReleaseTag {
             }
             return $null
         }
-        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases/latest" -UseBasicParsing
-        if ($rel.tag_name) { return [string]$rel.tag_name }
+        # Python track: newest tag that is NOT a Rust release (v0.1.x = Python,
+        # v*-rust = lksr). Plain /releases/latest returns whichever track
+        # tagged last and breaks the other installer.
+        $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases?per_page=100" -UseBasicParsing
+        foreach ($r in @($rels)) {
+            if ($r.tag_name -notlike "*-rust") { return [string]$r.tag_name }
+        }
+        return $null
     } catch {
         Write-Log "Could not resolve latest release: $_" "WARN"
     }
