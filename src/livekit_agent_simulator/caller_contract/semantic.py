@@ -258,6 +258,16 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
     # turns earlier), so the end tier owns the same booking nouns. The
     # count race is won by specificity: on an end contract these
     # thanks-for-booking phrases outscore arrange_visit's generic nouns.
+    # Runs 080/081 (dealer-live-full, openai caller): the generator keeps
+    # rewording the same thanks — "Thanks for your assistance with the
+    # test drive!", "I appreciate your assistance in scheduling..." — and
+    # each rewording outscores end 2-0 ("test drive" + "scheduling" vs
+    # nothing). Whack-a-mole phrasing coverage cannot win: the SHAPE is
+    # "thanks/appreciate + booking noun", so the end tier owns the shape —
+    # any thanks/appreciation word TOGETHER with a booking noun. Scoped
+    # as PAIRs below (both halves required): bare "thanks" with no
+    # booking noun still scores only the generic tier, and bare booking
+    # nouns ("test drive", "scheduling") match no end pattern alone.
     "end": ("goodbye", "bye", "thanks, that's all", "have a good day",
             "thank you", "thanks for your help", "thanks for the help",
             "thank you for helping me schedule",
@@ -290,6 +300,39 @@ def _split_clauses(utterance: str) -> list[str]:
 # to claim, but "adjustments" + "price" together marks a price-concession
 # proposal (negotiate), beating the "let me know" ask marker on count
 # (run 042). Format: act -> tuple of required-substring tuples.
+# End-tier shape pairs: a thanks/appreciation word + a booking noun TOGETHER
+# marks a thanks-for-booking closing (runs 078-081 class). Either half alone
+# decides nothing (bare "thanks" with no booking noun = generic end tier
+# only; bare booking nouns match no end pattern). Merged into _score_act_hits
+# (not _PAIR_PATTERNS, which is keyed by ACT_PATTERNS act and would collide
+# with the "end" lexical tier).
+_END_SHAPE_PAIRS: tuple[tuple[str, ...], ...] = (
+    ("thank", "test drive"),
+    ("thanks", "test drive"),
+    ("thank you", "test drive"),
+    ("appreciate", "test drive"),
+    ("thank", "scheduling"),
+    ("thanks", "scheduling"),
+    ("thank you", "scheduling"),
+    ("appreciate", "scheduling"),
+    ("thank", "schedule"),
+    ("thanks", "schedule"),
+    ("appreciate", "schedule"),
+    ("thank", "booking"),
+    ("thanks", "booking"),
+    ("appreciate", "booking"),
+    ("thank", "confirming"),
+    ("thanks", "confirming"),
+    ("appreciate", "confirming"),
+    # Run 080 ("I appreciate your assistance with the test drive"):
+    # appreciate + assistance TOGETHER (the thanks verb may attach to the
+    # assistance noun instead of the booking noun). Bare "assistance" with
+    # NO thanks word stays OUT ("I need assistance scheduling a visit" is
+    # a request, not a goodbye — it would tie arrange_visit 1-1).
+    ("appreciate", "assistance"),
+)
+
+
 _PAIR_PATTERNS: dict[str, tuple[tuple[str, ...], ...]] = {
     "ask": (("confirm", "price"),),
     "negotiate": (("adjustments", "price"), ("adjustment", "price")),
@@ -340,6 +383,10 @@ def _score_act_hits(text: str) -> dict[str, int]:
         for pair in _PAIR_PATTERNS.get(act, ()):
             if all(sub in lowered for sub in pair):
                 count += 1
+        if act == "end":
+            for pair in _END_SHAPE_PAIRS:
+                if all(sub in lowered for sub in pair):
+                    count += 1
         if count:
             hits[act] = count
     return hits

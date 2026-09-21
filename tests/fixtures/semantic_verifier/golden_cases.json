@@ -511,6 +511,60 @@
             "target": null,
             "confidence_min": 0.5
          }
+      },
+      {
+         "id": "act-end-thanks-assistance-pass",
+         "category": "ACT",
+         "contract": {
+            "behavior": "end",
+            "target": null,
+            "constraints": {
+               "max_turns": 5,
+               "max_words": 20,
+               "must_not": [
+                  "end_call"
+               ]
+            }
+         },
+         "candidate_claim": {
+            "act": "end",
+            "target": null
+         },
+         "utterance": "Thanks for your assistance with the test drive!",
+         "expected": {
+            "verdict": "valid",
+            "reason": null,
+            "act": "end",
+            "target": null,
+            "confidence_min": 0.5
+         }
+      },
+      {
+         "id": "act-end-appreciate-assistance-pass",
+         "category": "ACT",
+         "contract": {
+            "behavior": "end",
+            "target": null,
+            "constraints": {
+               "max_turns": 5,
+               "max_words": 20,
+               "must_not": [
+                  "end_call"
+               ]
+            }
+         },
+         "candidate_claim": {
+            "act": "end",
+            "target": null
+         },
+         "utterance": "I appreciate your assistance in scheduling the test drive.",
+         "expected": {
+            "verdict": "valid",
+            "reason": null,
+            "act": "end",
+            "target": null,
+            "confidence_min": 0.5
+         }
       }
    ]
 }
