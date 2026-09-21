@@ -565,6 +565,29 @@
             "target": null,
             "confidence_min": 0.5
          }
+      },
+      {
+         "id": "act-arrange-visit-contact-info-pass",
+         "category": "ACT",
+         "contract": {
+            "behavior": "arrange_visit",
+            "target": null,
+            "constraints": {
+               "max_turns": 5
+            }
+         },
+         "candidate_claim": {
+            "act": "arrange_visit",
+            "target": null
+         },
+         "utterance": "My name is Alex, and my phone number is 555-1234.",
+         "expected": {
+            "verdict": "valid",
+            "reason": null,
+            "act": "arrange_visit",
+            "target": null,
+            "confidence_min": 0.5
+         }
       }
    ]
 }

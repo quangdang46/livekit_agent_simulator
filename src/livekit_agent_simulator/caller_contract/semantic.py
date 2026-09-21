@@ -238,7 +238,21 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
                       # visit-specific noun keeps provide/ask from hijacking
                       # (neither owns "test drive" as a pattern).
                       "test drive",
-                      "test drive"),
+                      # Run 085 (dealer-live-full, openai caller): the agent
+                      # asked for name/phone to lock in the booking and the
+                      # generator answers with bare contact info — "My name
+                      # is Alex." / "My name is Alex, and my phone number is
+                      # 555-1234." — scoring ZERO hits in any tier (no verb,
+                      # no visit noun). This is a continuation of the SAME
+                      # arrange_visit behavior (providing the info the agent
+                      # requested to complete it), not a new behavior. "my
+                      # name is" + "phone number is"/"contact number"/"reach
+                      # me at" are specific to answering a booking-contact
+                      # request; narrow enough that no other tier owns them
+                      # (provide's patterns are "i want"/"i'd like to"/
+                      # "i'm calling about", none of which overlap).
+                      "my name is", "phone number is", "contact number",
+                      "reach me at", "you can reach me"),
     # Live run 007 (dealer-live-full): the generator's natural goodbye —
     # "Thank you for your help!" — scored 0 hits (no goodbye/bye/thanks-
     # that's-all) → LOW_CONFIDENCE ×3. "thank you" + "thanks" mark polite
