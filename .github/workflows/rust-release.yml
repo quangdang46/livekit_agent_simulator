@@ -80,13 +80,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      # NOTE: checkout FIRST — its default clean:true wipes untracked dirs,
+      # so downloading artifacts before it deletes dist/ (broke v0.1.0-rust).
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       # Ship the installers alongside the tarballs so pinned-version
       # installer URLs work (e.g. .../releases/download/vX.Y.Z-rust/install.sh).
-      - uses: actions/checkout@v7
       - name: Bundle installers
         shell: bash
         run: cp install.sh install.ps1 install-rust.sh dist/
