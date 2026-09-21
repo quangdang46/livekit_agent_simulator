@@ -13,7 +13,8 @@ param(
     [switch]$Verify,
     [switch]$Uninstall,
     [switch]$Repair,
-    [switch]$Quiet
+    [switch]$Quiet,
+    [switch]$Rust
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,8 +23,13 @@ $McpServerName = "livekit-agent-simulator"
 $PkgName = "livekit-agent-simulator"
 $Owner = "quangdang46"
 $Repo = "livekit-agent-simulator"
-# Install root: %LOCALAPPDATA%\lks\current
-$InstallRoot = Join-Path $env:LOCALAPPDATA "lks"
+# Install root: %LOCALAPPDATA%\lks\current (or %LOCALAPPDATA%\lksr\current with -Rust)
+if ($Rust) {
+    $BinaryName = "lksr"
+    $InstallRoot = Join-Path $env:LOCALAPPDATA "lksr"
+} else {
+    $InstallRoot = Join-Path $env:LOCALAPPDATA "lks"
+}
 $CurrentDir = Join-Path $InstallRoot "current"
 $ShimDir = Join-Path $env:USERPROFILE ".local\bin"
 
@@ -59,6 +65,17 @@ function Ensure-DirOnPath {
 
 function Get-LatestReleaseTag {
     try {
+        # Rust track: pick newest tag ending in -rust (tags are split:
+        # v0.1.x = Python, v*-rust = lksr binary). Plain /releases/latest
+        # would return whichever track was released last and break the
+        # other installer.
+        if ($Rust) {
+            $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases?per_page=100" -UseBasicParsing
+            foreach ($r in @($rels)) {
+                if ($r.tag_name -like "*-rust") { return [string]$r.tag_name }
+            }
+            return $null
+        }
         $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases/latest" -UseBasicParsing
         if ($rel.tag_name) { return [string]$rel.tag_name }
     } catch {
@@ -89,6 +106,14 @@ function Get-PortableAssetName {
     switch -Regex ($arch) {
         '^(ARM64|arm64)$' { return "lks-windows-arm64.zip" }
         default { return "lks-windows-x64.zip" }
+    }
+}
+
+function Get-RustAssetName {
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    switch -Regex ($arch) {
+        '^(ARM64|arm64)$' { return "lksr-windows-arm64.tar.gz" }
+        default { return "lksr-windows-x64.tar.gz" }
     }
 }
 
@@ -320,7 +345,7 @@ function Uninstall-All {
     if (Test-Path $InstallRoot) {
         Remove-Item -Recurse -Force $InstallRoot -ErrorAction SilentlyContinue
     }
-    foreach ($name in @("lks.cmd", "lks-mcp.cmd", "lks", "lks-mcp")) {
+    foreach ($name in @("lks.cmd", "lks-mcp.cmd", "lks", "lks-mcp", "lksr.cmd", "lksr.exe")) {
         $p = Join-Path $ShimDir $name
         if (Test-Path $p) { Remove-Item -Force $p -ErrorAction SilentlyContinue }
     }
@@ -462,6 +487,82 @@ exit /b %ERRORLEVEL%
     try { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue } catch {}
 }
 
+function Install-RustFromRelease {
+    param([string]$Ref)
+
+    if ($Ref -match '^[0-9]+\.[0-9]+') { $tag = "v$Ref" }
+    elseif ($Ref -match '^v[0-9]+\.[0-9]+') { $tag = $Ref }
+    else { throw "Rust builds are only published for version tags (e.g. v0.1.0-rust), not branch '$Ref'." }
+
+    $assetName = Get-RustAssetName
+    Write-Log "Looking for lksr release $tag : $assetName"
+
+    try {
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases/tags/$tag" -UseBasicParsing
+    } catch {
+        throw "No GitHub release for $tag : $_"
+    }
+
+    $asset = @($rel.assets) | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+    if (-not $asset) {
+        $names = (@($rel.assets) | ForEach-Object { $_.name }) -join ", "
+        throw "Release $tag has no lksr Windows asset (want $assetName). Assets: $names"
+    }
+
+    $work = Join-Path $env:TEMP ("lksr-portable-" + [guid]::NewGuid().ToString("n"))
+    New-Item -ItemType Directory -Path $work -Force | Out-Null
+    $tarball = Join-Path $work $asset.name
+    Write-Log "Downloading $($asset.browser_download_url)"
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $tarball -UseBasicParsing
+    if (-not (Test-Path $tarball) -or (Get-Item $tarball).Length -le 0) {
+        throw "Download failed or empty: $tarball"
+    }
+
+    Write-Log "Extracting lksr..."
+    # git-bash tar handles .tar.gz on windows-latest; 7-Zip fallback otherwise.
+    $extractDir = Join-Path $work "out"
+    New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+    $tarExe = Get-Command tar -ErrorAction SilentlyContinue
+    if ($tarExe) {
+        & $tarExe.Source -xzf $tarball -C $extractDir
+        if ($LASTEXITCODE -ne 0) { throw "tar extract failed (exit $LASTEXITCODE)" }
+    } else {
+        Expand-Archive -Path $tarball -DestinationPath $extractDir -Force
+    }
+
+    $bin = Get-ChildItem -Path $extractDir -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "lksr.exe" } | Select-Object -First 1
+    if (-not $bin) {
+        $bin = Get-ChildItem -Path $extractDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq "lksr" } | Select-Object -First 1
+    }
+    if (-not $bin) { throw "lksr.exe not found in tarball" }
+
+    if (Test-Path $InstallRoot) {
+        Stop-LkSimProcesses -Root $InstallRoot
+    }
+    if (-not (Test-Path $CurrentDir)) {
+        New-Item -ItemType Directory -Path $CurrentDir -Force | Out-Null
+    }
+    Copy-Item -Path $bin.FullName -Destination (Join-Path $CurrentDir "lksr.exe") -Force
+    Write-Log "Installed files -> $CurrentDir"
+
+    # Shims in ~/.local/bin (ASCII .cmd only)
+    if (-not (Test-Path $ShimDir)) {
+        New-Item -ItemType Directory -Path $ShimDir -Force | Out-Null
+    }
+    $exePath = Join-Path $CurrentDir "lksr.exe"
+    @"
+@echo off
+"%~dp0lksr.exe" %*
+"@ | Set-Content -Path (Join-Path $CurrentDir "lksr.cmd") -Encoding ASCII
+    Copy-Item -Path (Join-Path $CurrentDir "lksr.cmd") -Destination (Join-Path $ShimDir "lksr.cmd") -Force
+    Copy-Item -Path $exePath -Destination (Join-Path $ShimDir "lksr.exe") -Force
+
+    Ensure-DirOnPath $ShimDir
+    try { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue } catch {}
+}
+
 if ($Uninstall) {
     Uninstall-All
     return
@@ -514,6 +615,35 @@ exit /b %ERRORLEVEL%
 }
 
 $ResolvedRef = Resolve-InstallRef
+
+if ($Rust) {
+    Write-Log "Installing $PkgName Rust binary lksr (from $ResolvedRef)"
+    Write-Log "No uv/pip/build on this machine - CI already built everything"
+    Install-RustFromRelease -Ref $ResolvedRef
+
+    Write-Log "Skipped MCP auto-config (lksr -Rust mode)"
+    $exePath = Join-Path $CurrentDir "lksr.exe"
+
+    if ($Verify) {
+        if (-not (Test-Path $exePath)) { throw "lksr.exe missing after install" }
+        & $exePath --version | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "lksr --version failed after install (exit $LASTEXITCODE)" }
+        Write-Log "Verified lksr --version"
+    }
+
+    Write-Host ""
+    Write-Host "OK $PkgName (Rust lksr) installed" -ForegroundColor Green
+    Write-Host "  CLI: $exePath"
+    Write-Host ""
+    Write-Host "  Quick start:"
+    Write-Host "    lksr guide"
+    Write-Host "    lksr --version"
+    Write-Host ""
+    Write-Host "  If command not found, open a new PowerShell (PATH refresh)."
+    Write-Host ""
+    return
+}
+
 Write-Log "Installing $PkgName (portable pack from $ResolvedRef)"
 Write-Log "No uv/pip/build on this machine - CI already built everything"
 Install-PortableFromRelease -Ref $ResolvedRef

@@ -24,6 +24,11 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: lksr-linux-x86_64.tar.gz
+          # Windows: webrtc-sys C++ may fail on this runner the same way
+          # macos-x86_64 did — unverified locally, CI will tell us.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: lksr-windows-x64.tar.gz
     defaults:
       run:
         working-directory: src/livekit_agent_simulator_rust
@@ -51,10 +56,16 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }} -p lks
       - name: Package tarball
+        shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/lksr dist/lksr
-          tar -czf ${{ matrix.asset }} -C dist lksr
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "target/${{ matrix.target }}/release/lksr.exe" dist/lksr.exe
+            tar -czf "${{ matrix.asset }}" -C dist lksr.exe
+          else
+            cp "target/${{ matrix.target }}/release/lksr" dist/lksr
+            tar -czf "${{ matrix.asset }}" -C dist lksr
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
@@ -71,6 +82,12 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # Ship the installers alongside the tarballs so pinned-version
+      # installer URLs work (e.g. .../releases/download/vX.Y.Z-rust/install.sh).
+      - uses: actions/checkout@v7
+      - name: Bundle installers
+        shell: bash
+        run: cp install.sh install.ps1 install-rust.sh dist/
       - name: Checksums
         run: |
           cd dist

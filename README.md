@@ -298,8 +298,18 @@ See `web/README.md`.
 
 **Status:** data-plane ops (scenarios/validate/export/cues/plugins/runs/report/compare/optimize) and offline gates are at parity; the live-run path still has known gaps vs Python (script `speak` cues reach the room via the OpenAI bridge only, judge defaults to skip without `judge.base_url`, verify plugins need a build with `--features python-plugins`). For CI-critical runs use the Python `lks`; try `lksr` for quick local checks.
 
+Python `lks` stays the default install; pass `--rust` / `-Rust` for the Rust binary:
+
 ```bash
-curl -fsSL "https://github.com/quangdang46/livekit_agent_simulator/raw/main/install-rust.sh" | bash -s -- --verify   # once a v*-rust release exists
+curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/raw/main/install.sh" | bash -s -- --rust --verify
+```
+
+```powershell
+irm "https://github.com/quangdang46/livekit-agent-simulator/raw/main/install.ps1" -OutFile install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Rust -Verify
+```
+
+```bash
 cd src/livekit_agent_simulator_rust && cargo build -p lks && cargo test --workspace   # from source
 ```
 

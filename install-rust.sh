@@ -2,6 +2,9 @@
 # Install lksr (the Rust build of livekit-agent-simulator) from GitHub Releases.
 # Single static-ish binary — no uv/pip/build on the user machine.
 #
+# NOTE: the unified path is `install.sh --rust` (same logic); this file stays
+# fully working standalone for existing pinned URLs.
+#
 #   curl -fsSL "https://github.com/quangdang46/livekit-agent-simulator/releases/download/v0.1.0-rust/install-rust.sh" | bash
 #   curl -fsSL "…/install-rust.sh" | bash -s -- --verify
 #

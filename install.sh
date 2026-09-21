@@ -21,6 +21,7 @@ EASY=0
 VERIFY=0
 UNINSTALL=0
 NO_MCP=0
+RUST=0
 LOCK_DIR="${TMPDIR:-/tmp}/${BINARY_NAME}-install.lock.d"
 
 log_info()    { [ "$QUIET" -eq 1 ] && return; echo "[${BINARY_NAME}] $*" >&2; }
@@ -50,9 +51,10 @@ Default ref = latest release. No uv/pip on the user machine.
 
 Options:
   --version / --ref REF   release tag (default: latest)
+  --rust                  install the Rust lksr binary instead of Python lks
   --no-mcp                skip MCP provider auto-config
   --easy-mode             append DEST to PATH in shell rc
-  --verify                run ${BINARY_NAME} --help
+  --verify                run ${BINARY_NAME} --help (lksr --version in --rust mode)
   --quiet, -q
   --uninstall
   -h, --help
@@ -65,6 +67,7 @@ while [ $# -gt 0 ]; do
     --version|--ref)   GIT_REF="$2"; shift 2 ;;
     --version=*|--ref=*) GIT_REF="${1#*=}"; shift ;;
     --from-git|--from-git=*) shift; log_warn "--from-git ignored (portable-only installer)" ;;
+    --rust)            RUST=1; shift ;;
     --no-mcp)          NO_MCP=1; shift ;;
     --easy-mode)       EASY=1; shift ;;
     --verify)          VERIFY=1; shift ;;
@@ -204,16 +207,37 @@ latest_release_tag() {
     | grep -v -- '-rust$' | head -1
 }
 
+# Newest tag that IS a Rust release (v*-rust). Mirrors release_tag_from_ref
+# in install-rust.sh; used only in --rust mode.
+latest_rust_release_tag() {
+  curl -fsSL "https://api.github.com/repos/${OWNER}/${REPO}/releases?per_page=100" 2>/dev/null \
+    | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | grep -- '-rust$' | head -1
+}
+
 resolve_install_ref() {
   if [ -n "${GIT_REF}" ]; then
     echo "${GIT_REF}"
     return 0
   fi
   local latest
-  latest="$(latest_release_tag || true)"
+  if [ "$RUST" -eq 1 ]; then
+    latest="$(latest_rust_release_tag || true)"
+  else
+    latest="$(latest_release_tag || true)"
+  fi
   [ -n "$latest" ] || die "No GitRef and no GitHub releases. Pass --ref v0.1.0"
   log_info "Default ref -> latest release ${latest}"
   echo "$latest"
+}
+
+rust_release_tag_from_ref() {
+  local ref="$1"
+  if [ -n "$ref" ]; then
+    case "$ref" in v*) echo "$ref" ;; *) echo "v$ref" ;; esac
+    return 0
+  fi
+  echo ""
 }
 
 release_tag_from_ref() {
@@ -239,6 +263,56 @@ portable_asset_name() {
     arm64|aarch64) arch="arm64" ;;
   esac
   echo "lks-${os}-${arch}.zip"
+}
+
+rust_asset_name() {
+  local os arch
+  case "$(uname -s)" in
+    Darwin) os="macos" ;;
+    Linux)  os="linux" ;;
+    *) die "unsupported OS: $(uname -s)" ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) arch="x86_64" ;;
+    arm64|aarch64) arch="aarch64" ;;
+    *) die "unsupported arch: $(uname -m)" ;;
+  esac
+  echo "lksr-${os}-${arch}.tar.gz"
+}
+
+install_rust_binary() {
+  local ref="$1" tag asset url work tarball bin
+  tag="$(rust_release_tag_from_ref "$ref")"
+  [ -n "$tag" ] || die "No GitRef and no GitHub releases. Pass --ref v0.1.0-rust"
+
+  asset="$(rust_asset_name)"
+  log_info "Looking for lksr release ${tag}: ${asset}"
+
+  url="$(curl -fsSL "https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${tag}" \
+    | sed -n "s/.*\"browser_download_url\":[[:space:]]*\"\([^\"]*${asset}\)\".*/\1/p" \
+    | head -1)"
+  [ -n "$url" ] || die "Release ${tag} missing asset ${asset}"
+
+  work="$(mktemp -d "${TMPDIR:-/tmp}/lksr-install.XXXXXX")"
+  tarball="${work}/${asset}"
+  log_info "Downloading ${url}"
+  curl -fsSL "$url" -o "$tarball"
+  [ -s "$tarball" ] || die "empty download"
+
+  log_info "Extracting..."
+  tar -xzf "$tarball" -C "$work"
+  bin="$(find "$work" -mindepth 1 -maxdepth 2 -type f -name "lksr" | head -1)"
+  [ -n "$bin" ] || die "lksr binary not found in tarball"
+
+  mkdir -p "$DEST"
+  install -m 0755 "$bin" "$DEST/lksr"
+  log_success "Installed -> $DEST/lksr"
+
+  case ":$PATH:" in *":$DEST:"*) ;; *)
+    log_info "Ensure CLI on PATH: export PATH=\"$DEST:\$PATH\""
+  ;; esac
+
+  rm -rf "$work"
 }
 
 install_portable() {
@@ -301,7 +375,27 @@ install_portable() {
   rm -rf "$work"
 }
 
-[ "$UNINSTALL" -eq 1 ] && uninstall_all
+# --rust mode overrides (applied after arg parsing so defaults stay unchanged
+# when the flag is absent).
+if [ "$RUST" -eq 1 ]; then
+  BINARY_NAME="lksr"
+  # INSTALL_ROOT already defaulted to .../lks above; switch to .../lksr
+  # unless the user explicitly overrode it (env INSTALL_ROOT).
+  case "${INSTALL_ROOT}" in
+    "$HOME/.local/share/lks") INSTALL_ROOT="$HOME/.local/share/lksr" ;;
+  esac
+  CURRENT_DIR="$INSTALL_ROOT/current"
+  LOCK_DIR="${TMPDIR:-/tmp}/${BINARY_NAME}-install.lock.d"
+fi
+
+uninstall_rust_all() {
+  log_info "Uninstalling ${PKG_NAME} (Rust lksr)..."
+  rm -f "$DEST/lksr" 2>/dev/null || true
+  log_success "Uninstalled $DEST/lksr"
+  exit 0
+}
+
+[ "$UNINSTALL" -eq 1 ] && { if [ "$RUST" -eq 1 ]; then uninstall_rust_all; else uninstall_all; fi; }
 
 main() {
   acquire_lock
@@ -309,6 +403,29 @@ main() {
 
   local ref
   ref="$(resolve_install_ref)"
+
+  if [ "$RUST" -eq 1 ]; then
+    log_info "Installing ${PKG_NAME} Rust binary lksr (ref ${ref})"
+    log_info "No uv/pip/build on this machine - CI already built everything"
+    install_rust_binary "$ref"
+
+    export PATH="${DEST}:${PATH}"
+
+    if [ "$VERIFY" -eq 1 ]; then
+      "$DEST/lksr" --version
+      log_success "lksr verify OK"
+    fi
+
+    echo ""
+    log_success "${PKG_NAME} (Rust lksr) installed"
+    echo "  CLI:  $DEST/lksr"
+    echo ""
+    echo "  Quick start:"
+    echo "    lksr guide"
+    echo "    lksr --version"
+    echo ""
+    return 0
+  fi
 
   log_info "Installing ${PKG_NAME} portable pack (ref ${ref})"
   log_info "No uv/pip/build on this machine - CI already built everything"
