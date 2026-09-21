@@ -1161,6 +1161,13 @@ def _interaction(action: CallerAction) -> InteractionConfig | None:
 # welcome."). A reply containing a question mark or a forward-looking offer
 # ("anything else", "let me know", "can I help") is NOT closing — the agent
 # is still working the call and the budget loop continues.
+# Run 074 (dealer-live-full, gemini caller): the agent answered the end
+# turn with "Thank you, Mate!" and the escape missed it — the end loop
+# then burned all 5 turns on VALID thank-yous with no closing reply ever
+# coming. A thank-you IS a reciprocal closing here (same as you're-welcome
+# / my-pleasure): the agent acknowledged the goodbye instead of advancing
+# the call. Scoped to the end-behavior escape only (never the validator),
+# and _NON_CLOSING_PATTERNS still vetoes working replies first.
 _CLOSING_REPLY_PATTERNS = (
     "you're welcome",
     "you are welcome",
@@ -1176,6 +1183,9 @@ _CLOSING_REPLY_PATTERNS = (
     "bye",
     "take care",
     "see you",
+    "thank you",
+    "thanks",
+    "mate",
 )
 _NON_CLOSING_PATTERNS = (
     "?",
