@@ -138,6 +138,13 @@ pub struct Observer {
     pub agent_has_spoken: bool,
     pub agent_replied_this_turn: bool,
     pub user_has_spoken: bool,
+    /// Set when the agent participant left / the room closed mid-call
+    /// (mirrors Python Observer.agent_disconnected, set on
+    /// participant_disconnected for the agent identity and on room
+    /// disconnected). When set, no further agent turn will ever arrive.
+    /// `lks-livekit` (which owns the livekit types) sets this from its
+    /// room-event handlers; polled via `is_agent_gone()`.
+    pub agent_disconnected: bool,
     pub last_user_final_mono: Option<Instant>,
     last_activity_mono: Option<Instant>,
     any_activity: bool,
@@ -158,6 +165,7 @@ impl Observer {
             agent_has_spoken: false,
             agent_replied_this_turn: false,
             user_has_spoken: false,
+            agent_disconnected: false,
             last_user_final_mono: None,
             last_activity_mono: None,
             any_activity: false,
@@ -175,6 +183,26 @@ impl Observer {
 
     pub fn last_activity_mono(&self) -> Option<Instant> {
         self.last_activity_mono
+    }
+
+    /// True when the agent participant left / room closed mid-call
+    /// (mirrors Python `ObserverAgentWait.is_agent_gone()` reading
+    /// `observer.agent_disconnected`). Polled, never blocking.
+    pub fn is_agent_gone(&self) -> bool {
+        self.agent_disconnected
+    }
+
+    /// Mark the agent participant as disconnected (mirrors observer.py
+    /// `_on_leave` when `p.identity == agent_identity`).
+    pub fn on_agent_participant_disconnected(&mut self, identity: &str) {
+        if identity == self.cfg.agent_identity {
+            self.agent_disconnected = true;
+        }
+    }
+
+    /// Mark the room as closed (mirrors observer.py `_on_disconnected`).
+    pub fn on_room_disconnected(&mut self) {
+        self.agent_disconnected = true;
     }
 
     fn role_has_final(&self, role: &str) -> bool {

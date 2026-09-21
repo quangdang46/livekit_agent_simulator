@@ -361,6 +361,23 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 // "schedule"/"visit" alone never decides the act.
                 "schedule a visit",
                 "book a visit",
+                // Run 085 (dealer-live-full, openai caller): the agent
+                // asked for name/phone to lock in the booking and the
+                // generator answers with bare contact info — "My name
+                // is Alex." / "My name is Alex, and my phone number is
+                // 555-1234." — scoring ZERO hits in any tier (no verb,
+                // no visit noun). Same arrange_visit behavior (answering
+                // what the agent asked for to complete it), not a new
+                // behavior. Narrow: no other tier's generator output
+                // states contact info in a booking flow.
+                // Run 089: "My FULL name is Alex Johnson." broke the
+                // literal "my name is" adjacency — added bare "name is".
+                "my name is",
+                "name is",
+                "phone number is",
+                "contact number",
+                "reach me at",
+                "you can reach me",
             ],
         ),
         (
@@ -371,6 +388,10 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
             // and failed LOW_CONFIDENCE ×3, exactly the port-gap the Python
             // side's grounding comment on these three entries already
             // documents (run 007). Ported verbatim to keep parity.
+            // Runs 078/079 (dealer-live-full): the generator thanked with
+            // the visit noun attached ("Thank you for helping me schedule
+            // the test drive!") and arrange_visit outscored end 2-1 — a
+            // thank-you that ALSO names the booking is still a closing.
             &[
                 "goodbye",
                 "bye",
@@ -379,10 +400,64 @@ fn act_patterns() -> Vec<(&'static str, &'static [&'static str])> {
                 "thank you",
                 "thanks for your help",
                 "thanks for the help",
+                "thank you for helping me schedule",
+                "thank you for your help with scheduling",
+                "thank you for scheduling",
+                "thanks for scheduling",
+                "thank you for confirming the test drive",
+                "thank you for helping me schedule the test drive",
             ],
         ),
     ]
 }
+
+/// Run 064/069 slot-proposal pairs (mirrors Python
+/// `_PAIR_PATTERNS["arrange_visit"]`).
+const ARRANGE_VISIT_PAIR_PATTERNS: &[&[&str]] = &[
+    &["work for you", "morning"],
+    &["work for you", "10:00"],
+    &["work for you", "10am"],
+    &["work for you", "10 am"],
+    &["work for you", "ten"],
+    &["work for you", "tomorrow"],
+    &["what times", "available"],
+    &["what times", "morning"],
+    &["would work", "morning"],
+    &["would work", "tomorrow"],
+    &["would work", "10:00"],
+    &["work", "morning"],
+    &["how does", "morning"],
+    &["sound", "morning"],
+    &["lock in", "morning"],
+    &["lock in", "tomorrow"],
+    &["lock in", "10:00"],
+];
+
+/// Runs 078-081/087 thanks-shape pairs (mirrors Python `_END_SHAPE_PAIRS`).
+const END_SHAPE_PAIRS: &[&[&str]] = &[
+    &["thank", "test drive"],
+    &["thanks", "test drive"],
+    &["thank you", "test drive"],
+    &["appreciate", "test drive"],
+    &["thank", "scheduling"],
+    &["thanks", "scheduling"],
+    &["thank you", "scheduling"],
+    &["appreciate", "scheduling"],
+    &["thank", "schedule"],
+    &["thanks", "schedule"],
+    &["appreciate", "schedule"],
+    &["thank", "booking"],
+    &["thanks", "booking"],
+    &["appreciate", "booking"],
+    &["thank", "confirming"],
+    &["thanks", "confirming"],
+    &["appreciate", "confirming"],
+    &["appreciate", "assistance"],
+    &["look forward to", "test drive"],
+    &["look forward", "test drive"],
+    &["look forward to", "scheduling"],
+    &["look forward", "scheduling"],
+];
 
 fn target_keywords() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
@@ -536,6 +611,34 @@ impl RuleBasedSemanticVerifier {
                 && lowered.contains("price")
             {
                 count += 2;
+            }
+            // Run 064/069 (dealer-live-full, gemini caller): the generator
+            // asks the AGENT for a slot ("would around 10:00 AM tomorrow
+            // work for you?", "lock in 10:00 AM tomorrow") with no
+            // first-person booking verb. Schedule-question + time-shape
+            // pairs mark the slot-proposal shape; neither half alone
+            // decides the act.
+            if act == "arrange_visit" {
+                for pair in ARRANGE_VISIT_PAIR_PATTERNS {
+                    if pair.iter().all(|sub| lowered.contains(sub)) {
+                        count += 1;
+                    }
+                }
+            }
+            // Runs 078-081/087 (dealer-live-full): thanks/appreciation word
+            // + booking noun TOGETHER marks a thanks-for-booking closing
+            // (mirrors Python _END_SHAPE_PAIRS). Either half alone decides
+            // nothing. Bare "assistance" with NO thanks word stays OUT
+            // ("I need assistance scheduling a visit" is a request, not a
+            // goodbye). Bare "look forward to" with no booking noun stays
+            // out. In Rust both pair sets are checked for the end act
+            // (no dict-key collision concern).
+            if act == "end" {
+                for pair in END_SHAPE_PAIRS {
+                    if pair.iter().all(|sub| lowered.contains(sub)) {
+                        count += 1;
+                    }
+                }
             }
             if count > 0 {
                 hits.insert(act, count);
@@ -1131,6 +1234,65 @@ pub fn evaluate_behavior(
         return EvaluatorVerdict::Satisfied;
     }
     EvaluatorVerdict::NotSatisfied
+}
+
+/// Agent closing-turn markers (mirrors Python `_is_closing_reply` +
+/// `_CLOSING_REPLY_PATTERNS` in driver.py): the agent reciprocated the
+/// goodbye instead of advancing the call (run 061: "Anytime! Glad it's
+/// sorted.", "You're welcome."). Scoped to the end-behavior escape only
+/// (never the validator).
+const CLOSING_REPLY_PATTERNS: [&str; 17] = [
+    "you're welcome",
+    "you are welcome",
+    "my pleasure",
+    "anytime",
+    "glad it's sorted",
+    "glad its sorted",
+    "glad to help",
+    "happy to help",
+    "have a good day",
+    "have a great day",
+    "goodbye",
+    "bye",
+    "take care",
+    "see you",
+    // Run 074: the agent answered the end turn with "Thank you, Mate!" —
+    // a thank-you IS a reciprocal closing (same as you're-welcome).
+    "thank you",
+    "thanks",
+    "mate",
+];
+
+/// Markers that veto the closing escape: the agent is still working the
+/// call (mirrors Python `_NON_CLOSING_PATTERNS`).
+const NON_CLOSING_PATTERNS: [&str; 6] = [
+    "?",
+    "anything else",
+    "let me know",
+    "can i help",
+    "could i help",
+    "what else",
+];
+
+/// True when the agent's end-behavior turn reads as a reciprocal closing.
+/// True iff `behavior` is an end behavior and the agent text hits a closing
+/// marker with no non-closing veto (mirrors the Python escape gate
+/// `contract.behavior in ("end","hangup","hang_up") and _is_closing_reply`).
+pub fn is_end_behavior_closing_reply(behavior: &str, agent_text: &str) -> bool {
+    if !matches!(
+        behavior.to_lowercase().as_str(),
+        "end" | "hangup" | "hang_up"
+    ) {
+        return false;
+    }
+    let text = agent_text.to_lowercase();
+    if text.trim().is_empty() || text.trim() == "[untranscribed agent speech]" {
+        return false;
+    }
+    if NON_CLOSING_PATTERNS.iter().any(|p| text.contains(p)) {
+        return false;
+    }
+    CLOSING_REPLY_PATTERNS.iter().any(|p| text.contains(p))
 }
 
 fn price_quote_hit(text: &str) -> bool {
@@ -2734,5 +2896,196 @@ mod parity_tests {
             super::evaluate_behavior("ask", None, "I'll pencil you in for tomorrow morning.",),
             super::EvaluatorVerdict::Satisfied
         ));
+    }
+
+    // -----------------------------------------------------------------
+    // Port of Python b16d593..4edf273 golden cases (tests/fixtures/
+    // semantic_verifier/golden_cases.json): arrange_visit slot-question
+    // + contact-info pairs, end thanks-shape pairs.
+    // -----------------------------------------------------------------
+
+    fn test_contract(behavior: &str) -> super::BehaviorContract {
+        super::BehaviorContract {
+            behavior: behavior.to_string(),
+            target: None,
+            constraints: super::ContractConstraints {
+                max_turns: 5,
+                max_budget: None,
+                max_words: None,
+                max_duration_s: None,
+                forbidden_intents: vec![],
+                must_not: vec![],
+            },
+        }
+    }
+
+    fn classify_valid(behavior: &str, utterance: &str) {
+        let contract = test_contract(behavior);
+        let v = super::RuleBasedSemanticVerifier;
+        let observed = v.classify_inherent(utterance, &contract);
+        assert_eq!(
+            observed.act, behavior,
+            "utterance {utterance:?}: expected act {behavior:?}, got {:?} (all={:?}, conf={})",
+            observed.act, observed.all_acts, observed.confidence
+        );
+        assert!(
+            observed.confidence >= super::SEMANTIC_CONFIDENCE_THRESHOLD,
+            "utterance {utterance:?}: confidence {} below threshold",
+            observed.confidence
+        );
+    }
+
+    #[test]
+    fn golden_arrange_visit_slot_questions_classify() {
+        // act-arrange-visit-slot-question-pass + ten variant (run 064):
+        // slot-proposal with no first-person booking verb.
+        classify_valid(
+            "arrange_visit",
+            "Great, would around 10:00 AM tomorrow work for you?",
+        );
+        classify_valid(
+            "arrange_visit",
+            "Great, does ten in the morning work for you?",
+        );
+        // act-arrange-visit-slot-what-times-pass + how-does + lock-in
+        // (run 069): schedule-question + time shapes.
+        classify_valid(
+            "arrange_visit",
+            "Sure, what times do you have available tomorrow morning?",
+        );
+        classify_valid("arrange_visit", "How does ten in the morning sound?");
+        classify_valid(
+            "arrange_visit",
+            "Great, let's lock in 10:00 AM tomorrow morning then.",
+        );
+    }
+
+    #[test]
+    fn golden_arrange_visit_contact_info_classifies() {
+        // act-arrange-visit-contact-info-pass (run 085): bare contact
+        // info answering the agent's booking-contact request.
+        classify_valid(
+            "arrange_visit",
+            "My name is Alex, and my phone number is 555-1234.",
+        );
+        // Run 089: adjective insertion must not break the name pattern.
+        classify_valid("arrange_visit", "My FULL name is Alex Johnson.");
+    }
+
+    #[test]
+    fn golden_end_thanks_for_booking_classifies() {
+        // act-end-thanks-for-booking-pass + confirm variant (runs 078/079).
+        classify_valid("end", "Thank you for helping me schedule the test drive!");
+        classify_valid(
+            "end",
+            "Thank you for confirming the test drive at 10 a.m. tomorrow!",
+        );
+        // act-end-thanks-assistance-pass + appreciate variant (runs 080/081).
+        classify_valid("end", "Thanks for your assistance with the test drive!");
+        classify_valid(
+            "end",
+            "I appreciate your assistance in scheduling the test drive.",
+        );
+        // Run 087: look-forward-to with a booking noun is a closing.
+        classify_valid("end", "I look forward to our test drive tomorrow morning!");
+    }
+
+    #[test]
+    fn golden_end_bare_assistance_stays_out() {
+        // Bare assistance with NO thanks word is a request, not a
+        // goodbye — must not classify as end (run 080 scoping note).
+        let contract = test_contract("arrange_visit");
+        let v = super::RuleBasedSemanticVerifier;
+        let observed = v.classify_inherent(
+            "I need assistance scheduling a visit",
+            &contract,
+        );
+        assert_ne!(observed.act, "end");
+    }
+
+    // -----------------------------------------------------------------
+    // Port of Python test_contract_driver.py additions (b16d593, bc1d3ec):
+    // closing-reply escape gate + agent-gone observer tracking.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn end_closing_reply_satisfies_escape_gate() {
+        // Run 061: reciprocal closings satisfy the end behavior.
+        assert!(super::is_end_behavior_closing_reply(
+            "end",
+            "Anytime! Glad it's sorted."
+        ));
+        assert!(super::is_end_behavior_closing_reply(
+            "end",
+            "You're welcome."
+        ));
+        // Run 074: thank-you counts as a closing reply.
+        assert!(super::is_end_behavior_closing_reply(
+            "end",
+            "Thank you, Mate!"
+        ));
+        // Scoped to end behaviors only: hangup/hang_up ARE end
+        // behaviors, so they escape too; anything else does not.
+        assert!(!super::is_end_behavior_closing_reply(
+            "ask",
+            "You're welcome."
+        ));
+        assert!(super::is_end_behavior_closing_reply(
+            "hangup",
+            "You're welcome."
+        ));
+        assert!(super::is_end_behavior_closing_reply(
+            "hang_up",
+            "Goodbye, take care!"
+        ));
+    }
+
+    #[test]
+    fn end_question_reply_keeps_budget() {
+        // Non-closing replies (questions / forward offers) must NOT
+        // trigger the escape — mirrors
+        // test_end_behavior_agent_question_keeps_budget.
+        assert!(!super::is_end_behavior_closing_reply(
+            "end",
+            "What time works for you?"
+        ));
+        assert!(!super::is_end_behavior_closing_reply(
+            "end",
+            "Anything else I can help with?"
+        ));
+        assert!(!super::is_end_behavior_closing_reply(
+            "end",
+            "Let me know if you need anything."
+        ));
+        // Empty / untranscribed speech never closes.
+        assert!(!super::is_end_behavior_closing_reply("end", ""));
+        assert!(!super::is_end_behavior_closing_reply(
+            "end",
+            "[untranscribed agent speech]"
+        ));
+    }
+
+    #[test]
+    fn observer_agent_gone_tracks_disconnects() {
+        // Mirrors test_wait_fast_path_returns_none_when_agent_already_gone
+        // + test_agent_gone_mid_behavior_ends_by_agent_not_timeout intent:
+        // the gone latch starts false and flips on agent disconnect /
+        // room disconnect, and never on unrelated participants.
+        let mut obs = super::super::observer::Observer::new(
+            super::super::observer::ObserverConfig {
+                agent_identity: "agent-1".to_string(),
+                ..Default::default()
+            },
+        );
+        assert!(!obs.is_agent_gone());
+        obs.on_agent_participant_disconnected("someone-else");
+        assert!(!obs.is_agent_gone());
+        obs.on_agent_participant_disconnected("agent-1");
+        assert!(obs.is_agent_gone());
+
+        let mut obs2 = super::super::observer::Observer::new(Default::default());
+        assert!(!obs2.is_agent_gone());
+        obs2.on_room_disconnected();
+        assert!(obs2.is_agent_gone());
     }
 }

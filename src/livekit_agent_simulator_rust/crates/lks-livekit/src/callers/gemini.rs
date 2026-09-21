@@ -175,6 +175,9 @@ impl GeminiCallerBridge {
     }
 
     pub async fn run(&self, end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+        // Agent-gone tracking starts clean per run (mirrors Python
+        // Observer.agent_disconnected, fresh per Observer).
+        super::openai::AGENT_DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
         // Contract path (caller_steps non-empty): delegate to the shared
         // OpenAI-bridge plumbing (room + mic + dispatch + agent-join +
         // observation/cue loop). The Gemini bridge owns no contract
@@ -474,6 +477,11 @@ impl GeminiCallerBridge {
                                 spec_m.insert("identity".into(), serde_json::Value::String(identity.clone()));
                                 w.emit("room.participant_disconnected", Some(&spec_m), "room", None, None, false, None);
                             }
+                            // Agent-gone latch: the Gemini path tracks no
+                            // agent identity (pre-existing gap), so ANY
+                            // participant disconnect ends the agent side —
+                            // the sim is the only other participant.
+                            super::openai::AGENT_DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
                             eprintln!("[lksr] agent disconnected ({identity}) — ending run");
                             break;
                         }
@@ -482,6 +490,7 @@ impl GeminiCallerBridge {
                             let mut w = writer_obs.lock().await;
                             w.emit("room.disconnected", None, "room", None, None, false, None);
                             drop(w);
+                            super::openai::AGENT_DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
                             break;
                         }
                         Ok(SimRoomEvent::ActiveSpeakersChanged { identities }) => {

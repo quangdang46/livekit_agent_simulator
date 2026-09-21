@@ -353,6 +353,10 @@ impl OpenAiCallerBridge {
     /// plumbing; ScriptRuntime drives speech via the TTS→mic path. Port of
     /// run_orchestrator.py: the contract path "never opens a session".
     pub async fn run(&self, _end_call: broadcast::Receiver<()>) -> Result<(), RunError> {
+        // Agent-gone tracking starts clean per run (freestyle path; the
+        // contract-only path resets in run_plumbing). Mirrors Python
+        // Observer.agent_disconnected, fresh per Observer.
+        AGENT_DISCONNECTED.store(false, Ordering::SeqCst);
         if self.contract_only {
             return self.run_plumbing(_end_call).await;
         }
@@ -966,6 +970,12 @@ impl OpenAiCallerBridge {
                                 spec_m.insert("identity".into(), serde_json::Value::String(identity.clone()));
                                 w.emit("room.participant_disconnected", Some(&spec_m), "room", None, None, false, None);
                             }
+                            // Agent-gone latch (port of observer.py
+                            // agent_disconnected.set()): identity-gated,
+                            // mirroring `p.identity == agent_identity`.
+                            if identity == agent_identity {
+                                AGENT_DISCONNECTED.store(true, Ordering::SeqCst);
+                            }
                             eprintln!("[lksr] agent disconnected ({identity}) — ending run");
                             break;
                         }
@@ -974,6 +984,8 @@ impl OpenAiCallerBridge {
                             let mut w = writer_obs.lock().await;
                             w.emit("room.disconnected", None, "room", None, None, false, None);
                             drop(w);
+                            // Room closed: no further agent turn will arrive.
+                            AGENT_DISCONNECTED.store(true, Ordering::SeqCst);
                             break;
                         }
                         Ok(SimRoomEvent::ActiveSpeakersChanged { identities }) => {
@@ -1157,6 +1169,9 @@ impl OpenAiCallerBridge {
         // (the SAME broadcast end_rx run.rs hands to ScriptRuntime) so a
         // contract_do failure ends this loop immediately.
         let end_rx = end_call;
+        // Runs 054/055/083: agent-gone tracking must start clean per run
+        // (mirrors Python Observer.agent_disconnected, fresh per Observer).
+        AGENT_DISCONNECTED.store(false, Ordering::SeqCst);
         let livekit_cfg = &self.livekit;
 
         // 1. Room: connect as the sim caller, publish mic (same as run()).
@@ -1528,6 +1543,10 @@ impl OpenAiCallerBridge {
                                 spec_m.insert("identity".into(), serde_json::Value::String(identity.clone()));
                                 w.emit("room.participant_disconnected", Some(&spec_m), "room", None, None, false, None);
                             }
+                            // Agent-gone latch, identity-gated like observer.py.
+                            if identity == agent_identity {
+                                AGENT_DISCONNECTED.store(true, Ordering::SeqCst);
+                            }
                             eprintln!("[lksr] agent disconnected ({identity}) — ending run");
                             break;
                         }
@@ -1535,6 +1554,7 @@ impl OpenAiCallerBridge {
                             let mut w = writer_obs.lock().await;
                             w.emit("room.disconnected", None, "room", None, None, false, None);
                             drop(w);
+                            AGENT_DISCONNECTED.store(true, Ordering::SeqCst);
                             break;
                         }
                         Ok(SimRoomEvent::ActiveSpeakersChanged { identities }) => {
@@ -2134,6 +2154,20 @@ pub static MUTE_PERSONA_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static AGENT_FINAL_SEQ: AtomicI64 = AtomicI64::new(0);
 /// Text of the most recent agent final (paired with `AGENT_FINAL_SEQ`).
 pub static AGENT_FINAL_TEXT: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
+/// True once the agent participant left (participant_disconnected for the
+/// agent identity) or the room closed (mirrors Python
+/// `Observer.agent_disconnected`). Set by the room-events loop; polled by
+/// the `do:` driver via `is_agent_gone()` so it never burns the behavior
+/// budget polling a dead room (runs 054/055/083 class). Reset per run by
+/// the caller-bridge entry points alongside the other AGENT_* statics.
+/// Gemini path shares these openai.rs statics (same crate).
+pub static AGENT_DISCONNECTED: AtomicBool = AtomicBool::new(false);
+
+/// True when the agent participant left / room closed mid-call (mirrors
+/// Python `ObserverAgentWait.is_agent_gone()`). Polled, never blocking.
+pub fn is_agent_gone() -> bool {
+    AGENT_DISCONNECTED.load(Ordering::SeqCst)
+}
 
 pub fn find_subscribed_audio(
     room: &Arc<livekit::Room>,

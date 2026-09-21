@@ -943,36 +943,85 @@ impl ScriptRuntime {
             let mut collected = String::new();
             let mut quiet_deadline: Option<Instant> = None;
             let deadline = Instant::now() + Duration::from_secs(30);
-            let agent_text = loop {
-                let seq = crate::callers::openai::AGENT_FINAL_SEQ
-                    .load(std::sync::atomic::Ordering::SeqCst);
-                if seq > last_seq {
-                    last_seq = seq;
-                    let frag = crate::callers::openai::AGENT_FINAL_TEXT.lock().clone();
-                    let frag = frag.trim();
-                    if !frag.is_empty() {
-                        if !collected.is_empty() {
-                            collected.push(' ');
+            // Port of driver.py's post-publish agent-gone gate (runs
+            // 054/055) + agent_wait.py's wait-entry fast-path (run 083):
+            // when the agent already left, skip the wait AND the stale
+            // pre-drain final entirely (None) so the caller below takes
+            // the agent-ended path instead of recycling a dead reply.
+            // Otherwise poll the wait; a mid-wait disconnect also ends it
+            // early with whatever fragments arrived (None if none).
+            let agent_text: Option<String> = if crate::callers::openai::is_agent_gone() {
+                None
+            } else {
+                loop {
+                    // Agent left mid-call (end_call tool → disconnect):
+                    // stop polling a dead room — the caller maps None to
+                    // the agent-ended path, never a timeout + budget burn.
+                    if crate::callers::openai::is_agent_gone() {
+                        break if collected.is_empty() {
+                            None
+                        } else {
+                            Some(collected)
+                        };
+                    }
+                    let seq = crate::callers::openai::AGENT_FINAL_SEQ
+                        .load(std::sync::atomic::Ordering::SeqCst);
+                    if seq > last_seq {
+                        last_seq = seq;
+                        let frag = crate::callers::openai::AGENT_FINAL_TEXT.lock().clone();
+                        let frag = frag.trim();
+                        if !frag.is_empty() {
+                            if !collected.is_empty() {
+                                collected.push(' ');
+                            }
+                            collected.push_str(frag);
                         }
-                        collected.push_str(frag);
+                        quiet_deadline = Some(Instant::now() + quiet_window);
                     }
-                    quiet_deadline = Some(Instant::now() + quiet_window);
-                }
-                if let Some(qd) = quiet_deadline {
-                    if Instant::now() >= qd {
-                        break Some(collected);
+                    if let Some(qd) = quiet_deadline {
+                        if Instant::now() >= qd {
+                            break Some(collected);
+                        }
                     }
+                    if Instant::now() >= deadline {
+                        break if collected.is_empty() {
+                            None
+                        } else {
+                            Some(collected)
+                        };
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-                if Instant::now() >= deadline {
-                    break if collected.is_empty() {
-                        None
-                    } else {
-                        Some(collected)
-                    };
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
             };
             let Some(agent_text) = agent_text else {
+                // Agent gone mid-call (end_call tool → disconnect): the call
+                // is over by the AGENT's hand, not a caller violation and
+                // not a timeout to retry — end cleanly as agent-ended (runs
+                // 054/055 class burned the whole behavior budget polling a
+                // dead room into FAILED_MAX_TURNS instead). Only fall
+                // through to AGENT_TIMEOUT when the agent is NOT gone
+                // (still just slow).
+                if crate::callers::openai::is_agent_gone() {
+                    {
+                        let mut w = self.writer.lock().await;
+                        w.emit(
+                            "contract.agent_ended",
+                            Some(
+                                &json!({"behavior": behavior, "turn": turn})
+                                    .as_object()
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            ),
+                            "sim.script",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                    }
+                    let _ = self.end_tx.send(());
+                    return Ok(());
+                }
                 let reason = format!("agent did not reply to behavior {behavior:?} within timeout");
                 {
                     let mut w = self.writer.lock().await;
@@ -1009,6 +1058,34 @@ impl ScriptRuntime {
                 verdict,
                 lks_core::caller_contract::EvaluatorVerdict::Satisfied
             ) {
+                return Ok(());
+            }
+            // End-behavior escape (port of driver.py run-061 gate): the
+            // call is already socially over — the agent answered the end
+            // turn with a CLOSING turn (goodbye, you're-welcome,
+            // thank-you, glad-it's-sorted) instead of new content. A
+            // closing agent reply satisfies the end behavior; non-closing
+            // replies (questions, new info, forward offers) still loop
+            // the budget as before.
+            if lks_core::caller_contract::is_end_behavior_closing_reply(&behavior, &agent_text)
+            {
+                {
+                    let mut w = self.writer.lock().await;
+                    w.emit(
+                        "contract.agent_ended",
+                        Some(
+                            &json!({"behavior": behavior, "turn": turn})
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                        ),
+                        "sim.script",
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
+                }
                 return Ok(());
             }
             // Not satisfied: loop back to check_max_turns at the top — the

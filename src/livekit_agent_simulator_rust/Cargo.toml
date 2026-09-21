@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 # All crates in the workspace share the same version (single-version workspace).
 [workspace.package]
-version = "0.1.0-rust"
+version = "0.1.1-rust"
 edition = "2021"
 rust-version = "1.97"
 license = "MIT"
