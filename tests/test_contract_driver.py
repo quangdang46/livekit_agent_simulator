@@ -254,6 +254,162 @@ async def test_behavior_budget_owned_by_orchestrator_gate_not_range():
 
 
 @pytest.mark.asyncio
+async def test_agent_gone_mid_behavior_ends_by_agent_not_timeout():
+    """Runs 054/055 regression: the agent fires end_call mid-behavior and
+    disconnects. The run must end cleanly as agent-ended — never burn the
+    behavior budget polling a dead room into FAILED_MAX_TURNS."""
+
+    class _GoneAgent(FakeAgent):
+        def __init__(self):
+            super().__init__(replies=[])
+            self._gone = False
+
+        async def wait_agent_turn(self, *, timeout_s: float = 30.0):
+            self.waits += 1
+            self._gone = True  # agent left after our published turn
+            return None
+
+        def is_agent_gone(self) -> bool:
+            return self._gone
+
+    driver, orch = _driver(
+        backend=_ScriptedBackend(
+            utterances=[
+                {
+                    "act": "end",
+                    "target": None,
+                    "slots": {},
+                    "utterance": "Thanks, bye.",
+                }
+            ]
+        )
+    )
+    actions = parse_steps(
+        [{"do": {"behavior": "end", "constraints": {"max_turns": 5}}}],
+        file="t",
+    )
+    sink = FakeSink(orch)
+    agent = _GoneAgent()
+    events: list[tuple[str, dict]] = []
+    result = await driver.run(
+        actions, sink, agent, emit=lambda kind, spec=None: events.append((kind, spec or {}))
+    )
+    assert result.failure is None
+    assert result.ended_by == EndedBy.AGENT
+    assert result.turns_spoken == 1, "only the one published turn before the agent left"
+    kinds = [kind for kind, _ in events]
+    assert "contract.agent_ended" in kinds
+    assert not any(k == "contract.behavior_violation" for k in kinds)
+
+
+@pytest.mark.asyncio
+async def test_wait_fast_path_returns_none_when_agent_already_gone():
+    """Run-083 regression: the agent disconnected BEFORE wait_agent_turn was
+    entered. The stale pre-drain final must NOT be recycled — return None
+    immediately so the driver takes the agent-ended path."""
+    from livekit_agent_simulator.caller_contract.agent_wait import ObserverAgentWait
+
+    class _GoneObserver:
+        last_agent_final_mono = 123.0
+        last_agent_final_text = "Certainly. What time tomorrow morning works for you?"
+        agent_is_active_speaker = False
+
+        class _Evt:
+            def is_set(self):
+                return True
+
+        agent_disconnected = _Evt()
+
+    wait = ObserverAgentWait(observer=_GoneObserver())
+    assert await wait.wait_agent_turn(timeout_s=30.0) is None
+
+
+@pytest.mark.asyncio
+async def test_agent_silence_still_timeout_when_agent_present():
+    """The gone-check must not swallow a plain slow agent: no is_agent_gone
+    (old fakes) or False means the None maps to AGENT_TIMEOUT as before."""
+
+    class _SlowAgent(FakeAgent):
+        async def wait_agent_turn(self, *, timeout_s: float = 30.0):
+            self.waits += 1
+            return None
+
+    driver, orch = _driver()
+    actions = parse_steps(
+        [{"do": {"behavior": "ask", "constraints": {"max_turns": 2}}}],
+        file="t",
+    )
+    result = await driver.run(actions, FakeSink(orch), _SlowAgent())
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.AGENT_TIMEOUT
+    assert result.ended_by == EndedBy.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_end_behavior_agent_closing_reply_satisfies():
+    """Run-061 regression: the agent reciprocates the goodbye ("Anytime!
+    Glad it's sorted.") instead of new content. The end behavior must close
+    on the closing turn — never burn the budget into FAILED_MAX_TURNS while
+    both sides exchange closings."""
+    driver, orch = _driver(
+        backend=_ScriptedBackend(
+            utterances=[
+                {"act": "end", "target": None, "slots": {}, "utterance": "Thanks, bye."},
+                {"act": "end", "target": None, "slots": {}, "utterance": "Thanks again!"},
+            ]
+        )
+    )
+    actions = parse_steps(
+        [{"do": {"behavior": "end", "constraints": {"max_turns": 5}}}],
+        file="t",
+    )
+    sink = FakeSink(orch)
+    agent = FakeAgent(replies=["Anytime! Glad it's sorted."])
+    events: list[tuple[str, dict]] = []
+    result = await driver.run(
+        actions, sink, agent, emit=lambda kind, spec=None: events.append((kind, spec or {}))
+    )
+    assert result.failure is None
+    assert result.behaviors_completed == 1
+    assert result.turns_spoken == 1
+    kinds = [kind for kind, _ in events]
+    assert "contract.agent_ended" in kinds
+
+
+@pytest.mark.asyncio
+async def test_end_behavior_agent_question_keeps_budget():
+    """A non-closing agent reply (question / still working) must NOT trigger
+    the escape — the budget loop continues as before."""
+    driver, orch = _driver(
+        backend=_ScriptedBackend(
+            utterances=[
+                {"act": "end", "target": None, "slots": {}, "utterance": "Thanks, bye."},
+                {
+                    "act": "end",
+                    "target": None,
+                    "slots": {},
+                    "utterance": "Thank you for your help, goodbye!",
+                },
+            ]
+        )
+    )
+    actions = parse_steps(
+        [{"do": {"behavior": "end", "constraints": {"max_turns": 2}}}],
+        file="t",
+    )
+    sink = FakeSink(orch)
+    agent = FakeAgent(replies=["What time works for you?", "Anything else I can help with?"])
+    events: list[tuple[str, dict]] = []
+    result = await driver.run(
+        actions, sink, agent, emit=lambda kind, spec=None: events.append((kind, spec or {}))
+    )
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.BEHAVIOR_TIMEOUT
+    kinds = [kind for kind, _ in events]
+    assert "contract.agent_ended" not in kinds, "non-closing reply must not trigger the escape"
+
+
+@pytest.mark.asyncio
 async def test_stale_identity_dropped_never_published():
     driver, orch = _driver()
     actions = parse_steps([{"say": "Hello."}], file="t")

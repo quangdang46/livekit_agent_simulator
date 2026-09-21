@@ -237,7 +237,27 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
                       # or bare "schedule" alone never decides the act; the
                       # visit-specific noun keeps provide/ask from hijacking
                       # (neither owns "test drive" as a pattern).
-                      "test drive"),
+                      "test drive",
+                      # Run 085 (dealer-live-full, openai caller): the agent
+                      # asked for name/phone to lock in the booking and the
+                      # generator answers with bare contact info — "My name
+                      # is Alex." / "My name is Alex, and my phone number is
+                      # 555-1234." — scoring ZERO hits in any tier (no verb,
+                      # no visit noun). This is a continuation of the SAME
+                      # arrange_visit behavior (providing the info the agent
+                      # requested to complete it), not a new behavior. "my
+                      # name is" + "phone number is"/"contact number"/"reach
+                      # me at" are specific to answering a booking-contact
+                      # request; narrow enough that no other tier owns them
+                      # (provide's patterns are "i want"/"i'd like to"/
+                      # "i'm calling about", none of which overlap).
+                      # Run 089: "My FULL name is Alex Johnson." — the
+                      # literal "my name is" adjacency breaks on the
+                      # inserted adjective. "name is" (drop "my") still
+                      # cannot hijack elsewhere: no other tier's generator
+                      # output states "X is a name" outside a booking flow.
+                      "my name is", "name is", "phone number is",
+                      "contact number", "reach me at", "you can reach me"),
     # Live run 007 (dealer-live-full): the generator's natural goodbye —
     # "Thank you for your help!" — scored 0 hits (no goodbye/bye/thanks-
     # that's-all) → LOW_CONFIDENCE ×3. "thank you" + "thanks" mark polite
@@ -248,8 +268,33 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
     # behaviors because no other behavior's generator output ends with a
     # bare thank-you (and the contract-behavior tie-break prefers the
     # contract act on ties).
+    # Runs 078/079 (dealer-live-full, openai caller): the generator thanked
+    # with the visit noun attached — "Thank you for helping me schedule the
+    # test drive!" — and arrange_visit outscored end 2-1 ("test drive" +
+    # "schedule" vs "thank you") → SEMANTIC_ACT_MISMATCH ×3. A thank-you
+    # that ALSO names the booking is still a closing (the caller is not
+    # asking to schedule anymore — arrange_visit already satisfied two
+    # turns earlier), so the end tier owns the same booking nouns. The
+    # count race is won by specificity: on an end contract these
+    # thanks-for-booking phrases outscore arrange_visit's generic nouns.
+    # Runs 080/081 (dealer-live-full, openai caller): the generator keeps
+    # rewording the same thanks — "Thanks for your assistance with the
+    # test drive!", "I appreciate your assistance in scheduling..." — and
+    # each rewording outscores end 2-0 ("test drive" + "scheduling" vs
+    # nothing). Whack-a-mole phrasing coverage cannot win: the SHAPE is
+    # "thanks/appreciate + booking noun", so the end tier owns the shape —
+    # any thanks/appreciation word TOGETHER with a booking noun. Scoped
+    # as PAIRs below (both halves required): bare "thanks" with no
+    # booking noun still scores only the generic tier, and bare booking
+    # nouns ("test drive", "scheduling") match no end pattern alone.
     "end": ("goodbye", "bye", "thanks, that's all", "have a good day",
-            "thank you", "thanks for your help", "thanks for the help"),
+            "thank you", "thanks for your help", "thanks for the help",
+            "thank you for helping me schedule",
+            "thank you for your help with scheduling",
+            "thank you for scheduling",
+            "thanks for scheduling",
+            "thank you for confirming the test drive",
+            "thank you for helping me schedule the test drive"),
 }
 
 # Confidence assigned when N keyword hits are found for the winning act.
@@ -274,9 +319,88 @@ def _split_clauses(utterance: str) -> list[str]:
 # to claim, but "adjustments" + "price" together marks a price-concession
 # proposal (negotiate), beating the "let me know" ask marker on count
 # (run 042). Format: act -> tuple of required-substring tuples.
+# End-tier shape pairs: a thanks/appreciation word + a booking noun TOGETHER
+# marks a thanks-for-booking closing (runs 078-081 class). Either half alone
+# decides nothing (bare "thanks" with no booking noun = generic end tier
+# only; bare booking nouns match no end pattern). Merged into _score_act_hits
+# (not _PAIR_PATTERNS, which is keyed by ACT_PATTERNS act and would collide
+# with the "end" lexical tier).
+_END_SHAPE_PAIRS: tuple[tuple[str, ...], ...] = (
+    ("thank", "test drive"),
+    ("thanks", "test drive"),
+    ("thank you", "test drive"),
+    ("appreciate", "test drive"),
+    ("thank", "scheduling"),
+    ("thanks", "scheduling"),
+    ("thank you", "scheduling"),
+    ("appreciate", "scheduling"),
+    ("thank", "schedule"),
+    ("thanks", "schedule"),
+    ("appreciate", "schedule"),
+    ("thank", "booking"),
+    ("thanks", "booking"),
+    ("appreciate", "booking"),
+    ("thank", "confirming"),
+    ("thanks", "confirming"),
+    ("appreciate", "confirming"),
+    # Run 080 ("I appreciate your assistance with the test drive"):
+    # appreciate + assistance TOGETHER (the thanks verb may attach to the
+    # assistance noun instead of the booking noun). Bare "assistance" with
+    # NO thanks word stays OUT ("I need assistance scheduling a visit" is
+    # a request, not a goodbye — it would tie arrange_visit 1-1).
+    ("appreciate", "assistance"),
+    # Run 087 ("I look forward to our test drive tomorrow morning!"): a
+    # forward-looking closing that references the just-booked visit — same
+    # family as thanks/appreciate (whack-a-mole rewording of the same
+    # closing intent), scored 0 end hits. "look forward to" + a booking
+    # noun marks it; bare "look forward to" with no booking noun stays out
+    # (could be forward-looking about something unrelated to the call end).
+    ("look forward to", "test drive"),
+    ("look forward", "test drive"),
+    ("look forward to", "scheduling"),
+    ("look forward", "scheduling"),
+)
+
+
 _PAIR_PATTERNS: dict[str, tuple[tuple[str, ...], ...]] = {
     "ask": (("confirm", "price"),),
     "negotiate": (("adjustments", "price"), ("adjustment", "price")),
+    # Run 064 (dealer-live-full, gemini caller): the generator asks the
+    # AGENT for a slot — "does ten in the morning work for you?", "would
+    # around 10:00 AM tomorrow work for you?" — and scored 0 hits: no
+    # first-person booking verb, just a schedule-question with a concrete
+    # time. "work for you" + a time-shaped word marks the slot-proposal
+    # shape. Scoped as PAIRs (both substrings required) so a bare "work
+    # for you" with no time never decides the act — and time words alone
+    # ("morning", "10:00", "ten", "tomorrow") match no tier by themselves.
+    # NOTE: the parity fixture orchestrator_evaluator.json:153/167 carries
+    # "would tomorrow morning around 10am work for you" as AGENT text for
+    # the arrange_visit evaluator (not the caller verifier) — different
+    # module, no blast radius there.
+    "arrange_visit": (
+        ("work for you", "morning"),
+        ("work for you", "10:00"),
+        ("work for you", "10am"),
+        ("work for you", "10 am"),
+        ("work for you", "ten"),
+        ("work for you", "tomorrow"),
+        # Run 069 (dealer-live-full, gemini caller): more slot-proposal
+        # shapes with no first-person booking verb. Each pair needs a
+        # schedule-question half + a time half, so neither half alone
+        # decides the act ("what times are you open?" has no "available"/
+        # "morning" pair-mate; bare "morning"/"tomorrow" match no tier).
+        ("what times", "available"),
+        ("what times", "morning"),
+        ("would work", "morning"),
+        ("would work", "tomorrow"),
+        ("would work", "10:00"),
+        ("work", "morning"),
+        ("how does", "morning"),
+        ("sound", "morning"),
+        ("lock in", "morning"),
+        ("lock in", "tomorrow"),
+        ("lock in", "10:00"),
+    ),
 }
 
 
@@ -288,6 +412,10 @@ def _score_act_hits(text: str) -> dict[str, int]:
         for pair in _PAIR_PATTERNS.get(act, ()):
             if all(sub in lowered for sub in pair):
                 count += 1
+        if act == "end":
+            for pair in _END_SHAPE_PAIRS:
+                if all(sub in lowered for sub in pair):
+                    count += 1
         if count:
             hits[act] = count
     return hits

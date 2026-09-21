@@ -83,7 +83,32 @@ class ObserverAgentWait:
             return float(mono) * 1000.0
         return None
 
+    def is_agent_gone(self) -> bool:
+        """True when the agent participant left / room closed mid-call.
+
+        The Observer sets ``agent_disconnected`` on participant_disconnected
+        (matching agent identity) and on room disconnected. When set, no
+        further agent turn will ever arrive — the driver must end the run
+        as agent-ended, never burn the behavior budget polling a dead room
+        (dealer-live-full runs 054/055 class: end_call tool → disconnect →
+        5×30s FAILED_MAX_TURNS loop instead of a clean agent end).
+        """
+        ev = getattr(self.observer, "agent_disconnected", None)
+        try:
+            return bool(ev is not None and ev.is_set())
+        except Exception:  # noqa: BLE001 — best-effort probe
+            return False
+
     async def wait_agent_turn(self, *, timeout_s: float) -> str | None:
+        # Fast-path: the agent already left (end_call tool → disconnect
+        # before we even started waiting — run 083 class returned the
+        # STALE pre-drain final "Certainly. What time..." then looped the
+        # end budget on re-asks the dead agent could never answer).
+        # No further agent turn will ever arrive: return None immediately
+        # so the driver maps it to the agent-ended path, never to a
+        # recycled final.
+        if self.is_agent_gone():
+            return None
         deadline = time.monotonic() + timeout_s
         seen_at_start = getattr(self.observer, "last_agent_final_mono", None)
         # A final that already exists at call time (preamble-shape: the agent

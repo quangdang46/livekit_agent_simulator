@@ -143,6 +143,15 @@ class AgentTurnWait(Protocol):
         """
         ...
 
+    def is_agent_gone(self) -> bool:
+        """True when the agent participant left / room closed mid-call.
+
+        Polled (never blocking): the driver reads it via
+        ``getattr(agent, "is_agent_gone", None)`` so older fakes without
+        this method behave as "agent still here".
+        """
+        ...
+
 
 class AudioAssetPlayer(Protocol):
     """Abstract background-bed playback (ambient/office noise).
@@ -872,6 +881,26 @@ class ContractCallerDriver:
                 action, sink, agent, log, _emit, timeout_s=30.0
             )
             if agent_text is None:
+                # Agent gone mid-call (end_call tool → disconnect): the call
+                # is over by the AGENT's hand, not a caller violation and not
+                # a timeout to retry — end cleanly as agent-ended (runs
+                # 054/055 class burned the whole behavior budget polling a
+                # dead room into FAILED_MAX_TURNS instead).
+                gone = getattr(agent, "is_agent_gone", None)
+                try:
+                    agent_gone = bool(callable(gone) and gone())
+                except Exception:  # noqa: BLE001 — best-effort probe
+                    agent_gone = False
+                if agent_gone:
+                    _emit(
+                        "contract.agent_ended",
+                        {"behavior": contract.behavior, "turn": turns},
+                    )
+                    return DriverResult(
+                        ended_by=EndedBy.AGENT,
+                        behaviors_completed=0,
+                        turns_spoken=turns,
+                    )
                 # Agent silence, NOT a caller violation — a separate failure
                 # class (see AgentTurnWait docstring). The caller's turn was
                 # already validly spoken and published; only the agent side
@@ -890,6 +919,23 @@ class ContractCallerDriver:
             log.append(Turn(speaker="agent", text=agent_text))
             verdict = self.orchestrator.evaluate_behavior(contract, agent_text)
             if verdict == EvaluatorVerdict.SATISFIED:
+                return turns, agent_text
+            # End-behavior escape: the call is already socially over — the
+            # agent answered the end turn with a CLOSING turn (goodbye,
+            # you're-welcome, glad-it's-sorted) instead of new content.
+            # Holding the behavior open to burn the remaining budget asking
+            # for a "closing" reply that already arrived is wrong (run 061
+            # class: agent said "Anytime! Glad it's sorted." / "You're
+            # welcome." to end turns 4-5, then the run died FAILED_MAX_TURNS
+            # on polite thank-yous while both sides exchanged closings).
+            # A closing agent reply satisfies the end behavior: the goodbye
+            # was heard and reciprocated. Non-closing replies (questions,
+            # new info, deflections) still loop the budget as before.
+            if contract.behavior in ("end", "hangup", "hang_up") and _is_closing_reply(agent_text):
+                _emit(
+                    "contract.agent_ended",
+                    {"behavior": contract.behavior, "turn": turns},
+                )
                 return turns, agent_text
             # Not satisfied: loop back to the single owner gate at the top
             # (check_max_turns -> CONTINUE means "another caller turn",
@@ -943,6 +989,15 @@ class ContractCallerDriver:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 return None
+            # Agent left mid-call (end_call tool → disconnect): stop polling
+            # a dead room — the caller maps the None below to a clean
+            # agent-ended result instead of a timeout + budget burn.
+            gone = getattr(agent, "is_agent_gone", None)
+            try:
+                if callable(gone) and gone():
+                    return None
+            except Exception:  # noqa: BLE001 — best-effort probe
+                pass
             # Short slices so the cut-in lands mid-answer, not after it.
             try:
                 text = await asyncio.wait_for(
@@ -1099,6 +1154,57 @@ class ContractCallerDriver:
 
 def _interaction(action: CallerAction) -> InteractionConfig | None:
     return action.interaction
+
+
+# Agent closing-turn markers: the agent reciprocated the goodbye instead of
+# advancing the call (run 061 class: "Anytime! Glad it's sorted.", "You're
+# welcome."). A reply containing a question mark or a forward-looking offer
+# ("anything else", "let me know", "can I help") is NOT closing — the agent
+# is still working the call and the budget loop continues.
+# Run 074 (dealer-live-full, gemini caller): the agent answered the end
+# turn with "Thank you, Mate!" and the escape missed it — the end loop
+# then burned all 5 turns on VALID thank-yous with no closing reply ever
+# coming. A thank-you IS a reciprocal closing here (same as you're-welcome
+# / my-pleasure): the agent acknowledged the goodbye instead of advancing
+# the call. Scoped to the end-behavior escape only (never the validator),
+# and _NON_CLOSING_PATTERNS still vetoes working replies first.
+_CLOSING_REPLY_PATTERNS = (
+    "you're welcome",
+    "you are welcome",
+    "my pleasure",
+    "anytime",
+    "glad it's sorted",
+    "glad its sorted",
+    "glad to help",
+    "happy to help",
+    "have a good day",
+    "have a great day",
+    "goodbye",
+    "bye",
+    "take care",
+    "see you",
+    "thank you",
+    "thanks",
+    "mate",
+)
+_NON_CLOSING_PATTERNS = (
+    "?",
+    "anything else",
+    "let me know",
+    "can i help",
+    "could i help",
+    "what else",
+)
+
+
+def _is_closing_reply(agent_text: str) -> bool:
+    """True when the agent's turn reads as a reciprocal closing."""
+    text = (agent_text or "").lower()
+    if not text or text.strip() == "[untranscribed agent speech]":
+        return False
+    if any(p in text for p in _NON_CLOSING_PATTERNS):
+        return False
+    return any(p in text for p in _CLOSING_REPLY_PATTERNS)
 
 
 # Fixed cut-in lines per interrupt class. Author-fixed text (like ``say``):
