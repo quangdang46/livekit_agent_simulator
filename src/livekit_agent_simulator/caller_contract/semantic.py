@@ -237,6 +237,7 @@ ACT_PATTERNS: dict[str, tuple[str, ...]] = {
                       # or bare "schedule" alone never decides the act; the
                       # visit-specific noun keeps provide/ask from hijacking
                       # (neither owns "test drive" as a pattern).
+                      "test drive",
                       "test drive"),
     # Live run 007 (dealer-live-full): the generator's natural goodbye —
     # "Thank you for your help!" — scored 0 hits (no goodbye/bye/thanks-
@@ -277,6 +278,42 @@ def _split_clauses(utterance: str) -> list[str]:
 _PAIR_PATTERNS: dict[str, tuple[tuple[str, ...], ...]] = {
     "ask": (("confirm", "price"),),
     "negotiate": (("adjustments", "price"), ("adjustment", "price")),
+    # Run 064 (dealer-live-full, gemini caller): the generator asks the
+    # AGENT for a slot — "does ten in the morning work for you?", "would
+    # around 10:00 AM tomorrow work for you?" — and scored 0 hits: no
+    # first-person booking verb, just a schedule-question with a concrete
+    # time. "work for you" + a time-shaped word marks the slot-proposal
+    # shape. Scoped as PAIRs (both substrings required) so a bare "work
+    # for you" with no time never decides the act — and time words alone
+    # ("morning", "10:00", "ten", "tomorrow") match no tier by themselves.
+    # NOTE: the parity fixture orchestrator_evaluator.json:153/167 carries
+    # "would tomorrow morning around 10am work for you" as AGENT text for
+    # the arrange_visit evaluator (not the caller verifier) — different
+    # module, no blast radius there.
+    "arrange_visit": (
+        ("work for you", "morning"),
+        ("work for you", "10:00"),
+        ("work for you", "10am"),
+        ("work for you", "10 am"),
+        ("work for you", "ten"),
+        ("work for you", "tomorrow"),
+        # Run 069 (dealer-live-full, gemini caller): more slot-proposal
+        # shapes with no first-person booking verb. Each pair needs a
+        # schedule-question half + a time half, so neither half alone
+        # decides the act ("what times are you open?" has no "available"/
+        # "morning" pair-mate; bare "morning"/"tomorrow" match no tier).
+        ("what times", "available"),
+        ("what times", "morning"),
+        ("would work", "morning"),
+        ("would work", "tomorrow"),
+        ("would work", "10:00"),
+        ("work", "morning"),
+        ("how does", "morning"),
+        ("sound", "morning"),
+        ("lock in", "morning"),
+        ("lock in", "tomorrow"),
+        ("lock in", "10:00"),
+    ),
 }
 
 

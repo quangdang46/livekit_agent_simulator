@@ -83,6 +83,22 @@ class ObserverAgentWait:
             return float(mono) * 1000.0
         return None
 
+    def is_agent_gone(self) -> bool:
+        """True when the agent participant left / room closed mid-call.
+
+        The Observer sets ``agent_disconnected`` on participant_disconnected
+        (matching agent identity) and on room disconnected. When set, no
+        further agent turn will ever arrive — the driver must end the run
+        as agent-ended, never burn the behavior budget polling a dead room
+        (dealer-live-full runs 054/055 class: end_call tool → disconnect →
+        5×30s FAILED_MAX_TURNS loop instead of a clean agent end).
+        """
+        ev = getattr(self.observer, "agent_disconnected", None)
+        try:
+            return bool(ev is not None and ev.is_set())
+        except Exception:  # noqa: BLE001 — best-effort probe
+            return False
+
     async def wait_agent_turn(self, *, timeout_s: float) -> str | None:
         deadline = time.monotonic() + timeout_s
         seen_at_start = getattr(self.observer, "last_agent_final_mono", None)
