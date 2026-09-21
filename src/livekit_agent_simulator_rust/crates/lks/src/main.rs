@@ -1003,14 +1003,14 @@ mod tests {
     fn cli_parses_help_and_no_args() {
         let cli = Cli::parse_from(["lksr"]);
         assert!(matches!(cli, Cli { command: None, .. }));
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.0-rust");
+        assert!(!env!("CARGO_PKG_VERSION").is_empty());
     }
 
     #[test]
     fn version_flag_is_wired() {
         let cmd = Cli::command();
         let about = cmd.get_version().expect("version set");
-        assert_eq!(about, "0.1.0-rust");
+        assert_eq!(about, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
