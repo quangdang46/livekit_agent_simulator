@@ -344,6 +344,16 @@ _END_SHAPE_PAIRS: tuple[tuple[str, ...], ...] = (
     # NO thanks word stays OUT ("I need assistance scheduling a visit" is
     # a request, not a goodbye — it would tie arrange_visit 1-1).
     ("appreciate", "assistance"),
+    # Run 087 ("I look forward to our test drive tomorrow morning!"): a
+    # forward-looking closing that references the just-booked visit — same
+    # family as thanks/appreciate (whack-a-mole rewording of the same
+    # closing intent), scored 0 end hits. "look forward to" + a booking
+    # noun marks it; bare "look forward to" with no booking noun stays out
+    # (could be forward-looking about something unrelated to the call end).
+    ("look forward to", "test drive"),
+    ("look forward", "test drive"),
+    ("look forward to", "scheduling"),
+    ("look forward", "scheduling"),
 )
 
 
