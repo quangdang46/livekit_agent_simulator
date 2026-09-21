@@ -303,6 +303,28 @@ async def test_agent_gone_mid_behavior_ends_by_agent_not_timeout():
 
 
 @pytest.mark.asyncio
+async def test_wait_fast_path_returns_none_when_agent_already_gone():
+    """Run-083 regression: the agent disconnected BEFORE wait_agent_turn was
+    entered. The stale pre-drain final must NOT be recycled — return None
+    immediately so the driver takes the agent-ended path."""
+    from livekit_agent_simulator.caller_contract.agent_wait import ObserverAgentWait
+
+    class _GoneObserver:
+        last_agent_final_mono = 123.0
+        last_agent_final_text = "Certainly. What time tomorrow morning works for you?"
+        agent_is_active_speaker = False
+
+        class _Evt:
+            def is_set(self):
+                return True
+
+        agent_disconnected = _Evt()
+
+    wait = ObserverAgentWait(observer=_GoneObserver())
+    assert await wait.wait_agent_turn(timeout_s=30.0) is None
+
+
+@pytest.mark.asyncio
 async def test_agent_silence_still_timeout_when_agent_present():
     """The gone-check must not swallow a plain slow agent: no is_agent_gone
     (old fakes) or False means the None maps to AGENT_TIMEOUT as before."""

@@ -100,6 +100,15 @@ class ObserverAgentWait:
             return False
 
     async def wait_agent_turn(self, *, timeout_s: float) -> str | None:
+        # Fast-path: the agent already left (end_call tool → disconnect
+        # before we even started waiting — run 083 class returned the
+        # STALE pre-drain final "Certainly. What time..." then looped the
+        # end budget on re-asks the dead agent could never answer).
+        # No further agent turn will ever arrive: return None immediately
+        # so the driver maps it to the agent-ended path, never to a
+        # recycled final.
+        if self.is_agent_gone():
+            return None
         deadline = time.monotonic() + timeout_s
         seen_at_start = getattr(self.observer, "last_agent_final_mono", None)
         # A final that already exists at call time (preamble-shape: the agent
