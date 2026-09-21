@@ -456,8 +456,8 @@
             "act": "arrange_visit",
             "target": null,
             "confidence_min": 0.5
-         },
-
+         }
+      },
       {
          "id": "act-end-thanks-for-booking-pass",
          "category": "ACT",
@@ -511,8 +511,6 @@
             "target": null,
             "confidence_min": 0.5
          }
-      }
-
       }
    ]
 }
