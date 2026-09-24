@@ -174,17 +174,36 @@ the port code:
    cmd //c "subst W: C:\\path\\to\\livekit-agent-simulator"
    cd W:/src/livekit_agent_simulator_rust
    export CARGO_TARGET_DIR="W:/debug"          # short: fixes MAX_PATH
-   export RUSTFLAGS="-C target-feature=+crt-static"   # see (2)
+   export PYO3_PYTHON="C:/path/to/python.exe"  # see (2)
+   export RUSTFLAGS="-C target-feature=+crt-static"   # see (3)
    cargo check --workspace
    ```
 
    `CARGO_TARGET_DIR` must be short; the source path may stay wherever it is,
    because only the target tree grows deep enough to break the vendored
-   includes. `PYO3_PYTHON` must also point at a real interpreter
-   (`lks-core`'s default features embed CPython for the `.py` verify
-   plugins); without it the build stops at `pyo3-ffi: no Python 3.x
-   interpreter found`.
-2. **CRT mismatch**: `webrtc-sys` native objects build `MT_StaticRelease`
+   includes.
+
+2. **Embedded CPython**: `lks-core`'s default features include `python-plugins`
+   (pyo3), so the build needs a real interpreter. Without `PYO3_PYTHON` it stops
+   at `pyo3-ffi: no Python 3.x interpreter found`.
+
+   This also applies at **runtime**: the built `lksr.exe` dynamically links that
+   interpreter's DLL, so in a shell without it on PATH the binary exits
+   immediately with `error while loading shared libraries: python312.dll`.
+   **This affects the released binary too, not just local builds** — a published
+   `lksr.exe` built against a different CPython demands the matching
+   `python3XX.dll`, which the installer does not ship. Put the interpreter on
+   PATH before running `lksr`:
+
+   ```sh
+   export PATH="/c/Users/ADMIN/AppData/Roaming/uv/python/cpython-3.12.13-windows-x86_64-none:$PATH"
+   ```
+
+   `lks` (Python) has no such requirement. Either shipping a static/embedded
+   Python or making the installer provision the matching DLL would remove this
+   footgun.
+
+3. **CRT mismatch**: `webrtc-sys` native objects build `MT_StaticRelease`
    while Rust links `MD_DynamicRelease` (LNK2038). Workaround:
    `RUSTFLAGS="-C target-feature=+crt-static"`. With all three workarounds
    (short target dir, repo-root `subst`, `PYO3_PYTHON`) plus crt-static,
