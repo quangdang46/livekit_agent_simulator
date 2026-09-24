@@ -26,6 +26,9 @@ BUG-7-01-INVESTIGATION-REPORT.md
 
 # Rust full-port workspace build output
 src/livekit_agent_simulator_rust/target/
+# Short-CARGO_TARGET_DIR workaround on Windows (see docs/caller-runtime-state-machine.md §8)
+debug/
+src/livekit_agent_simulator_rust/debug/
 
 # macOS junk
 .DS_Store

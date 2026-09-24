@@ -30,6 +30,19 @@ FLOW EVENTS are the agent's own published node-lifecycle digest. Repeating entri
 the same node indicate the flow held on that node across turns; transitions between nodes
 show advancement.
 
+TEST INSTRUMENTATION — read before reporting "the agent leaked an internal string":
+Scenarios configure agent messages as deliberate MARKER strings to make behaviour
+observable in the transcript (e.g. a global fallback message and a per-node override
+message configured with distinct sentinel text, precisely so the reviewer can tell
+WHICH layer produced it). A marker appearing in the transcript is the scenario working
+as designed, not the agent exposing internals to a caller. Do not report marker/sentinel
+strings, configured fallback/retry text, or their repetition across turns as UX defects.
+Judge whether the right marker was produced in the right situation — and where the run
+supplies an assert contract (machine-checked outcomes), that contract is authoritative:
+if it passed, the behavior it covers is correct, and the call should not be downgraded for
+it. Only flag such text when the transcript shows a marker where the scenario did NOT
+configure one, or when the assert contract for it failed.
+
 When reviewing:
 - Do not criticize stylistic differences unless they negatively affect usability.
 - Distinguish between critical issues and minor wording improvements.
@@ -60,6 +73,39 @@ Return JSON with this structure:
 """
 
 
+def build_assert_digest(assert_verify: object) -> str | None:
+    """Render the machine-checked assert contract for the judge prompt.
+
+    The judge otherwise sees only a conversation and re-litigates behavior that
+    the run already proved correct (e.g. reading a deliberate test marker as the
+    agent leaking an internal string). Passing the contract makes the authoritative
+    signal visible instead of merely implied.
+    """
+    if not isinstance(assert_verify, dict):
+        return None
+    checks = assert_verify.get("checks") or []
+    if not checks:
+        return None
+    lines: list[str] = []
+    overall = assert_verify.get("pass")
+    if overall is not None:
+        lines.append(f"Overall: {'PASS' if overall else 'FAIL'}")
+    for chk in checks:
+        if not isinstance(chk, dict):
+            continue
+        name = chk.get("check") or chk.get("id") or chk.get("type") or "check"
+        ok = chk.get("pass")
+        mark = "PASS" if ok else ("FAIL" if ok is False else "?")
+        detail = ""
+        phrases = chk.get("phrases")
+        if isinstance(phrases, list) and phrases:
+            detail = f" — expects {phrases!r}"
+            if chk.get("negate"):
+                detail += " (must NOT appear)"
+        lines.append(f"- [{mark}] {name}{detail}")
+    return "\n".join(lines) if lines else None
+
+
 def build_user_prompt(
     *,
     pass_criteria: list[str],
@@ -67,6 +113,7 @@ def build_user_prompt(
     tool_spans: str,
     flow_digest: str | None = None,
     goals_met: bool | None = None,
+    assert_digest: str | None = None,
 ) -> str:
     parts = [
         "PASS CRITERIA:",
@@ -78,6 +125,18 @@ def build_user_prompt(
         "TOOL SPANS:",
         tool_spans or "(none)",
     ]
+    if assert_digest:
+        parts.extend(
+            [
+                "",
+                "ASSERT CONTRACT (machine-checked; authoritative when present):",
+                assert_digest,
+                "",
+                "The checks above passed or failed on their own. Treat a PASSED check as "
+                "proof the behavior it covers is correct — do not re-litigate it as a UX "
+                "problem below. Judge only what the contract does not cover.",
+            ]
+        )
     if flow_digest:
         parts.extend(
             [

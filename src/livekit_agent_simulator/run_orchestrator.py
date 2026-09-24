@@ -677,6 +677,10 @@ async def run_scenario_instance(
                     writer.turn_metrics(),
                     tool_events,
                     flow_events,
+                    # Hand the judge the machine-checked contract so it does not
+                    # re-litigate behavior the run already proved correct (it was
+                    # reading deliberate test markers as leaked internals).
+                    summary_extra.get("assert_verify"),
                 )
         except Exception as e:
             verdict = {

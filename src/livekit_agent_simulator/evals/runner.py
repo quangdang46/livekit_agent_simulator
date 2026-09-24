@@ -11,7 +11,7 @@ from .aggregate import aggregate_judges
 from .backend import JudgeBackend, backend_from_config
 from .evidence import build_evidence_packet
 from .presets import expand_criteria, expand_judge_group
-from .prompt import JUDGE_SYSTEM, build_user_prompt
+from .prompt import JUDGE_SYSTEM, build_assert_digest, build_user_prompt
 from .relevancy import apply_relevancy
 from .resolve import resolve_judge
 from .types import JudgmentResult, parse_judgment_payload
@@ -161,6 +161,7 @@ async def _judge(
     *,
     flow_events: list[dict[str, Any]] | None = None,
     goals_met: bool | None = None,
+    assert_verify: object | None = None,
 ) -> dict[str, Any]:
     if not pass_criteria:
         return JudgmentResult(verdict="skipped", notes="No criteria.").to_dict()
@@ -177,6 +178,7 @@ async def _judge(
         tool_spans=packet["tool_spans"],
         flow_digest=packet["flow_digest"],
         goals_met=goals_met,
+        assert_digest=build_assert_digest(assert_verify),
     )
     try:
         text = await backend.complete_json(system=JUDGE_SYSTEM, user=user)
@@ -197,6 +199,7 @@ async def judge_run(
     turns: list[dict[str, Any]],
     tool_events: list[dict[str, Any]],
     flow_events: list[dict[str, Any]] | None = None,
+    assert_verify: object | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_judge(judge_cfg, sim_api_key=sim_api_key)
     if not resolved.ready:
@@ -220,6 +223,7 @@ async def judge_run(
     return await _judge(
         backend, pass_criteria, turns, tool_events,
         flow_events=flow_events, goals_met=None,
+        assert_verify=assert_verify,
     )
 
 

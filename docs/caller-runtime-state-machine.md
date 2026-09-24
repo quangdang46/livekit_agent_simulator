@@ -158,12 +158,34 @@ the port code:
 1. **MAX_PATH**: the default deep `target/` path exceeds Windows path
    limits inside the vendored webrtc headers (`abseil-cpp` includes fail
    with C1083 despite the files existing). Workaround: build with a short
-   target dir — `subst W: <repo>\target` then
-   `CARGO_TARGET_DIR="W:/debug" cargo ...`.
+   target dir.
+
+   **Subst the REPO ROOT, not the rust crate dir.** `lks-core`'s
+   `#[derive(RustEmbed)]` resolves `../../../../templates` relative to the
+   crate manifest, and a `subst` root cannot be walked out of — mapping
+   `W:` at `src/livekit_agent_simulator_rust` makes those paths escape the
+   drive and fail with `os error 3` / "folder does not exist", producing nine
+   bogus E0599 errors in `authoring.rs` that look like missing `iter`/`get`
+   methods. The working recipe is:
+
+   ```sh
+   # from a bash shell (note the cmd //c so Git Bash does not eat /d)
+   cmd //c "subst W: /d" 2>/dev/null || true
+   cmd //c "subst W: C:\\path\\to\\livekit-agent-simulator"
+   cd W:/src/livekit_agent_simulator_rust
+   export CARGO_TARGET_DIR="W:/debug"          # short: fixes MAX_PATH
+   export RUSTFLAGS="-C target-feature=+crt-static"   # see (2)
+   cargo check --workspace
+   ```
+
+   `CARGO_TARGET_DIR` must be short; the source path may stay wherever it is,
+   because only the target tree grows deep enough to break the vendored
+   includes. `PYO3_PYTHON` must also point at a real interpreter
+   (`lks-core`'s default features embed CPython for the `.py` verify
+   plugins); without it the build stops at `pyo3-ffi: no Python 3.x
+   interpreter found`.
 2. **CRT mismatch**: `webrtc-sys` native objects build `MT_StaticRelease`
    while Rust links `MD_DynamicRelease` (LNK2038). Workaround:
-   `RUSTFLAGS="-C target-feature=+crt-static"`. With both workarounds,
-   `cargo check --workspace` is green, `lks-core` 27/27 test binaries pass,
-   `lks-livekit` lib tests 11/11 pass, and `lksr.exe` links successfully.
-   (`execute_parity` integration binaries hit an unrelated MSYS DLL-loader
-   issue when spawned from this shell; lib tests are the supported gate.)
+   `RUSTFLAGS="-C target-feature=+crt-static"`. With all three workarounds
+   (short target dir, repo-root `subst`, `PYO3_PYTHON`) plus crt-static,
+   `cargo check --workspace` is green and the full test suite runs.

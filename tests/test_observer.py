@@ -227,3 +227,85 @@ def test_stale_segment_interim_dropped_across_turns_run_050(tmp_path) -> None:
                       segment_id=seg, source="lk.transcription")
     assert len(writer._events) == before
     assert obs.turn == 2
+
+
+# ---------------------------------------------------------------------------
+# Cross-source duplicate finals (VOICEAIDASHBOARD follow-up / run 033)
+#
+# A caller utterance is reported twice: once by the room's own STT
+# (`lk.transcription`, carrying a segment_id) and once by the agent republishing
+# its transcript (`voice_ai.transcript`, no segment_id, ~400 ms later, identical
+# text). The second copy used to be merged as a split-utterance continuation, so
+# the run summary APPENDED it and every caller line rendered doubled
+# ("Hello. ... Hello. ...").
+#
+# Same text from the SAME source is a genuine repeat and must still merge, so
+# the dedupe keys on source, not text alone.
+# ---------------------------------------------------------------------------
+
+
+def test_agent_republished_transcript_does_not_double_user_text(tmp_path):
+    obs, writer = _observer(tmp_path)
+    line = "Hello. I would like to speak to someone about my building."
+
+    obs.on_transcript("user", line, final=True, source="lk.transcription", segment_id="SG_1")
+    # Agent republishes the same line with no segment_id, before any agent reply.
+    obs.on_transcript("user", line, final=True, source="voice_ai.transcript")
+
+    finals = [
+        e for e in writer.events if e["kind"] == "transcript.user.final"
+    ]
+    assert len(finals) == 1, "cross-source duplicate must be dropped"
+    assert finals[0]["spec"]["text"] == line
+
+
+def test_same_source_repeat_is_dropped_by_the_dedupe_window(tmp_path):
+    """Identical text from the same source is already handled upstream.
+
+    _accept_final drops a same-source, same-text final inside
+    transcript_dedupe_window_ms, so it never reaches the turn-merge branch.
+    This is the pre-existing behaviour the new check deliberately does not
+    change — it only covers the CROSS-source case that slipped through.
+    """
+    obs, writer = _observer(tmp_path)
+
+    obs.on_transcript("user", "yes", final=True, source="lk.transcription", segment_id="SG_1")
+    obs.on_transcript("user", "yes", final=True, source="lk.transcription", segment_id="SG_2")
+
+    finals = [
+        e for e in writer.events if e["kind"] == "transcript.user.final"
+    ]
+    assert len(finals) == 1
+
+
+def test_cross_source_duplicate_dropped_across_many_turns(tmp_path):
+    """Regression shape from run 033: every turn doubled, 13/13 affected."""
+    obs, writer = _observer(tmp_path)
+    lines = [
+        "Hello.",
+        "I am afraid I cannot say.",
+        "I really do not know.",
+        "That is all I can say.",
+    ]
+    for i, line in enumerate(lines):
+        obs.on_transcript("user", line, final=True, source="lk.transcription", segment_id=f"SG_{i}")
+        obs.on_transcript("user", line, final=True, source="voice_ai.transcript")
+        # A real agent answer is a full sentence. A 1-2 word reply would be
+        # classified as a backchannel, which legitimately merges the next user
+        # final into this turn instead of starting a new one.
+        # Unique per turn: an identical agent final would be swallowed by
+        # _accept_final dedupe window, leaving the turn open so the next user
+        # final merges as a continuation.
+        obs.on_transcript(
+            "agent",
+            f"Thank you. Next, could you please provide your callback phone "
+            f"number, including the area code? (step {i})",
+            final=True,
+            source="lk.transcription",
+        )
+
+    finals = [
+        e for e in writer.events if e["kind"] == "transcript.user.final"
+    ]
+    assert len(finals) == len(lines)
+    assert [e["spec"]["text"] for e in finals] == lines

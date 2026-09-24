@@ -532,9 +532,24 @@ class Observer:
 
         if role == "user":
             norm = _normalize_text(text)
-            is_echo_of_prior_turn = self._agent_replied_this_turn and (
-                norm == self._current_turn_user_norm
-                or _similar_text(norm, self._current_turn_user_norm or "")
+            # Same text as the turn's first final, from a DIFFERENT reporter.
+            #
+            # A caller utterance is reported twice: the room's own STT
+            # (`lk.transcription`, rank 3) and the agent republishing its
+            # transcript (`voice_ai.transcript`, rank 2). `_accept_final`
+            # deliberately lets the better-ranked data-topic source through —
+            # that is intentional, the agent's transcript is cleaner than LK ASR.
+            # But when the TEXT is identical the second event carries no new
+            # information, and `merge_as_same_turn` below would treat it as a
+            # split-utterance continuation, so the run summary APPENDED it and
+            # every caller line rendered doubled ("hello. ... hello. ...").
+            #
+            # Genuine repeats do not reach here: a same-source, same-text final
+            # is already dropped by `_accept_final`'s dedupe window above.
+            if norm and norm == self._current_turn_user_norm:
+                return
+            is_echo_of_prior_turn = self._agent_replied_this_turn and _similar_text(
+                norm, self._current_turn_user_norm or ""
             )
             if is_echo_of_prior_turn:
                 return

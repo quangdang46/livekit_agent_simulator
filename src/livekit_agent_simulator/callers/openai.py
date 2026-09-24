@@ -1141,13 +1141,19 @@ class OpenAICallerBridge:
         # caller turn would hang forever and the agent never gets kicked. Arm a
         # one-shot task to force the manual turn hand-off after a grace period.
         # Guarded: unit tests drive _dispatch_event without a running loop.
+        #
+        # Resolve the loop BEFORE building the coroutine. `asyncio.create_task(coro)`
+        # evaluates `coro` first and only then discovers there is no loop, so the
+        # try/except around it would orphan the coroutine (RuntimeWarning:
+        # "coroutine ... was never awaited" plus a leaked object). Checking the
+        # loop up front means we never construct a coroutine we cannot schedule.
         if self._out_done_timer is None:
             try:
-                self._out_done_timer = asyncio.create_task(
-                    self._out_done_watchdog()
-                )
+                loop = asyncio.get_running_loop()
             except RuntimeError:
-                self._out_done_timer = None
+                loop = None
+            if loop is not None:
+                self._out_done_timer = loop.create_task(self._out_done_watchdog())
         pending = self._script_steps_pending()
         early_bye = contains_farewell_signal(self._sim_out_text)
         scripted_farewell = self._script_hangup_farewell

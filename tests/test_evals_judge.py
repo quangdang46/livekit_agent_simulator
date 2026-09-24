@@ -465,3 +465,87 @@ def test_repair_rejects_unrecoverable_input():
     j = _parse_llm_json("not-json")
     assert j.verdict == "error"
     assert "non-JSON" in j.notes
+
+
+# ---------------------------------------------------------------------------
+# Assert-contract digest
+#
+# Regression from run 033 (scenario-7): the judge read the deliberate
+# GLOBAL-/NODE-*-EXTRACTION-FAILED test markers as the agent leaking internal
+# strings, and scored the run "maybe"/55 with two bogus "Major" issues — even
+# though the machine-checked contract was 5/5 PASS. The judge never saw that
+# contract, so it re-derived correctness from the conversation alone.
+# ---------------------------------------------------------------------------
+
+
+def test_build_assert_digest_renders_passing_checks():
+    from livekit_agent_simulator.evals.prompt import build_assert_digest
+
+    digest = build_assert_digest(
+        {
+            "pass": True,
+            "checks": [
+                {
+                    "check": "outcome:s7_node_without_override_uses_global",
+                    "pass": True,
+                    "type": "transcript_contains",
+                    "phrases": ["GLOBAL-EXTRACTION-FAILED"],
+                },
+                {
+                    "check": "outcome:s7_partial_node_inherits_global",
+                    "pass": True,
+                    "phrases": ["NODE-C-NO-INPUT"],
+                    "negate": True,
+                },
+            ],
+        }
+    )
+    assert digest is not None
+    assert "Overall: PASS" in digest
+    assert "[PASS] outcome:s7_node_without_override_uses_global" in digest
+    assert "GLOBAL-EXTRACTION-FAILED" in digest
+    # A negated check must read as "must NOT appear", or the judge inverts it.
+    assert "must NOT appear" in digest
+
+
+def test_build_assert_digest_marks_failures():
+    from livekit_agent_simulator.evals.prompt import build_assert_digest
+
+    digest = build_assert_digest(
+        {"pass": False, "checks": [{"check": "outcome:x", "pass": False}]}
+    )
+    assert digest is not None
+    assert "Overall: FAIL" in digest
+    assert "[FAIL] outcome:x" in digest
+
+
+def test_build_assert_digest_returns_none_without_a_contract():
+    from livekit_agent_simulator.evals.prompt import build_assert_digest
+
+    assert build_assert_digest(None) is None
+    assert build_assert_digest({}) is None
+    assert build_assert_digest({"pass": True, "checks": []}) is None
+    assert build_assert_digest("not a dict") is None
+
+
+def test_user_prompt_includes_contract_and_marker_guidance():
+    from livekit_agent_simulator.evals.prompt import (
+        JUDGE_SYSTEM,
+        build_assert_digest,
+        build_user_prompt,
+    )
+
+    user = build_user_prompt(
+        pass_criteria=["The call reached an ending"],
+        transcript="AGENT: GLOBAL-EXTRACTION-FAILED please repeat",
+        tool_spans="",
+        assert_digest=build_assert_digest(
+            {"pass": True, "checks": [{"check": "outcome:x", "pass": True}]}
+        ),
+    )
+    assert "ASSERT CONTRACT" in user
+    assert "authoritative" in user.lower()
+    # The system prompt must tell the judge that configured markers are
+    # instrumentation, or it will keep flagging them as leaked internals.
+    assert "TEST INSTRUMENTATION" in JUDGE_SYSTEM
+    assert "MARKER" in JUDGE_SYSTEM
