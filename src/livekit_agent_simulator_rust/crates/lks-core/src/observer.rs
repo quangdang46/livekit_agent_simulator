@@ -323,9 +323,26 @@ impl Observer {
         spec: Map<String, Json>,
     ) {
         let norm = normalize_text(text);
+        // Same text as this turn's first final, from a DIFFERENT reporter.
+        //
+        // A caller utterance is reported twice: the room's own STT
+        // (`lk.transcription`, carries a segment id) and the agent republishing
+        // its transcript (a data topic, no segment id, ~400 ms later, identical
+        // text). The dedupe window deliberately lets the better-ranked data-topic
+        // source through — the agent's transcript is cleaner than LK ASR. But
+        // when the TEXT is identical the second event carries no new information,
+        // and `merge_as_same_turn` below would treat it as a split-utterance
+        // continuation, so the run summary appended it and every caller line
+        // rendered doubled ("hello. ... hello. ...").
+        //
+        // Genuine repeats do not reach here: a same-source, same-text final is
+        // already dropped by the dedupe window. Keep this guard in parity with
+        // `livekit_agent_simulator/livekit/observer.py::on_user_final`.
+        if !norm.is_empty() && Some(&norm) == self.current_turn_user_norm.as_ref() {
+            return;
+        }
         let is_echo_of_prior_turn = self.agent_replied_this_turn
-            && (Some(&norm) == self.current_turn_user_norm.as_ref()
-                || similar_text(&norm, self.current_turn_user_norm.as_deref().unwrap_or("")));
+            && similar_text(&norm, self.current_turn_user_norm.as_deref().unwrap_or(""));
         if is_echo_of_prior_turn {
             return;
         }
