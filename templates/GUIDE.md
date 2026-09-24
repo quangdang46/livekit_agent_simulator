@@ -90,12 +90,15 @@ Templates: `outbound-human-pickup.yaml`, `outbound-callee-sim.yaml`, `inbound-ca
 
 ### Voice, language & call recording
 
-The sim caller is **always voice** when `simulator.api_key` is set (Gemini Live or OpenAI Realtime TTS in the room, per `simulator.provider`).
-There is no separate “enable voice” toggle — only **which provider/voice/language** and **whether to save WAV**.
+The sim caller is **always voice**, spoken by a **local** TTS engine — `sherpa` when the `tts-sherpa` extra is installed, otherwise the OS TTS fallback (`sapi_fallback`). Every run emits `sim.caller_tts` naming the branch that actually fired.
+
+> `simulator.provider` does **not** select the caller's speech engine. It selects the caller *bridge* and the semantic LLM behind `do:` steps. The cloud Realtime session (`bridge.run()`) is not part of the caller path.
+
+There is no separate “enable voice” toggle — only **which language/voice the local engine uses** and **whether to save WAV**. Install `tts-sherpa` for a deterministic voice; without it the OS voice varies by machine, which matters when comparing audio across runs.
 
 | Layer | What it does | Where to set |
 |-------|----------------|--------------|
-| **Sim speech** | Active provider (Gemini Live / OpenAI Realtime) speaks as the caller | `simulator.provider`, `simulator.voice.*`, `simulator.language` |
+| **Sim speech** | Local TTS (sherpa, else OS TTS) speaks as the caller | `tts-sherpa` extra, `simulator.voice.*`, `simulator.language` — **not** `simulator.provider` |
 | **Persona locale** | Prompt + scenario language hint | `Scenario.metadata.locale`, optional `Persona.spec.language` |
 | **Vocal barge / backchannel** | Real speech WAV into sim mic (STT hears it) | Script `delivery: room_pcm` + `asset: voice.*` or `.agent-sim/cues/*.wav` |
 | **Call recording** | Stereo `conversation.wav` for replay (`lks web`) | `observe.record_audio: true` |

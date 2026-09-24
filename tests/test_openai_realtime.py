@@ -578,3 +578,48 @@ async def test_connect_retries_transport_error_then_succeeds(monkeypatch):
     drops = [e for e in bridge.writer.events if e[0] == "sim.openai_socket_drop"]
     assert len(drops) == 1
     assert drops[0][1]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_inject_openai_text_emits_when_session_never_connected():
+    """A dead OpenAI session must not fall back to local TTS in silence.
+
+    Regression: when `_ws` was never established (connect failed, or `run()`
+    died before the handshake), `_inject_openai_text` returned False on its
+    first guard with no event. The caller then spoke every line through
+    `_inject_sapi_fallback` — a different speech engine than the configured
+    `simulator.provider` — while the run still reported
+    `sim.mic_published provider="openai"` and an openai config snapshot. The
+    report therefore attributed the audio to a provider that never ran, and
+    there was nothing in the event log to contradict it.
+    """
+    bridge = _bridge()
+    bridge._ws = None
+    bridge._send_ok = False
+
+    ok = await bridge._inject_openai_text(
+        "My callback number is five five five", label="say1",
+        delivery="openai_text", gain=1.0,
+    )
+    assert ok is False
+    kinds = [k for k, _ in bridge.writer.events]
+    assert "sim.openai_session_unavailable" in kinds
+    spec = dict(bridge.writer.events)["sim.openai_session_unavailable"]
+    assert spec["ws_connected"] is False
+    assert spec["send_ok"] is False
+    assert "local TTS" in spec["impact"]
+
+
+@pytest.mark.asyncio
+async def test_session_unavailable_is_emitted_once_not_per_line():
+    """A 20-line scenario must not produce 20 copies of the same warning."""
+    bridge = _bridge()
+    bridge._ws = None
+    bridge._send_ok = False
+
+    for i in range(5):
+        await bridge._inject_openai_text(
+            f"line {i}", label=f"say{i}", delivery="openai_text", gain=1.0,
+        )
+    kinds = [k for k, _ in bridge.writer.events]
+    assert kinds.count("sim.openai_session_unavailable") == 1

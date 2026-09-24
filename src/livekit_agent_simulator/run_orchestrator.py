@@ -430,6 +430,43 @@ async def run_scenario_instance(
             finally:
                 bridge.stop()
 
+            # Which engine actually produced the caller's voice. The
+            # caller_contract path is the ONLY caller path: `bridge.run()`
+            # (the cloud Realtime session selected by `simulator.provider`)
+            # is deleted, and caller speech comes from the local TTS branch —
+            # sherpa when the `tts-sherpa` extra is installed, otherwise the OS
+            # TTS fallback. `simulator.provider` still selects the bridge object
+            # and the semantic LLM behind `do:` steps, but it does NOT choose
+            # the caller's speech engine.
+            #
+            # Without this the run looks like it honoured the configured
+            # provider: the config snapshot reports `provider`/`voice_model`/
+            # `active_profile`, `preflight` checks `simulator.api_key`, and
+            # `sim.mic_published` reports `provider` — while every utterance was
+            # spoken by a different engine. Per-utterance `contract.published`
+            # carries `tts`, but a run that is only skimmed never surfaces it.
+            try:
+                from .caller_contract.live_wiring import last_tts_branch
+
+                caller_tts = last_tts_branch()
+            except Exception:  # noqa: BLE001 — diagnostics must never fail a run
+                caller_tts = None
+            writer.emit(
+                "sim.caller_tts",
+                spec={
+                    "branch": caller_tts,
+                    "configured_provider": cfg.simulator.provider,
+                    "provider_selects_speech_engine": False,
+                    "note": (
+                        "caller speech is produced by the local TTS branch; "
+                        "simulator.provider selects the caller bridge and the "
+                        "semantic LLM, not the speech engine. Install the "
+                        "'tts-sherpa' extra for a deterministic voice."
+                    ),
+                },
+                include_dialogue=False,
+            )
+
             writer.emit("run.end_condition", spec={"reason": end_reason}, include_dialogue=False)
             session_snapshot_attempted = True
             await observer.finalize_session_snapshot()

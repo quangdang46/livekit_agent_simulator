@@ -416,6 +416,25 @@ class OpenAICallerBridge:
                     include_dialogue=False,
                 )
                 if not is_transport or attempt == max_attempts:
+                    if attempt == max_attempts:
+                        # Terminal: the OpenAI caller will never be live, so
+                        # every utterance will be served by local TTS. Say so
+                        # explicitly — the per-attempt `sim.openai_socket_drop`
+                        # events look like a recoverable retry loop otherwise.
+                        self.writer.emit(
+                            "sim.openai_connect_failed",
+                            spec={
+                                "attempts": max_attempts,
+                                "error": f"{type(e).__name__}: {e}",
+                                "impact": (
+                                    "caller speech falls back to local TTS; "
+                                    "the configured simulator provider is NOT "
+                                    "being used"
+                                ),
+                            },
+                            source="sim",
+                            include_dialogue=False,
+                        )
                     raise
                 await asyncio.sleep(min(2.0 * attempt, 6.0))
         raise RuntimeError("unreachable")  # pragma: no cover
@@ -705,6 +724,30 @@ class OpenAICallerBridge:
         it stayed silent (caller falls back to local TTS).
         """
         if self._ws is None or not self._send_ok:
+            # NOTE: on the current caller_contract path this method is not
+            # reached — `run_orchestrator` only calls `bridge.publish_mic()`,
+            # never `bridge.run()`, and the contract driver synthesizes caller
+            # speech through `caller_contract.live_wiring._synthesize`. The
+            # run-level truth is emitted as `sim.caller_tts` in the
+            # orchestrator. This guard remains for the legacy bridge path (and
+            # for any caller that drives `run()` directly), where a dead
+            # session would otherwise drop to local TTS with no diagnostic.
+            if not getattr(self, "_openai_unavailable_warned", False):
+                self._openai_unavailable_warned = True
+                self.writer.emit(
+                    "sim.openai_session_unavailable",
+                    spec={
+                        "label": label,
+                        "ws_connected": self._ws is not None,
+                        "send_ok": bool(self._send_ok),
+                        "impact": (
+                            "caller speech falls back to local TTS; the "
+                            "configured simulator provider is NOT being used"
+                        ),
+                    },
+                    source="sim",
+                    include_dialogue=False,
+                )
             return False
         self._inject_playback_gain = max(0.0, min(1.0, float(gain) * self._voice_gain))
         self._inject_turn_active = True
