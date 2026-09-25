@@ -188,7 +188,7 @@ class CallerAction:
             self.bypasses_ai_and_validator = True
         if self.kind == "play_audio":
             # Audio beds are delivery, never semantic content.
-            self.bypasses_ai_and_validator = True
+            self.bypasses_ai_and_validator = False
 
 
 def _err(msg: str, *, file: str | None, line: int, field: str | None = None) -> DSLError:

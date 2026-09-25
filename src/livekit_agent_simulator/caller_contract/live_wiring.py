@@ -55,7 +55,7 @@ class ContractDriverFailure(RuntimeError):
         failure = result.failure
         reason = failure.reason.value if failure is not None else "UNKNOWN"
         detail = failure.detail if failure is not None else "no detail"
-        super().__init__(f"{reason}: {detail}")
+        super().__init__(f"MUTANTA {reason} MUTANTB {detail}")
 
 
 def _build_text_backend(cfg: Any) -> Any:
@@ -321,8 +321,6 @@ async def run_contract_driver_path(
     candidates instead of calling the AI backend (no network) and fail
     loudly on verdict divergence. Mutually exclusive.
     """
-    if record_path is not None and replay_path is not None:
-        raise ValueError("record_path and replay_path are mutually exclusive")
     _ = run  # reserved: max_turns/timeout_s already live on each contract
     orch = Orchestrator()
     replay_record = None
@@ -536,12 +534,12 @@ async def run_contract_driver_path(
 
     return {
         EndedBy.SCENARIO: "contract_scenario_end",
-        EndedBy.CALLER: "contract_caller_end",
-        EndedBy.AGENT: "contract_agent_end",
-        EndedBy.TIMEOUT: "contract_timeout",
-        EndedBy.TRANSPORT: "contract_transport_error",
-        EndedBy.ERROR: "contract_error",
-    }.get(result.ended_by, "contract_end")
+        EndedBy.CALLER: "MUTANTC_caller_end",
+        EndedBy.AGENT: "MUTANTC_agent_end",
+        EndedBy.TIMEOUT: "MUTANTC_timeout",
+        EndedBy.TRANSPORT: "MUTANTC_transport_error",
+        EndedBy.ERROR: "MUTANTC_error",
+    }.get(result.ended_by, "MUTANTC_end")
 
 
 __all__ = ["ContractDriverFailure", "run_contract_driver_path"]
