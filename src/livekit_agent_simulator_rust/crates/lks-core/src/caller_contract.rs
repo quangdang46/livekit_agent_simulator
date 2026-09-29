@@ -2150,24 +2150,68 @@ mod parity_tests {
         serde_json::from_value(raw.clone()).expect("candidate shape mismatch")
     }
 
-    const VALIDATOR_VECTOR_FILES: [&str; 11] = [
-        "validator_valid_pass.json",
-        "validator_act_mismatch.json",
-        "validator_target_mismatch.json",
-        "validator_slot_violation.json",
-        "validator_slot_string_coercion.json",
-        "validator_schema_invalid.json",
-        "validator_utterance_too_long.json",
-        "validator_end_call_not_allowed.json",
-        "validator_forbidden_intent_lexical.json",
-        "validator_forbidden_intent_nested_semantic.json",
-        "validator_ambiguous_low_confidence.json",
-    ];
+    /// Every `validator_*.json` in the shared fixture directory, sorted for a
+    /// stable failure order.
+    ///
+    /// This used to be a hardcoded `[&str; 11]`, which made the harness
+    /// one-sided BY CONSTRUCTION: adding a 12th vector had Python pick it up
+    /// automatically and Rust never see it, so the "both sides green" claim
+    /// went false with nothing going red. Editing or deleting an existing
+    /// vector was symmetric and safe — the harness degraded exactly as it was
+    /// used more. `caller_dsl.rs` already globbed this same directory, which is
+    /// why the `dsl/` subdir was safe and this one was not.
+    ///
+    /// If a curated subset is ever genuinely wanted, make the exclusion
+    /// explicit here and fail when a `validator_*.json` exists that is neither
+    /// in the list nor in an explicit skip list. Silence is the failure mode,
+    /// not the subset.
+    fn validator_vector_files() -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(fixtures_dir())
+            .expect("validator fixtures dir")
+            .filter_map(|entry| {
+                let entry = entry.expect("dir entry");
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("validator_") && name.ends_with(".json") {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        names.sort();
+        assert!(
+            !names.is_empty(),
+            "no validator_*.json found - the glob is broken, not the fixture set empty"
+        );
+        names
+    }
+
+    #[test]
+    fn the_validator_glob_sees_every_validator_vector() {
+        let found = validator_vector_files();
+        for required in [
+            "validator_valid_pass.json",
+            "validator_target_mismatch.json",
+            "validator_utterance_too_long.json",
+        ] {
+            assert!(
+                found.iter().any(|f| f == required),
+                "{required} missing from the glob: {found:?}"
+            );
+        }
+        // Anything that is NOT a validator vector must not leak in.
+        assert!(
+            !found
+                .iter()
+                .any(|f| f == "schema.json" || f == "should_interrupt.json"),
+            "the glob must select validator_*.json only: {found:?}"
+        );
+    }
 
     #[test]
     fn validator_vectors_produce_expected_verdict_in_rust() {
-        for filename in VALIDATOR_VECTOR_FILES {
-            let data = load(filename);
+        for filename in validator_vector_files() {
+            let data = load(&filename);
             let contract = build_contract(&data["contract"]);
             let candidate = build_candidate(&data["candidate"]);
             // Semantic verification is MANDATORY (mirrors validator.py:
