@@ -55,20 +55,27 @@ This is the point of the whole design: without attribution, an agent bug is indi
 
 ```yaml
 router:
-  provider: openai          # openai | gemini | jev
+  provider: openai          # openai | gemini
   model: gpt-4.1-nano
   api_key: sk-...            # config.yaml is gitignored; no api_key_env indirection
   timeout_ms: 1500
   temperature: 0
-  prompt_version: v1
-  unknown_policy: off_script
 
 text_planner:
   enabled: true             # false => publish catalog text verbatim (byte-exact regression)
+  # toggles the EXISTING caller_contract/text_backends.py, not a new port
   provider: openai
   model: gpt-4.1-nano
   api_key: sk-...
 ```
+
+> **Two keys were cut in polish round 3** as dead surface (AGENTS.md: *"if you can't name the flow that calls it, it is dead on arrival"*):
+> - **`unknown_policy`** — its only legal value was `off_script` and nothing branched on it. A validated constant is still a dead knob; the catalog's system entry already *is* the policy, so the key was a second source of truth. It returns only if a second terminal behaviour is ever designed.
+> - **`prompt_version`** — existed for cross-backend benchmarking that no bead performs, and Jev has no adapter. It returns only alongside a real benchmark bead.
+>
+> `reasoning_effort` is a **code constant in the adapters**, not a key — an operator choice nobody would exercise.
+>
+> Every remaining key has a named consumer: `provider`/`model`/`api_key`/`temperature` → the adapters, `timeout_ms` → the port, `text_planner.enabled` → the driver.
 
 The enum is built **at runtime** from the response ids in the scenario. Nothing hardcodes `company|phone|address`.
 
@@ -84,7 +91,7 @@ agent transcript
  Response Catalog         ← authored ground truth
       │
       ▼
- Text Planner            ← HOW: persona phrasing  (caller_contract/text_backends.py)
+ Text Backend            ← HOW: persona phrasing  (caller_contract/text_backends.py — REUSED, not new)
       │
       ▼
  ValidationResult(VALID, reason="ROUTED")   ← carve-out, see D2
@@ -93,7 +100,7 @@ agent transcript
  TTS
 ```
 
-The router never writes words. The text planner never chooses a response. Keeping them separate is what lets selection stay deterministic while wording stays natural.
+The router never writes words. The text backend never chooses a response. Keeping them separate is what lets selection stay deterministic while wording stays natural.
 
 **The cost, stated plainly:** with `text_planner.enabled: true` the published wording is **not** byte-stable across runs, so a router scenario is not byte-replayable. `text_planner.enabled: false` restores byte-exact output. Combined with D12 this means the two are the same constraint seen from two sides.
 
@@ -139,25 +146,57 @@ Three findings materially altered the design. Each is cited in the synthesis; th
 
 **Status:** accepted by owner 2026-09-29. Supersedes the D2 rationale and the "Byte-faithful publish" paragraph in Appendix A (§2, line ~916) **only where they say the routed text is never passed through a generator**.
 
-**Change.** `_route_candidate` gains one step between the catalog lookup and publish:
+**Change.** `_route_candidate` gains one step between the catalog lookup and publish. **No new port.** The existing text backend is reused; only its *input* changes from a `BehaviorContract` to a `ResponseCatalog` entry.
 
 ```python
 response = self.responses.get(decision.response_id)
+
 utterance = response.text
-if self.text_planner is not None:              # config: text_planner.enabled
-    utterance = await self.text_planner.phrase(
-        canonical_text=response.text,
-        persona=self.persona,
-        intent=response.intent,
+if self.text_backend is not None:              # config: text_planner.enabled
+    parsed = self.text_backend.generate(
+        build_routed_context(
+            response=response,
+            turn=turns,
+            agent_latest=agent_latest,
+            relevant_facts=self.relevant_facts,
+            recent_turns=recent,
+        )
     )
-# D2 carve-out is unchanged and now applies to the PARAPHRASE
-return CandidateUtterance(
-    act=contract.behavior, target=None,
-    slots={"routed": True, "response_id": decision.response_id},
-    utterance=utterance,
-    identity=self.orchestrator.new_generation(),
-)
+    utterance = parsed["utterance"]            # _parse_backend_response already exists
 ```
+
+`build_routed_context` is a sibling of the existing `build_context` (`language_adapter.py:65-88`) and returns **the same key shape**, so the transport, the provider wiring, the retry policy and `_parse_backend_response` are all reused unchanged. That is the win: no new HTTP layer, no second urllib/retry/429 implementation.
+
+**One prompt addition is unavoidable — do not claim this is input-only.** The existing `_SYSTEM_PROMPT` (`text_backends.py:33-57`) says *"you only phrase the CURRENT behavior naturally"* and the response envelope is `{"act", "target", "slots", "utterance"}`. The context has nowhere to carry the canonical line:
+
+```python
+{
+  "current_behavior": {"act", "target", "max_budget", "turn", "max_turns"},
+  "agent_latest": {"text": ...} | None,
+  "relevant_facts": [...],
+  "recent_turns": [...],
+}
+```
+
+So `build_routed_context` adds exactly one key and the prompt gains one clause:
+
+```python
+    "canonical_text": response.text,     # the single new key
+```
+
+> *"`canonical_text` is the line to phrase. Stay strictly on it."*
+
+`act` stays in the envelope and is echoed back unchanged — harmless, and D3 already established the behaviour verb is cosmetic on this path. `_REQUIRED_CANDIDATE_KEYS = ("act", "utterance")` (`language_adapter.py:90`) keeps working, so the parse path is untouched.
+
+> ⚠️ **Three pre-existing, distinct things are easy to confuse with a "text planner". Check the real signature before assuming an API:**
+>
+> | Thing | What it is | AI? |
+> |---|---|---|
+> | `caller_contract/text_backends.py` | The LLM phrasing layer — `generate(context: dict) -> dict`, urllib, no SDK. **This is what the router path reuses.** | **yes** |
+> | `CallerInteractionPlanner.plan_speak(validated_utterance, interaction)` | Deterministic token-level shaper — inserts hesitation, duplicates a token as a stumble, from an authored `InteractionConfig`. Docstring: *"Deterministic delivery-layer planner. No AI, no free-text generation."* | **no** |
+> | `behavior_compile` / `semantic` | Rule-based behaviour compilation and the lexical verifier D2 bypasses. | no |
+>
+> `interaction_planner.py:87` is `def plan_speak(self, validated_utterance: str, interaction: InteractionConfig | None) -> InteractionOutcome:` — **two** parameters, called as `plan_speak(candidate.utterance, _interaction(action))` at `driver.py`. There is no `canonical_text`, `persona`, `behavior_instruction`, `allow_hesitation`, or `allow_stumble` parameter anywhere in the code. The `do:` path already discards `plan_speak` output to keep TTS input byte-identical to what the validator saw (`driver.py:786-790`), and this amendment keeps that: the shaper stays off on both planner modes.
 
 **Why the validator carve-out still holds — with a corrected reason.** The original D2 argued "the routed text is authored ground truth, not a generation". That was true before the planner was re-enabled and is no longer. The carve-out is still required, for a stronger reason:
 
@@ -229,7 +268,37 @@ If (1) or (4) or (5) fails, nothing downstream is trustworthy.
 
 Because `d431686` sits on top of `c0d3e26`, `git revert` will likely conflict in `live_wiring.py` — the same file the router edits. A targeted manual revert as its own commit is the safe path.
 
-**Decision needed:** keep the mutants for the judge work (they may be mid-experiment) or revert before router work. The synthesis assumes revert.
+**This is shared work, not router-only.** The DTMF beads carry the same prerequisite:
+
+```
+livekit-agent-simulator-dtmf-restore-python-3tv.1  [P0]  Revert c0d3e26 mutants before any DTMF work
+```
+
+So the revert is a **common prerequisite** for both efforts. Do it once, as its own commit, and let both depend on it. If the judge experiment still needs the mutants, the honest order is: finish the judge validation first, then revert, then start router and DTMF — not run them against a sabotaged tree.
+
+### 6a. Sibling track — DTMF keypad restore
+
+Already tracked as beads, and **must be implemented alongside this plan** rather than deferred:
+
+| Bead | Title |
+|---|---|
+| `…-3tv` | Restore DTMF keypad support to the Python `lks` port (P0 feature) |
+| `…-3tv.1` | Revert `c0d3e26` mutants before any DTMF work (P0) — see §6 |
+| `…-3tv.2` | Decision: shared-room-only DTMF, or authorise PSTN plumbing (P0) |
+| `…-3tv.4` | Foundation: publisher module, driver branch, room gate, dsl trigger (P0) |
+| `…-3tv.4.1` | New module `caller_contract/dtmf.py`: `DtmfPublisher` seam and `RoomDtmfPublisher` (P0) |
+| `…-3tv.4.2` | Add the dtmf branch to `ContractCallerDriver`, close the silent fall-through (P0) |
+| `…-3tv.4.4` | Construct the publisher in `live_wiring` with a fail-fast room-identity gate (P0) |
+| `…-3tv.6` | Verification: unit tests, the tripwire gate, a real negative check (P0) |
+| `…-3tv.6.1` | Write `tests/test_contract_dtmf.py` covering all six behaviours (P0) |
+| `…-3tv.6.2` | Add the template tripwire: spot-drive `dtmf-ivr-menu` through the real driver (P0) |
+
+**Two collisions to resolve before writing code — both are in files this plan also edits:**
+
+1. **`caller_contract/dsl.py`** — DTMF needs a new trigger kind; §6 needs `dsl.py:191` reverted. Same file, same commit window.
+2. **`caller_contract/live_wiring.py`** — DTMF `3tv.4.4` constructs a publisher there; §6 reverts lines 58 and 537–542 there. Same file, and the mutant revert is DTMF's own `3tv.1` prerequisite.
+
+Neither is a reason to serialise the work — it is a reason to **land the mutant revert first, on its own**, and to sequence the DTMF and router changes to `dsl.py` / `live_wiring.py` deliberately rather than letting them interleave across branches.
 
 ---
 
@@ -263,6 +332,32 @@ Because `d431686` sits on top of `c0d3e26`, `git revert` will likely conflict in
 >   bypassed either way.
 >
 > Everything else stands as written.
+>
+> ### ⚠️ Citation accuracy (checked 2026-09-29)
+>
+> The `file:line` references **in this appendix are from the synthesis agents and several no longer
+> match the tree.** Verified against the current source:
+>
+> | Cited | Actually at | Status |
+> |---|---|---|
+> | `driver.py:620` `should_invoke_adapter` | 620 | ✅ |
+> | `driver.py:1203` `[untranscribed agent speech]` guard (the D9 idiom) | 1203 | ✅ |
+> | `driver.py:1239` `_wait_trigger` | 1239 | ✅ |
+> | `driver.py:1292-1310` silence branch | 1292 | ✅ |
+> | `driver.py:786-790` / `:786-830` byte-faithful comment | 786-791 (text at 788) | ~ok |
+> | `interaction_planner.py:84-85` and `:87` | 84-85, 87 | ✅ |
+> | `text_backends.py:33`, `:108`, `:117`, `:155` | as cited | ✅ |
+> | `language_adapter.py:65-88`, `:141-143` | as cited | ✅ |
+> | `live_wiring.py:58`, `:537` | as cited | ✅ |
+> | `dsl.py:191` | 191 | ✅ |
+> | **`driver.py:919-922`** `evaluate_behavior` call | **920** | ❌ |
+> | **`driver.py:946-959`** `BEHAVIOR_TIMEOUT` | **943** | ❌ |
+> | **`language_adapter.py:90`** `_REQUIRED_CANDIDATE_KEYS` | **91** | ❌ |
+> | `driver.py:683`, `:686`, `:687`, `:700-706`, `:735-742`, `live_wiring.py:522` | not checked | ⚠️ |
+>
+> They are left in place so the synthesis's reasoning stays auditable. **Before implementing, open
+> each cited line and confirm it** — the implementation beads carry corrected numbers where these
+> were load-bearing, but the appendix is the reference an implementer will read first.
 
 # Response Router — Merged Implementation Spec (livekit-agent-simulator)
 
