@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..audio.sapi_tts import TARGET_RATE, synthesize_pcm16_mono
+from ..config import CONFIG_FILENAME, DOT_FOLDER, ConfigError
 from . import EndedBy
 from .agent_wait import ObserverAgentWait
 from .driver import ContractCallerDriver, DriverResult
@@ -296,6 +297,86 @@ class BridgeAssetPlayer:
             self.writer.emit(kind, spec=spec, source="sim.contract", include_dialogue=False)
 
 
+def _attach_response_router(driver: Any, cfg: Any, scenario: Any) -> None:
+    """Wire ``driver.router`` / ``response_catalog`` from config + scenario.
+
+    This is the ONLY place the router reaches a live run. Its absence is
+    invisible: every unit test injects the router by hand, so a run driven
+    through :func:`run_contract_driver_path` would quietly take the
+    ``caller_steps`` path and emit no ``contract.router_decision`` — a
+    scenario that authors ``responses:`` behaving exactly like the legacy
+    one.
+
+    Half-configuration fails loudly rather than degrading to legacy:
+
+    * ``router:`` configured, scenario has ``responses:`` — the router MUST
+      be attached, or the authored catalog is ignored.
+    * scenario has ``responses:``, ``router:`` absent — unreachable via
+      ``load_config`` (a parse-time ConfigError), but re-checked here so a
+      directly-constructed Scenario cannot slip past.
+    * ``router:`` configured, scenario has NO ``responses:`` — legacy by
+      design (the D13 opt-in model: archived scenarios keep their exact
+      behaviour). Not an error.
+    """
+    catalog = getattr(scenario, "responses", None)
+    router_cfg = getattr(cfg, "router", None)
+
+    if catalog is None:
+        if router_cfg is None:
+            return
+        # Router configured but this scenario is caller_steps-only: correct,
+        # and deliberately silent. Say so once so an operator who expected
+        # routing here does not debug a run that never had a catalog.
+        return
+
+    if router_cfg is None:
+        raise ConfigError(
+            f"Scenario {getattr(scenario, 'id', '?')!r} authors "
+            "`responses:` but no `router:` block is configured, so there is "
+            "no decision layer to choose a response. Add a `router:` block to "
+            f"{DOT_FOLDER}/{CONFIG_FILENAME}, or remove `responses:`."
+        )
+
+    from .router_gemini import GeminiResponseRouter
+    from .router_openai import OpenAIResponseRouter
+
+    impl, default_model = (
+        (GeminiResponseRouter, "gemini-flash-latest")
+        if router_cfg.provider == "gemini"
+        else (OpenAIResponseRouter, "gpt-4.1-nano")
+    )
+    try:
+        driver.router = impl(
+            api_key=router_cfg.api_key,
+            # An empty `model:` means "the adapter's own default", which is
+            # an alias rather than a pinned version for both providers.
+            model=router_cfg.model or default_model,
+            timeout_s=router_cfg.timeout_s,
+            temperature=router_cfg.temperature,
+        )
+    except Exception as exc:  # noqa: BLE001 — surfaced as a config fault, never a silent fallback
+        raise ConfigError(
+            f"Could not build the `{router_cfg.provider}` router adapter: {exc}"
+        ) from exc
+
+    driver.response_catalog = catalog
+
+    planner = getattr(cfg, "text_planner", None)
+    if planner is None:
+        return
+    driver.planner_enabled = bool(planner.enabled)
+    if not planner.enabled:
+        # Verbatim mode: no backend call, so provider/model/api_key on the
+        # block are moot for this run.
+        return
+    backend = (
+        GeminiTextBackend(api_key=planner.api_key, model=planner.model)
+        if planner.provider == "gemini" or planner.provider == "google"
+        else OpenAITextBackend(api_key=planner.api_key, model=planner.model)
+    )
+    driver.routed_adapter = AILanguageAdapter(backend=backend)
+
+
 async def run_contract_driver_path(
     scenario: "Scenario",
     run: "SimulatorSpec",
@@ -352,6 +433,7 @@ async def run_contract_driver_path(
         adapter=adapter,
         synthesize=_synthesize,
     )
+    _attach_response_router(driver, cfg, scenario)
     recorder = None
     if record_path is not None:
         from .record_replay import Recorder

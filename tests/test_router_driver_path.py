@@ -171,3 +171,43 @@ async def test_a_legacy_scenario_is_untouched():
     assert d.router is None
     assert d.response_catalog is None
     assert d.routed_turns == []
+
+
+async def test_a_router_attached_by_the_real_seam_reaches_this_branch():
+    """Close the seam the other tests here bypass.
+
+    Every other test in this file sets `d.router` by hand, so they pass
+    whether or not any production code path ever assigns it. `_attach_
+    response_router` is the only place that happens; this drives the same
+    real harness after it runs, so a regression that drops the call from
+    `run_contract_driver_path` fails HERE rather than turning every router
+    scenario into a silent legacy run.
+    """
+    from types import SimpleNamespace
+
+    from livekit_agent_simulator.caller_contract.live_wiring import (
+        _attach_response_router,
+    )
+    from livekit_agent_simulator.config import RouterConfig
+
+    d, orch = _driver()
+    _attach_response_router(
+        d,
+        SimpleNamespace(
+            router=RouterConfig(provider="openai", api_key="sk-test"),
+            text_planner=SimpleNamespace(enabled=False, provider="openai", model="", api_key="sk-x"),
+        ),
+        SimpleNamespace(id="r1", responses=_catalog()),
+    )
+    # Construction is covered in test_router_wiring; swap in a scripted
+    # decision so no network call happens here. What is under test is that
+    # the fields the seam SET are the ones this branch reads.
+    seen: list[str] = []
+    d.router = _Router("company")
+    d.router.seen = seen
+
+    await d.run(_steps(), FakeSink(orch), FakeAgent(replies=list(UNSATISFIED)))
+
+    assert seen, "a router attached by the real seam never reached the branch"
+    assert d.routed_turns and d.routed_turns[0]["response_id"] == "company"
+

@@ -228,6 +228,13 @@ class ContractCallerDriver:
     # ABSENCE is the feature gate, so with no router nothing below changes.
     router: Any = None
     response_catalog: Any = None
+    # HOW layer for a routed line. None -> reuse `adapter`, so the default
+    # keeps phrasing routed text with the same backend that phrases `do:`
+    # lines. Set when `text_planner:` names its own provider/model.
+    routed_adapter: Any = None
+    # `text_planner.enabled`. False publishes catalog text verbatim — the
+    # byte-exact mode that makes a router scenario reproducible at all.
+    planner_enabled: bool = True
     routed_turns: list[dict] = field(default_factory=list)
     _degeneracy: Any = None
 
@@ -734,15 +741,28 @@ class ContractCallerDriver:
                     "agent_text": agent_text[:200],
                     "agent_text_sha": hashlib.sha1(agent_text.encode("utf-8")).hexdigest(),
                 })
-                routed_candidate = await self.adapter.generate_routed_candidate(
-                    contract=contract,
-                    context=build_routed_context(
-                        contract=contract, response=spec, turn=turns,
-                        agent_latest=agent_text, recent_turns=log,
-                        relevant_facts=facts,
-                    ),
-                    identity=self.orchestrator.new_generation(),
-                )
+                identity = self.orchestrator.new_generation()
+                if self.planner_enabled:
+                    routed_adapter = self.routed_adapter or self.adapter
+                    routed_candidate = await routed_adapter.generate_routed_candidate(
+                        contract=contract,
+                        context=build_routed_context(
+                            contract=contract, response=spec, turn=turns,
+                            agent_latest=agent_text, recent_turns=log,
+                            relevant_facts=facts,
+                        ),
+                        identity=identity,
+                    )
+                else:
+                    # text_planner.enabled: false — publish the authored line
+                    # exactly. Still a CandidateUtterance so publish, the
+                    # agent-turn wait, and evaluate_behavior below are
+                    # unchanged; only the wording layer is skipped.
+                    routed_candidate = CandidateUtterance(
+                        act=contract.behavior, target=None,
+                        slots={"routed": True},
+                        utterance=spec.text, identity=identity,
+                    )
 
             def _generate() -> CandidateUtterance:
                 if routed_candidate is not None:

@@ -1446,3 +1446,155 @@ async def test_record_and_replay_paths_are_mutually_exclusive():
             record_path=Path("run.json"),
             replay_path=Path("run.json"),
         )
+
+
+# ---------------------------------------------------------------------------
+# Response router: attach, end to end through run_contract_driver_path
+# ---------------------------------------------------------------------------
+
+
+def _router_cfg(*, planner_enabled: bool = False):
+
+    """A cfg carrying the two blocks `_attach_response_router` reads.
+
+    text_planner defaults to DISABLED here so the routed turn publishes the
+    authored line verbatim and the test makes no AI call. The router itself
+    is scripted below.
+    """
+
+    return SimpleNamespace(
+        simulator=SimpleNamespace(provider="openai", api_key="sk-test"),
+        router=SimpleNamespace(
+            provider="openai",
+            model="",
+            api_key="sk-test",
+            timeout_ms=1_500,
+            temperature=0.0,
+            timeout_s=1.5,
+        ),
+        text_planner=SimpleNamespace(
+            enabled=planner_enabled, provider="openai", model="", api_key="sk-test"
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_responses_scenario_routes_through_the_real_driver_path():
+    """The whole seam, end to end.
+
+    Every other router test injects `driver.router` by hand, so none of them
+    can tell "the router works" from "the router is never attached". This
+    drives `run_contract_driver_path` — the function a real run calls — with
+    a scenario that authors `responses:` and a config carrying `router:`,
+    and asserts a routing decision is actually recorded.
+    """
+
+    from livekit_agent_simulator.caller_contract.responses import ResponseCatalog
+    from livekit_agent_simulator.caller_contract.router import RouteDecision
+    import livekit_agent_simulator.caller_contract.router_openai as _ro
+
+    catalog = ResponseCatalog.from_dict(
+        {
+            "company_name": {
+                "intent": "company_name",
+                "instruction": "Provide the company name.",
+                "text": "It's Bluebird Property Management.",
+            },
+            "off_script": {
+                "intent": "off_script",
+                "instruction": "Select only when no other response fits.",
+                "text": "I'm sorry, could we stay focused?",
+                "system": True,
+            },
+        }
+    )
+
+    class _ScriptedRouter:
+        """Construction is real (the seam builds the class); only the call is
+        scripted, because what is under test is the ATTACH, not the HTTP."""
+
+        def __init__(self, **kw):
+            self.kw = kw
+            self.seen: list[str] = []
+
+        async def route(self, *, agent_transcript, catalog):
+            self.seen.append(agent_transcript)
+            return RouteDecision(
+                response_id="company_name",
+                confidence=0.9,
+                backend="scripted",
+                latency_ms=1,
+            )
+
+    scenario = SimpleNamespace(
+        id="router-e2e",
+        caller_actions=parse_steps(
+            [
+                {
+                    "do": {
+                        "behavior": "negotiate",
+                        "target": "price",
+                        "constraints": {"max_turns": 2, "max_budget": 30000},
+                    }
+                }
+            ],
+            file="t",
+        ),
+        responses=catalog,
+    )
+    observer = FakeObserver(
+        replies=[
+            "What is your company name?",
+            "That is over our budget.",
+            "We cannot go any higher.",
+            "Then we will pass.",
+            "Understood, thank you.",
+        ]
+    )
+    writer = FakeWriter()
+    bridge = FakeBridge()
+
+    import livekit_agent_simulator.caller_contract.live_wiring as _lw
+
+    # Turn 0 is legacy (the caller opens the call before the agent has said
+    # anything, so there is nothing to route on) and does reach the text
+    # backend. Script that one reply with the same shape
+    # test_contract_driver's _ScriptedBackend emits for negotiate/price, so
+    # the semantic verifier accepts it and the loop turns to the routed turn.
+    legacy_reply = _mock_openai_reply(
+        {
+            "act": "negotiate",
+            "target": "price",
+            "slots": {"max_budget": 30000},
+            "utterance": "Would you be able to come down to $30,000?",
+        }
+    )
+
+    _lw._SHERPA_DEAD = True  # sherpa model download shares urlopen
+    try:
+        with patch.object(_ro, "OpenAIResponseRouter", _ScriptedRouter), patch(
+            "urllib.request.urlopen", return_value=legacy_reply
+        ), patch(
+            "livekit_agent_simulator.caller_contract.live_wiring.ObserverAgentWait",
+            return_value=ScriptedAgentWait(observer),
+        ):
+            # negotiate/price is never satisfied by the scripted replies, so
+            # the run ends BEHAVIOR_TIMEOUT. That is fine and expected: the
+            # routing decision is recorded BEFORE the timeout, and it is the
+            # recording this test is about.
+            with pytest.raises(ContractDriverFailure) as ended:
+                await run_contract_driver_path(
+                    scenario, None, observer, bridge, writer, _router_cfg()
+                )
+    finally:
+        _lw._SHERPA_DEAD = False
+    assert ended.value.result.ended_by.value == "timeout"
+
+    decisions = [spec for kind, spec in writer.events if kind == "contract.router_decision"]
+    assert decisions, (
+        "the router was never attached: the run took the legacy caller_steps "
+        "path and emitted no routing decision"
+    )
+    assert decisions[0]["response_id"] == "company_name"
+    assert decisions[0]["off_script"] is False
+    assert decisions[0]["agent_text"], "the decision must record what it routed on"
