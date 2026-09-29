@@ -223,10 +223,16 @@ scenario format. The relevant piece for this problem is their `FACTS` block —
 facts authored up front, **withheld until asked, one per turn** — which is
 exactly the missing decision layer.
 
-**Status: designed.** The response router that closes this gap is specified in
+**Status: implemented.** The response router that closes this gap is specified in
 [`docs/plans/response-router.md`](docs/plans/response-router.md) — see §2 and §3
 below. Note it lands as `responses` (a catalog of things the caller *does*),
 not `facts` (values), because the routing unit is a response, not data.
+
+**Beads that implement it:** `response-router-v2-3` (catalog), `.5`/`.6`/`.7`
+(port + providers), `.8` (parse/export), `.9` (driver + **the attach seam**),
+`.10` (evidence), `.11` (smoke), `.20` (package dogfoods it in CI). Migration
+guide and target-repo hand-off:
+[`docs/migration-caller-steps-to-responses.md`](docs/migration-caller-steps-to-responses.md).
 
 ---
 
@@ -242,6 +248,11 @@ transcript is often still perfectly healthy.
 This makes the harness brittle for any flow whose question count is not known in
 advance: the natural fix (add more steps) makes the script drift further from
 whatever the agent actually asked, feeding problem 2.
+
+**Status: implemented** by the same beads as §2 — the router answers one
+question per turn against an authored catalog, so the caller is no longer
+walking a fixed-length list. `max_turns` still bounds the behavior, but budget
+exhaustion on a routed turn is a clean exit, not a caller violation.
 
 ---
 

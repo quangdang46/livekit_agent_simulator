@@ -1787,68 +1787,126 @@ This whole part **stays as-is** — the repo already has forensic events, report
 
 ### 27.5 Final architecture diagram (consolidation version, replacing all earlier scattered diagrams)
 
+**v2 (2026-09-29).** The scenario may now author `responses:` alongside
+`caller_steps`, which adds a second WHAT-path. The left column below is
+unchanged; the routed column replaces steps 2–4 and *skips the validator*
+(§27.7 — this is a deliberate carve-out from the absolute invariant in §29.2,
+and the single most important thing to understand about the router).
+
 ```text
-                         ┌─────────────┐
-                         │  Scenario   │
-                         └──────┬──────┘
-                                │
-                                ▼
-                    ┌─────────────────────┐
-                    │   Behavior Engine   │
-                    │        WHAT         │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │    Orchestrator     │
-                    │        WHEN         │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │  Language Adapter   │
-                    │        HOW          │
-                    │ Gemini / OpenAI     │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Contract Validator  │
-                    │   HARD BOUNDARY     │
-                    └──────────┬──────────┘
-                               │ PASS
-                               ▼
-                    ┌─────────────────────┐
-                    │ Interaction Planner │
-                    │      DELIVERY       │
-                    └──────────┬──────────┘
-                               │
-                 ┌─────────────┼─────────────┐
-                 ▼             ▼             ▼
-                TTS           DTMF         Control
-                 │             │             │
-                 └─────────────┼─────────────┘
-                               ▼
-                         ┌───────────┐
-                         │ LiveKit   │
-                         │ Transport │
-                         └─────┬─────┘
-                               │
-                               ▼
-                         ┌───────────┐
-                         │   Agent   │
-                         └─────┬─────┘
-                               │
-                               ▼
-                         ┌───────────┐
-                         │ Observer  │
-                         └─────┬─────┘
-                               │
-                               ▼
-                    Behavior / Assertions
-                               │
-                               └──────→ LOOP
+      caller_steps scenario                responses: scenario
+      (unchanged, still default)           (opt-in)
+
+┌─────────────┐                      ┌─────────────┐
+│  Scenario   │                      │  Scenario   │
+└──────┬──────┘                      └──────┬──────┘
+       │                                    │
+       ▼                                    ▼
+┌─────────────────────┐            ┌─────────────────────┐
+│   Behavior Engine   │            │   Decision Router   │  WHAT:
+│        WHAT         │            │   (WHAT: pick a     │  choose one
+└──────────┬──────────┘            │   responseId)      │  responseId
+           │                       └──────────┬──────────┘
+           ▼                                  ▼
+┌─────────────────────┐            ┌─────────────────────┐
+│    Orchestrator      │            │    Orchestrator     │
+│        WHEN         │            │        WHEN         │
+└──────────┬──────────┘            └──────────┬──────────┘
+           │                                  ▼
+           ▼                       ┌─────────────────────┐
+┌─────────────────────┐            │  Language Adapter   │  HOW:
+│  Language Adapter   │            │  (text_planner)     │  paraphrase
+│        HOW          │            └──────────┬──────────┘
+│ Gemini / OpenAI     │                       │
+└──────────┬──────────┘                       │  BYPASSED (D2)
+           │                                 │  synth VALID
+           ▼                                 │  ("ROUTED")
+┌─────────────────────┐                       │
+│ Contract Validator  │                       │
+│   HARD BOUNDARY     │                       │
+└──────────┬──────────┘                       │
+           │ PASS                             │
+           └────────────┬─────────────────────┘
+                        ▼
+           ┌─────────────────────┐
+           │ Interaction Planner │
+           │      DELIVERY       │
+           └──────────┬──────────┘
+                      │
+        ┌─────────────┼─────────────┐
+        ▼             ▼             ▼
+       TTS           DTMF         Control
+        │             │             │
+        └─────────────┼─────────────┘
+                      ▼
+                ┌───────────┐
+                │ LiveKit   │
+                │ Transport │
+                └─────┬─────┘
+                      │
+                      ▼
+                ┌───────────┐
+                │   Agent   │
+                └─────┬─────┘
+                      │
+                      ▼
+                ┌───────────┐
+                │ Observer  │
+                └─────┬─────┘
+                      │
+                      ▼
+             Behavior / Assertions
+                      │
+                      └──────→ LOOP
 ```
+
+### 27.7 What `responses:` changes, and what it does not
+
+A `responses:` catalog replaces the Behavior Engine as the thing that
+decides WHAT. The router answers one question — given what the agent just
+said, which of the authored responses is this turn? — and returns exactly
+one `responseId` drawn from that catalog.
+
+Four consequences, each of which has already cost a bead:
+
+1. **The catalog's system entry is what makes the contract satisfiable.** A
+   response with `system: true` is the answer when nothing else matches, so
+   "the router always returns a valid id" is a *structural* property rather
+   than an aspiration. It must be authored, not defaulted: a canned
+   out-of-scope line baked into the package would be spoken by a simulated
+   caller in a scenario that has nothing to do with it. The router seeing
+   the authored `text` would also let it pattern-match the answer instead of
+   the question, so it receives `intent` + `instruction` only.
+
+2. **The validator is bypassed on the routed path (D2), and this violates
+   the absolute invariant in §29.2.** Not because routed text is unsafe —
+   because it is *authored ground truth*, so grading it means the harness
+   grading its own fixture. Scoring a persona paraphrase against the
+   behaviour verb fails closed at `_NO_MATCH_CONFIDENCE`, producing
+   `CALLER_BEHAVIOR_VIOLATION`: **an agent bug reported as a caller bug.**
+   That is the exact attribution inversion the system entry exists to
+   prevent, reintroduced through the validator. The routed candidate gets a
+   synthetic `ValidationResult(VALID, reason="ROUTED")`. *Without the
+   comment at the cut site, the next reader will "fix" this back.*
+
+3. **Routing changes WHAT the caller says, never WHEN it speaks.** The
+   agent-turn wait and `evaluate_behavior` still run after a routed turn,
+   because a routed turn still has to be able to satisfy its own behavior —
+   which requires an agent reply to evaluate against. Removing the wait
+   breaks the engine contract, not just the router.
+
+4. **`off_script` is an AGENT deviation, not a caller fault.** The verdict
+   exists so a run that went off-script is attributed correctly. It is only
+   meaningful in that direction: a correct agent drawing a false
+   `off_script`, and a deviating agent drawing `matched`, each silently
+   corrupt a suite, and each is satisfied by a one-sided assertion.
+
+`--no-router` exists because of (2) and (4): once a router is misrouting
+every turn, there must be a way to stop it mid-incident without editing the
+scenario. It bypasses the ROUTER, not the wording layer —
+`text_planner.enabled: false` is not equivalent, because the router would
+still pick ids, still record verdicts, and still bypass the validator.
+
 
 ### 27.6 Final architecture summary line (replacing all earlier north-stars, the most complete version)
 
@@ -2002,6 +2060,12 @@ The user confirmed the next direction: **turn the 5 priorities in §28.7 into fo
 
 ### 29.1 Official pipeline (unchanged from §27.5, restated as the reference frame for the state machine)
 
+The `caller_steps` pipeline below is unchanged and remains the default. A
+scenario authoring `responses:` substitutes the Decision Router for the
+Behavior Engine and the Language Adapter, and skips the Validator — both
+paths converge on the Orchestrator (see §27.5 for the side-by-side and
+§27.7 for why).
+
 ```text
 Scenario
    ↓
@@ -2028,6 +2092,18 @@ Behavior Evaluator
 ### 29.2 The two most general invariants — covering all of §13–§28, used as the ultimate acceptance test
 
 > **Absolute invariant #1 (semantic boundary):** No audio utterance may be published to LiveKit unless it has passed through the Caller Contract Validator and received a `VALID` verdict.
+>
+> ⚠️ **AMENDED 2026-09-29 — one deliberate carve-out.** A scenario that
+> authors `responses:` routes through the Decision Router, and a routed
+> candidate bypasses the validator, receiving a synthetic
+> `ValidationResult(VALID, reason="ROUTED")` instead. See §27.7. The
+> reasoning: the routed line is *authored ground truth*, so validating it
+> is the harness grading its own fixture — and it fails closed, turning an
+> agent bug into `CALLER_BEHAVIOR_VIOLATION`. The invariant still holds for
+> every `caller_steps` scenario, which remains the default. **If you are
+> reading this while working on the routed path, do not "restore" the
+> validator there** — that produces CALLER_BEHAVIOR_VIOLATION on every
+> turn.
 
 > **Absolute invariant #2 (concurrency/staleness boundary):** Every generated action must carry the current (`behavior_id + turn_id + generation_id`) triple; an action with any of the three stale against the newest state **must not execute** (no audio publish, no DTMF send, no control action).
 

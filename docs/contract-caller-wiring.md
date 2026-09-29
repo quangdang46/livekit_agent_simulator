@@ -13,6 +13,31 @@ Scenario (caller_steps: say/do/wait/dtmf/interrupt/end)
   → Observer → TurnDetector → BehaviorEvaluator → next behavior / next turn
 ```
 
+## The routed variant (`responses:`)
+
+Opt-in, added 2026-09-29. The two coexist: a scenario with both `caller_steps`
+and `responses:` uses `caller_steps` and the router is not engaged, which is
+what keeps every existing scenario unchanged.
+
+```text
+Scenario (responses: catalog + router: block in config)
+  → Decision Router   WHAT: pick exactly one responseId from the catalog
+  → Orchestrator      WHEN: unchanged
+  → AI Language Adapter   HOW: unchanged (text_planner)
+  → Contract Validator    BYPASSED — synthetic VALID("ROUTED")
+  → Interaction Planner → TTS → publish
+  → Observer → TurnDetector → BehaviorEvaluator → next turn
+```
+
+The router replaces the **generation** step only. The agent-turn wait and
+`evaluate_behavior` still run after a routed turn — without the wait a
+routed turn can never satisfy its behavior, because there is no agent reply
+to evaluate against, and every such run dies at `BEHAVIOR_TIMEOUT`.
+
+The validator bypass is the load-bearing subtlety and it carves out the
+invariant below. See `NEW_ARCHITECTURE_FOR_LKS_AND_LKSR.md` §27.7 and
+[docs/migration-caller-steps-to-responses.md](migration-caller-steps-to-responses.md).
+
 ## Why text-only backend for `do:`
 
 The live bug class (role-flip/recap) exists because generation and audio
@@ -60,3 +85,14 @@ involved in caller speech again; the bridge keeps only mic/mixer plumbing.
   STOP; never speaks the rejected candidate.
 - `wait`/`dtmf`/`interrupt`/`end` never go through AI/TTS (planner control
   actions only).
+- **The "validator is the single enforcement choke point" invariant has ONE
+  deliberate carve-out**: a routed turn (a scenario authoring `responses:`)
+  receives a synthetic `ValidationResult(VALID, reason="ROUTED")` without
+  calling the validator. `validator.py`'s own docstring states the invariant
+  this breaks — leave the comment at the cut site in place, or the next
+  reader will restore the validator and turn every routed turn into
+  `CALLER_BEHAVIOR_VIOLATION`.
+- A routed turn still runs the agent-turn wait and `evaluate_behavior`.
+  Routing changes WHAT the caller says, never WHEN it speaks.
+- `responses:` without a `router:` config block is a `ConfigError` naming the
+  scenario. It is never a silent fall back to `caller_steps`.

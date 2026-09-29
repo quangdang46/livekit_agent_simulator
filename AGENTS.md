@@ -169,6 +169,42 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 - **Context.notes** — author-only (reports/docs); **not** injected into the caller SI.
 - **Context.caller_knows** / **world** — optional facts the persona already knows (injected).
 
+### The two caller paths
+
+| Key | Status |
+|---|---|
+| **`caller_steps`** (`say` / `do` / `wait` / `dtmf` / `interrupt` / `end`) | The contract path, and the **default**. Every scenario carries it. |
+| **`responses:`** | Opt-in response catalog. Routes via the Decision Router. |
+
+They coexist. **When both are present, `caller_steps` wins and the router is
+not engaged** — that is what keeps every existing scenario unchanged.
+
+⚠️ **Two things to know before touching the routed path:**
+
+1. The Contract Validator is **bypassed** on a routed turn (synthetic
+   `ValidationResult(VALID, reason="ROUTED")`). This is a deliberate carve-out
+   from the "no unvalidated utterance reaches the agent" invariant: the
+   routed line is authored ground truth, so validating it means the harness
+   grading its own fixture — which fails closed and turns an agent bug into
+   `CALLER_BEHAVIOR_VIOLATION`. **Do not "restore" the validator here.**
+   Rationale: `NEW_ARCHITECTURE_FOR_LKS_AND_LKSR.md` §27.7.
+2. `responses:` requires a `router:` block in `.agent-sim/config.yaml`, and
+   its absence is a **`ConfigError` naming the scenario** — never a silent
+   fall back to `caller_steps`.
+
+Docs: [docs/migration-caller-steps-to-responses.md](docs/migration-caller-steps-to-responses.md),
+[docs/router-prompts.md](docs/router-prompts.md), working example
+`templates/examples/router-smoke.yaml`.
+
+**Testing a change to the router:** the router is attached in
+`live_wiring._attach_response_router`, called from
+`run_contract_driver_path`. Unit tests that inject `driver.router` by hand
+prove the branch works but NOT that anything attaches it — that gap is how
+the router shipped un-attached with every test green. Drive
+`run_contract_driver_path` (see
+`tests/test_contract_live_wiring.py` and
+`tests/test_router_smoke_template.py`) and mutation-verify.
+
 ---
 
 ## Hard rules

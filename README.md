@@ -191,7 +191,8 @@ INVALID ──► retry (bounded, max_retries + 1 attempts)
 Invariants the suite pins (not aspirations — each has a regression test):
 
 - **No unvalidated utterance reaches the agent** — `test_contract_e2e_hard_boundary.py`;
-  mutation-checked (`test_contract_live_wiring.py`, Audit B).
+  mutation-checked (`test_contract_live_wiring.py`, Audit B). ⚠️ One deliberate
+  carve-out on the routed path — see below.
 - **Rejected candidates never reach TTS/PCM/mixer** — synthesis happens only
   after VALID.
 - **Authored audio never touches the speech layer** — `play_audio:` beds go to
@@ -201,6 +202,45 @@ Invariants the suite pins (not aspirations — each has a regression test):
   agent silence (bounded 6 s) before publishing.
 - **`script.verify` / recovery asserts / `ended_by` understand both event
   vocabularies** — legacy `sim.script.*` and contract `contract.*`.
+
+#### The routed path (`responses:`) — opt-in
+
+A scenario may also author a `responses:` catalog. The two coexist: a
+scenario with both uses **`caller_steps`**, and the router is not engaged.
+This is why every existing scenario is untouched.
+
+```text
+Scenario ─ responses: ─► Decision Router ─ picks ONE responseId (WHAT)
+                              │
+                              ▼
+                         Orchestrator (WHEN) ── unchanged
+                              │
+                              ▼
+                    Language Adapter (HOW, text_planner) ── unchanged
+                              │
+                              ▼
+              Contract Validator ── BYPASSED on this path
+```
+
+**The validator is skipped on a routed turn, and that carves out the
+"no unvalidated utterance reaches the agent" invariant above.** It is
+deliberate: the routed line is *authored ground truth*, so validating it
+means the harness grading its own fixture — and it fails closed, turning an
+agent bug into `CALLER_BEHAVIOR_VIOLATION`. The routed candidate gets a
+synthetic `ValidationResult(VALID, reason="ROUTED")`. **Do not "restore" the
+validator on this path.** Rationale in
+[NEW_ARCHITECTURE_FOR_LKS_AND_LKSR.md §27.7](NEW_ARCHITECTURE_FOR_LKS_AND_LKSR.md).
+
+The catalog requires one `system: true` entry, which is what makes "the
+router always returns a valid id" structural rather than aspirational —
+and makes an agent that goes off-script **recorded** (`off_script`) rather
+than papered over. That verdict means the **agent** deviated, not the
+caller.
+
+- Working example: `templates/examples/router-smoke.yaml`
+- Migration guide + target-repo hand-off: [docs/migration-caller-steps-to-responses.md](docs/migration-caller-steps-to-responses.md)
+- Router prompts: [docs/router-prompts.md](docs/router-prompts.md)
+- Mid-incident abort: `lks execute <id> --no-router`
 
 Details: [docs/contract-caller-wiring.md](docs/contract-caller-wiring.md) (design),
 [docs/caller-runtime-audit.md](docs/caller-runtime-audit.md) (reachability + audio
