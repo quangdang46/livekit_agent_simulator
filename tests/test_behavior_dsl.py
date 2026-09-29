@@ -240,3 +240,45 @@ def test_parse_steps_preserves_order_and_line_numbers() -> None:
     actions = parse_steps(steps)
     assert [a.line_no for a in actions] == [1, 2, 3]
     assert [a.say_text for a in actions] == ["one", "two", "three"]
+
+
+# ---------------------------------------------------------------------------
+# do: target — structural validation (response-router, PROBLEMS.md §6)
+# ---------------------------------------------------------------------------
+
+
+def test_a_malformed_target_is_a_parse_error_not_a_paid_call() -> None:
+    """A target that is not a non-empty string must fail here.
+
+    The semantic verifier grades an utterance against `behavior` + `target`, so
+    a malformed target does not fail cleanly at parse — it fails later, as a
+    CALL, as CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE, with the real cause one
+    layer down in reports/<run-id>/events.jsonl. A parse error is free; a ~70s
+    paid call is not.
+    """
+    for bad, label in [
+        ("", "empty string"),
+        ("   ", "whitespace only"),
+        (123, "a number"),
+        (["a"], "a list"),
+        ({"k": "v"}, "a mapping"),
+    ]:
+        with pytest.raises(Exception) as err:  # noqa: B017 — the DSL raises a ParseError subclass
+            parse_steps([{"do": {"behavior": "ask", "target": bad}}], file="t")
+        assert "target" in str(err.value), f"{label} must be reported against do.target: {err.value}"
+
+
+def test_any_non_empty_target_is_legal_there_is_no_allowlist() -> None:
+    """Consumer business vocabulary must not be baked into `src/`.
+
+    `DEFAULT_BEHAVIOR_CATALOG` is a *default* precisely so scenarios may extend
+    it; the same reasoning applies to targets, and AGENTS.md's generic-core rule
+    forbids the alternative. What is generic and worth checking is the SHAPE.
+    """
+    steps = parse_steps([{"do": {"behavior": "ask", "target": "roof_damage_report"}}], file="t")
+    assert steps[0].contract.target == "roof_damage_report"
+
+
+def test_an_absent_target_stays_legal() -> None:
+    steps = parse_steps([{"do": {"behavior": "end"}}], file="t")
+    assert steps[0].contract.target is None

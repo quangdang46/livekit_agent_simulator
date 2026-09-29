@@ -281,6 +281,243 @@ Recorded so they stop being re-investigated.
   anti-hallucination property the current design deliberately bought? Candidate:
   route among authored `FACTS` only, never generate new behaviours.
 
+## 6. Response-router authoring — the `do:` target allowlist is undocumented
+
+> Found 2026-09-29 while converting the `voice-ai-agent` GPT-Live scenarios to
+> the response-router v2 design. This is the successor to problem 2: the decision
+> layer now exists, and this is what it costs to author against it.
+
+### Problem
+
+A scenario that authors `responses:` must also keep a `caller_steps` turn 0, and
+that turn must be a `do:` **behavior** — a scripted `say:` hands iteration 2
+straight to `end:` and the router never runs (see
+`caller_contract/driver.py:704`: the router is gated on `agent_text`, which is
+empty on the first iteration). That `do:` is then validated by the semantic
+verifier, which rejects it with `CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE` if
+the generated utterance does not read as the declared `behavior` toward the
+declared `target`.
+
+`DEFAULT_BEHAVIOR_CATALOG` (`caller_contract/dsl.py:37`) enumerates the eleven
+valid behaviors. It enumerates **no targets** — yet a target is half of what the
+verifier grades against.
+
+### Why the existing warning is not enough
+
+`templates/examples/router-smoke.yaml` warns:
+
+> The behaviour verb is deliberately one the semantic verifier already accepts
+> (negotiate/price), **not one invented for this smoke**. … turn 0 is legacy and
+> does go through validation, so it needs a verb with a known-good utterance.
+
+The package names one known-good pair and nothing else. A reader has three
+options, all bad: copy `negotiate`/`price` and ship a turn 0 unrelated to the
+rest of the flow; invent a target and discover by running; or grep the templates
+for one that happens to fit. Known-good targets recoverable by grep are
+`price`, `hours`, `charge` — all **commercial** intents, so a scenario about
+reporting a building problem has no usable pair and the obvious response is the
+expensive one.
+
+### Cost
+
+Each attempt is a real call — an OpenAI Realtime caller, a live GPT-Live agent,
+~70s, plus first-audio latency. The failure surfaces only *after* the call, as
+`status: failed / hard_reasons: ["status:failed"]`. `lks validate` reports
+`✓ valid`, `warnings: none`, `authoring tier: blocking`. The actual error is one
+layer down and is not printed by the CLI summary table:
+
+```
+ContractDriverFailure: CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE
+```
+
+### Suggested fixes
+
+1. ~~**Print the cause of a failed run in the CLI output.**~~ **DONE (`32e4f42`).**
+   Two defects, not one: `render_execute`'s iterations table had **no** `error`
+   column, and `render_execute_all` had one that `ops.execute_scenario` never
+   populated (the run result had no `error` key). Both fixed —
+   `run_scenario_instance` now returns `error` via `diagnose_failure()`, which
+   scans the reporter events for any spec carrying an error. Matched on "any
+   spec with an error" rather than on event kind, because the paths use
+   different kinds (`run.error`, `sim.error`, `sim.leg_error`,
+   `dispatch.agent_timeout`) and enumerating them is a list to forget to update.
+
+   This fix was found independently while working on something else, and it
+   immediately paid for itself: it turned the `_run_scenario()` `TypeError`
+   below from a multi-turn bisect into a one-second read.
+
+2. **Validate `do:` targets at PARSE time.** **PARTLY DONE (`32e4f42`+).**
+   Structure is now checked — a target that is not a non-empty string is a
+   parse error naming `do.target`, free instead of a 70s paid call.
+
+   **The allowlist half is rejected, deliberately.** The original suggestion was
+   to enumerate known-good targets beside `DEFAULT_BEHAVIOR_CATALOG`, but
+   `dsl.py:37-40` states the catalog "must never be hardcoded business
+   vocabulary (AGENTS.md generic-core rule)". `price` / `order_status` / `fees`
+   *are* business vocabulary. The behaviors (`ask`, `confirm`, `deny`) are
+   legitimately generic conversational primitives; targets are not. Enumerating
+   them would also bake this package's first commercial scenario into every
+   consumer's core.
+
+   **The limit of the check, stated plainly:** it does NOT tell you whether a
+   target is one the semantic verifier recognises. That vocabulary is
+   scenario-specific, so it belongs in docs and examples — not in a catalog in
+   `src/`.
+
+3. **Still open — a non-commercial worked example.** The structural check
+   catches `target: 123`; it cannot catch `target: <a real word the verifier
+   happens not to know>`, which is the actual reported failure. `router-smoke.yaml`
+   uses `negotiate`/`price` and says so, but a scenario about reporting a
+   building problem still has no starting point. Grep-recoverable known-good
+   targets are `price`, `hours`, `charge` — **all commercial**, which is the
+   whole complaint.
+
+4. **Still open — surface the verdict vocabulary at validate time.** `lks validate`
+   reports `✓ valid`, `warnings: none`, `authoring tier: blocking` for a scenario
+   that will fail on the call. The parse gate cannot know this without a
+   target allowlist, so the honest options are a warning (not an error) listing
+   the *shape* of the risk, or documentation.
+
+### Reproduction
+
+```yaml
+responses:
+  off_script: { intent: off_script, instruction: "…", text: "…", system: true }
+caller_steps:
+  - do:
+      behavior: ask
+      target: <invented target>
+      constraints: { max_turns: 2 }
+  - end: true
+```
+
+`lks validate` → `✓ valid`, `warnings: none`. `lks execute` →
+`CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE`, after the call has run.
+
+## 7. `lks execute` fails 100% — `no_router` is passed but not accepted
+
+> Found 2026-09-29. **Committed at HEAD, not a work-in-progress.** Blocks every
+> `lks execute` in the repo, silently.
+
+### Problem
+
+```
+TypeError: _run_scenario() got an unexpected keyword argument 'no_router'
+```
+
+`ops.py:531` calls `_run_scenario(..., no_router=no_router)`, but the signature
+of `async def _run_scenario(...)` ends at `replay_path: Any = None` — there is
+no `no_router` parameter. Introduced by `bda3cb6 feat(cli): --no-router abort
+path (response-router v2-21)`, which added the parameter to `execute_scenario`
+and to the call site but not to the callee's signature.
+
+Confirmed present in `git show HEAD:src/livekit_agent_simulator/ops.py`.
+
+### Why it is worse than it looks
+
+The `TypeError` is raised inside `ops.py`'s `except Exception` arm, so it is
+swallowed into:
+
+```python
+{"executed": True, "run_id": None, "status": "failed", "error": "TypeError: ..."}
+```
+
+No room is created, no report directory, no job reaches the agent, no row lands
+in `run_events`. From the outside it is indistinguishable from a dead
+infrastructure. The only symptom is `status: failed` /
+`hard_reasons: ["status:failed"]` — which is why this cost a long bisect before
+the cause was found.
+
+### Fix
+
+Add `no_router: bool = False` to `_run_scenario`'s signature and forward it to
+`run_scenario_instance` if that does not already accept it. A regression test
+should call `execute_scenario(no_router=True)` and assert it does not raise.
+
+### Note
+
+The in-progress `diagnose_failure` + `error` column in `cli_render.py` turns
+this from a bisect into a one-second read, which is what surfaced it. Reported
+to the owning session separately.
+
+## 8. The router routes the agent's PREAMBLE, and `off_script` does not absorb it
+
+> Found 2026-09-29, run `009-…-b1ae` — the first run to pass the gate since the
+> `no_router` fix (problem 7). The gate is green and the conversation is still wrong.
+
+### Problem
+
+Every `contract.router_decision` is one step behind, because turn 1 classifies the
+agent's **preamble**, not a question:
+
+| turn | `agent_text` | `response_id` | correct? |
+|---|---|---|---|
+| 1 | "Thank you for considering our service. This automated system will take down your building details…" | `vague_company` | no |
+| 2 | "To begin, could I please get your company name and the full name of the person in charge?" | `contact_name` | no — should be `vague_company` |
+| 3 | "Thank you" | `wrap_up` | yes |
+
+`off_script` — reserved, `system: true`, described in `router-smoke.yaml` as
+"an agent that goes off-script is RECORDED rather than papered over with a
+fallback branch" — never fired. The preamble has no matching entry and was
+assigned to the first response instead.
+
+Observable consequence on the agent side: the caller answers out of order, so the
+conversation ends with the agent asking *"could you tell me your company name
+again?"* — it never received one.
+
+### Two things worth checking
+
+- **`confidence: null` on every decision**, including the ones that are right.
+  If `null` means "the adapter did not return a confidence" rather than
+  "confident", the router has no signal for when it is unsure, and a catalog
+  with no match assigns into a response rather than falling to `off_script`.
+- **Is this authoring or a router defect?** A catalog that omits the preamble is
+  a legitimate authoring gap, and adding an entry is the caller's job. But
+  `off_script` exists precisely for the case where nothing matches, and it did
+  not engage. Which of the two it should be determines whether the fix is a
+  YAML entry or a router change.
+
+### Answered (2026-09-29, read from source)
+
+**`confidence` is structurally impossible, not merely absent.** `build_route_schema`
+(`router.py:120-130`) declares only `responseId` and sets `additionalProperties: False`,
+so the provider is *forbidden* from returning a confidence. `parse_route_body:204`
+therefore reads `raw.get("confidence")` and always gets `None`. The
+`RouteDecision.confidence` docstring (`router.py:75-77`) promises telemetry "so a
+low-confidence case can be found when a prompt needs work" — that sentence can
+never come true by construction. It is a dead knob: a field, a docstring, no
+consumer. The only mechanical backstop is `DegeneracyGuard`, which needs three
+consecutive identical ids; alternating ids never trigger it.
+
+**`off_script` is a label, not a fallback.** `offerable_ids()` (`responses.py:239-246`)
+states the system response is *"always offerable"*, so on turn 1 the `off_script`
+entry was in the options and the router chose `vague_company` over it — the
+prompt only says "choose the system entry ONLY when nothing else fits", and the
+model did not comply. `driver.py:730` then derives `off_script = bool(spec.system)`
+from the *label*, not from whether anything matched. The harness therefore
+**cannot distinguish**:
+
+- "the router knows nothing matched" → a true `off_script`, and
+- "the router is confidently wrong" → still reported as `matched`.
+
+Turn 1 is exactly the second case: `matched`, `confidence: null`, for a preamble
+that matches no entry.
+
+**This is the mirror of the failure the design already guards against.**
+`run_orchestrator.py:133` worries about the agent going off-script and the
+harness recording a *false `off_script`*. The design protects that direction;
+what actually happens is a **false `matched`**, and nothing guards it. A
+one-sided guard: whichever direction is unobserved is the one that fails.
+
+**Authoring still needs the entry, and it is a band-aid.** A catalog cannot
+enumerate everything-that-does-not-match, so the next scenario meets the same
+class. Treat "false `matched`" as its own design gap rather than something the
+YAML can fix.
+
+### Evidence
+
+`contract.router_decision` events in `reports/009-gpt-live-retry-while-speaking-20260929-094728-b1ae/events.jsonl`.
+
 ---
 
 ## Evidence index
@@ -290,3 +527,7 @@ Recorded so they stop being re-investigated.
 | `034-gpt-live-queue-fifo-20260929-013239-2065` | barge, `delay_ms: 1000` | failed — `require_superseded` (supersession never occurred; nodes are static/pregen clips) |
 | `035-gpt-live-happy-path-20260929-013951-ca38` | cooperative, `delay_ms: 2600` | failed — caller overlap lost a user turn; company name never extracted |
 | `036-gpt-live-happy-path-20260929-014856-58a9` | cooperative, `delay_ms: 6500` | failed — script exhausted, flow still asking; transcript healthy through node 1-b |
+| `004-gpt-live-retry-while-speaking-20260929-091122-ef64` | `responses:` + `caller_steps: [say, end]` | failed — call ended after 7s, `contract_scenario_end`; router never got a turn (problem 6) |
+| `006-gpt-live-retry-while-speaking-20260929-092157-8466` | `responses:` + `do: ask / <invented target>` | failed — `CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE` (problem 6) |
+| `008-gpt-live-retry-while-speaking-20260929-094309-9dc4` | `do: ask / hours`, `max_turns: 2` | failed — `BEHAVIOR_TIMEOUT`; behavior budget exhausted mid-call |
+| `009-gpt-live-retry-while-speaking-20260929-094728-b1ae` | `do: ask / hours`, `max_turns: 8` | **gate green** (`ok: ✓`) — but the router routed the preamble and every answer was off by one (problem 8) |

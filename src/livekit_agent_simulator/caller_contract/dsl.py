@@ -342,6 +342,32 @@ def _parse_do(
             field="do.behavior",
         )
 
+    # Structural target check only. There is deliberately NO target allowlist
+    # here, for the same reason `known_behaviors` is a default rather than a
+    # hardcoded vocabulary: target strings are consumer business vocabulary,
+    # and AGENTS.md's generic-core rule forbids baking them into `src/`.
+    #
+    # What IS generic and worth catching at parse time: a target that is not a
+    # non-empty string. The semantic verifier grades an utterance against
+    # `behavior` + `target`, so a malformed target does not fail cleanly at
+    # parse — it fails LATER as a paid CALL, as
+    # CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE, with the real cause one layer
+    # down in reports/<run-id>/events.jsonl. A parse error is free; a ~70s
+    # call is not.
+    #
+    # Note the limit of this check: it does NOT tell you whether the target is
+    # one the verifier recognises. That vocabulary is scenario-specific, so it
+    # belongs in docs and examples, not in this catalog.
+    if target is not None and (not isinstance(target, str) or not target.strip()):
+        raise _err(
+            f"do: 'target' must be a non-empty string when present, got "
+            f"{type(target).__name__}"
+            + (f" ({target!r})" if isinstance(target, str) else ""),
+            file=file,
+            line=line,
+            field="do.target",
+        )
+
     constraints = _parse_constraints(constraints_raw, file=file, line=line)
     contract = BehaviorContract(behavior=behavior_name, target=target, constraints=constraints)
     contract.validate()

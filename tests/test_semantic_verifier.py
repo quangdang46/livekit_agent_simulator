@@ -252,3 +252,50 @@ def test_classifier_distinguishes_common_acts(utterance: str) -> None:
     contract = _negotiate_contract()
     observed = verifier.classify(utterance, contract)
     assert observed.confidence >= SEMANTIC_CONFIDENCE_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# target_keywords extension point (response-router, PROBLEMS.md §6)
+# ---------------------------------------------------------------------------
+
+
+def test_a_consumer_can_supply_its_own_target_vocabulary() -> None:
+    """`behaviors` had an extension point; `targets` did not.
+
+    TARGET_KEYWORDS is all commercial (price, hours, charge, fees, ...) and was
+    never overridden anywhere in src/ or tests/. So a scenario about reporting
+    a building problem had NO working `do:` target, and found that out by
+    paying for a call: unknown target -> no evidence -> LOW_CONFIDENCE ->
+    CALLER_BEHAVIOR_VIOLATION.
+    """
+    v = RuleBasedSemanticVerifier(
+        target_keywords={"maintenance_schedule": ("maintenance", "repair", "schedule")}
+    )
+    contract = BehaviorContract(behavior="provide", target="maintenance_schedule")
+    got = v.classify("I can schedule the maintenance repair for next week.", contract)
+    assert got.target == "maintenance_schedule", (
+        "a consumer-supplied target must produce evidence, or the extension "
+        "point is dead"
+    )
+
+
+def test_the_defaults_are_unchanged_when_nothing_is_supplied() -> None:
+    """Every existing scenario must behave identically after this change."""
+    v = RuleBasedSemanticVerifier()
+    contract = BehaviorContract(behavior="provide", target="price")
+    assert v.classify("That price is too high.", contract).target == "price"
+
+
+def test_supplying_one_target_does_not_require_restating_the_defaults() -> None:
+    # Entries MERGE, so passing a single consumer target does not silently
+    # drop the eight built-ins.
+    v = RuleBasedSemanticVerifier(target_keywords={"roof_damage": ("roof", "leak")})
+    assert v.classify("That price is too high.", BehaviorContract("provide", "price")).target == "price"
+    assert v.classify("There is a roof leak.", BehaviorContract("provide", "roof_damage")).target == "roof_damage"
+
+
+def test_an_unknown_target_still_yields_no_evidence_never_a_guess() -> None:
+    # Extending the table must not weaken the "no evidence, never a guess"
+    # rule: a target nobody supplied keywords for is still unverifiable here.
+    v = RuleBasedSemanticVerifier(target_keywords={"roof_damage": ("roof",)})
+    assert v.classify("The roof is fine.", BehaviorContract("provide", "unmapped")).target is None

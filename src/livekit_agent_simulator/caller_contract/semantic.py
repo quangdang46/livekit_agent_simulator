@@ -59,18 +59,26 @@ TARGET_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _target_evidence(utterance: str, target: str | None) -> str | None:
+def _target_evidence(
+    utterance: str,
+    target: str | None,
+    table: dict[str, tuple[str, ...]] | None = None,
+) -> str | None:
     """Independent target evidence from the utterance text alone.
 
     Returns the contract's target string when the utterance contains a
     topic keyword for it, else None (no evidence — never a guess, never
-    the generator's claim). Unknown targets (absent from TARGET_KEYWORDS)
-    always yield None at this tier: a stronger verifier backend must
-    supply the evidence instead.
+    the generator's claim). Unknown targets (absent from the table) always
+    yield None at this tier: a stronger verifier backend must supply the
+    evidence instead.
+
+    ``table`` is the verifier's merged keyword map. ``None`` means the
+    module default, which keeps this function usable standalone and keeps
+    every existing call site's behaviour identical.
     """
     if target is None:
         return None
-    keywords = TARGET_KEYWORDS.get(target)
+    keywords = (TARGET_KEYWORDS if table is None else table).get(target)
     if keywords is None:
         return None
     lowered = utterance.lower()
@@ -433,7 +441,29 @@ class RuleBasedSemanticVerifier:
     Swappable behind SemanticVerifierProtocol; a stronger backend (local
     NLI, LLM judge) can replace this without the validator's enforcement
     boundary moving.
+
+    ``target_keywords`` is the extension point that makes
+    :data:`TARGET_KEYWORDS` a DEFAULT rather than a closed vocabulary — the
+    same relationship ``known_behaviors=`` has on :func:`dsl.parse_steps`.
+    Without it the two halves of the contract were asymmetric for no decided
+    reason: behaviors could be extended per scenario, targets could not, so a
+    scenario about anything other than price/hours/charges had no working
+    ``do:`` target and discovered that by paying for a call
+    (``CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE``).
+
+    Supplying it is also how a consumer stays generic-core-clean: the domain
+    vocabulary belongs to the consumer, not to this package. Entries MERGE
+    over the defaults, so passing one target does not require restating the
+    eight built-ins.
     """
+
+    def __init__(
+        self, *, target_keywords: dict[str, tuple[str, ...]] | None = None
+    ) -> None:
+        self._target_keywords: dict[str, tuple[str, ...]] = {
+            **TARGET_KEYWORDS,
+            **(target_keywords or {}),
+        }
 
     def classify(self, utterance: str, contract: BehaviorContract) -> ObservedAct:
         overall_hits = _score_act_hits(utterance)
@@ -453,11 +483,17 @@ class RuleBasedSemanticVerifier:
             # No act pattern matched at all: genuinely ambiguous. Do not
             # guess the contract's own behavior just to look confident —
             # return low confidence and let the validator reject it.
-            # target=None for the same reason as the matched path below:
-            # no independent target evidence exists in this tier.
+            #
+            # The target tier is INDEPENDENT of the act tier, so it is still
+            # consulted here. Discarding it would make "no act evidence"
+            # silently mean "no target evidence either", which is a different
+            # claim and a stronger one: an utterance can name the topic
+            # unambiguously while being unclear about the act. Before this,
+            # that was thrown away and the utterance failed as
+            # LOW_CONFIDENCE for a reason unrelated to the target.
             return ObservedAct(
                 act=contract.behavior,
-                target=None,
+                target=_target_evidence(utterance, contract.target, self._target_keywords),
                 confidence=_NO_MATCH_CONFIDENCE,
                 all_acts=detected_intent_tags or [contract.behavior],
             )
@@ -483,7 +519,7 @@ class RuleBasedSemanticVerifier:
         # yield None at this tier — a stronger backend must supply them.
         return ObservedAct(
             act=best_act,
-            target=_target_evidence(utterance, contract.target),
+            target=_target_evidence(utterance, contract.target, self._target_keywords),
             confidence=_confidence_for(primary_hits),
             all_acts=all_acts,
         )
