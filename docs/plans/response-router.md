@@ -1399,9 +1399,60 @@ Also change `contract_summary.py:133` from the hardcoded `"validation": "passed"
 
 ---
 
-## 7. Rust twin (deliberate divergence, recorded)
+## 7. Rust twin (`lksr`)
 
-`lks-core/src/scenario.rs` `KNOWN_KINDS` is a fixed array and `scenario_jsonl.rs` hard-rejects unknown kinds, so a JSONL scenario with a `Responses` section parses in Python and is rejected by `lksr`. `tests/golden/` is empty, so nothing catches it today. v1 is **Python-only for router scenarios**; the exclusion is stated in the plan and in `AGENTS.md` rather than silently carried. Revisit if `lksr` ever needs to execute a router run.
+**Answer: v1 is Python-only for router scenarios.** This section was rewritten
+2026-09-29 after three claims in the original draft were checked against the tree
+and found false or stale.
+
+`lks-core/src/scenario.rs` `KNOWN_KINDS` is a fixed `[&str; 13]` containing
+`"CallerSteps"` and no `"Responses"`, and `scenario_jsonl.rs:185` hard-rejects
+unknown kinds — so a scenario authoring `responses:` parses under `lks` and is
+**rejected** under `lksr`. No `lksr` user is stranded, because D13 keeps
+`caller_steps` mandatory and **caller_steps wins when both are present**: the
+router is not engaged, so an `lksr` user running a dual-key scenario executes
+exactly the `caller_steps` path.
+
+| Concern | Action |
+|---|---|
+| **Router execution on `lksr`** | **Out of scope in v1.** Do not port the router. `caller_contract.rs` has ~1000-1100 lines with zero references outside that file — the interaction planner (`:1542-1728`), turn detector, seeded-interruption policy, record/replay (`:1728-2118`), `validate_with_retry`. `script.rs:722-724` carries the admitting TODO. Porting the router means **wiring dead code**, which AGENTS.md forbids. |
+| **`KNOWN_KINDS` hard-reject** | Leave as-is. It is the enforcement, not an oversight: a `responses:` scenario fails fast under `lksr` instead of silently running the legacy path and reporting clean. Same shape as the `driver.py:660` guard. |
+| **The "exclusion is stated in AGENTS.md" claim** | **DELETE — it was false.** AGENTS.md had **zero** occurrences of `lksr`, `router`, or divergence before v2-14. v2-14 added the router section (which is still Python-only in wording and does not yet name the `lksr` gap); this row is where that gap is recorded. Do not repeat the claim. |
+| **"tests/golden/ is empty, so nothing catches it"** | **DELETE — stale.** `crates/lks-core/tests/golden/` holds 4 files dated 2026-09-03 (`conversation.wav`, `events.jsonl`, `meta.json`, `summary.json`). The *conclusion* survives; the stated reason does not. |
+| **Shared parity vectors** | Not engaged. No file under `tests/fixtures/parity/` contains `responses` or `router` (23 files + `dsl/` subdir), so `otd.10`'s "any vector change requires updating both sides in the same commit" does not apply to this migration. |
+| **Fail-fast on the Rust side** | Required in v1 — `v2-29`: `lksr` must name the unimplemented router on the same predicate Python uses, rather than accepting the scenario and doing something else. |
+| **The written repo rule** | `PLAN-20260813-rust-full-port.md:23` — *"No new features land in Python after P3 unless they are also ported in the same change."* **A maintainer may read that as still binding, in which case this migration violates a written rule.** It has never been formally retired or re-adopted. **This is the maintainer's call, not the implementer's**, and answering it is worth more than the guard bead. |
+
+**The port is not retired — that distinction is the whole risk.** 16 `f8k` beads
+closed 2026-08-14, back-port `cbb1200` landed 2026-09-21 (+353 to
+`caller_contract.rs`), and it has its own CI and release pipelines. A Rust user
+today is **not** stale: `v0.1.0-rust` is an un-bumped parallel version line cut
+from the current tree (`rev-list --count v0.1.0-rust..v0.1.12` = 0). But the
+cadence is a decaying single-author burst — 26 commits on 09-15, 18 on 09-18,
+4 on 09-21, 1 on 09-24, zero since, and 209 Rust commits over 90 days under
+four name spellings. *"Maintained" is true; "maintained with a second owner"
+is not.*
+
+**Two Rust-only behaviours survive on the surface `lksr` keeps, and they will
+grow.** (i) `dtmf` actually **executes** on the Rust `caller_steps` path
+(`scenario.rs:447-454` → `script.rs:528-543`) where Python's driver emits only
+`contract.control` and falls through with no action
+(`driver.py:632-634` — *"dtmf / silence: control actions, never AI/TTS"*,
+tracked by a DTMF bead); (ii) `caller_steps` `end:`/`hangup:` silently inherit
+a 20 s open-question deferral (`script.rs:354-460`) that Python's driver has
+no equivalent of.
+
+*(The Python line was `driver.py:592-593` in the earlier draft of this bead —
+wrong; that is the interrupt cut-in path. Corrected to `632-634` after
+checking.)*
+
+**Exposure is structurally low, for reasons that are checkable.** Two
+independent release trains (`python-release.yml:5-7` `v*` minus `v*-rust*`;
+`rust-release.yml:5-6` `v*-rust*`); no Windows artifact exists at all
+(`rust-release.yml:27-33`, webrtc-sys abseil; `install.ps1:118-122` hard-throws),
+so exposure on the largest platform is zero; Python is the default
+(`install.sh:24` `RUST=0`); and there is no second contract driver
+(`caller_dsl.rs:8-10` scopes itself *"parse + validate only"*).
 
 ---
 

@@ -196,6 +196,21 @@ Docs: [docs/migration-caller-steps-to-responses.md](docs/migration-caller-steps-
 [docs/router-prompts.md](docs/router-prompts.md), working example
 `templates/examples/router-smoke.yaml`.
 
+### ⚠️ The routed path is PYTHON-ONLY
+
+`lksr` does **not** execute router scenarios. `scenario.rs` `KNOWN_KINDS` has no
+`"Responses"` and `scenario_jsonl.rs:185` hard-rejects unknown kinds, so a
+`responses:` scenario is **rejected** under `lksr` rather than silently run
+legacy. No `lksr` user is stranded: `caller_steps` is mandatory and wins when
+both are present, so a dual-key scenario executes the `caller_steps` path under
+`lksr` and the router is simply not engaged.
+
+Do not port the router to Rust in v1 — `caller_contract.rs` carries ~1000 lines
+with zero references outside that file, so porting means wiring dead code, which
+this file forbids. Full reasoning, including the two Rust-only behaviours that
+survive on the surface `lksr` keeps, is in
+`docs/plans/response-router.md` Appendix A §7.
+
 **Testing a change to the router:** the router is attached in
 `live_wiring._attach_response_router`, called from
 `run_contract_driver_path`. Unit tests that inject `driver.router` by hand
