@@ -388,7 +388,7 @@ def render_execute(console: Console, data: dict[str, Any]) -> None:
     iters = data.get("iterations") or []
     if iters:
         t = _table(
-            ["i", "run_id", "status", "gate", "ok", "ttfw", "p50", "p95", "hard_reasons"],
+            ["i", "run_id", "status", "gate", "ok", "ttfw", "p50", "p95", "hard_reasons", "error"],
             title="iterations",
         )
         for it in iters:
@@ -402,6 +402,10 @@ def render_execute(console: Console, data: dict[str, Any]) -> None:
                 fmt_ms(it.get("turn_p50_ms")),
                 fmt_ms(it.get("turn_p95_ms")),
                 fmt_list(it.get("hard_reasons")),
+                # Why the run failed, not just that it did. Without this a hard
+                # failure prints `status: failed` and the cause is one layer
+                # down in reports/<run-id>/events.jsonl.
+                truncate(it.get("error"), 50),
                 style=status_style(console, it.get("status")),
             )
         console.print(t)

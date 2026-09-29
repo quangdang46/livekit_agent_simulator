@@ -234,6 +234,48 @@ async def run_scenario(
     )
 
 
+def diagnose_failure(
+    status: str,
+    events: list[dict[str, Any]],
+    meta: dict[str, Any] | None = None,
+) -> str | None:
+    """Why the run failed, or None if there is nothing to say.
+
+    `cli_render` renders an `error` column for a failed run, but nothing
+    populated it: the run result had no such key, so a hard failure printed
+    `status: failed` / `hard_reasons: ["status:failed"]` and the real cause sat
+    one layer down in ``reports/<run-id>/events.jsonl``. Cost, once:
+    ``CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE`` took a bisect and a ~70s
+    paid call to find, from a report that said only ``status:failed``.
+
+    Derived from the reporter events rather than a threaded variable, so every
+    failure path that reports itself is covered without new plumbing. Matches on
+    "any spec carrying an error", NOT on event kind: the paths use different
+    kinds (``run.error`` from the top-level handler, ``sim.error`` from audio
+    finalize, ``sim.leg_error`` / ``dispatch.agent_timeout`` from connect), and
+    enumerating them here would be a list to forget to update.
+
+    Returns None on success, and None on a failure with nothing diagnosable —
+    the CLI renders a dash for that rather than inventing a reason.
+    """
+    if status != "failed":
+        return None
+    for ev in reversed(events):
+        # `EventWriter.events` is a list of plain dicts with a "spec" key, not
+        # objects with attributes.
+        spec = ev.get("spec") if isinstance(ev, dict) else None
+        if not isinstance(spec, dict):
+            continue
+        raw = spec.get("error")
+        if not raw:
+            continue
+        where = spec.get("where") or spec.get("mode")
+        return f"{raw} (in {where})" if where else str(raw)
+    if meta and meta.get("assert_failed"):
+        return "assert verify failed"
+    return None
+
+
 async def run_scenario_instance(
     cfg: SimConfig,
     scenario: Scenario,
@@ -775,7 +817,18 @@ async def run_scenario_instance(
                 for oc in scenario.asserts.outcomes:
                     if oc.type == "llm_bool" and oc.prompt:
                         criteria.append(f"[outcome:{oc.id}] {oc.prompt}")
+            from .evals.prompt import build_router_digest
             from .evals.runner import judge_run, judge_run_multi
+
+            # The judge needs the router's routing evidence: without it, a
+            # routed run cannot be distinguished from "the line was authored
+            # and on-script" vs "the system entry fired because nothing in the
+            # catalog matched" — which is the distinction the response catalog
+            # exists to record. Framed as EVIDENCE, not a verdict: an
+            # off-script turn can still sound natural and the call still
+            # recover, so a judge treating the count as authoritative would
+            # invent the exact UX complaint `off_script` exists to prevent.
+            router_digest = build_router_digest(_router_summary)
 
             if getattr(scenario, "pass_judges", None):
                 verdict = await judge_run_multi(
@@ -786,6 +839,7 @@ async def run_scenario_instance(
                     writer.turn_metrics(),
                     tool_events,
                     flow_events,
+                    router_digest=router_digest,
                 )
             else:
                 verdict = await judge_run(
@@ -799,6 +853,7 @@ async def run_scenario_instance(
                     # re-litigate behavior the run already proved correct (it was
                     # reading deliberate test markers as leaked internals).
                     summary_extra.get("assert_verify"),
+                    router_digest=router_digest,
                 )
         except Exception as e:
             verdict = {
@@ -923,4 +978,5 @@ async def run_scenario_instance(
         "status": status,
         "report_dir": str(report_dir),
         "summary": summary,
+        **({"error": diagnose_failure(status, writer.events, meta)} if status == "failed" else {}),
     }

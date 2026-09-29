@@ -357,3 +357,36 @@ async def test_wait_holds_slot_before_next_parallel(tmp_path) -> None:
     third_t = starts[2][0]
     first_wave_t = min(starts[0][0], starts[1][0])
     assert third_t - first_wave_t >= 0.15
+
+
+def test_execute_scenario_threads_no_router_through_every_signature() -> None:
+    """Regression: `lks execute` failed 100% with a TypeError.
+
+    `execute_scenario` passed `no_router=no_router` to `_run_scenario`, but
+    `_run_scenario`'s signature had no such parameter, so every call raised
+    `TypeError: _run_scenario() got an unexpected keyword argument 'no_router'`.
+
+    That TypeError was swallowed by the `except Exception` around `_run()` and
+    turned into `{"status": "failed", "error": "TypeError: ..."}` — no room, no
+    report dir, no job for the agent, no events. It looked like dead
+    infrastructure, and cost a bisect to find.
+
+    Asserted through the REAL signatures rather than by calling the CLI: a
+    private helper's parameter list is easy to miss by eye and impossible to
+    miss with an inspect-based check.
+    """
+    import inspect
+
+    from livekit_agent_simulator import ops
+
+    # The keyword must exist on every layer that carries it.
+    assert "no_router" in inspect.signature(ops.execute_scenario).parameters
+    assert "no_router" in inspect.signature(ops._run_scenario).parameters
+
+    src = inspect.getsource(ops._run_scenario)
+    assert "no_router=no_router" in src, (
+        "_run_scenario accepts no_router but does not forward it"
+    )
+
+    ro = inspect.getsource(ops.run_orchestrator.run_scenario)
+    assert "no_router=no_router" in ro, "run_scenario drops no_router before run_scenario_instance"

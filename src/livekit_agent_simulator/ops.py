@@ -427,6 +427,7 @@ async def _run_scenario(
     environment: str | None = None,
     record_path: Any = None,
     replay_path: Any = None,
+    no_router: bool = False,
 ) -> dict[str, Any]:
     """Internal: run JSONL scenario after preflight (orchestrator also preflights)."""
     cfg = load_config(project_root, profile=profile, environment=environment)
@@ -438,6 +439,7 @@ async def _run_scenario(
         caller_policy=caller_policy,
         record_path=record_path,
         replay_path=replay_path,
+        no_router=no_router,
     )
 
 
@@ -563,6 +565,10 @@ async def execute_scenario(
             "gate": gate["gate"],
             "ok": gate["ok"],
             "hard_reasons": gate["hard_reasons"],
+            # `cli_render` renders this column; without it a failed run shows
+            # only `status:failed` and the real cause is one layer down in
+            # reports/<run-id>/events.jsonl.
+            "error": result.get("error"),
             "ttfw_ms": mdig.get("ttfw_ms"),
             "turn_p50_ms": mdig.get("turn_p50_ms"),
             "turn_p95_ms": mdig.get("turn_p95_ms"),

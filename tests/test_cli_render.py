@@ -362,3 +362,91 @@ def test_cli_validate_invalid_exits_1_in_both_modes(runner: CliRunner, proj: Pat
     as_json = runner.invoke(app, ["validate", "does-not-exist", "--json", "--root", str(proj)])
     assert as_json.exit_code == 1
     assert json.loads(as_json.stdout)["valid"] is False
+
+
+def test_a_failed_run_prints_why_not_just_that_it_failed() -> None:
+    """The `error` column existed and was permanently blank.
+
+    `render_execute` has rendered `truncate(r.get("error"), 50)` for a while, but
+    `ops.execute_scenario` never copied an `error` key into the iteration row, so
+    a hard failure printed `status: failed` and nothing else. The real cause was
+    one layer down in reports/<run-id>/events.jsonl.
+
+    Cost: `CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE` took a bisect and a ~70s
+    paid call to find, from a report that said only `status:failed`.
+    """
+    data = {
+        "executed": True,
+        "validation": {"valid": True, "id": "r1"},
+        "repeat": 1,
+        "pass_at_k": 0,
+        "hard_passes": 0,
+        "ok": False,
+        "status": "failed",
+        "iterations": [
+            {
+                "i": 1,
+                "run_id": "001-x",
+                "status": "failed",
+                "gate": "fail",
+                "ok": False,
+                "hard_reasons": ["status:failed"],
+                "error": "ContractDriverFailure: CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE (in contract)",
+            }
+        ],
+    }
+    out = cr.render_text(cr.render_execute, data)
+    assert "CALLER_BEHAVIOR_VIOLATION" in out, (
+        "a failed run must say WHY; the error column rendered blank for this long"
+    )
+
+
+def test_a_failed_run_with_no_diagnosable_error_still_renders() -> None:
+    # `error` is optional. Absence must render as a dash, not as a crash or a
+    # misleading blank cell.
+    data = {
+        "executed": True,
+        "validation": {"valid": True, "id": "r1"},
+        "repeat": 1,
+        "pass_at_k": 0,
+        "hard_passes": 0,
+        "ok": False,
+        "status": "failed",
+        "iterations": [
+            {"i": 1, "run_id": "001-x", "status": "failed", "gate": "fail",
+             "ok": False, "hard_reasons": ["status:failed"]}
+        ],
+    }
+    out = cr.render_text(cr.render_execute, data)
+    assert "001-x" in out
+
+
+@pytest.mark.asyncio
+async def test_the_error_reaches_the_rendered_table_through_the_real_chain() -> None:
+    """`ops.execute_scenario` -> iteration row -> rendered table.
+
+    The two tests above build the row by hand, so they stay green if `ops`
+    stops forwarding the key — which is precisely how this bug survived. Only a
+    test that runs the real producer can catch a broken link in the chain.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from livekit_agent_simulator import ops
+
+    failed = {
+        "executed": True,
+        "run_id": "001-x",
+        "status": "failed",
+        "summary": {},
+        "error": "ContractDriverFailure: CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE",
+    }
+    with (
+        patch.object(ops, "validate_scenario", return_value={"valid": True, "id": "r1"}),
+        patch.object(ops, "_run_scenario", new=AsyncMock(return_value=dict(failed))),
+    ):
+        out = await ops.execute_scenario("/tmp", "r1")
+
+    row = out["iterations"][0]
+    assert row["error"], "ops must forward the error into the iteration row"
+    rendered = cr.render_text(cr.render_execute, out)
+    assert "CALLER_BEHAVIOR_VIOLATION" in rendered
