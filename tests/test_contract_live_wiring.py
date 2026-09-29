@@ -1521,7 +1521,6 @@ async def test_a_responses_scenario_routes_through_the_real_driver_path():
             self.seen.append(agent_transcript)
             return RouteDecision(
                 response_id="company_name",
-                confidence=0.9,
                 backend="scripted",
                 latency_ms=1,
             )
