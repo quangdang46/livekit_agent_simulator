@@ -20,6 +20,8 @@ caller of this module), never to the scenario file.
 
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -118,6 +120,27 @@ class AILanguageAdapter:
 
     backend: LanguageBackendProtocol
     max_retries: int = 1
+
+    async def generate_routed_candidate(
+        self,
+        *,
+        contract: BehaviorContract,
+        context: dict[str, Any],
+        identity: GenerationIdentity,
+    ) -> CandidateUtterance:
+        """Phrase a ROUTED line, bypassing the validator BY DESIGN (D2).
+
+        The router already chose WHAT to say, so the validator has nothing to
+        grade: scoring authored text is the harness grading its own fixture.
+        """
+        result = await asyncio.to_thread(self.backend.generate, context)
+        utterance = str((result or {}).get("utterance") or "").strip()
+        if not utterance:
+            raise LanguageGenerationError("routed text backend returned an empty utterance")
+        return CandidateUtterance(
+            act=contract.behavior, target=None, slots={"routed": True},
+            utterance=utterance, identity=identity,
+        )
 
     def generate_candidate(
         self,

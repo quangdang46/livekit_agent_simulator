@@ -18,6 +18,8 @@ adapter (bridge mixer) is wired in a later slice.
 
 from __future__ import annotations
 
+import hashlib
+
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -72,8 +74,33 @@ from .language_adapter import (
     build_context,
     should_invoke_adapter,
 )
+
+
+def build_routed_context(
+    *,
+    contract: BehaviorContract,
+    response: Any,
+    turn: int,
+    agent_latest: str | None,
+    recent_turns: list[Any],
+    relevant_facts: list[str] | None = None,
+) -> dict[str, Any]:
+    """Text-backend context for a ROUTED turn.
+
+    A two-line delegate onto build_context plus ONE key, so the two prompt
+    shapes cannot drift. canonical_text is the ONLY place the authored text
+    appears: relevant_facts reads as background the persona already knows, and
+    putting the answer there would invite embellishing around it.
+    """
+    ctx = build_context(
+        contract=contract, turn=turn, agent_latest=agent_latest,
+        relevant_facts=relevant_facts or [], recent_turns=recent_turns,
+    )
+    ctx["canonical_text"] = response.text
+    return ctx
 from .orchestrator import BehaviorOutcome, Orchestrator
-from .validator import ContractValidator
+from .router import DegeneracyGuard, RouterError, RouterTerminal
+from .validator import ContractValidator, ValidationResult, Verdict
 
 
 class PublishDrainTimeout(RuntimeError):
@@ -197,6 +224,12 @@ class ContractCallerDriver:
     # record-then-replay reproduces the identical verdict trail without AI.
     # Set by live_wiring from --record; None in unit tests unless assigned.
     recorder: Any = None
+    # Response-router path (v2-9). None on every legacy scenario; their
+    # ABSENCE is the feature gate, so with no router nothing below changes.
+    router: Any = None
+    response_catalog: Any = None
+    routed_turns: list[dict] = field(default_factory=list)
+    _degeneracy: Any = None
 
     async def run(
         self,
@@ -653,7 +686,67 @@ class ContractCallerDriver:
                 recent_turns=log,
             )
 
+            # ---- response-router (v2-9) ---------------------------------
+            # Replaces the GENERATE step only. Publish, the agent-turn wait at
+            # the end of this iteration, and evaluate_behavior all still run:
+            # a routed turn must be able to satisfy its own behavior, which
+            # needs an agent reply to evaluate, and the wait is the FIRST
+            # listen of the audio just published, not a second one. Routing
+            # changes WHAT the caller says, never WHEN it speaks.
+            routed_candidate: CandidateUtterance | None = None
+            if self.router is not None and self.response_catalog is not None and agent_text:
+                try:
+                    decision = await self.router.route(
+                        agent_transcript=agent_text, catalog=self.response_catalog,
+                    )
+                    if self._degeneracy is None:
+                        self._degeneracy = DegeneracyGuard()
+                    # Inside the try: a degenerate router must become a RED
+                    # run via the RouterTerminal arm below, not propagate out
+                    # of the driver.
+                    self._degeneracy.observe(decision.response_id)
+                except RouterTerminal as exc:
+                    return self._fail(
+                        FailureReason.LANGUAGE_GENERATION_ERROR,
+                        f"router degenerate: {exc}", EndedBy.ERROR, 0, turns,
+                    )
+                except RouterError as exc:
+                    # RouterFault: a refusal or schema violation. NEVER
+                    # resolved into a plausible responseId - the caller would
+                    # speak the invention out loud.
+                    return self._fail(
+                        FailureReason.LANGUAGE_GENERATION_ERROR,
+                        f"router failed: {exc}", EndedBy.ERROR, 0, turns,
+                    )
+                spec = self.response_catalog.get(decision.response_id)
+                self.response_catalog.serve(decision.response_id)
+                off_script = bool(spec.system)
+                self.routed_turns.append({
+                    "turn": turns, "response_id": decision.response_id,
+                    "off_script": off_script, "confidence": decision.confidence,
+                    "backend": decision.backend, "latency_ms": decision.latency_ms,
+                })
+                _emit("contract.router_decision", {
+                    "behavior": contract.behavior, "turn": turns,
+                    "response_id": decision.response_id, "off_script": off_script,
+                    "confidence": decision.confidence, "backend": decision.backend,
+                    "latency_ms": decision.latency_ms,
+                    "agent_text": agent_text[:200],
+                    "agent_text_sha": hashlib.sha1(agent_text.encode("utf-8")).hexdigest(),
+                })
+                routed_candidate = await self.adapter.generate_routed_candidate(
+                    contract=contract,
+                    context=build_routed_context(
+                        contract=contract, response=spec, turn=turns,
+                        agent_latest=agent_text, recent_turns=log,
+                        relevant_facts=facts,
+                    ),
+                    identity=self.orchestrator.new_generation(),
+                )
+
             def _generate() -> CandidateUtterance:
+                if routed_candidate is not None:
+                    return routed_candidate
                 identity = self.orchestrator.new_generation()
                 return self.adapter.generate_candidate(contract, context, identity)
 
@@ -681,6 +774,22 @@ class ContractCallerDriver:
             for _ in range(self.max_retries + 1):
                 attempts += 1
                 try:
+                    if routed_candidate is not None:
+                        # D2: the router picked this line, so a real verdict
+                        # would grade the harness's own fixture and fail closed
+                        # on natural phrasing. result_attempt MUST be set here:
+                        # the loop below reads it unconditionally.
+                        candidate_attempt = routed_candidate
+                        result_attempt = ValidationResult(
+                            verdict=Verdict.VALID, reason="ROUTED"
+                        )
+                        last_verdict = result_attempt
+                        _attempt_verdicts.append(
+                            (result_attempt.verdict.value, result_attempt.reason,
+                             candidate_attempt.utterance)
+                        )
+                        candidates.append(candidate_attempt)
+                        break
                     candidate_attempt = _generate()
                 except LanguageGenerationError as exc:
                     transport_error = exc
