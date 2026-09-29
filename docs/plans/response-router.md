@@ -1403,3 +1403,53 @@ Re-run the control set on **any** change to `model`, `prompt_version`, `reasonin
 5. **Is `responses:` the right block name?** `caller_steps:` is the WHEN skeleton, `responses:` the WHAT source. `caller_responses:` is more symmetric and costs a longer key. Cheap now, expensive after templates exist.
 6. **Should the router see recent turns, or strictly the last agent utterance?** The contract says `route(agent_transcript, responses)`. `build_context` already caps `recent_turns` at 6, and an agent that re-asks across two finals routes wrong against one — but the Jev research's own warning applies directly: accuracy falls as irrelevant state grows. v1 keeps the contract exact.
 7. **Is `off_script` supposed to ever end the call?** v1: no, by contract ("responds as a reasonable caller would, and records the deviation"). If you want a Nth-consecutive cutoff, it needs a new `EndedBy` **and** a `_CONTRACT_END_SIDES` entry that maps to no side, or it silently breaks the two `ended_by: sim` template asserts.
+---
+
+## Bead map
+
+The plan and the bead set drifted twice during this work — the plan said "place the branch after
+the agent-turn wait", which is the wrong end of the loop, and the config block kept two dead keys
+after the code had cut them. This map is the guard: **a design change is not done until the bead
+and this section agree.**
+
+| Bead | Owns | Lands in |
+|---|---|---|
+| `v2-1` | provider enum guarantees, ceilings, schema shape | this plan §1 |
+| `v2-2` | text-backend reuse, prompt clause, `relevant_facts` | this plan §3a |
+| `v2-3` | `responses.py` — the catalog | `caller_contract/responses.py` |
+| `v2-4` | `router` / `text_planner` config blocks | `config.py` |
+| `v2-5` | the port, degeneracy guard, retry policy | `caller_contract/router.py` |
+| `v2-6` / `v2-7` | OpenAI / Gemini adapters | `router_openai.py`, `router_gemini.py` |
+| `v2-8` | scenario parse + export, together | `scenario.py`, `scenario_from_dict.py`, `scenario_yaml.py` |
+| `v2-9` | the driver branch | `caller_contract/driver.py`, `language_adapter.py` |
+| `v2-10` | router evidence in the run summary | `run_orchestrator.py` |
+| `v2-11` | attribution both directions, both planner modes | `tests/test_router_smoke.py` |
+| `v2-22` | ordering vs the DTMF track | this plan §4 |
+| `v2-13` | prompt guide | docs |
+| `v2-15` | judge / eval | judge surface |
+| `v2-16` | fixtures + snapshot regeneration | `tests/fixtures/`, snapshots |
+| `v2-17` | CLI help | `cli.py` |
+| `v2-20` | the package's own router scenario | `.agent-sim/` |
+| `v2-27` | `lks init` router config — **OWNER DECISION** | `templates/`, `ops.py` |
+
+### Where the implementation differs from the first draft
+
+Three corrections, all verified rather than assumed:
+
+1. **The routing branch replaces the GENERATE step only.** The first draft said "after the
+   agent-turn wait and before the generate/validate loop" — those two are in the wrong relative
+   order. The loop is generate-then-listen, so a branch placed after the wait sits downstream of
+   publish and never gets first crack. A branch that publishes and `continue`s is worse: it skips
+   the wait, and `evaluate_behavior` is what decides whether a behavior is satisfied, so every
+   routed turn would end `BEHAVIOR_TIMEOUT`. **Routing changes WHAT the caller says, never WHEN it
+   speaks.**
+2. **The gate is `agent_text` truthiness, not a turn index.** `agent_text` is reset per *behavior*
+   (`driver.py:629`), so a three-behavior scenario has three legacy openings, not one. An index
+   gate only works by accident of where the variable happens to be initialised.
+3. **Two config keys were cut as dead surface** (`unknown_policy`, `prompt_version`) — the plan's
+   first draft still listed them. The off-script verdict is a *catalog lookup*, not a config branch.
+
+### Suite baseline
+
+`1156 → 1293` as of `4fba5c3`. Re-measure before trusting any number: this tree is shared and
+changes under measurement.
