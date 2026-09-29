@@ -103,7 +103,7 @@ class _ScriptedRouter:
         from livekit_agent_simulator.caller_contract.router import RouteDecision
 
         return RouteDecision(
-            response_id=response_id, confidence=0.9, backend="scripted", latency_ms=1
+            response_id=response_id, backend="scripted", latency_ms=1
         )
 
 

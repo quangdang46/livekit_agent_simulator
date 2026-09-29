@@ -18,12 +18,12 @@ def _ev(kind: str, **spec) -> dict:
 
 MATCHED = _ev(
     "contract.router_decision", turn=0, response_id="company", off_script=False,
-    confidence=0.9, backend="openai", latency_ms=12, agent_text="hi",
+    backend="openai", latency_ms=12, agent_text="hi",
     agent_text_sha="abc",
 )
 OFF = _ev(
     "contract.router_decision", turn=1, response_id="sys", off_script=True,
-    confidence=0.4, backend="openai", latency_ms=9, agent_text="what about parking",
+    backend="openai", latency_ms=9, agent_text="what about parking",
     agent_text_sha="def",
 )
 
@@ -49,9 +49,14 @@ def test_each_decision_keeps_its_own_identity_and_hash():
     assert [d["response_id"] for d in s["decisions"]] == ["company", "sys"]
     assert s["decisions"][0]["agent_text_sha"] == "abc"
     assert s["decisions"][1]["agent_text_sha"] == "def"
-    # confidence is recorded for diagnosis but did NOT decide the verdict
-    assert s["decisions"][0]["confidence"] == 0.9
+    # The verdict comes from the LABEL the router chose, not from any score:
+    # off_script is true iff the selected id is the system entry.
     assert s["decisions"][0]["off_script"] is False
+    assert s["decisions"][1]["off_script"] is True
+    assert "confidence" not in s["decisions"][0], (
+        "confidence was removed: strict structured outputs made it structurally "
+        "impossible, so it was always null in every report"
+    )
 
 
 def test_truncated_agent_text_still_carries_a_hash_of_the_full_line():

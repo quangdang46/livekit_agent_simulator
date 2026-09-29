@@ -67,7 +67,7 @@ class _ScriptedRouter:
         )
         return RouteDecision(
             response_id="company" if asked_for_company else "sys",
-            confidence=0.9 if asked_for_company else 0.2,
+
             backend="scripted",
             latency_ms=5,
         )

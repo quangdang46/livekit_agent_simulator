@@ -162,7 +162,6 @@ def _summarize_router(events: list[dict]) -> dict | None:
                 "turn": d.get("turn"),
                 "response_id": d.get("response_id"),
                 "off_script": bool(d.get("off_script")),
-                "confidence": d.get("confidence"),
                 "backend": d.get("backend"),
                 "latency_ms": d.get("latency_ms"),
                 # Full-line hash: the text is truncated for readability, and

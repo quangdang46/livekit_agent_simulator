@@ -514,6 +514,51 @@ enumerate everything-that-does-not-match, so the next scenario meets the same
 class. Treat "false `matched`" as its own design gap rather than something the
 YAML can fix.
 
+### Proposed fix (consolidated across review)
+
+`NO_MATCH = "__none__"` added to the `enum` in `build_route_schema`, so "nothing
+matches" becomes expressible. Preferred over `type: ["string","null"]`: a null
+does not read as a decision and is not greppable, a sentinel is both.
+
+**The branch must be three-way, not two.** This is the part that is easy to
+miss and that would undo the point of the change:
+
+```python
+if decision == NO_MATCH:
+    off_script = True
+elif decision in response_ids:
+    off_script = False
+else:
+    raise UnknownResponseId(decision)   # a hallucinated id must NOT become off_script
+```
+
+If the driver maps "anything not in `response_ids`" to `off_script`, the sentinel
+**masks model hallucinations** — collapsing "the model declined" and "the model
+invented an id" into the same label. That is the opposite of what this fix is
+for.
+
+**Do not remove `confidence` in the same PR.** The sentinel makes `off_script` a
+real decision and leaves `confidence` as a dead criterion; both are true, but two
+concerns in one change is one hard review. Sentinel first, `confidence` as its
+own bead — remove the field and its docstring if nobody claims it.
+
+### Test conditions
+
+1. Current behaviour cannot distinguish false-`matched` from a real match
+   (turn 1 of run 011).
+2. `confidence` is always `None` regardless of what the body returns.
+3. `confidence` is a dead knob — it has a docstring promising telemetry, a real
+   consumer (`_summarize_router` writes `decisions[]`), and a test asserting it
+   exists, so it looks alive while it never has a value. Note that removing the
+   field will turn that test red, which is correct.
+4. **A genuinely matching turn still returns its own id, not `__none__`.** Without
+   this, the sentinel is only shown not to break everything, not shown to
+   discriminate.
+5. **The sentinel survives into the router log / events JSONL**, so the next
+   false `matched` is greppable instead of reconstructed by hand.
+6. **`off_script` is still a valid `response_id`** for any scenario that defines
+   one — the sentinel must not swallow it.
+
 ### Evidence
 
 `contract.router_decision` events in `reports/009-gpt-live-retry-while-speaking-20260929-094728-b1ae/events.jsonl`.

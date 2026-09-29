@@ -69,7 +69,7 @@ class _Router:
         else:
             rid = self.response_id
         return RouteDecision(
-            response_id=rid, confidence=0.9, backend="stub", latency_ms=12
+            response_id=rid, backend="stub", latency_ms=12
         )
 
 

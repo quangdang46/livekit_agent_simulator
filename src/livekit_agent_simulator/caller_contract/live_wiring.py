@@ -96,7 +96,20 @@ def _build_semantic_verifier(cfg: Any) -> SemanticVerifierProtocol:
     block — those concern PassCriteria/asserts judging, not semantic
     verification.
     """
-    return RuleBasedSemanticVerifier()
+    # `target_keywords` lets a consumer supply its own domain vocabulary, since
+    # TARGET_KEYWORDS in `semantic.py` is a DEFAULT (all commercial entries)
+    # rather than the set of legal targets — the same relationship
+    # `known_behaviors=` has on `parse_steps`. Without this the config key is
+    # parsed, validated and snapshotted but never applied, which is a dead knob
+    # wearing a working one's clothes.
+    #
+    # `getattr` because scenario test doubles carry only `caller_actions` and
+    # default `simulator` off entirely; `SimConfig.target_keywords` defaults to
+    # an empty mapping, so `or None` keeps the verifier's own merge semantics
+    # (an empty dict would otherwise be a no-op that reads as configured).
+    simulator_cfg = getattr(cfg, "simulator", None)
+    target_keywords = getattr(simulator_cfg, "target_keywords", None)
+    return RuleBasedSemanticVerifier(target_keywords=target_keywords or None)
 
 
 def _synthesize(text: str) -> bytes:

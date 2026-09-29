@@ -85,12 +85,52 @@ def test_valid_body_becomes_a_decision():
     assert d.backend == "t"
 
 
-def test_confidence_is_carried_but_never_decides():
-    d = parse_route_body({RESPONSE_KEY: "a", "confidence": 0.4}, options=["a"], backend="t")
-    assert d.confidence == 0.4, "telemetry only — nothing branches on it"
-    # A non-numeric or absent confidence is simply absent, not an error.
-    assert parse_route_body({RESPONSE_KEY: "a", "confidence": "high"}, options=["a"], backend="t").confidence is None
-    assert parse_route_body({RESPONSE_KEY: "a"}, options=["a"], backend="t").confidence is None
+def test_route_decision_carries_no_confidence_and_the_schema_forbids_one():
+    """The dead knob this replaced, and why it could never have worked.
+
+    `RouteDecision.confidence` was documented as "telemetry only", parsed out
+    of the provider body, and recorded per-decision in the run summary. It could
+    never be populated: the request is
+    `{"responseId": {...}}` with `additionalProperties: False` under
+    `"strict": True`, so the provider is structurally forbidden from returning
+    anything else. Every real run recorded `confidence: null`.
+
+    The old test here passed a hand-made body containing `confidence` — an
+    input the provider cannot send — so it read as covered while the production
+    path was permanently empty. This test pins the schema instead, which is
+    the thing that actually decides.
+    """
+    from livekit_agent_simulator.caller_contract.router import (
+        RESPONSE_KEY,
+        RouteDecision,
+    )
+
+    assert not hasattr(RouteDecision("a"), "confidence"), (
+        "confidence must not come back: strict structured outputs forbid any "
+        "property outside the schema"
+    )
+
+    schema = build_route_schema(["a", "b"])
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == [RESPONSE_KEY]
+    assert set(schema["properties"]) == {RESPONSE_KEY}, (
+        "if a second property is ever added here, this test must be revisited - "
+        "it is what makes confidence structurally impossible"
+    )
+
+
+def test_an_extra_provider_property_is_still_ignored_not_fatal():
+    """A provider that ignores `additionalProperties: False` must not crash.
+
+    Strict mode makes it forbidden, not impossible; a non-compliant backend
+    could still send it. The router reads the one key it asked for and ignores
+    the rest, so a stray field can never become a silent decision input.
+    """
+    d = parse_route_body(
+        {RESPONSE_KEY: "a", "confidence": 0.4, "why": "because"}, options=["a"], backend="t"
+    )
+    assert d.response_id == "a"
+    assert d.backend == "t"
 
 
 def test_out_of_set_id_is_a_contract_violation():

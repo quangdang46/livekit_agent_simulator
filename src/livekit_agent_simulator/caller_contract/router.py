@@ -72,14 +72,29 @@ class RouterTerminal(RouterError):
 class RouteDecision:
     """One routing outcome.
 
-    ``confidence`` is TELEMETRY ONLY. It is carried so a run can compare
-    backends and so a low-confidence case can be found when a prompt needs
-    work. Nothing branches on it: the runtime reads ``response_id`` and
-    nothing else.
+    **There is deliberately no ``confidence`` field.** An earlier draft
+    carried one, documented as "telemetry only", parsed out of the provider
+    body and recorded per-decision in the run summary. It could never be
+    populated: the request schema is
+    ``{"responseId": {...}}`` with ``additionalProperties: False`` under
+    ``"strict": True``, so the provider is structurally forbidden from
+    returning anything else. Every real run recorded ``confidence: null``.
+
+    It was the most dangerous shape a dead knob can take — a docstring
+    promising telemetry, a real consumer writing it into ``decisions[]``, and
+    a test feeding ``parse_route_body`` a hand-made body the provider cannot
+    send — so it read as alive while always being dead.
+
+    Removing it also removes the temptation to threshold an unmeasurable
+    number: a ``confidence < 0.4 -> no-match`` rule over an always-``None``
+    field is a silent no-op, which looks like a working safety net.
+
+    If calibrated routing confidence is ever wanted, the honest shape is
+    ``probabilities`` over the enum, not a self-reported scalar — and that is
+    a separate design decision, not a revival of this field.
     """
 
     response_id: str
-    confidence: float | None = None
     backend: str = ""
     latency_ms: int | None = None
 
@@ -201,14 +216,7 @@ def parse_route_body(raw: Any, *, options: list[str], backend: str) -> RouteDeci
         raise RouterFault(
             f"{backend}: returned {response_id!r}, which is not one of the offered options"
         )
-    confidence = raw.get("confidence")
-    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
-        confidence = None
-    return RouteDecision(
-        response_id=response_id,
-        confidence=float(confidence) if confidence is not None else None,
-        backend=backend,
-    )
+    return RouteDecision(response_id=response_id, backend=backend)
 
 
 def should_retry(status: int | None, exc: BaseException | None = None) -> bool:

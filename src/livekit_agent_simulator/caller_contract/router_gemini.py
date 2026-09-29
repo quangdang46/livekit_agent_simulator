@@ -143,7 +143,6 @@ class GeminiResponseRouter:
         decision = parse_route_body(raw, options=options, backend=self.name)
         return RouteDecision(
             response_id=decision.response_id,
-            confidence=decision.confidence,
             backend=self.name,
             latency_ms=int((time.monotonic() - started) * 1000),
         )

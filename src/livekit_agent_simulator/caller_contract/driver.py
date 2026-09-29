@@ -730,13 +730,13 @@ class ContractCallerDriver:
                 off_script = bool(spec.system)
                 self.routed_turns.append({
                     "turn": turns, "response_id": decision.response_id,
-                    "off_script": off_script, "confidence": decision.confidence,
+                    "off_script": off_script,
                     "backend": decision.backend, "latency_ms": decision.latency_ms,
                 })
                 _emit("contract.router_decision", {
                     "behavior": contract.behavior, "turn": turns,
                     "response_id": decision.response_id, "off_script": off_script,
-                    "confidence": decision.confidence, "backend": decision.backend,
+                    "backend": decision.backend,
                     "latency_ms": decision.latency_ms,
                     "agent_text": agent_text[:200],
                     "agent_text_sha": hashlib.sha1(agent_text.encode("utf-8")).hexdigest(),
