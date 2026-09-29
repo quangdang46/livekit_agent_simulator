@@ -76,7 +76,9 @@ from livekit_agent_simulator.caller_contract.live_wiring import (
 
 from livekit_agent_simulator.caller_contract.dsl import parse_steps
 
-from livekit_agent_simulator.caller_contract.driver import ContractCallerDriver
+from livekit_agent_simulator.caller_contract.driver import ContractCallerDriver, DriverResult
+
+from livekit_agent_simulator.caller_contract.failures import RunFailure
 
 from livekit_agent_simulator.caller_contract.language_adapter import AILanguageAdapter
 
@@ -1284,3 +1286,159 @@ async def test_play_asset_refusal_fails_the_run_as_transport_not_caller_violatio
     assert result.failure is not None
     assert result.failure.reason == FailureReason.TRANSPORT_ERROR
     assert result.failure.reason != FailureReason.CALLER_BEHAVIOR_VIOLATION
+
+
+# --- Slice 3c: the end_reason labels are product surface ---------------------
+#
+# Commit c0d3e26 relabelled five of the six EndedBy -> reason keys to MUTANTC_*
+# and the suite stayed green, because every test asserting the returned string
+# drove the SCENARIO ending -- the one key the mutant left alone. These labels
+# are not cosmetic: script/models.py maps contract_caller_end /
+# contract_agent_end onto the `sim` / `agent` assert vocabulary and asserts.py
+# special-cases contract_timeout, so a wrong label turns every
+# `type: ended_by` assertion into "unrecognized" with nothing complaining.
+
+
+@pytest.mark.asyncio
+
+async def test_agent_hangup_returns_contract_agent_end():
+
+    """The real driver, no mocking of the unit under test: the caller speaks,
+    the agent goes silent AND disconnects, so driver.run returns a failure-free
+    DriverResult(ended_by=AGENT). run_contract_driver_path must name the agent
+    as the side that ended the call."""
+
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps(
+            [{"do": {"behavior": "ask", "constraints": {"max_turns": 2}}}], file="t"
+        )
+    )
+
+    bridge = FakeBridge()
+
+    # always_timeout: wait_agent_turn returns None, which is the branch that
+    # then probes is_agent_gone().
+    observer = FakeObserver(always_timeout=True)
+
+    writer = FakeWriter()
+
+    cfg = _fake_cfg()
+
+    agent = ScriptedAgentWait(observer)
+    agent.is_agent_gone = lambda: True
+
+    payload = {"act": "ask", "target": None, "slots": {}, "utterance": "Could you tell me more?"}
+
+    with patch("urllib.request.urlopen", return_value=_mock_openai_reply(payload)):
+
+        with patch(
+            "livekit_agent_simulator.caller_contract.live_wiring.ObserverAgentWait",
+            return_value=agent,
+        ):
+
+            end_reason = await run_contract_driver_path(
+                scenario, None, observer, bridge, writer, cfg
+            )
+
+    assert end_reason == "contract_agent_end"
+
+    # Not a failure: the caller published its turn, the agent simply hung up.
+    assert len(bridge._mixer.pushed) == 1
+
+
+@pytest.mark.asyncio
+
+@pytest.mark.parametrize(
+    "ended_by,expected",
+    [
+        (EndedBy.SCENARIO, "contract_scenario_end"),
+        (EndedBy.CALLER, "contract_caller_end"),
+        (EndedBy.AGENT, "contract_agent_end"),
+        (EndedBy.TIMEOUT, "contract_timeout"),
+        (EndedBy.TRANSPORT, "contract_transport_error"),
+        (EndedBy.ERROR, "contract_error"),
+        # A key outside the map must degrade to the documented fallback rather
+        # than leak None/raw enum text into run.end_condition.reason.
+        ("not-an-ended-by", "contract_end"),
+    ],
+)
+
+async def test_ended_by_maps_to_the_contract_reason_label(ended_by, expected):
+
+    """Pin every key of the EndedBy -> reason map, including the ones the
+    driver cannot currently reach.
+
+    Reachability today: driver.py builds a failure-free DriverResult only for
+    SCENARIO (two sites) and AGENT (one site); every other ending goes through
+    _fail(), which always attaches a RunFailure, and run_contract_driver_path
+    raises ContractDriverFailure before the map whenever failure is not None.
+    So contract_caller_end / contract_timeout / contract_transport_error /
+    contract_error are unreachable in production right now. They are pinned
+    anyway because they are the map's published domain -- a future change that
+    makes one reachable must not also be free to rename it.
+    """
+
+    async def _finished(self, *a, **kw):
+        return DriverResult(ended_by=ended_by, failure=None)
+
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps([{"say": "Hi there."}], file="t")
+    )
+
+    with patch("urllib.request.urlopen"):
+
+        with patch.object(ContractCallerDriver, "run", _finished):
+
+            end_reason = await run_contract_driver_path(
+                scenario, None, FakeObserver(), FakeBridge(), FakeWriter(), _fake_cfg()
+            )
+
+    assert end_reason == expected
+
+
+def test_driver_failure_message_is_reason_colon_detail():
+
+    """str(ContractDriverFailure) is what the CLI prints and what operators read
+    in a failed run. The "reason: detail" shape is the contract; c0d3e26
+    rewrote it as f"MUTANTA {reason} MUTANTB {detail}"."""
+
+    result = DriverResult(
+        ended_by=EndedBy.ERROR,
+        failure=RunFailure(
+            reason=FailureReason.AGENT_TIMEOUT, detail="agent silent for 30.0s"
+        ),
+    )
+
+    exc = ContractDriverFailure(result)
+
+    assert str(exc) == f"{FailureReason.AGENT_TIMEOUT.value}: agent silent for 30.0s"
+
+    # The wrapped result stays reachable for callers that want the typed reason.
+    assert exc.result.failure.reason == FailureReason.AGENT_TIMEOUT
+
+
+@pytest.mark.asyncio
+
+async def test_record_and_replay_paths_are_mutually_exclusive():
+
+    """Passing both is a contradiction the caller cannot honour: the replay
+    backend replaces the AI backend, so the run would silently produce no
+    record. c0d3e26 deleted this guard and no test noticed. The guard is the
+    first statement in the function, so this needs no fakes beyond the args."""
+
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps([{"say": "Hi there."}], file="t")
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+
+        await run_contract_driver_path(
+            scenario,
+            None,
+            FakeObserver(),
+            FakeBridge(),
+            FakeWriter(),
+            _fake_cfg(),
+            record_path=Path("run.json"),
+            replay_path=Path("run.json"),
+        )
