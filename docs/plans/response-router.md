@@ -104,6 +104,47 @@ The router never writes words. The text backend never chooses a response. Keepin
 
 **The cost, stated plainly:** with `text_planner.enabled: true` the published wording is **not** byte-stable across runs, so a router scenario is not byte-replayable. `text_planner.enabled: false` restores byte-exact output. Combined with D12 this means the two are the same constraint seen from two sides.
 
+### Schema shape and limits (v2-1 research, verified against primary vendor docs)
+
+**The enum MUST be wrapped.** A bare top-level `{"type": "string", "enum": [...]}`
+is invalid and the API will not accept it, so one shape serves both providers:
+
+```json
+{"type": "object",
+ "properties": {"responseId": {"type": "string", "enum": ["<authored ids>"]}},
+ "required": ["responseId"], "additionalProperties": false}
+```
+
+`required` is not decoration on either provider. OpenAI strict mode requires it outright; on
+Gemini its **absence is what makes `{}` reachable**, because every property is optional by
+default there.
+
+**Two ceilings, and the second one usually binds first.** From the OpenAI structured-outputs
+guide:
+
+- *"A schema may have up to 1000 enum values across all enum properties."*
+- *"For a single enum property with string values, the total string length of all enum values
+  cannot exceed 15,000 characters when there are more than 250 enum values."*
+
+A count-only check waves a 400-id catalog straight through to a live 400 — and that failure
+would be attributed to the agent under test. Both are enforced at **parse** time with file:line
+(`responses.py`: `MAX_RESPONSES`, `ENUM_LENGTH_LIMIT_FROM`, `MAX_ENUM_TOTAL_CHARS`).
+
+**Refusal is not a distinct status.** On OpenAI it arrives as HTTP **200** with
+`content[].type == "refusal"` (Responses) or `message.refusal != null` (Chat Completions). The
+adapter maps it to a harness fault. Fabricating a real-looking authored id there is the one
+outcome the whole catalog design exists to prevent.
+
+**Gemini publishes no numeric enum cap.** A large enum is one of four named complexity triggers
+for a hard `InvalidArgument: 400`, so the OpenAI ceilings are used for both providers as the
+conservative shared bound. Gemini's other documented traps: don't duplicate the schema in the
+prompt, and set `maxOutputTokens` explicitly so thinking tokens cannot consume the whole budget
+and return a candidate with zero text parts.
+
+**Ranking, for the record:** OpenAI strict mode is the stronger guarantee against an out-of-set
+label — reasoned from both providers' own docs, **not measured**. Neither publishes a conformance
+rate.
+
 **A trap worth naming:** `interaction_planner.plan_speak()` is **not** a text-planning port. `interaction_planner.py:84-85` says so outright — *"Deterministic delivery-layer planner. No AI, no free-text generation."* It inserts hesitation/stumble tokens from an authored `InteractionConfig`, and the `do:` path already discards it (`driver.py:786-790`, to keep TTS input byte-identical to what the validator saw). Toggling *that* would add filler tokens and break validator identity without making anything more natural. The AI phrasing layer is `caller_contract/text_backends.py`.
 
 ---
@@ -153,19 +194,53 @@ response = self.responses.get(decision.response_id)
 
 utterance = response.text
 if self.text_backend is not None:              # config: text_planner.enabled
-    parsed = self.text_backend.generate(
+    # Through the ADAPTER, not the backend directly: generate_candidate
+    # (language_adapter.py:122-147) owns the bounded retry loop. The earlier
+    # snippet called self.text_backend.generate(...) and silently lost it.
+    candidate = await self.text_backend.generate_candidate(
         build_routed_context(
+            contract=contract,                 # REQUIRED — see NOTE 1
             response=response,
             turn=turns,
-            agent_latest=agent_latest,
-            relevant_facts=self.relevant_facts,
-            recent_turns=recent,
+            agent_latest=agent_text or None,
+            recent_turns=log,
         )
     )
-    utterance = parsed["utterance"]            # _parse_backend_response already exists
+    utterance = candidate.utterance
 ```
 
-`build_routed_context` is a sibling of the existing `build_context` (`language_adapter.py:65-88`) and returns **the same key shape**, so the transport, the provider wiring, the retry policy and `_parse_backend_response` are all reused unchanged. That is the win: no new HTTP layer, no second urllib/retry/429 implementation.
+**NOTE 1 — `contract` is not optional.** The earlier signature omitted it, which is a latent
+crash, not a style issue: `_REQUIRED_CANDIDATE_KEYS = ("act", "utterance")` is checked at
+`language_adapter.py:97` with a *falsy* test, and `CandidateUtterance.validate()` raises
+`ValueError("act must be a non-empty string")`. With no contract the model has no `act` to echo
+and would have to **fabricate** one to survive the parse. The driver's in-hand contract is free —
+`generate_candidate` already accepts `contract` and never reads it — and it leaves
+`_parse_backend_response` genuinely untouched.
+
+**NOTE 2 — the routed context is a two-line delegate, not a second builder.**
+
+```python
+def build_routed_context(*, contract, response, turn, agent_latest, recent_turns, relevant_facts=None):
+    ctx = build_context(contract=contract, turn=turn, agent_latest=agent_latest,
+                        relevant_facts=relevant_facts or [], recent_turns=recent_turns)
+    ctx["canonical_text"] = response.text
+    return ctx
+```
+
+Re-emitting the four key literals would create a second shape that can silently drift from
+`build_context` — the AGENTS.md "one clear API" failure. `DEFAULT_RECENT_TURNS_CAP` is inherited
+this way, so the routed path cannot drift to a different turn cap.
+
+**`relevant_facts` stays present and `[]`.** It is a `run()` keyword (`driver.py:209`) that
+nothing populates — the only production call site, `live_wiring.py:491-502`, omits it — so it is
+`None → [] → []` on every real run. Omitting it would require the divergent second builder above.
+
+**REJECTED, and it is a trap:** putting `response.text` into `relevant_facts` as well as
+`canonical_text` shows the model the authored line twice — once as *the line to phrase*, once as
+*a known fact the persona has* — which is an explicit invitation to contextualise or embellish.
+The caller's `off_script` count would then mix router deviations with wording drift, and
+attribution stops being interpretable. `canonical_text` is the **only** place the authored text
+appears in a routed context.
 
 **One prompt addition is unavoidable — do not claim this is input-only.** The existing `_SYSTEM_PROMPT` (`text_backends.py:33-57`) says *"you only phrase the CURRENT behavior naturally"* and the response envelope is `{"act", "target", "slots", "utterance"}`. The context has nowhere to carry the canonical line:
 
