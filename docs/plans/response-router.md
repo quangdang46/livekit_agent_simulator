@@ -318,16 +318,23 @@ Each step independently reviewable and revertable. Steps 1–3 are pure addition
 
 | Step | Change | Size | Integration |
 |---|---|---|---|
-| **0** | Revert the committed mutants (see §6) | 3 sites | blocks everything |
-| **1** | `caller_contract/responses.py` — catalog, reserved id, parse-time `MAX_RESPONSES` | ~140 lines | none |
-| **2** | `config.py` — additive `router` block, validated at load | ~50 lines | none |
-| **3** | `caller_contract/router.py` + `router_openai.py` / `router_gemini.py` | ~230 lines | none |
+| **0** | Revert the committed mutants (see §6) | **4 sites, not 3** | blocks everything |
+| **1** | `caller_contract/responses.py` — catalog, reserved id, parse-time ceilings | ~250 lines | none |
+| **2** | `config.py` — additive `router` / `text_planner` blocks, validated at load | ~90 lines | none |
+| **3** | `caller_contract/router.py` + `router_openai.py` / `router_gemini.py` | ~600 lines | none |
 | **4** | Scenario parse + export, landing together (D13) | 4 files, ~45 lines | schema only |
-| **5** | `driver.py` + `live_wiring.py` — the integration | ~60 lines | **the risky step** |
+| **5** | `driver.py` — the routed branch | ~90 lines | **the risky step** |
+| **5b** | `live_wiring.py` — **attach the router**, or Step 5 is dead code | ~70 lines | **see below** |
 | **6** | Evidence: `contract_summary` router key, events, `_describe` cases | ~60 lines | reporting |
 | **7** | *(separate commit)* extract `http_json.post_json` shared by text backend and router | — | refactor |
 
-Only **Step 5** touches the driver control flow. Everything before it is additive and testable in isolation.
+Only **Steps 5 and 5b** touch the driver control flow. Everything before it is additive and
+testable in isolation.
+
+**Step 5b was missing from this table originally, and its absence is why the router shipped
+dead.** A branch that is never wired is not implemented — the branch was correct, every unit test
+was green, and no real run ever reached it. Step 5b's exit criterion is mutation, not coverage:
+replace `_attach_response_router(driver, cfg, scenario)` with `pass` and confirm a test fails.
 
 ---
 
@@ -338,34 +345,46 @@ The failure mode this design exists to prevent is not a crash — it is a **wron
 1. A correct, on-script agent produces **zero** `off_script` verdicts.
 2. A deliberately off-script agent (one that asks something no response covers) produces an `off_script` verdict, and the run is attributed to the **agent**, not the caller.
 3. A repeated question returns the same `responseId` twice when `reusable`, and never when not.
-4. A 7-archived-scenario regression run produces byte-identical output.
+4. **Archived-scenario regression output is byte-identical.** ⚠️ Correction: the seven archived
+   scenarios live in `voice-ai-agent/.agent-sim/scenarios/_archive/`, not in this package
+   (AGENTS.md Boundary), so no test here can observe them. The regression net that *is* testable
+   from here is `templates/*` + `templates/examples/*` + `tests/fixtures/*` + the parity vectors.
+   Checking the archived seven is a manual step in the target-repo hand-off
+   (`docs/migration-caller-steps-to-responses.md`).
 5. **Both planner modes** (§3a): with `text_planner.enabled: true` the verdict stream is identical to `false` — a persona paraphrase must not change attribution. With `false`, output is byte-identical run to run.
 
 If (1) or (4) or (5) fails, nothing downstream is trustworthy.
 
 ---
 
-## 6. Blocker before any of this: committed mutants
+## 6. Blocker before any of this: committed mutants — ✅ RESOLVED
 
-`c0d3e26 test(mutation): inject A/B/C mutants in caller-contract for judge checks` is on `main`, with `d431686` on top.
+`c0d3e26 test(mutation): inject A/B/C mutants in caller-contract for judge checks` was on `main`, with `d431686` on top. **Reverted in `eda4216`** (bead `…-3tv.1`, the shared DTMF/router prerequisite).
 
-| File | Line | Currently | Restore to |
+| File | Line | Was | Restored to |
 |---|---|---|---|
 | `caller_contract/live_wiring.py` | 58 | `f"MUTANTA {reason} MUTANTB {detail}"` | `f"{reason}: {detail}"`-style message |
+| `caller_contract/live_wiring.py` | 324 | **the `record_path`/`replay_path` mutual-exclusion guard, deleted** | `raise` on both set |
 | `caller_contract/live_wiring.py` | 537–542 | `MUTANTC_caller_end` … `MUTANTC_end` | `contract_caller_end` … `contract_error` |
 | `caller_contract/dsl.py` | 191 | `if self.kind == "say": self.bypasses_ai_and_validator = True` | do not bypass for `say` |
 
-**These are deliberate, not accidental** — the commit message says they exist to check the judge detects a broken harness. But `dsl.py:191` is read at `driver.py:620` and hard-fails `play_audio` with `VALIDATION_ERROR`, so **every `end_reason` assertion written before they are reverted is measuring a mutant.**
+⚠️ **There were FOUR sites, not three.** The hand-off listed three; the fourth (`live_wiring.py:324`)
+was found by the peer session while executing the revert. Reverting three would have left
+`run_contract_driver_path(record_path=…, replay_path=…)` running both branches instead of raising.
 
-Because `d431686` sits on top of `c0d3e26`, `git revert` will likely conflict in `live_wiring.py` — the same file the router edits. A targeted manual revert as its own commit is the safe path.
+Verify, not assume: `git diff c0d3e26~1 -- caller_contract/dsl.py caller_contract/live_wiring.py`
+returns empty — the tree is byte-identical to pre-mutant, which is stronger than checking each
+line.
 
-**This is shared work, not router-only.** The DTMF beads carry the same prerequisite:
+**And the suite was green with the mutants in it** — 1156 passed either way. They were never
+caught, because all four `end_reason` assertions in `test_contract_live_wiring.py` reach the
+`SCENARIO` ending, which `MUTANTC` does not touch; the other five keys were unobserved. That is
+why the coverage-gap bead exists (pin all six, plus the message format and the record/replay
+guard). Separately, **4 of the 6 keys in the map are unreachable at all**: `_fail()` always
+attaches a `RunFailure` and `run_contract_driver_path` raises before reaching the map, so only
+`contract_scenario_end` and `contract_agent_end` can ever be returned — a pre-existing
+`no dead features` violation, tracked as `dead-end-reason-keys-jrp`.
 
-```
-livekit-agent-simulator-dtmf-restore-python-3tv.1  [P0]  Revert c0d3e26 mutants before any DTMF work
-```
-
-So the revert is a **common prerequisite** for both efforts. Do it once, as its own commit, and let both depend on it. If the judge experiment still needs the mutants, the honest order is: finish the judge validation first, then revert, then start router and DTMF — not run them against a sabotaged tree.
 
 ### 6a. Sibling track — DTMF keypad restore
 
@@ -384,22 +403,62 @@ Already tracked as beads, and **must be implemented alongside this plan** rather
 | `…-3tv.6.1` | Write `tests/test_contract_dtmf.py` covering all six behaviours (P0) |
 | `…-3tv.6.2` | Add the template tripwire: spot-drive `dtmf-ivr-menu` through the real driver (P0) |
 
-**Two collisions to resolve before writing code — both are in files this plan also edits:**
+**Two collisions between this plan and the DTMF track — both resolved by landing the revert first:**
 
-1. **`caller_contract/dsl.py`** — DTMF needs a new trigger kind; §6 needs `dsl.py:191` reverted. Same file, same commit window.
-2. **`caller_contract/live_wiring.py`** — DTMF `3tv.4.4` constructs a publisher there; §6 reverts lines 58 and 537–542 there. Same file, and the mutant revert is DTMF's own `3tv.1` prerequisite.
+1. **`caller_contract/dsl.py`** — DTMF needs a new trigger kind; the revert touched `dsl.py:191`. Same file, same commit window. ✅ `eda4216`.
+2. **`caller_contract/live_wiring.py`** — DTMF `3tv.4.4` constructs a publisher there; the revert touched lines 58, 324 and 537–542 there. Same file, and the mutant revert is DTMF's own `3tv.1` prerequisite. ✅ `eda4216`.
 
-Neither is a reason to serialise the work — it is a reason to **land the mutant revert first, on its own**, and to sequence the DTMF and router changes to `dsl.py` / `live_wiring.py` deliberately rather than letting them interleave across branches.
+The revert landed first and on its own, as the plan called for. The DTMF track now rebases on it; this
+plan's own later work in `live_wiring.py` (the attach seam, `--no-router` threading) came after,
+so the two do not interleave.
 
 ---
 
 ## 7. Still open
 
-- **Provider guarantee asymmetry.** The spec needs a runtime-generated enum. Whether OpenAI strict mode or Gemini `responseSchema` more strongly prevents an out-of-set label — and whether a bare top-level `enum` is accepted or must be wrapped in an object — decides the v1 schema shape. Contract-mechanics research was tasked with this; confirm before Step 3.
-- **`MAX_RESPONSES` ceiling.** Gemini rejects large enums with a mid-call 400 and publishes no numeric limit, so the ceiling is ours and must fail as a **parse error naming file:line**, not as a call-time 400 blamed on the agent.
-- **Latency headroom.** `timeout_ms: 1500` is asserted but not yet justified against measured GPT-4.1 nano / Gemini Flash Lite figures in this loop.
-- **Jev as a third adapter.** Unbuilt by design. It is a good future fit — its `Choice` primitive is a typed decision with no text generation, which is exactly this contract — but nothing in v1 depends on it.
-- **Turn alignment is still open.** `PROBLEMS.md` §1 (the `silence` trigger firing mid-turn because `active_speakers_changed` lags ~2.4 s) is a *separate* problem from the router. A router does not fix a dropped utterance. Until that is addressed, a run can still lose a caller turn and the router will not know.
+**Resolved since the first draft** (research bead `v2-1`, findings in §1):
+
+- ~~Provider guarantee asymmetry~~ → **the enum must be wrapped.** A bare
+  top-level `{"type":"string","enum":[…]}` is invalid, so one shape serves
+  both providers: `{"type":"object","properties":{"responseId":{…}},"required":["responseId"],"additionalProperties":false}`.
+  `required` is not decoration — OpenAI strict mode requires it, and on
+  Gemini its *absence* is what makes `{}` reachable, since every property is
+  optional there by default.
+- ~~`MAX_RESPONSES` ceiling~~ → **two ceilings, and the second binds first.**
+  OpenAI publishes "up to 1000 enum values" *and* "total string length of
+  all enum values cannot exceed 15,000 characters when there are more than
+  250 enum values". A count-only check waves a 400-id catalog straight into a
+  live 400, and that failure would be attributed to the agent under test.
+  Both are enforced at parse in `responses.py`, with file:line.
+- **Refusal is not a distinct status.** On OpenAI it arrives as HTTP **200**
+  with `content[].type == "refusal"`. It maps to a harness fault — never to a
+  fabricated `response_id`, which is the one outcome the catalog design
+  exists to prevent.
+- **Ranking, for the record:** OpenAI strict mode is the stronger guarantee,
+  reasoned from both providers' docs and **not measured** — neither publishes
+  a conformance rate.
+
+**Still open:**
+
+- **Latency headroom.** `timeout_ms: 1500` is asserted but not justified
+  against measured GPT-4.1 nano / Gemini Flash Lite figures in this loop.
+- **Jev as a third adapter.** Unbuilt by design, and deliberately *not*
+  scaffolded: `provider: jev` parses, then raises a named error, because
+  AGENTS.md forbids shipping surface nobody runs. It is a good future fit —
+  its `Choice` primitive is a typed decision with no text generation, which is
+  exactly this contract.
+- **Turn alignment is still open.** `PROBLEMS.md` §1 (the `silence` trigger
+  firing mid-turn because `active_speakers_changed` lags ~2.4 s) is a *separate*
+  problem from the router, with its own parent and beads. A router does not
+  fix a dropped utterance. Until that is addressed, a run can still lose a
+  caller turn and the router will not know — and §1 research found the signal
+  is a participant attribute (`lk.agent.state`), not an event, with the lag
+  deliberately left unmeasured because measuring it needs a live duplex call.
+- **`v2-27` — `lks init` must not scaffold a `responses:` template its own
+  config cannot run.** OWNER DECISION. A scaffolded `responses:` scenario with
+  no `router:` block raises `ConfigError` at run time, so adding the router
+  block to `templates/config.yaml` would *fix* that — while shipping a key
+  every new project pays for and does not use.
 
 ---
 
@@ -424,31 +483,34 @@ Neither is a reason to serialise the work — it is a reason to **land the mutan
 >
 > Everything else stands as written.
 >
-> ### ⚠️ Citation accuracy (checked 2026-09-29)
+> ### ⚠️ Citation accuracy (re-checked 2026-09-29, after v2-9/10/11/20/21)
 >
 > The `file:line` references **in this appendix are from the synthesis agents and several no longer
-> match the tree.** Verified against the current source:
+> match the tree.** `driver.py` and `language_adapter.py` both shifted when the routed branch and
+> the attach seam landed. Re-verified against the current source:
 >
-> | Cited | Actually at | Status |
+> | Cited | Actually at now | Status |
 > |---|---|---|
-> | `driver.py:620` `should_invoke_adapter` | 620 | ✅ |
-> | `driver.py:1203` `[untranscribed agent speech]` guard (the D9 idiom) | 1203 | ✅ |
-> | `driver.py:1239` `_wait_trigger` | 1239 | ✅ |
-> | `driver.py:1292-1310` silence branch | 1292 | ✅ |
-> | `driver.py:786-790` / `:786-830` byte-faithful comment | 786-791 (text at 788) | ~ok |
-> | `interaction_planner.py:84-85` and `:87` | 84-85, 87 | ✅ |
-> | `text_backends.py:33`, `:108`, `:117`, `:155` | as cited | ✅ |
-> | `language_adapter.py:65-88`, `:141-143` | as cited | ✅ |
-> | `live_wiring.py:58`, `:537` | as cited | ✅ |
-> | `dsl.py:191` | 191 | ✅ |
-> | **`driver.py:919-922`** `evaluate_behavior` call | **920** | ❌ |
-> | **`driver.py:946-959`** `BEHAVIOR_TIMEOUT` | **943** | ❌ |
-> | **`language_adapter.py:90`** `_REQUIRED_CANDIDATE_KEYS` | **91** | ❌ |
-> | `driver.py:683`, `:686`, `:687`, `:700-706`, `:735-742`, `live_wiring.py:522` | not checked | ⚠️ |
+> | `driver.py:620` `should_invoke_adapter` | 660 (call site), 75 (import) | ❌ was right before v2-9 |
+> | `driver.py:919-922` `evaluate_behavior` | 1049 | ❌ |
+> | `driver.py:946-959` `BEHAVIOR_TIMEOUT` | 1082 | ❌ |
+> | `driver.py:1239` `_wait_trigger` | 1368 | ❌ |
+> | `driver.py:1292-1310` silence branch | 1292+ | ⚠️ verify |
+> | `driver.py:786-790` byte-faithful comment | 917 | ❌ |
+> | `language_adapter.py:90` `_REQUIRED_CANDIDATE_KEYS` | 93 | ❌ |
+> | `language_adapter.py:97` falsy check | 99 | ❌ |
+> | `interaction_planner.py:84-85`, `:87` | as cited | ✅ |
+> | `text_backends.py:33`, `:108`, `:155` | as cited | ✅ |
+> | `dsl.py:191` (the injected mutant) | reverted; peer `eda4216` restored all **four** mutants | ✅ |
+> | `live_wiring.py:58`, `:537` (mutants A and C) | reverted with the above | ✅ |
 >
-> They are left in place so the synthesis's reasoning stays auditable. **Before implementing, open
-> each cited line and confirm it** — the implementation beads carry corrected numbers where these
-> were load-bearing, but the appendix is the reference an implementer will read first.
+> The mutant citations are worth noting: the hand-off listed three, and there were **four** — a
+> fourth in `live_wiring.py` had removed the `record_path`/`replay_path` mutual-exclusion guard.
+> Reverting three would have left a path that ran both branches instead of raising.
+>
+> They are left in place so the synthesis's reasoning stays auditable. **Before implementing,
+> open each cited line and confirm it** — the implementation beads carry corrected numbers where
+> these were load-bearing, but the appendix is the reference an implementer will read first.
 
 # Response Router — Merged Implementation Spec (livekit-agent-simulator)
 
@@ -1421,20 +1483,26 @@ and this section agree.**
 | `v2-5` | the port, degeneracy guard, retry policy | `caller_contract/router.py` |
 | `v2-6` / `v2-7` | OpenAI / Gemini adapters | `router_openai.py`, `router_gemini.py` |
 | `v2-8` | scenario parse + export, together | `scenario.py`, `scenario_from_dict.py`, `scenario_yaml.py` |
-| `v2-9` | the driver branch | `caller_contract/driver.py`, `language_adapter.py` |
+| `v2-9` | the driver branch **and the attach seam** | `caller_contract/driver.py`, `language_adapter.py`, `caller_contract/live_wiring.py` |
 | `v2-10` | router evidence in the run summary | `run_orchestrator.py` |
 | `v2-11` | attribution both directions, both planner modes | `tests/test_router_smoke.py` |
+| `v2-20` | the package's own router scenario, driven in CI | `templates/examples/router-smoke.yaml`, `tests/test_router_smoke_template.py` |
+| `v2-21` | the `--no-router` abort path | `cli.py`, `ops.py`, `run_orchestrator.py` |
 | `v2-22` | ordering vs the DTMF track | this plan §4 |
-| `v2-13` | prompt guide | docs |
+| `v2-13` | prompt guide | `docs/router-prompts.md` |
+| `v2-14` | architecture diagram, AGENTS.md, README, migration guide | `NEW_ARCHITECTURE_…md`, `docs/migration-caller-steps-to-responses.md` |
 | `v2-15` | judge / eval | judge surface |
 | `v2-16` | fixtures + snapshot regeneration | `tests/fixtures/`, snapshots |
 | `v2-17` | CLI help | `cli.py` |
-| `v2-20` | the package's own router scenario | `.agent-sim/` |
+| `v2-18` | `http_json.post_json` shared by text backend and router | P2 refactor, after the router ships |
+| `v2-19` | web report player renders the router key | `web/` — blocked on `v2-16` |
+| `v2-26` | `cargo fmt` — **NEEDS A RUST TOOLCHAIN**, unavailable here | Rust CI |
 | `v2-27` | `lks init` router config — **OWNER DECISION** | `templates/`, `ops.py` |
+| `v2-28`…`v2-32` | Rust parity: decision, fail-fast, cleanup | `src/livekit_agent_simulator_rust/` |
 
 ### Where the implementation differs from the first draft
 
-Three corrections, all verified rather than assumed:
+Four corrections, all verified rather than assumed:
 
 1. **The routing branch replaces the GENERATE step only.** The first draft said "after the
    agent-turn wait and before the generate/validate loop" — those two are in the wrong relative
@@ -1448,8 +1516,21 @@ Three corrections, all verified rather than assumed:
    gate only works by accident of where the variable happens to be initialised.
 3. **Two config keys were cut as dead surface** (`unknown_policy`, `prompt_version`) — the plan's
    first draft still listed them. The off-script verdict is a *catalog lookup*, not a config branch.
+4. **A branch that is never wired is not implemented.** `v2-9` was originally closed on "the branch
+   runs correctly when called". Nothing in the run path ever assigned `driver.router`, so the branch
+   was dead code in every real run while all 1293 tests passed — they injected the router by hand.
+   This is the same shape as the 4/6 unreachable `EndedBy` keys found the same day. **The exit
+   criterion for any driver-integration bead is now: drive `run_contract_driver_path` itself, and
+   mutation-verify** (replace the attach call with `pass`; the test must fail). A unit test that
+   calls the seam directly cannot see the call site disappear — that mistake was made here and
+   caught only by mutation.
+
+`text_planner` was itself a dead knob until `v2-9` gave it consumers: `enabled: false` publishes
+catalog text verbatim (byte-exact mode), otherwise the block's own provider/model/api_key build a
+paraphrase backend for routed lines. Cutting it instead was the other option, but `enabled: false`
+is what D12's record/replay ban rests on.
 
 ### Suite baseline
 
-`1156 → 1293` as of `4fba5c3`. Re-measure before trusting any number: this tree is shared and
+`1156 → 1321` as of `097e9c8`. Re-measure before trusting any number: this tree is shared and
 changes under measurement.
