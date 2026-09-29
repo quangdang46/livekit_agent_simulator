@@ -55,19 +55,35 @@ This is the point of the whole design: without attribution, an agent bug is indi
 
 ```yaml
 router:
-  provider: openai          # openai | gemini
+  provider: openai          # openai | gemini   (jev parses, then fails loud — no adapter)
   model: gpt-4.1-nano
-  api_key: sk-...            # config.yaml is gitignored; no api_key_env indirection
+  api_key: sk-...           # config.yaml is gitignored; no api_key_env indirection
   timeout_ms: 1500
   temperature: 0
 
 text_planner:
   enabled: true             # false => publish catalog text verbatim (byte-exact regression)
-  # toggles the EXISTING caller_contract/text_backends.py, not a new port
+  # drives the EXISTING caller_contract/text_backends.py, not a new port
   provider: openai
   model: gpt-4.1-nano
   api_key: sk-...
 ```
+
+**Every key has a named consumer** — `provider` selects the port implementation, `model` /
+`api_key` / `temperature` build the adapter request, `timeout_ms` bounds the port call,
+`text_planner.enabled` selects byte-exact versus paraphrased publication.
+
+> **Two keys were cut in polish round 3** as dead surface (AGENTS.md: *"if you can't name the flow
+> that calls it, it is dead on arrival"*):
+> - **`unknown_policy`** — its only legal value was `off_script` and nothing branched on it. A
+>   validated constant is still a dead knob, and the off-script verdict is a **catalog lookup**,
+>   not a config branch. It returns only if a second terminal behaviour is ever designed.
+> - **`prompt_version`** — existed for cross-backend benchmarking that no bead performs, and Jev
+>   has no adapter. It returns only alongside a real benchmark bead.
+>
+> `reasoning_effort` is a **code constant in the adapters**, not a key — an operator choice nobody
+> would exercise. A test asserts all three stay absent from both the config and the snapshot, so
+> adding one back fails a test rather than starting an argument.
 
 > **Two keys were cut in polish round 3** as dead surface (AGENTS.md: *"if you can't name the flow that calls it, it is dead on arrival"*):
 > - **`unknown_policy`** — its only legal value was `off_script` and nothing branched on it. A validated constant is still a dead knob; the catalog's system entry already *is* the policy, so the key was a second source of truth. It returns only if a second terminal behaviour is ever designed.
