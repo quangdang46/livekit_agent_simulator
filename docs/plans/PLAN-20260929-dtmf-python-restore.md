@@ -10,16 +10,53 @@
 - **What is going on:** `lks` (Python) parses `- dtmf: "1"` in a scenario's `caller_steps`, then drops it on the floor. `caller_contract/driver.py:592` has no `dtmf` branch, so the action falls through to a generic `contract.control` event and no tone ever reaches LiveKit. The Rust port `lksr` still has this capability because it was ported before the Python engine was removed. Any Windows user is stuck: `lksr` ships no Windows release asset.
 - **We recommend:** add the one missing wire call, in the contract path, behind a narrow publisher seam, and fail loudly when the topology cannot deliver. Do **not** resurrect `ScriptRunner`.
 - **The finding that changed the design:** the highest-scoring design published from `bridge.room`. That is the *sim* room, and in 3 of 5 caller modes the agent is in a different LiveKit room. A `SipDTMF` packet is room-scoped, so those modes would emit a green event for a tone that reached nobody. No challenge lens asked where the agent actually was; the synthesis step caught it.
-- **Status:** sealed. Implementation is 9 steps, estimated small-to-medium, fully offline-testable. Blocked on the three decisions in [§9](#9-decisions-needed-from-a-human).
+- **Status:** sealed. Implementation is 9 steps, estimated small-to-medium, fully offline-testable. Blocked on the three decisions in [§10](#10-decisions-needed-from-a-human).
 
-## 1. The defect
+## 1. This is a regression, and the repo currently says otherwise
+
+Do not present this as a new feature. It shipped once and was deleted.
+
+| When | What | Evidence |
+|---|---|---|
+| 2026-07-14 | `livekit-agent-simulator-b7a` "P1.A DTMF / IVR Script action" ships `action: dtmf`, `publish_dtmf`, `sim.dtmf` events, an assert, and a template. Closed with an explicit **draft waiver**: *"NO real E2E merge to main until worker handles SIP DTMF"*. | bead close reason |
+| 2026-09-16 | `665ec8c` deletes `script/runtime.py` (609 lines, containing `publish_dtmf`) plus its 21 tests, as *"dead code: 0 instantiations outside its own tests"*. | `git show 665ec8c` |
+| since | The Rust port kept its copy, so `lksr` still works. Python has an inert parser, an active reporter, and no execution path. | `lks-livekit/src/script.rs:543` |
+
+The timing constants in this plan come from the deleted implementation, not
+from the old bead text:
+
+```
+git show 665ec8c^:src/livekit_agent_simulator/script/runtime.py
+  line 294:  kind = "sim.script.dtmf"
+  line 308:  await asyncio.sleep(0.12)          # the 'w' pause
+  line 311:  await local.publish_dtmf(code=DMAP[ch], digit=ch)
+  line 315:  await asyncio.sleep(0.15)          # gap after each tone
+```
+
+`b7a`'s description says *"w=pause (~0.5s)"*. That was an aspirational design
+note from July, not what shipped. 120 ms and 150 ms are correct.
+
+**Why nobody noticed.** `WIP.md` claims the capability exists, in two places:
+
+- `WIP.md:51` — `| DTMF / IVR scripting | ✅ | ✅ | ❌ |`, in a table whose
+  second column is `lks`.
+- `WIP.md:94` — `| **P1.A** | **DTMF / IVR scripting** ✅ | ... Done: Script
+  action dtmf; publish_dtmf; sim.script.dtmf events; assert sequence;
+  templates ivr-pin-entry |`
+
+The `ivr-pin-entry-draft.jsonl` named there is already gone too; only
+`ivr-pin-dtmf.jsonl` remains. Nothing in the tree asserted the claim, so
+nothing contradicted it. The tripwire test in §7 is the durable fix for that,
+and it is not an optional extra.
+
+## 2. The defect
 
 `caller_steps` supports a `dtmf:` key end to end except for the last step:
 
 | Layer | File | State |
 |---|---|---|
 | Parse + validate | `caller_contract/dsl.py:423-427` | works |
-| Classify | `caller_contract/interaction_planner.py:118` | works, but unwired (see §7) |
+| Classify | `caller_contract/interaction_planner.py:118` | works, but unwired (deleted in §5, step 7) |
 | **Execute** | `caller_contract/driver.py` | **missing** |
 | Verify / report | `script/verify.py:268`, `script/summary.py:16-21` | already counts `sim.script.dtmf` |
 
@@ -35,7 +72,7 @@ _emit("contract.control", {"kind": action.kind, "line": action.line_no})
 
 A test pins this behaviour. `tests/test_contract_live_wiring.py:685` `test_wait_and_dtmf_never_publish` asserts `urlopen` was never called for `[{wait: 10}, {dtmf: "123"}, {end: true}]`. Its `wait` half is right; its `dtmf` half encodes the bug.
 
-## 2. Why "document `lksr`-only" was rejected
+## 3. Why "document `lksr`-only" was rejected
 
 It was on the table and it fails on three counts:
 
@@ -45,7 +82,7 @@ It was on the table and it fails on three counts:
 
 So the majority of Windows users run Python, and Python cannot press a key.
 
-## 3. The finding that drives the design: rooms are not shared
+## 4. The finding that drives the design: rooms are not shared
 
 `SimLegHandle` (`livekit/sim_leg/protocol.py:24-32`) carries **two** rooms, and `run_orchestrator.py:366` builds the caller bridge with `room=leg_handle.sim_room`.
 
@@ -70,7 +107,7 @@ if (participant.identity !== options.getCallerIdentity()) return;
 
 **Consequence:** there is no publisher that is both in the right room and correctly attributed, in the two-room modes. The correct response is to fail fast and say why, not to publish into the void.
 
-## 4. Design
+## 5. Design
 
 One new module, one branch in an always-live loop, one shipped template. No new authoring syntax, no config knob, no CLI flag.
 
@@ -214,8 +251,9 @@ Move the filter to `CallerAction.kind == "dtmf"`, or delete it. Do not leave a p
 - `docs/behavior-dsl.md` — add one line: a keypress appears in `events.jsonl` as `sim.script.dtmf`, and **not** as a report marker.
 - In the `dtmf.py` docstring, state what the event proves: tones were **submitted to the local participant**, not that an agent received them. The server excludes the sender from fan-out, so the sim structurally cannot observe its own tone. The only in-repo delivery evidence is the agent's own reaction (`demo/dtmf-feature/agent/dtmf_agent.py:120`).
 - Note that `DTMF_CODES` is LiveKit's map (`#` to 11), not RFC 4733 (`#` to 15). A real SIP caller pressing `#` yields 15, and `livekit/sip` ignores `code` on the room-to-phone leg. An agent asserting on `SipDTMF.code` rather than `.digit` behaves differently under simulation.
+- `WIP.md`, which claims the capability exists in two places (§1). Its `P1.A` row should cite the tripwire test from §7 rather than being flipped to a bare `❌`. A "Done" with a named test behind it is a claim; a "Done" without one is how this drift happened in the first place. Also re-check the `ivr-pin-entry` template that row names, which no longer exists.
 
-## 5. The named user flow
+## 6. The named user flow
 
 AGENTS.md's no-dead-features rule requires a concrete user for every line shipped. Here it is:
 
@@ -241,7 +279,7 @@ One of these (`agent_w3ph2c35kisb1ibqythi571j`) has a `single_key` node acceptin
 
 What is *not* a justification: archived runs `058`/`063`, which show `error: null` in `events.jsonl`. Those prove an FFI round-trip completed, and both ran in `webrtc_sim`, the one mode where the room is shared. They are not delivery evidence.
 
-## 6. Test plan
+## 7. Test plan
 
 All offline. Fakes are per-file, as in `tests/test_contract_live_wiring.py`.
 
@@ -277,7 +315,7 @@ excludes the sender from data fan-out, so the sim structurally cannot observe
 its own tone. The archived runs `058`/`063` showing `error: null` are exactly
 this limitation being misread as proof.
 
-One live run against `agent_w3ph2c35kisb1ibqythi571j` (the §5 node: `single_key`,
+One live run against `agent_w3ph2c35kisb1ibqythi571j` (the §6 node: `single_key`,
 `acceptedKeys` 1/2/3, four `DTMF` transitions). Capture per press: the
 `sim.script.dtmf` event, the agent's transcript immediately after, the
 transition actually taken (`Cụm 1` versus `Cụm 0 - Timeout`), and the wall-clock
@@ -295,7 +333,7 @@ deferred in CI. It is not optional for closing the epic.
 
 `uv run --extra dev pytest -q` against the current suite before any edit. On Windows, if `uv sync` fails because the MCP exe is locked, use `.venv\Scripts\python.exe -m pytest -q`.
 
-## 7. Rust parity
+## 8. Rust parity
 
 The wire capability already exists in Rust on the contract path, via the projection from caller steps onto script steps. This change converges them.
 
@@ -305,9 +343,9 @@ The wire capability already exists in Rust on the contract path, via the project
 | `plan_dtmf` removal | Required in the same commit: `lks-core/src/caller_contract.rs:1678`, its sole caller at `:2561`, and the `dtmf` case in `tests/fixtures/parity/interaction_planner.json`. Rust enumerates top-level fixtures from a hardcoded `VALIDATOR_VECTOR_FILES` at `caller_contract.rs:2153`. |
 | Charset | Deliberately untouched. `dsl.py:423-427` and `caller_dsl.rs:508-524` both accept any non-empty string. Tightening Python alone breaks the shared-fixture harness (`tests/test_dsl_parity_vectors.py:6-8`: *"must accept/reject the SAME steps"*). Unknown characters are handled at publish time into the event's `error` field. Separate ticket, two-sided. |
 
-**Known pre-existing divergence, note and do not fix here.** Python `summary.py:16-21` counts four `sim.script.*` kinds into `script_cues_fired`; Rust `summary.rs:23-26` filters on `sim.script.cue` only. The same scenario reports `1` under `lks` and `0` under `lksr`. Emitting the shared event name makes this visible instead of hidden. Aligning them is a separate small PR. See decision §9.3.
+**Known pre-existing divergence, note and do not fix here.** Python `summary.py:16-21` counts four `sim.script.*` kinds into `script_cues_fired`; Rust `summary.rs:23-26` filters on `sim.script.cue` only. The same scenario reports `1` under `lks` and `0` under `lksr`. Emitting the shared event name makes this visible instead of hidden. Aligning them is a separate small PR. See decision §10.3.
 
-## 8. Do not
+## 9. Do not
 
 - **Do not resurrect `script/runtime.py` or any `ScriptRunner`.** It was deleted for a reason, and `run_orchestrator.py:399-411` makes the contract path the only caller path.
 - **Do not publish from `observer.room`.** It reaches the agent in all five modes and is dropped by all five, because the sender identity is `lks-obs-*`.
@@ -320,19 +358,19 @@ The wire capability already exists in Rust on the contract path, via the project
 - **Do not touch `demo/`** in this commit.
 - **Do not make `plan_dtmf` live** by routing the new branch through the planner. It has no timing, no pacing, and no test beyond a classification assertion.
 
-## 9. Decisions needed from a human
+## 10. Decisions needed from a human
 
-**9.1 The two-room gap is made loud, not solved.** Real DTMF is a PSTN use case, and PSTN is exactly the topology this plan refuses to work in. Supporting it needs a participant in the agent room that the agent perceives as the caller, which is a server-side or SIP-leg change rather than a client one. Options: (a) accept shared-room-only for now, recommended; (b) authorise real plumbing, a dedicated caller-identity participant in the agent room; (c) ask voice-ai-agent to relax `attach-flow-runtime.ts:729` to accept any sender. Recommendation is (a) plus a bead for (b) and (c). Do not read the fail-fast as "done".
+**10.1 The two-room gap is made loud, not solved.** Real DTMF is a PSTN use case, and PSTN is exactly the topology this plan refuses to work in. Supporting it needs a participant in the agent room that the agent perceives as the caller, which is a server-side or SIP-leg change rather than a client one. Options: (a) accept shared-room-only for now, recommended; (b) authorise real plumbing, a dedicated caller-identity participant in the agent room; (c) ask voice-ai-agent to relax `attach-flow-runtime.ts:729` to accept any sender. Recommendation is (a) plus a bead for (b) and (c). Do not read the fail-fast as "done".
 
-**9.2 Framing.** Consumer demand is resolved (§5), but the project may still want this framed as a regression fix against runs 058/063 rather than a new feature. Author's position: it is a regression, since the Python port had the capability and lost it.
+**10.2 Framing.** Consumer demand is resolved (§6), but the project may still want this framed as a regression fix against runs 058/063 rather than a new feature. Author's position: it is a regression, since the Python port had the capability and lost it.
 
-**9.3 `script_cues_fired` cross-port divergence.** Align Rust's `summary.rs` up to the four-kind set, or align Python down to `sim.script.cue`? It is a machine-readable `summary.json` field, so the choice is visible to consumers. Pick deliberately.
+**10.3 `script_cues_fired` cross-port divergence.** Align Rust's `summary.rs` up to the four-kind set, or align Python down to `sim.script.cue`? It is a machine-readable `summary.json` field, so the choice is visible to consumers. Pick deliberately.
 
-## 10. Preconditions
+## 11. Preconditions
 
 **Revert `c0d3e26` before the verification step is meaningful.** The A/B/C mutants are live at HEAD: `live_wiring.py:58` raises `f"MUTANTA {reason} MUTANTB {detail}"` from `ContractDriverFailure.__init__`, and `live_wiring.py:539-543` maps `EndedBy` values to `MUTNTC_*` strings. Every failure-path assertion in the new test file lands on that path. Until it is reverted, a green suite cannot be interpreted.
 
-## 11. Definition of done
+## 12. Definition of done
 
 1. `c0d3e26` reverted; baseline suite green and its count recorded.
 2. Steps 1 through 9 implemented, each with a `file:line` reference in the commit body.
@@ -340,7 +378,7 @@ The wire capability already exists in Rust on the contract path, via the project
 4. Negative check performed and reverted.
 5. Full suite green; the delta equals the tests added plus the ones deliberately removed.
 6. Rust change in step 7 landed, `cargo test --workspace` green.
-7. Decisions §9.1 through §9.3 recorded in this document with the answers filled in.
+7. Decisions §10.1 through §10.3 recorded in this document with the answers filled in.
 
 ## Appendix — rejected designs
 
