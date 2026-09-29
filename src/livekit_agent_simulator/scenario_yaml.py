@@ -137,6 +137,19 @@ def scenario_to_dict(scenario: Scenario) -> dict[str, Any]:
     }
     if scenario.context:
         data["context"] = dict(scenario.context)
+    if scenario.responses is not None:
+        # Only emitted when authored, so every existing scenario's export stays
+        # byte-identical. Mirrors the catalog's own id -> spec shape.
+        data["responses"] = {
+            rid: {
+                "intent": spec.intent,
+                "instruction": spec.instruction,
+                "text": spec.text,
+                **({"system": True} if spec.system else {}),
+                **({"reusable": True} if spec.reusable else {}),
+            }
+            for rid, spec in scenario.responses.responses.items()
+        }
     if scenario.execute is not None:
         data["execute"] = {
             "max_turns": scenario.execute.max_turns,

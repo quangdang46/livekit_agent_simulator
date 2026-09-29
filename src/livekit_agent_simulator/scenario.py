@@ -187,6 +187,10 @@ class Scenario:
     # set, persona_system_prompt() composes with this policy instead of the
     # builtin DefaultCallerPolicy — the runtime seam for `lks execute --optimized`.
     caller_policy: Any = None
+    # Optional authored response catalog (response-router v2). Purely additive:
+    # empty by default, and `caller_actions` keeps winning when both are
+    # present — a transitional vocabulary, not a replacement (plan D13).
+    responses: Any = None
 
     def effective_caller_mode(self) -> str:
         if self.caller and self.caller.mode:

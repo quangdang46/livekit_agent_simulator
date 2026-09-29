@@ -132,6 +132,20 @@ def scenario_from_dict(
         behavior_spec = dict(beh_raw)
 
     caller_actions: list[Any] = []
+    # Authored response catalog (response-router v2). Additive and optional;
+    # a scenario with neither section drives the legacy path unchanged.
+    responses = None
+    responses_raw = data.get("responses")
+    if responses_raw is not None:
+        from .caller_contract.responses import ResponseCatalog, ResponseCatalogError
+
+        if not isinstance(responses_raw, dict):
+            raise ScenarioError(f"{path_label}: responses must be a mapping of id -> response")
+        try:
+            responses = ResponseCatalog.from_dict(responses_raw, file=path_label, line=1)
+        except ResponseCatalogError as e:
+            raise ScenarioError(str(e)) from e
+
     caller_steps_raw = data.get("caller_steps")
     if caller_steps_raw is not None:
         from .caller_contract.dsl import DSLError, parse_steps
@@ -186,6 +200,7 @@ def scenario_from_dict(
         asserts=asserts,
         behavior_spec=behavior_spec,
         caller_actions=caller_actions,
+        responses=responses,
     )
 
     try:
