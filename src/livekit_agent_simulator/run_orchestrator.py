@@ -122,6 +122,57 @@ def allocate_run_dir(
     raise RuntimeError(f"Could not allocate a free report dir under {reports_dir}")
 
 
+
+def _summarize_router(events: list[dict]) -> dict | None:
+    """Fold `contract.router_decision` events into run-summary evidence.
+
+    Returns None when the run never routed, so a non-router scenario gains no
+    `router` key and its summary is unchanged.
+
+    Attribution has to be readable in BOTH directions: a correct agent that
+    draws a false off_script, and a hallucinating agent that draws matched,
+    each silently corrupt a suite. So the counts are kept separate rather than
+    collapsed, and the per-decision list keeps responseId + the agent-line
+    hash so a human can audit any single row.
+    """
+    decisions = [
+        (e.get("spec") or {})
+        for e in events
+        if e.get("kind") == "contract.router_decision"
+    ]
+    faults = [
+        (e.get("spec") or {})
+        for e in events
+        if e.get("kind") == "contract.router_fault"
+    ]
+    unroutable = [
+        (e.get("spec") or {})
+        for e in events
+        if e.get("kind") == "contract.router_unroutable"
+    ]
+    if not decisions and not faults and not unroutable:
+        return None
+    return {
+        "matched": sum(1 for d in decisions if not d.get("off_script")),
+        "off_script": sum(1 for d in decisions if d.get("off_script")),
+        "faults": len(faults),
+        "unroutable": len(unroutable),
+        "decisions": [
+            {
+                "turn": d.get("turn"),
+                "response_id": d.get("response_id"),
+                "off_script": bool(d.get("off_script")),
+                "confidence": d.get("confidence"),
+                "backend": d.get("backend"),
+                "latency_ms": d.get("latency_ms"),
+                # Full-line hash: the text is truncated for readability, and
+                # truncation must never be able to hide a divergence (D10).
+                "agent_text_sha": d.get("agent_text_sha"),
+            }
+            for d in decisions
+        ],
+    }
+
 def _collect_flow_events(
     events: list[dict[str, Any]],
     flow_topics: list[str],
@@ -670,6 +721,13 @@ async def run_scenario_instance(
                     if a.kind == "do" and a.contract is not None
                 ],
             )
+            # Router evidence, in the SAME try/except as its siblings so a
+            # router failure can never break summary generation. Present only
+            # for a routed run: a non-router run has no router key at all
+            # (D11), so its summary is byte-identical to before.
+            _router_summary = _summarize_router(writer.events)
+            if _router_summary is not None:
+                summary_extra["caller_contract"]["router"] = _router_summary
         except Exception:  # noqa: BLE001 — summary must never break a run
             pass
 
