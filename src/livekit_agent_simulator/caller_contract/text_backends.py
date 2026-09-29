@@ -51,7 +51,17 @@ _SYSTEM_PROMPT = (
     # "price", "cost", or "$"). A paraphrase that drops the topic word is not
     # a valid phrasing of the behavior, however natural it sounds.
     "When current_behavior.target is set, the utterance MUST name that topic "
-    "in words — do not paraphrase the topic away."
+    "in words — do not paraphrase the topic away. "
+    # Response-router path (v2): on a routed turn the context carries
+    # `canonical_text`, the line the scenario author wrote. The model phrases
+    # it, and the whole value of authoring it is that the caller says THAT
+    # thing — so the clause has to forbid both drift directions. Adding a
+    # detail the author did not write is the failure the router exists to
+    # prevent (the response catalog is the specification, not a starting
+    # point); dropping part of it is the same failure wearing a disguise.
+    "If the context carries `canonical_text`, that is the line to speak: "
+    "phrase it naturally, but do not add any fact, name, number, or offer "
+    "that is not already in it, and do not drop any part of it."
 )
 
 
