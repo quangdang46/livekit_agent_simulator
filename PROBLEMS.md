@@ -66,6 +66,116 @@ None in the harness — the delay is set per scenario. `gpt-live-happy-path` use
 `6500ms` with a comment recording why. **This is load-bearing, not a
 workaround**: shortening it re-breaks the run.
 
+### Researched: the signal that replaces `active_speakers`
+
+**Chosen signal: the agent's own state machine, published as the participant
+attribute `lk.agent.state`.** Values are exactly
+`'idle' | 'initializing' | 'listening' | 'thinking' | 'speaking'`
+(`AgentState` in `livekit/attribute-definitions`, the JSON Schema that generates
+`client-sdk-js/src/room/attribute-typings.ts`).
+
+Turn completion becomes `speaking` → `listening`. That is the agent's own
+decision that its turn is over, not an inference from audio energy by the SFU —
+which is precisely the distinction §1 is about. The current gate conflates
+"loud" with "still talking"; this one does not.
+
+#### Why not `agent_state_changed`
+
+There is no such event on a client. `livekit.protocol.agent_pb.agent_session`
+defines `AgentSessionEvent.agent_state_changed` and `AgentState`
+(`AS_INITIALIZING/IDLE/LISTENING/THINKING/SPEAKING`), but that is the
+**agent-worker** IPC message. The Python client SDK (`livekit` 1.1.13)
+declares 35 room events in `EventTypes` (`.venv/.../livekit/rtc/room.py:54`)
+and `agent_state_changed` is not one of them; `grep agent_state
+.venv/.../livekit/rtc/*.py` returns nothing. A non-agent participant cannot
+subscribe to it.
+
+#### How the state actually reaches us
+
+The worker writes it as a participant attribute, which every client receives:
+
+```
+AgentSession state machine
+  → agents-js: setAttributes({ ["lk.agent.state"]: ev.newState })
+       (livekit/agents/voice/room_io/room_io.ts)
+  → also ATTRIBUTE_AGENT_STATE = "lk.agent.state"  (livekit/agents/types.py)
+  → room participant attributes
+  → client: RoomEvent "participant_attributes_changed"
+       (.venv/.../livekit/rtc/room.py:54 declares it in EventTypes,
+        :924-936 dispatches it, emitting (changed_attributes: dict, participant))
+```
+
+The simulator does **not** subscribe to this today. `Observer.attach()`
+(`livekit/observer.py:202`) registers exactly six handlers —
+`participant_connected`, `participant_disconnected`, `track_subscribed`,
+`active_speakers_changed`, `disconnected`, `data_received` — and
+`participant_attributes_changed` is not one of them.
+
+The payload is already narrow: `changed_attributes` is a `dict` of only the
+keys that changed (`room.py:927-930`), so the handler is a dict lookup on
+`"lk.agent.state"`, not an attribute-diff walk.
+
+Attributes travel on the reliable, ordered participant-attribute channel —
+a different path from the unreliable `data_received` packets we already handle.
+
+#### What has to be wired
+
+1. `livekit/observer.py` — add a `@room.on("participant_attributes_changed")`
+   handler; on `p.identity == self.agent_identity` and `"lk.agent.state"` in
+   `changed`, set `self.agent_state` (new) and
+   `self.agent_state_changed_mono` (new, `time.monotonic()`), and emit a
+   `room.agent_state` event so it lands in `events.jsonl` for measurement.
+2. `caller_contract/agent_wait.py` — the trigger gate. `is_agent_speaking_now()`
+   (`:59-67`) and `last_speech_at_ms()` (`:69-84`) both read
+   `agent_is_active_speaker`; `wait_agent_turn` reads it at `:127-128` and
+   `:145`. These become `agent_state == "speaking"`.
+3. `callers/gemini.py:1284`, `callers/openai.py:939` — the same one-line
+   delegate in the two sim callers.
+4. `caller_nudge.py:63`, `interrupt_rate.py:181,190-193,230,312` — read
+   `agent_has_spoken` / `agent_is_active_speaker`; decide per site whether
+   "speaking" or "has spoken" is the right question.
+
+Keep `agent_is_active_speaker` as a **floor**, not a replacement: audio energy
+is still the only signal that survives an agent that never publishes state, and
+the existing three-tier wait in `wait_agent_turn` (`:118-124`) already reasons
+in tiers.
+
+#### The failure mode to design against
+
+If the agent under test does not publish `lk.agent.state`, this signal never
+fires and the gate degrades to *permanently silent* — the same class of bug as
+the four unreachable `EndedBy` keys, but worse, because it fails silently
+instead of raising. So: **fail loud.** If no `lk.agent.state` has been seen by
+the time the first agent turn is expected, say so in the run report rather than
+falling back quietly to the 6500 ms delay.
+
+#### Lag: NOT YET MEASURED
+
+This is the one deliverable element I could not complete. The number requires
+one live run against a real duplex agent; I had no credentials, and dialling a
+live voice agent is the owner's call, not mine to make unprompted. No run in
+this repo has ever captured the attribute, so it cannot be recovered from
+history either.
+
+To measure, once wired, on a run that reproduces §1 (run 035 shape,
+`delay_ms: 2600`), read `events.jsonl` and compare four timestamps for the same
+agent turn:
+
+| Signal | Timestamp to read |
+|---|---|
+| ground truth | `room.agent_state` → `speaking` (agent's own decision) |
+| candidate | `room.active_speakers` first including the agent |
+| transcript | agent transcript final |
+| trigger | `contract.trigger_fired kind=silence` |
+
+Lag = `active_speakers` − `agent_state`. The hypothesis to falsify is that the
+current ~2.4s shrinks to ≈0, **and** that `speaking` → `listening` lands *after*
+the last audio frame rather than before it — if `listening` arrives early the
+caller would barge in at the tail instead, trading one bug for another. Measure
+both edges. The docs' own caution applies in reverse here: `waiting` on a
+genuine turn end is the correct fix, but only if the signal is honest about
+when the audio actually stops.
+
 ---
 
 ## 2. No decision layer — the AI sits at phrasing only, there is no router
