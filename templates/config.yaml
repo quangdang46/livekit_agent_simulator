@@ -76,6 +76,35 @@ judge:
   model: "gemini-3.1-flash-lite"
   temperature: 0
 
+# ─────────────────────────────────────────────────────────────────────────────
+# NO `router:` BLOCK HERE — DELIBERATELY. Do not "helpfully" add one.
+#
+# The response router (`route(agent_transcript, responses) -> responseId`)
+# is opt-in: a scenario only routes when it authors `responses:`. Adding a
+# router block to this scaffold would mean every `lks init` project ships
+# an API key for a feature it does not use — and would make the default
+# install path fail outright, because a scaffolded `responses:` scenario
+# with no `router:` raises ConfigError at run time (responses without a
+# decision layer is an authoring mistake, not something to paper over by
+# silently falling back to caller_steps).
+#
+# To use it: add the block below to YOUR .agent-sim/config.yaml, and author
+# `responses:` in the scenario. See templates/examples/router-smoke.yaml
+# for a working catalog.
+#
+# router:
+#   provider: openai          # openai | gemini  (jev parses, then fails loud —
+#   model: gpt-4.1-nano      #   there is no adapter for it in this package)
+#   api_key: sk-...           # config.yaml is gitignored; no api_key_env indirection
+#   timeout_ms: 1500
+#   temperature: 0
+#
+# text_planner:               # paraphrases a routed line before publication;
+#   enabled: true             #   false publishes catalog text verbatim, which
+#   provider: openai          #   is the byte-exact regression mode
+#   model: gpt-4.1-nano
+#   api_key: sk-...
+
 observe:
   timezone: "UTC"
   lk_transcription: true

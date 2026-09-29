@@ -1,0 +1,87 @@
+# Response-router smoke scenario — the package exercising its own router.
+#
+# Why this exists: the router's only executions were unit tests that inject
+# `driver.router` by hand, plus hand-run E2E in a target repo. That is the
+# "feature nobody runs inside this package" shape, and it had a concrete cost:
+# nothing in the run path ever attached the router, so every router test was
+# green while a real run took the legacy caller_steps path. This scenario is
+# driven through `run_contract_driver_path` by
+# tests/test_router_smoke_template.py, so that class of regression is caught
+# here instead of in another repo.
+#
+# NOT copied by `lks init` (which copies only config.yaml, smoke-hello.yaml,
+# scenario-scaffold.yaml). It needs a `router:` block, and the scaffolded
+# config is deliberately router-free — see the note in templates/config.yaml.
+#
+# It covers exactly the two branches that decide whether attribution is
+# trustworthy: a turn that maps to an authored response (`matched`), and a
+# turn the agent took somewhere no authored response covers (`off_script`).
+# The acceptance gate is bead .11; this is the smoke.
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: router-smoke
+  locale: en-US
+  tags:
+  - smoke
+  - router
+persona:
+  name: Robin
+  brief: You are a prospective customer calling a property manager to ask a short
+    question, then wrapping up. You answer only what you were asked, and you
+    never invent details.
+  goals:
+  - Answer whatever the agent asks about your company
+  - Politely end the conversation
+  style: polite, brief
+execute:
+  max_turns: 3
+  timeout_s: 90
+  first_speaker: user
+# The authored response catalog. `instruction` is what the ROUTER matches on;
+# `text` is the ground truth the caller publishes. The router never sees
+# `text` — emitting it would let the model pattern-match on the answer
+# instead of the question.
+responses:
+  company_name:
+    intent: ask_company_name
+    instruction: Select this when the agent asks which company the caller represents.
+    text: It's Bluebird Property Management.
+  callback_number:
+    intent: ask_callback_number
+    instruction: Select this when the agent asks for a callback phone number.
+    text: You can reach me on 555-0142.
+    reusable: true
+  # REQUIRED and marked system:true — parse fails without it. A reserved id
+  # cannot collide with an authored one, so the router always has exactly one
+  # valid answer and an agent that goes off-script is RECORDED rather than
+  # papered over with a fallback branch.
+  off_script:
+    intent: off_script
+    instruction: Select this only when the agent's question matches none of the other
+      responses.
+    text: I'm sorry, could we stay focused on the property inquiry?
+    system: true
+# Contract path (caller_contract single path). Present alongside `responses:`
+# because the two coexist (D13): the caller opens the call, and routing
+# engages from the turn after the agent has actually spoken.
+#
+# The behaviour verb is deliberately one the semantic verifier already
+# accepts (negotiate/price), not one invented for this smoke. On the ROUTED
+# turns the validator is bypassed by design (D2) — grading an authored
+# response would be the harness grading its own fixture — but turn 0 is
+# legacy and does go through validation, so it needs a verb with a known-good
+# utterance. What is under test here is the routing path; the verb is the
+# vehicle for reaching it.
+caller_steps:
+  - do:
+      behavior: negotiate
+      target: price
+      constraints:
+        max_turns: 3
+        max_budget: 30000
+  - end: true
+pass_criteria:
+  criteria:
+  - The agent got a company name
+  - The call ended politely
