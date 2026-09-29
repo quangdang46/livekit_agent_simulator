@@ -277,3 +277,72 @@ def evaluate_script_log(
         "plugin_results": plugin_results,
         "pass": all(bool(c.get("pass")) for c in checks) if checks else False,
     }
+
+
+def run_verify_plugins(
+    verify: ScriptVerifySpec,
+    *,
+    scenario: Any,
+    project_root: Any,
+    events: Any,
+    steps: Any = (),
+) -> list[dict[str, Any]]:
+    """Run registered verify plugins and return their checks.
+
+    Lifted out of :func:`evaluate_script_log` so the CONTRACT path can use it
+    too. The two halves of that function have different applicability: step
+    matching keys off ``step_id``s matched against ``sim.script.cue`` events,
+    which the contract path genuinely never emits - but a verify plugin
+    consumes the run's ``events``, not step ids, so skipping it for that
+    reason skipped something that DID apply. That made every plugin assertion
+    a silent no-op that reported ``ok: true``.
+
+    Failure of a plugin is a check that does not pass, not an exception: the
+    caller decides how to fold it into hard_reasons.
+    """
+    checks: list[dict[str, Any]] = []
+    if not verify.plugins:
+        return checks
+    from ..plugins.api import VerifyContext
+    from ..plugins.loader import ensure_plugins_loaded
+    from ..plugins.registry import get_verify
+
+    if project_root is not None:
+        ensure_plugins_loaded(
+            project_root,
+            list(scenario.plugin_modules) if scenario is not None else None,
+        )
+    for plugin_name in verify.plugins:
+        fn = get_verify(plugin_name)
+        if fn is None:
+            checks.append({"check": f"plugin:{plugin_name}", "pass": False,
+                           "reason": f"verify plugin {plugin_name!r} is not registered"})
+            continue
+        if scenario is None or project_root is None:
+            checks.append({"check": f"plugin:{plugin_name}", "pass": False,
+                           "reason": "plugin verify requires scenario and project_root"})
+            continue
+        # plugin_options is a FLAT map keyed by plugin name, not a nested block.
+        opts = verify.plugin_options.get(plugin_name, {})
+        if not isinstance(opts, dict):
+            opts = {}
+        ctx = VerifyContext(
+            events=events, steps=steps, verify=verify, scenario=scenario,
+            project_root=Path(project_root), plugin_name=plugin_name,
+            options=dict(opts),
+        )
+        try:
+            raw = fn(ctx)
+        except Exception as e:  # noqa: BLE001 - a plugin must not kill the run
+            checks.append({"check": f"plugin:{plugin_name}", "pass": False,
+                           "reason": f"{type(e).__name__}: {e}"})
+            continue
+        passed = bool(raw.get("pass"))
+        plugin_checks = raw.get("checks")
+        if isinstance(plugin_checks, list):
+            for item in plugin_checks:
+                if isinstance(item, dict):
+                    checks.append({**item, "plugin": plugin_name})
+        checks.append({"check": f"plugin:{plugin_name}", "pass": passed,
+                       "plugin": plugin_name, "detail": raw.get("detail")})
+    return checks

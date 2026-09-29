@@ -40,6 +40,7 @@ from .plugins import registry as plugin_registry
 from .plugins.api import AfterRunContext, BeforeRunContext
 from .scenario import Scenario, SimulatorSpec, find_scenario, validate_telephony_for_mode
 from .script import build_caller_behavior_summary, evaluate_script_log
+from .script.verify import run_verify_plugins
 
 
 _LEADING_SEQ = re.compile(r"^(\d+)-")
@@ -567,14 +568,31 @@ async def run_scenario_instance(
         and scenario.script_verify is not None
         and (scenario.script_steps or bool(scenario.script_verify.plugins))
     )
-    if status == "done" and contract_caller_path and scenario.script_steps:
+    if status == "done" and contract_caller_path and (
+        scenario.script_steps or (scenario.script_verify and scenario.script_verify.plugins)
+    ):
+        # Step matching genuinely does not apply here (it keys off step_ids
+        # matched against sim.script.cue, which the contract path never emits).
+        # Verify PLUGINS however are a different matter: they consume the run's
+        # events, not step ids, so skipping them for that reason skipped
+        # something that DID apply - every plugin assertion was a silent no-op
+        # reporting ok:true. Run them and keep only the step half skipped.
+        _plugin_checks: list = []
+        if scenario.script_verify is not None:
+            _plugin_checks = run_verify_plugins(
+                scenario.script_verify,
+                scenario=scenario,
+                project_root=project_root,
+                events=writer.events,
+            )
         script_verify = {
             "skipped": True,
             "reason": (
-                "caller_steps drives the contract path; script.verify checks the "
+                "caller_steps drives the contract path; step matching checks the "
                 "legacy sim.script.cue vocabulary that this path never emits"
             ),
             "steps_not_applicable": [s.id for s in scenario.script_steps],
+            "plugin_checks": _plugin_checks,
         }
         writer.emit("script.verify", spec=script_verify, include_dialogue=False)
         summary_extra["script_verify"] = script_verify
@@ -588,6 +606,18 @@ async def run_scenario_instance(
         )
         writer.emit("script.verify", spec=script_verify, include_dialogue=False)
         summary_extra["script_verify"] = script_verify
+        # A failing verify plugin must fail the run, the same way a failing
+        # assert outcome does. Without this the contract path reported ok:true
+        # on an impossible plugin assertion - a silent false-pass.
+        if status == "done" and any(
+            isinstance(c, dict) and c.get("pass") is False
+            for c in _plugin_checks
+        ):
+            status = "failed"
+            meta["verify_plugin_failed"] = [
+                c.get("check") for c in _plugin_checks
+                if isinstance(c, dict) and c.get("pass") is False
+            ]
 
     if status == "done" and scenario.asserts is not None and not scenario.asserts.empty:
         from .asserts import evaluate_asserts
