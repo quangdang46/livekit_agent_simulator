@@ -162,6 +162,7 @@ async def _judge(
     flow_events: list[dict[str, Any]] | None = None,
     goals_met: bool | None = None,
     assert_verify: object | None = None,
+    router_digest: str | None = None,
 ) -> dict[str, Any]:
     if not pass_criteria:
         return JudgmentResult(verdict="skipped", notes="No criteria.").to_dict()
@@ -179,6 +180,7 @@ async def _judge(
         flow_digest=packet["flow_digest"],
         goals_met=goals_met,
         assert_digest=build_assert_digest(assert_verify),
+        router_digest=router_digest,
     )
     try:
         text = await backend.complete_json(system=JUDGE_SYSTEM, user=user)
@@ -200,6 +202,7 @@ async def judge_run(
     tool_events: list[dict[str, Any]],
     flow_events: list[dict[str, Any]] | None = None,
     assert_verify: object | None = None,
+    router_digest: str | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_judge(judge_cfg, sim_api_key=sim_api_key)
     if not resolved.ready:
@@ -224,6 +227,7 @@ async def judge_run(
         backend, pass_criteria, turns, tool_events,
         flow_events=flow_events, goals_met=None,
         assert_verify=assert_verify,
+        router_digest=router_digest,
     )
 
 

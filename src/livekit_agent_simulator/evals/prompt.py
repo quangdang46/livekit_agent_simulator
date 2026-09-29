@@ -106,6 +106,44 @@ def build_assert_digest(assert_verify: object) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+def build_router_digest(router_summary: object) -> str | None:
+    """Render the harness's own routing attribution for the judge prompt.
+
+    The judge otherwise sees only a conversation and cannot tell an authored
+    on-script reply from the fallback the harness had to reach for because
+    nothing in the catalog fitted. That distinction is the whole point of a
+    response catalog: OFF-SCRIPT means the agent asked something the caller
+    had no authored answer for, which is a fact about the call, not a defect
+    visible in the wording.
+
+    Deliberately NOT framed as authoritative, unlike the assert contract. The
+    judge may still hold that an off-script turn read as perfectly natural and
+    that the conversation recovered — this is evidence, not a verdict.
+    """
+    if not isinstance(router_summary, dict):
+        return None
+    decisions = router_summary.get("decisions") or []
+    if not decisions:
+        return None
+    matched = router_summary.get("matched", 0)
+    off = router_summary.get("off_script", 0)
+    lines = [
+        f"- responses chosen: {len(decisions)} "
+        f"({matched} matched, {off} off-script)"
+    ]
+    for d in decisions:
+        if not isinstance(d, dict):
+            continue
+        rid = d.get("response_id") or "?"
+        kind = "off-script" if d.get("off_script") else "matched"
+        turn = d.get("turn")
+        where = f"turn {turn}" if turn is not None else "turn ?"
+        conf = d.get("confidence")
+        tail = f", confidence {conf}" if conf is not None else ""
+        lines.append(f"- {where}: {rid} [{kind}]{tail}")
+    return "\n".join(lines) if lines else None
+
+
 def build_user_prompt(
     *,
     pass_criteria: list[str],
@@ -114,6 +152,7 @@ def build_user_prompt(
     flow_digest: str | None = None,
     goals_met: bool | None = None,
     assert_digest: str | None = None,
+    router_digest: str | None = None,
 ) -> str:
     parts = [
         "PASS CRITERIA:",
@@ -143,6 +182,20 @@ def build_user_prompt(
                 "",
                 "FLOW EVENTS (node lifecycle — strong evidence for hold/advance behavior):",
                 flow_digest,
+            ]
+        )
+
+    if router_digest:
+        parts.extend(
+            [
+                "",
+                "RESPONSE ROUTING (harness attribution — evidence, not a verdict):",
+                router_digest,
+                "",
+                "OFF-SCRIPT means the caller had no authored answer for what the agent "
+                "asked and used the authored fallback. That is a fact about the "
+                "conversation, not a defect in the wording — weigh it, do not report it "
+                "as a UX problem on its own.",
             ]
         )
     if goals_met:
