@@ -194,3 +194,65 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 | Dot folder (target) | `.agent-sim/` |
 | Sim participant | `lks-caller` |
 | Room prefix | `lks-<run-id>` |
+
+<!-- bv-agent-instructions-v4 -->
+
+---
+
+## Beads Workflow Integration
+
+This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking and [beads_viewer_rust](https://github.com/quangdang46/beads_viewer_rust) (`bvr`) for graph-aware triage. Issues are stored in `.beads/` and tracked in git. Current `br` workspaces normally export `.beads/issues.jsonl`; older `bd`/legacy workspaces may use `.beads/beads.jsonl`. `bvr` auto-discovers the supported JSONL files, so agents should use `br`/`bvr` commands instead of hard-coding a single filename.
+
+### Using bvr as an AI sidecar
+
+bvr is a graph-aware triage engine for Beads projects. Instead of parsing .beads/issues.jsonl / .beads/beads.jsonl directly or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
+
+**Scope boundary:** bvr handles *what to work on* (triage, priority, planning). `br` handles creating, modifying, and closing beads.
+
+**CRITICAL: Use ONLY --robot-* flags. Bare bvr launches an interactive TUI that blocks your session.**
+
+#### The Workflow: Start With Triage
+
+**`bvr --robot-triage` is your single entry point.** It returns everything you need in one call:
+- `quick_ref`: at-a-glance counts + top 3 picks
+- `recommendations`: ranked actionable items with scores, reasons, unblock info
+- `quick_wins`: low-effort high-impact items
+- `blockers_to_clear`: items that unblock the most downstream work
+- `project_health`: status/type/priority distributions, graph metrics
+- `commands`: copy-paste shell commands for next steps
+
+```bash
+bvr --robot-triage        # THE MEGA-COMMAND: start here
+bvr --robot-next          # Minimal: just the single top pick + claim command
+```
+
+Before claiming, verify current state with `br show <id> --json` or `br ready --json`. `recommendations` can include graph-important blocked or assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields represent claimable work.
+
+#### Other bvr Commands
+
+| Command | Purpose |
+|---------|---------|
+| `bvr --robot-insights` | Deep graph analysis: PageRank, betweenness, HITS, k-core, critical path |
+| `bvr --robot-plan` | Dependency-respecting execution plan with parallel tracks |
+| `bvr --robot-priority` | Priority misalignment detection |
+| `bvr --robot-alerts` | Stale issues, blocking cascades |
+| `bvr --robot-suggest` | Smart suggestions: duplicates, missing dependencies, labels |
+| `bvr --robot-graph` | Dependency graph export (JSON/DOT/Mermaid) |
+| `bvr --robot-search <query>` | Semantic search over issue titles/descriptions |
+| `bvr --robot-history` | Bead-to-commit correlation from git history |
+| `bvr --robot-label-health` | Per-label health metrics |
+| `bvr --robot-schema` | JSON Schema definitions for all robot outputs |
+
+#### br Quick Reference
+
+```bash
+br list                          # List all beads
+br ready                         # Actionable beads (no open blockers)
+br show <id>                     # View bead details
+br update <id> --status in_progress  # Claim work
+br update <id> --status closed   # Complete work
+br dep add <id> <target>         # Add dependency
+br sync --flush-only             # Sync changes to issues.jsonl
+```
+<!-- end-bv-agent-instructions -->
+
