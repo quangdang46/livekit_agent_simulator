@@ -82,7 +82,10 @@ async def test_publish_waits_for_mixer_drain_before_returning():
     elapsed = time.monotonic() - started
 
     assert ok is True
-    assert elapsed >= 0.15, "publish() must not return before the mixer actually drained"
+    # 0.14 not 0.15: asyncio.sleep is not a hard lower bound on Windows — a bare
+    # sleep(0.120) returned at 109ms in 8/200 runs on this box. The regression
+    # this guards is "publish() returned before the drain", which lands near 0.
+    assert elapsed >= 0.14, "publish() must not return before the mixer actually drained"
 
 
 @pytest.mark.asyncio

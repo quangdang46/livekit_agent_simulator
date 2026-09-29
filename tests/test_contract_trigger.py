@@ -404,7 +404,16 @@ async def test_time_trigger_fires_after_delay():
     dt_ms = (_time.monotonic() - t0) * 1000.0
     assert result.failure is None
     assert len(sink.published) == 1
-    assert dt_ms >= 120
+    # Not `>= 120`. asyncio.sleep is not a hard lower bound on Windows: a bare
+    # `asyncio.sleep(0.120)` returned at 109ms in 8 of 200 runs on this box,
+    # which is exactly how this assertion failed at 108.99999ms while the run
+    # was otherwise correct. The driver cannot promise more than the event loop
+    # delivers.
+    #
+    # What this still guards is the real regression: a `time` trigger firing
+    # immediately instead of waiting. That lands near 0ms, so a 100ms floor
+    # separates "waited" from "did not" by a wide margin.
+    assert dt_ms >= 100, f"time trigger fired after {dt_ms:.1f}ms, expected ~120ms"
 
 
 @pytest.mark.asyncio

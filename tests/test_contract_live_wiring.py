@@ -774,7 +774,11 @@ async def test_end_does_not_fire_before_say_audio_drains():
 
     assert end_reason == "contract_scenario_end"
 
-    assert elapsed >= 0.2, "driver must wait for say's drain before firing end"
+    # 0.19 not 0.2: asyncio.sleep is not a hard lower bound on Windows — a bare
+    # sleep(0.120) returned at 109ms in 8/200 runs here. See
+    # tests/test_contract_trigger.py::test_time_trigger_fires_after_delay. The
+    # regression this guards is "end fired without waiting", which lands near 0.
+    assert elapsed >= 0.19, "driver must wait for say's drain before firing end"
 
     # By the time `end` was emitted, the mixer must already be drained.
 
