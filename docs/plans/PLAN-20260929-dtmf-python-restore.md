@@ -166,12 +166,28 @@ This preserves the only historical behaviour that made DTMF work. `demo/dtmf-fea
 
 ```yaml
 caller_steps:
-  - do: {behavior: greet, expect: greeting}
-  - wait: {seconds: 2}
+  - do: {behavior: ask, target: greeting}
+  - wait: 2000
   - dtmf: "1w2w3w#"
-  - wait: {seconds: 3}
+  - wait: 3000
   - end: true
 ```
+
+Verified by running `parse_steps` against it, which yields
+`kinds=['do', 'wait', 'dtmf', 'wait', 'end']` and `dtmf_digits='1w2w3w#'`.
+
+Three authoring traps, all confirmed against `caller_contract/dsl.py` at this
+tree, because `docs/behavior-dsl.md` gets two of them wrong:
+
+- `expect:` is not a `do:` key. `_parse_do` (`:328-333`) reads only `behavior`,
+  `target`, `constraints`, `interaction` and hard-errors on anything else.
+- `greet` is not in `DEFAULT_BEHAVIOR_CATALOG` (`:37`), which is exactly
+  `accept, arrange_visit, ask, clarify, confirm, deny, end, interrupt,
+  negotiate, provide, reject`.
+- `wait:` takes a bare integer in milliseconds. `- wait: {seconds: 2}` fails.
+
+Where the doc and the parser disagree, the parser wins. Pipe any new scenario
+YAML through `parse_steps` before committing it.
 
 `templates/` is force-included into the wheel (`pyproject.toml:51-52`) and `tests/test_contract_all_templates.py::_all_templates()` globs the examples directory, so the existing CI gate parses it.
 
@@ -253,6 +269,27 @@ Assert the **event**, not merely that a publisher was injected. The existing `te
 ### Negative check
 
 Comment out the new `dtmf` branch. Confirm `tests/test_contract_dtmf.py` and the new spot-drive go red, and that the template still parses, proving the parse-only gate is not the keeper. Revert.
+
+### Live smoke — the only real delivery evidence
+
+Everything above is offline, and offline cannot prove delivery. The server
+excludes the sender from data fan-out, so the sim structurally cannot observe
+its own tone. The archived runs `058`/`063` showing `error: null` are exactly
+this limitation being misread as proof.
+
+One live run against `agent_w3ph2c35kisb1ibqythi571j` (the §5 node: `single_key`,
+`acceptedKeys` 1/2/3, four `DTMF` transitions). Capture per press: the
+`sim.script.dtmf` event, the agent's transcript immediately after, the
+transition actually taken (`Cụm 1` versus `Cụm 0 - Timeout`), and the wall-clock
+gap between tone and the agent's first word. Retain the `events.jsonl`.
+
+A press of `1` reaching `Cụm 1 - Thu thập thông tin` is the pass condition.
+The timeout transition on a successful press is a failure **even when
+`sim.script.dtmf` reported `published: 1`**, because that divergence is
+precisely what the restore must not ship.
+
+This bead needs real credentials and a running LiveKit project, so it may be
+deferred in CI. It is not optional for closing the epic.
 
 ### Baseline
 
