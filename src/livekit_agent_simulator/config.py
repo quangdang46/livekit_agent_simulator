@@ -101,6 +101,16 @@ class SimulatorConfig:
     language: str = DEFAULT_LANGUAGE
     voice: SimulatorVoiceConfig = field(default_factory=SimulatorVoiceConfig)
     name: str = "default"
+    # Consumer-supplied target vocabulary for the semantic verifier.
+    # EMPTY BY DEFAULT, and the package ships no entries of its own:
+    # `price`/`charge`/`fees` are one domain's business words, and
+    # AGENTS.md generic-core forbids baking them in as a second source
+    # of truth beside the verifier's TARGET_KEYWORDS. A consumer whose
+    # scenarios talk about maintenance schedules or loan servicing supplies
+    # its own, and nothing is overridden unless they do.
+    #
+    # Fed to RuleBasedSemanticVerifier(target_keywords=...) at runtime.
+    target_keywords: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass
@@ -299,6 +309,42 @@ def _require(section: dict[str, Any], key: str, section_name: str) -> Any:
     return value
 
 
+def _build_target_keywords(raw: Any) -> dict[str, tuple[str, ...]]:
+    """Validate `simulator.target_keywords` — target -> the words that prove it.
+
+    Structure only. This deliberately carries NO opinion about WHICH targets
+    exist: that knowledge belongs to the consumer, because a target is a domain
+    object (a maintenance schedule is not a universal thing) and the only
+    correct list is the one the author brings. An empty map is the normal
+    state and means "use the package defaults unchanged".
+
+    The one thing worth catching early is a malformed entry, because a list
+    silently coerced to a string would turn the verifier's keyword scan into a
+    substring match against one long word and quietly stop matching.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError("`simulator.target_keywords` must be a mapping (or absent)")
+    out: dict[str, tuple[str, ...]] = {}
+    for key, words in raw.items():
+        name = str(key).strip()
+        if not name:
+            raise ConfigError("`simulator.target_keywords` has an empty target name")
+        if isinstance(words, str) or not isinstance(words, (list, tuple)):
+            raise ConfigError(
+                f"`simulator.target_keywords.{name}` must be a list of words, "
+                f"not a bare string (a string would match as one substring)"
+            )
+        cleaned = tuple(str(w).strip() for w in words if str(w).strip())
+        if not cleaned:
+            raise ConfigError(
+                f"`simulator.target_keywords.{name}` has no usable words"
+            )
+        out[name] = cleaned
+    return out
+
+
 def _build_simulator_config(
     sim_raw: dict[str, Any], *, name: str
 ) -> SimulatorConfig:
@@ -332,6 +378,7 @@ def _build_simulator_config(
         voice=str(voice_raw.get("voice", "Puck")),
         language=str(voice_raw.get("language", default_lang)),
     )
+    target_keywords = _build_target_keywords(sim_raw.get("target_keywords"))
     return SimulatorConfig(
         provider=provider_raw,  # type: ignore[assignment]
         mode=mode_raw,  # type: ignore[assignment]
@@ -339,6 +386,7 @@ def _build_simulator_config(
         language=default_lang,
         voice=voice,
         name=name,
+        target_keywords=target_keywords,
     )
 
 
@@ -795,6 +843,17 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
     # Router blocks appear ONLY when configured. A snapshot from a run with no
     # router must stay byte-identical to one written before this feature, so
     # every consumer (and every golden fixture) sees an unchanged document.
+    # Consumer target vocabulary: present only when the consumer actually
+    # supplied some. A report written before this feature existed must stay
+    # byte-identical (D11), so the key is ABSENT rather than empty.
+    if cfg.simulator.target_keywords:
+        snap["simulator_target_keywords"] = {
+            "targets": sorted(cfg.simulator.target_keywords),
+            "word_counts": {
+                k: len(v) for k, v in sorted(cfg.simulator.target_keywords.items())
+            },
+        }
+
     if cfg.router is not None:
         snap["router"] = {
             "provider": cfg.router.provider,
