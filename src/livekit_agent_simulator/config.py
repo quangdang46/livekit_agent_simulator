@@ -30,6 +30,26 @@ _PROVIDER_VALUES = frozenset({"google", "openai"})
 BrainMode = Literal["realtime"]
 _BRAIN_MODE_VALUES = frozenset({"realtime"})
 
+# Response-router / text-planner providers. Separate from _PROVIDER_VALUES:
+# those drive the realtime caller brain, these drive a text LLM port.
+RouterName = Literal["openai", "gemini"]
+_ROUTER_PROVIDER_VALUES = frozenset({"openai", "gemini"})
+
+# Providers that are a real, named target but have no adapter written yet.
+# They get their own error naming the missing class, so "you asked for
+# something we have not built" never reads like "you typed it wrong". Do NOT
+# add an adapter to make one of these pass — AGENTS.md prefers a loud failure
+# over a stub that implements one backend and pretends to be several.
+_PENDING_PROVIDER_ADAPTERS = {
+    "jev": "JevRouterAdapter",
+}
+
+# `router.timeout_ms` bounds one router call. Below the floor a single round
+# trip cannot complete; above the ceiling a hung port would stall a run that
+# should have failed fast.
+_ROUTER_TIMEOUT_MS_MIN = 200
+_ROUTER_TIMEOUT_MS_MAX = 60_000
+
 
 class ConfigError(Exception):
     """Raised when config.yaml is missing or invalid. Message is user-actionable."""
@@ -93,6 +113,44 @@ class JudgeConfig:
     api_key: str | None = None
     # Wire format when base_url set: openai (/chat/completions) | anthropic (/messages)
     endpoint_type: str = "openai"
+
+
+@dataclass
+class RouterConfig:
+    """Engine only. No scenario vocabulary, no business logic, no fallback.
+
+    Every field here is read by a named consumer: ``provider`` selects the port
+    implementation, ``model``/``api_key``/``temperature`` build the adapter
+    request, ``timeout_ms`` bounds the port call. There is deliberately no
+    ``unknown_policy`` and no ``prompt_version`` — an off-script verdict is a
+    catalog lookup, not a config branch, and a version knob nothing increments
+    is a dead feature (see the v2-4 bead's re-introduction triggers).
+    """
+
+    provider: str = "openai"
+    model: str = ""
+    api_key: str = ""
+    timeout_ms: int = 1_500
+    temperature: float = 0.0
+
+    @property
+    def timeout_s(self) -> float:
+        return self.timeout_ms / 1000.0
+
+
+@dataclass
+class TextPlannerConfig:
+    """Paraphrase pass over an authored response before publication.
+
+    ``enabled: false`` publishes catalog text verbatim, which is the
+    byte-exact regression mode. Keys mirror :class:`RouterConfig` because both
+    drive the same text backend; only ``enabled`` is planner-specific.
+    """
+
+    enabled: bool = True
+    provider: str = "openai"
+    model: str = ""
+    api_key: str = ""
 
 
 @dataclass
@@ -194,6 +252,12 @@ class SimConfig:
     project: str | None = None
     cues: CuesConfig = field(default_factory=CuesConfig)
     telephony: TelephonyConfig = field(default_factory=TelephonyConfig)
+    # Response-router engine. None = no `router:` block, and the run uses no
+    # router at all. Absent must stay absent: config_snapshot omits the key
+    # entirely so a pre-router report is byte-identical to one written today.
+    router: RouterConfig | None = None
+    # Authored-response paraphrase pass. None = no `text_planner:` block.
+    text_planner: TextPlannerConfig | None = None
     # Name of the caller profile selected for this run (None = legacy flat
     # `simulator:` block; else a `simulator.profiles.<name>` key).
     active_profile: str | None = None
@@ -275,6 +339,93 @@ def _build_simulator_config(
         language=default_lang,
         voice=voice,
         name=name,
+    )
+
+
+def _resolve_router_provider(value: Any, *, section_name: str) -> str:
+    """Validate one provider value for `router:` / `text_planner:`.
+
+    Three outcomes, deliberately distinguished:
+
+    * a built provider passes through;
+    * a named provider with no adapter yet fails with the adapter's class name,
+      so the user learns the target is real but unimplemented rather than
+      assuming they misspelled it;
+    * anything else is a plain unknown-value error.
+    """
+    provider = str(value).strip().lower()
+    if provider in _ROUTER_PROVIDER_VALUES:
+        return provider
+    adapter = _PENDING_PROVIDER_ADAPTERS.get(provider)
+    if adapter is not None:
+        raise ConfigError(
+            f"`{section_name}.provider` is `{provider}`, which is a supported "
+            f"target but has no adapter in this package yet ({adapter} is not "
+            f"implemented). Use one of: "
+            f"{', '.join(sorted(_ROUTER_PROVIDER_VALUES))}."
+        )
+    raise ConfigError(
+        f"`{section_name}.provider` must be one of "
+        f"{', '.join(sorted(_ROUTER_PROVIDER_VALUES))} (got {provider!r})."
+    )
+
+
+def _resolve_api_key(
+    section_raw: dict[str, Any], *, section_name: str, fallback: str
+) -> str:
+    """Explicit key wins; otherwise borrow the caller brain's credential.
+
+    Both router ports are the same vendor as the simulator in every current
+    deployment, so requiring the operator to paste the same secret twice would
+    be pure friction — but an absent key must still fail here rather than at
+    the first request, with a stack trace instead of a sentence.
+    """
+    key = str(section_raw.get("api_key") or "").strip()
+    if key:
+        return key
+    if fallback.strip():
+        return fallback.strip()
+    raise ConfigError(
+        f"Missing `{section_name}.api_key` in {DOT_FOLDER}/{CONFIG_FILENAME}, and "
+        f"no `simulator.api_key` to fall back to. Copy the value from LiveKit "
+        f"Cloud / your worker and try again."
+    )
+
+
+def _build_router_config(
+    router_raw: dict[str, Any], *, simulator_api_key: str
+) -> RouterConfig:
+    timeout_ms = int(router_raw.get("timeout_ms", 1_500))
+    if not _ROUTER_TIMEOUT_MS_MIN <= timeout_ms <= _ROUTER_TIMEOUT_MS_MAX:
+        raise ConfigError(
+            f"`router.timeout_ms` must be between {_ROUTER_TIMEOUT_MS_MIN} and "
+            f"{_ROUTER_TIMEOUT_MS_MAX} (got {timeout_ms})."
+        )
+    return RouterConfig(
+        provider=_resolve_router_provider(
+            router_raw.get("provider", "openai"), section_name="router"
+        ),
+        model=str(router_raw.get("model") or "").strip(),
+        api_key=_resolve_api_key(
+            router_raw, section_name="router", fallback=simulator_api_key
+        ),
+        timeout_ms=timeout_ms,
+        temperature=float(router_raw.get("temperature", 0.0)),
+    )
+
+
+def _build_text_planner_config(
+    planner_raw: dict[str, Any], *, simulator_api_key: str
+) -> TextPlannerConfig:
+    return TextPlannerConfig(
+        enabled=bool(planner_raw.get("enabled", True)),
+        provider=_resolve_router_provider(
+            planner_raw.get("provider", "openai"), section_name="text_planner"
+        ),
+        model=str(planner_raw.get("model") or "").strip(),
+        api_key=_resolve_api_key(
+            planner_raw, section_name="text_planner", fallback=simulator_api_key
+        ),
     )
 
 
@@ -432,6 +583,27 @@ def load_config(project_root: Path | str, profile: str | None = None, environmen
 
     simulator = _build_simulator_config(sim_raw, name=active_profile or "default")
 
+    # Parsed after `simulator` so the api_key fallback resolves. Both blocks are
+    # optional and stay None when absent — a config without a router is the
+    # normal case today, and must not grow a default block.
+    router_raw = raw.get("router")
+    router = None
+    if router_raw is not None:
+        if not isinstance(router_raw, dict):
+            raise ConfigError("`router` must be a mapping (or absent)")
+        router = _build_router_config(
+            router_raw, simulator_api_key=simulator.api_key
+        )
+
+    planner_raw = raw.get("text_planner")
+    text_planner = None
+    if planner_raw is not None:
+        if not isinstance(planner_raw, dict):
+            raise ConfigError("`text_planner` must be a mapping (or absent)")
+        text_planner = _build_text_planner_config(
+            planner_raw, simulator_api_key=simulator.api_key
+        )
+
     judge: JudgeConfig | None = None
     judge_raw = raw.get("judge")
     if isinstance(judge_raw, dict):
@@ -555,6 +727,8 @@ def load_config(project_root: Path | str, profile: str | None = None, environmen
         project=raw.get("project"),
         cues=cues,
         telephony=telephony,
+        router=router,
+        text_planner=text_planner,
         active_profile=active_profile,
     )
 
@@ -565,7 +739,7 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
     if not cfg.observe.lk_agent_session and not cfg.observe.tool_event_patterns:
         gaps.append("tool_events")
     tel = cfg.telephony
-    return {
+    snap: dict[str, Any] = {
         "project": cfg.project,
         "livekit": {
             "url_host": cfg.livekit.url.split("://")[-1].split("/")[0],
@@ -618,3 +792,22 @@ def config_snapshot(cfg: SimConfig) -> dict[str, Any]:
         },
         "observe_gaps": gaps,
     }
+    # Router blocks appear ONLY when configured. A snapshot from a run with no
+    # router must stay byte-identical to one written before this feature, so
+    # every consumer (and every golden fixture) sees an unchanged document.
+    if cfg.router is not None:
+        snap["router"] = {
+            "provider": cfg.router.provider,
+            "model": cfg.router.model,
+            "api_key_set": bool(cfg.router.api_key),
+            "timeout_ms": cfg.router.timeout_ms,
+            "temperature": cfg.router.temperature,
+        }
+    if cfg.text_planner is not None:
+        snap["text_planner"] = {
+            "enabled": cfg.text_planner.enabled,
+            "provider": cfg.text_planner.provider,
+            "model": cfg.text_planner.model,
+            "api_key_set": bool(cfg.text_planner.api_key),
+        }
+    return snap
