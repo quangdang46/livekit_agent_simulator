@@ -54,7 +54,16 @@ fn agent_republished_transcript_does_not_double_user_text() {
     let line = "Hello. I would like to speak to someone about my building.";
     let t0 = Instant::now();
 
-    o.on_transcript(&mut w, "user", line, true, Some("SG_1"), "lk.transcription", t0, 0);
+    o.on_transcript(
+        &mut w,
+        "user",
+        line,
+        true,
+        Some("SG_1"),
+        "lk.transcription",
+        t0,
+        0,
+    );
     // The agent republishes the same line, no segment id, before any reply.
     o.on_transcript(
         &mut w,
@@ -79,7 +88,16 @@ fn same_source_repeat_is_dropped_by_the_dedupe_window() {
     let (mut o, mut w) = make_observer(&dir);
     let t0 = Instant::now();
 
-    o.on_transcript(&mut w, "user", "yes", true, Some("SG_1"), "lk.transcription", t0, 0);
+    o.on_transcript(
+        &mut w,
+        "user",
+        "yes",
+        true,
+        Some("SG_1"),
+        "lk.transcription",
+        t0,
+        0,
+    );
     o.on_transcript(
         &mut w,
         "user",
