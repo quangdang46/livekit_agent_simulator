@@ -136,6 +136,13 @@ def execute(
         "--replay",
         help="Replay a caller record with no AI calls (fails loudly on verdict divergence).",
     ),
+    no_router: bool = typer.Option(
+        False,
+        "--no-router",
+        help="ABORT PATH: force this run onto the caller_steps path even when the "
+        "scenario authors `responses:`. For when a router change starts misrouting "
+        "in another repo. Does not edit the scenario and does not persist.",
+    ),
 ) -> None:
     """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)"""
     result = _run(
@@ -151,6 +158,7 @@ def execute(
             environment=environment,
             record_path=record,
             replay_path=replay,
+            no_router=no_router,
         )
     )
     from .suite import evaluate_run_result

@@ -209,6 +209,7 @@ async def run_scenario(
     caller_policy: Any = None,
     record_path: Any = None,
     replay_path: Any = None,
+    no_router: bool = False,
 ) -> dict[str, Any]:
     """Run one scenario by id from `.agent-sim/scenarios/`.
 
@@ -229,7 +230,7 @@ async def run_scenario(
         scenario.caller_policy = caller_policy
     return await run_scenario_instance(
         cfg, scenario, run_name=run_name, agent_name=agent_name,
-        record_path=record_path, replay_path=replay_path,
+        record_path=record_path, replay_path=replay_path, no_router=no_router,
     )
 
 
@@ -241,8 +242,17 @@ async def run_scenario_instance(
     agent_name: str | None = None,
     record_path: Any = None,
     replay_path: Any = None,
+    no_router: bool = False,
 ) -> dict[str, Any]:
     """Run a parsed Scenario (file or in-memory). Returns {run_id, status, report_dir, summary}.
+
+    ``no_router`` is the operator abort path: it forces the caller_steps path
+    even when the scenario authors ``responses:``. It is a RUN-TIME flag, not a
+    config key - a key left set to false is itself a second source of truth,
+    and a flag in a shell history is not. It bypasses the ROUTER, not the
+    wording layer: ``text_planner.enabled: false`` is not equivalent, because
+    the router would still pick responseIds, still record verdicts, and still
+    bypass the validator, so a misrouting run stays misrouting.
 
     ``agent_name`` overrides ``cfg.livekit.agent_name`` for this run only —
     dispatch targets the named worker without editing ``.agent-sim/config.yaml``
@@ -447,6 +457,26 @@ async def run_scenario_instance(
                 bridge.watch_agent_tracks(leg_handle.gemini_listen_identity)
             else:
                 bridge.watch_agent_tracks(leg_handle.agent_identity)
+
+            # ── operator abort path (--no-router) ──────────────────────────
+            # Placed here, immediately before the contract path, so the router
+            # never receives a catalog: clearing scenario.responses means the
+            # driver's `response_catalog is not None` gate is false, and the run
+            # takes the caller_steps path. Emitting alone would NOT do that - the
+            # router would still route, still record verdicts, still bypass the
+            # validator.
+            if no_router and getattr(scenario, "responses", None) is not None:
+                # Recorded, never silent: a run that did NOT exercise the router
+                # must never be mistaken for one that did and passed.
+                writer.emit(
+                    "contract.router_aborted",
+                    spec={
+                        "reason": "--no-router",
+                        "responses": sorted(scenario.responses.responses),
+                    },
+                    include_dialogue=False,
+                )
+                scenario.responses = None
 
             # ── caller_contract single path (the ONLY caller path) ──
             # Every scenario carries caller_actions (migration gate

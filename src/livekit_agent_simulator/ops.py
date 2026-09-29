@@ -474,6 +474,7 @@ async def execute_scenario(
     environment: str | None = None,
     record_path: Any = None,
     replay_path: Any = None,
+    no_router: bool = False,
 ) -> dict[str, Any]:
     """Validate then run one scenario from `.agent-sim/scenarios/<id>.jsonl`.
 
@@ -527,6 +528,7 @@ async def execute_scenario(
             environment=environment,
             record_path=record_path,
             replay_path=replay_path,
+            no_router=no_router,
         )
 
     for i in range(repeat):
