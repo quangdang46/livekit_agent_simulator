@@ -134,7 +134,7 @@ def _synthesize(text: str) -> bytes:
     which branch fired instead of unit tests asserting it in isolation
     (acceptance B4).
     """
-    global _SHERPA_DEAD, _TTS_BRANCH
+    global _SHERPA_DEAD, _TTS_BRANCH, _TTS_DOWNGRADE_REASON
     if not _SHERPA_DEAD:
         try:
             from ..audio.tts_engine import TtsCache
@@ -146,9 +146,32 @@ def _synthesize(text: str) -> bytes:
             if pcm:
                 _TTS_BRANCH = "sherpa"
                 return bytes(pcm)
-        except Exception:  # noqa: BLE001 — any sherpa failure falls back to OS TTS
-            pass
-        _SHERPA_DEAD = True
+        except Exception as exc:  # noqa: BLE001 — any sherpa failure falls back to OS TTS
+            # The reason is RECORDED because `except: pass` made this
+            # undiagnosable. Measured on this repo (2026-09-30): a run
+            # published `tts: sapi_fallback` for every utterance, which the
+            # report shows as a healthy run, and nothing anywhere said why.
+            # A peer session had to read this function and then run
+            # `pip list` to find out — the diagnosis existed and was thrown
+            # away. The raised message is already precise
+            # (`SherpaOnnxNotInstalledError: ... Install with uv sync --extra
+            # tts-sherpa`), so recording it costs one line and ends the hunt.
+            #
+            # A SECOND cause is a real bug, and it is not the common one:
+            # `audio/sherpa_models.py::ensure_model_dir` does
+            # `shutil.rmtree(model_dir)` and re-extracts in place with no lock
+            # (`:185-188`), so two processes racing leave a half-written model
+            # dir and the next reader raises `ModelIntegrityError` from the
+            # present-but-unverifiable branch (`:170`). Worth fixing; do not
+            # mistake it for why a given run downgraded.
+            _TTS_DOWNGRADE_REASON = f"{type(exc).__name__}: {exc}"
+            _SHERPA_DEAD = True
+        else:
+            # No exception, but `pcm` was empty — sherpa ran and produced
+            # nothing. A different failure with the same consequence, so it
+            # gets its own reason rather than a bare downgrade.
+            _TTS_DOWNGRADE_REASON = "sherpa produced no audio (empty pcm)"
+            _SHERPA_DEAD = True
     _TTS_BRANCH = "sapi_fallback"
     pcm = synthesize_pcm16_mono(text, rate=TARGET_RATE) or b""
     if not pcm:
@@ -177,15 +200,93 @@ def _synthesize(text: str) -> bytes:
 
 _SHERPA_DEAD = False
 _TTS_BRANCH: str | None = None
+_TTS_DOWNGRADE_REASON: str | None = None
 
 
 def last_tts_branch() -> str | None:
     """Which TTS branch the last ``_synthesize`` call took (acceptance B4).
 
-    ``"sherpa"``, ``"sapi_fallback"``, or ``None`` when nothing has been
-    synthesized yet in this process.
+    ``"sherpa"``, ``"sapi_fallback"``, ``"synthetic"``, or ``None`` when
+    nothing has been synthesized yet in this process.
     """
     return _TTS_BRANCH
+
+
+def last_tts_downgrade_reason() -> str | None:
+    """Why the process gave up on sherpa, or ``None`` if it never did.
+
+    ``None`` is the NORMAL case and means every utterance used the pinned
+    neural voice. A non-``None`` value is not itself a failure — SAPI is a
+    working fallback — but it does mean the audio this run published is
+    **lower quality than the audio the config asked for**, and a report that
+    does not say so reads like a run that got what it asked for.
+
+    That distinction is the whole reason this exists. Before it, the only
+    evidence of a downgrade was ``contract.published`` carrying
+    ``tts: "sapi_fallback"`` per utterance, which records THAT it happened and
+    nothing about WHY — and ``except: pass`` had already discarded the why.
+
+    Read with the sibling fields to tell the cases apart: an
+    ``IntegrityError`` naming the model is almost always the
+    `ensure_model_dir` extraction race; a network error is a failed download;
+    an import error is a missing optional dependency.
+    """
+    return _TTS_DOWNGRADE_REASON
+
+
+# TODO(human): decide what a TTS DOWNGRADE does to a run.
+#
+# The recording above is done. The policy is not, and it is a real fork with
+# different costs on each side — which is why it is yours and not a default.
+#
+# Today: `sapi_fallback` is invisible at gate level. A run whose every
+# utterance was synthesized by Windows SAPI reports `ok ✓` exactly like a run
+# that used the pinned neural voice, provided no assertion inspects the audio.
+# Measured 2026-09-30 on the target repo: long sentences degraded into
+# single unrecognizable words on the agent side, and nothing in the report
+# said the run had left the configured TTS.
+#
+# What to implement here, and the trade-offs:
+#
+#   A. Emit an event, change nothing else.
+#      `contract.tts_downgraded` with `last_tts_downgrade_reason()`, emitted
+#      once per run. Cheapest, and a report now carries the fact. Still lets
+#      a green gate sit on downgraded audio.
+#
+#   B. A + make the gate care.
+#      `suite.py` already grew `ungraded` this session for a judge that could
+#      not produce a verdict; a run whose audio came from a different engine
+#      than the config names is the same class — graded on a different
+#      artifact than intended. But TTS degradation is COMMON and usually
+#      harmless (a missing optional extra on any machine that never installed
+#      it), so a hard gate here fires constantly and teaches people to ignore
+#      the gate — the exact failure mode `ungraded` was built to avoid.
+#
+#   C. A + retry sherpa on the next utterance.
+#      Defeats `_SHERPA_DEAD` being sticky. Wrong for the common cause (a
+#      missing extra never becomes present mid-run, so every utterance would
+#      pay a doomed import) and right for the rare one (the extraction race,
+#      which a retry genuinely fixes). It also reintroduces a per-utterance
+#      stall.
+#
+# Note the tension B and C both hide: "downgraded" covers a missing optional
+# dependency, which is a SETUP state and arguably should be a loud
+# preflight failure rather than anything a run reports — `preflight.py` now
+# has a `_check_router_config` for the router, and this is the same shape.
+#
+# Two things worth deciding alongside it:
+#   - Whether `_SHERPA_DEAD` should stay process-global at all. It exists so
+#     a failed model download is paid once. But it also means one bad
+#     utterance permanently changes the voice of the whole run. A test
+#     asserting `_TTS_BRANCH == "sherpa"` is order-dependent because of it.
+#   - Whether the `ensure_model_dir` race (rmtree + extractall in place, no
+#     lock) gets fixed here or as its own change. Separate bug, separate fix,
+#     and fixing the policy without it means the downgrade still happens — it
+#     just becomes visible.
+#
+# Guard: whatever you choose, sherpa must remain the default and SAPI must
+# remain reachable. A run that cannot speak is worse than one that speaks
+# plainly.
 
 
 def _sherpa_engine():
