@@ -254,6 +254,69 @@ def _with_report_pointer(error: str | None, report_dir: Path) -> str | None:
     return f"{error} (report: {report_dir})"
 
 
+async def _cleanup_rooms(
+    adapter: Any,
+    leg_handle: Any,
+    meta: dict[str, Any],
+    writer: Any,
+) -> None:
+    """Disconnect the sim's rooms and delete them, recording every failure.
+
+    Extracted from `run_scenario_instance` so it is testable directly — the
+    first version of its test inspected the caller's source with string
+    searches, which proves nothing about behaviour.
+
+    Every step is guarded and every failure is RECORDED rather than
+    swallowed. `delete_room` was the one unguarded step: a failure propagated
+    out and skipped everything after it. A bare `except: pass` would have been
+    worse in the other direction — a room that survives still holds a LiveKit
+    dispatch job, and a worker still holding one may refuse to initialise a
+    runner for the next dispatch. That is the shape of the `AgentJoinTimeout`
+    reports on the target repo, so this failure has to be loud.
+
+    NOT a candidate for those reports themselves: `rooms_to_delete` is
+    correctly populated for every leg (`[dispatch.room_name]` for webrtc_sim),
+    and the reported runs end with the sim leg closing cleanly. Recorded here
+    so the two are not conflated.
+    """
+    rooms: list[str] = []
+    if leg_handle is not None:
+        rooms = list(leg_handle.rooms_to_delete)
+        try:
+            await leg_handle.disconnect_rooms()
+        except Exception as exc:  # noqa: BLE001 — cleanup must continue
+            writer.emit(
+                "sim.error",
+                spec={
+                    "where": "disconnect_rooms",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                source="sim",
+                include_dialogue=False,
+            )
+    elif meta.get("room_name"):
+        rooms = [str(meta["room_name"])]
+    for rn in dict.fromkeys(rooms):
+        try:
+            await adapter.delete_room(rn)
+        except Exception as exc:  # noqa: BLE001 — one room must not block the rest
+            writer.emit(
+                "sim.error",
+                spec={
+                    "where": "delete_room",
+                    "room": rn,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "note": (
+                        "the room may still hold a dispatch job; a worker still "
+                        "holding one may not initialise a runner for the next "
+                        "dispatch"
+                    ),
+                },
+                source="sim",
+                include_dialogue=False,
+            )
+
+
 def diagnose_failure(
     status: str,
     events: list[dict[str, Any]],
@@ -679,17 +742,7 @@ async def run_scenario_instance(
                         include_dialogue=False,
                     )
             # Cleanup rooms from SimLegHandle (WebRTC: one room; SIP: agent + sim).
-            rooms: list[str] = []
-            if leg_handle is not None:
-                rooms = list(leg_handle.rooms_to_delete)
-                try:
-                    await leg_handle.disconnect_rooms()
-                except Exception:
-                    pass
-            elif meta.get("room_name"):
-                rooms = [str(meta["room_name"])]
-            for rn in dict.fromkeys(rooms):
-                await adapter.delete_room(rn)
+            await _cleanup_rooms(adapter, leg_handle, meta, writer)
 
     # ── Phase: post-run hard verify + report digests ─────────────────────
     summary_extra: dict[str, Any] = {}

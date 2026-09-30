@@ -163,3 +163,85 @@ def test_the_cli_enables_faulthandler_before_doing_anything() -> None:
         "faulthandler must be enabled before any work starts — the run that "
         "needs it is the one that cannot be instrumented in advance"
     )
+
+
+async def test_a_failed_room_delete_is_recorded_and_does_not_stop_the_rest() -> None:
+    """A surviving room is the failure mode nobody is told about.
+
+    `delete_room` was the one unguarded step in the post-run cleanup, so a
+    failure propagated and skipped everything after it. A bare `except: pass`
+    would be worse in the other direction: a surviving room still holds a
+    LiveKit dispatch job, and a worker still holding one may refuse to
+    initialise a runner for the next dispatch — the shape of the
+    `AgentJoinTimeout` reports on the target repo. So it must be loud.
+    """
+    from livekit_agent_simulator.run_orchestrator import _cleanup_rooms
+
+    class _ExplodingAdapter:
+        def __init__(self) -> None:
+            self.attempted: list[str] = []
+
+        async def delete_room(self, room_name: str) -> None:
+            self.attempted.append(room_name)
+            raise RuntimeError("room not found")
+
+    class _Writer:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        def emit(self, kind, spec=None, **kwargs) -> None:
+            self.events.append((kind, spec or {}))
+
+    class _Leg:
+        rooms_to_delete = ["room-a", "room-b"]
+
+        async def disconnect_rooms(self) -> None:
+            return None
+
+    adapter, writer = _ExplodingAdapter(), _Writer()
+    await _cleanup_rooms(adapter, _Leg(), {}, writer)
+
+    # Both rooms attempted: one failure must not abandon the rest.
+    assert adapter.attempted == ["room-a", "room-b"]
+    errors = [spec for kind, spec in writer.events if kind == "sim.error"]
+    assert len(errors) == 2, f"each failed room must be recorded: {errors}"
+    assert all(e["where"] == "delete_room" for e in errors)
+    assert {e["room"] for e in errors} == {"room-a", "room-b"}, (
+        "the message must name which room survived — an unnamed failure is one "
+        "nobody can act on"
+    )
+    assert "dispatch job" in errors[0]["note"]
+
+
+async def test_a_disconnect_failure_does_not_prevent_deletion() -> None:
+    """Order matters: disconnect fails, delete still runs."""
+    from livekit_agent_simulator.run_orchestrator import _cleanup_rooms
+
+    class _Adapter:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        async def delete_room(self, room_name: str) -> None:
+            self.deleted.append(room_name)
+
+    class _Writer:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        def emit(self, kind, spec=None, **kwargs) -> None:
+            self.events.append((kind, spec or {}))
+
+    class _Leg:
+        rooms_to_delete = ["only-room"]
+
+        async def disconnect_rooms(self) -> None:
+            raise RuntimeError("already gone")
+
+    adapter, writer = _Adapter(), _Writer()
+    await _cleanup_rooms(adapter, _Leg(), {}, writer)
+
+    assert adapter.deleted == ["only-room"]
+    kinds = [k for k, _ in writer.events]
+    assert "sim.error" in kinds
+    where = [s.get("where") for k, s in writer.events if k == "sim.error"]
+    assert where == ["disconnect_rooms"]
