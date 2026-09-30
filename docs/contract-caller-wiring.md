@@ -15,9 +15,12 @@ Scenario (caller_steps: say/do/wait/dtmf/interrupt/end)
 
 ## The routed variant (`responses:`)
 
-Opt-in, added 2026-09-29. The two coexist: a scenario with both `caller_steps`
-and `responses:` uses `caller_steps` and the router is not engaged, which is
-what keeps every existing scenario unchanged.
+Opt-in, added 2026-09-29. The two coexist, and with both present **the ROUTER
+runs** — `caller_steps` still supplies the opening action and stays mandatory,
+but it does not win precedence. (The routing gate is `router is not None and
+response_catalog is not None and agent_text`; there is no `caller_steps` check
+anywhere in `driver.py`.) Every existing scenario is untouched because none of
+them author `responses:`.
 
 ```text
 Scenario (responses: catalog + router: block in config)

@@ -6,9 +6,12 @@ from this catalog and never a value outside it, which is what makes
 "always a valid responseId" a structural property rather than a hope.
 
 The catalog is a transitional state, not a replacement: ``caller_steps`` stays
-required and wins when both are present (see the migration plan's D13). This
-module adds the vocabulary; deciding when it engages is the scenario schema's
-and the driver's job.
+mandatory (see the migration plan's D13) and still supplies the opening action.
+It does NOT win precedence — when a scenario carries both, the ROUTER runs,
+because the driver's gate is ``router is not None and response_catalog is not
+None and agent_text`` (``driver.py:712``) with no ``caller_steps`` check
+anywhere. This module adds the vocabulary; deciding when it engages is the
+scenario schema's and the driver's job.
 
 @see docs/plans/response-router.md  (contract, §1; decisions D7, D8)
 """

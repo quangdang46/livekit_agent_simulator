@@ -695,15 +695,63 @@ pub async fn execute_scenario_parsed(
     // Gemini and OpenAI branches of the same dispatch — a guard that has to
     // be added twice is a guard that will be added once.
     //
-    // The predicate is SYMMETRIC with Python's ConfigError, and that symmetry
-    // is the point: both ports must decide from the same condition, or the
-    // same scenario behaves differently under `lks` and `lksr` with nothing
-    // saying why. Note it is NOT "contains responses:" — a responses: block
-    // with no router configured is INERT AND CORRECT on both ports (caller_steps
-    // wins), and refusing there would break every stock template.
+    // The predicate is COMPLEMENTARY to Python's ConfigError, not symmetric —
+    // and that is deliberate, not an oversight. The two ports ask DIFFERENT
+    // questions about the same scenario:
+    //
+    //   scenario        | `lks` (Python)          | `lksr` (Rust)
+    //   ----------------+-------------------------+--------------------------
+    //   responses+router | OK, routes             | Err (this guard)
+    //   responses, no    | ConfigError at RUN time | OK, caller_steps
+    //     router         |                         |
+    //   router, no       | OK, silent             | OK, silent
+    //     responses      |                         |
+    //   neither          | OK                     | OK
+    //
+    // It is RUN time, not load time: `load_config` only parses config.yaml and
+    // never reads a scenario, so it cannot raise about `responses:` at all. The
+    // ConfigError comes from `_attach_response_router` inside
+    // `run_contract_driver_path`, i.e. during `lks execute` — which is where an
+    // operator will meet it.
+    //
+    // Why they differ: this guard exists to stop `lksr` HALF-RUNNING the
+    // router, which needs both halves attached. With no `router:` block there
+    // is nothing unimplemented to half-run, so caller_steps is the complete,
+    // correct behaviour. Python's ConfigError answers a different question —
+    // "did the author forget the decision layer?" — which is a config-authoring
+    // concern, not a capability one.
+    //
+    // So `lksr` is a SUBSET port: it validates LESS, never differently. A
+    // scenario `lks` refuses may still run under `lksr`. Making the predicates
+    // match would require `lksr` to re-implement every authoring check
+    // `lks` has (dispatch_metadata, target_keywords, text_planner, observe
+    // sub-groups) — reintroducing exactly the cross-port divergence this
+    // comment is defending against.
+    //
+    // Two things this comment asserted FALSE until 2026-09-30, both landmines:
+    //   1. "SYMMETRIC with Python" — they are complements (table above).
+    //   2. "caller_steps wins when both keys are present" — IT DOES NOT.
+    //      Python's gate is `router is not None and response_catalog is not
+    //      None and agent_text` (caller_contract/driver.py:712) with NO
+    //      caller_steps check at all, so with both keys the ROUTER runs. Every
+    //      migrated gpt-live-* scenario carries both, which is why they route.
+    //      Believing (2) would mean dropping `cfg.router.is_some()` from this
+    //      guard and silently attaching a router `lksr` does not implement.
     if scenario.responses_present() && cfg.router.is_some() {
         return Err(RunError(format!(
-            "scenario `{}` authors `responses:` and a `router:` block is configured,              but lksr does not implement the v2 responses router.              Two remedies: (1) run it with the Python `lks` (lksr is opt-in via              --rust / -Rust), or (2) remove the `router:` block from              .agent-sim/config.yaml, which makes the router inert and the              scenario falls back to caller_steps.",
+            "scenario `{}` authors `responses:` and a `router:` block is configured,\n\
+             but lksr does not implement the v2 responses router.\n\
+             \n\
+             Two remedies:\n\
+             \x20 (1) run it with the Python `lks` (lksr is opt-in via --rust / -Rust).\n\
+             \x20     Today this is the only action correct on BOTH ports — for different\n\
+             \x20     reasons on each, so do not treat it as permanent.\n\
+             \x20 (2) remove the `responses:` block from the scenario.\n\
+             \n\
+             NOT a remedy: deleting the `router:` block. That does unblock lksr, but `lks`\n\
+             then raises ConfigError at RUN time from `_attach_response_router` (\"authors\n\
+             `responses:` but no `router:` block is configured\"), converting an lksr-only\n\
+             problem into one no port can run. See the complementarity table above.",
             scenario.id
         )));
     }

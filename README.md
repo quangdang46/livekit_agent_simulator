@@ -205,9 +205,10 @@ Invariants the suite pins (not aspirations — each has a regression test):
 
 #### The routed path (`responses:`) — opt-in
 
-A scenario may also author a `responses:` catalog. The two coexist: a
-scenario with both uses **`caller_steps`**, and the router is not engaged.
-This is why every existing scenario is untouched.
+A scenario may also author a `responses:` catalog. The two coexist, and when
+both are present **the ROUTER runs** — `caller_steps` still supplies the opening
+action and stays mandatory, but it does not win precedence. Every existing
+scenario is untouched because none of them author `responses:`.
 
 ```text
 Scenario ─ responses: ─► Decision Router ─ picks ONE responseId (WHAT)

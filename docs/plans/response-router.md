@@ -1405,13 +1405,39 @@ Also change `contract_summary.py:133` from the hardcoded `"validation": "passed"
 2026-09-29 after three claims in the original draft were checked against the tree
 and found false or stale.
 
-`lks-core/src/scenario.rs` `KNOWN_KINDS` is a fixed `[&str; 13]` containing
-`"CallerSteps"` and no `"Responses"`, and `scenario_jsonl.rs:185` hard-rejects
-unknown kinds — so a scenario authoring `responses:` parses under `lks` and is
-**rejected** under `lksr`. No `lksr` user is stranded, because D13 keeps
-`caller_steps` mandatory and **caller_steps wins when both are present**: the
-router is not engaged, so an `lksr` user running a dual-key scenario executes
-exactly the `caller_steps` path.
+`lks-core/src/scenario.rs` `KNOWN_KINDS` is a fixed `[&str; 14]` that **does**
+contain `"Responses"` (added in v2-29), and both `scenario_yaml.rs` and
+`scenario_jsonl.rs:348` store the catalog verbatim — v2-28 chose parse-reject,
+and **v2-29 replaced it** with a run-time guard in
+`lks-livekit/src/run.rs`, because a parser error cannot name the two remedies an
+operator actually has. The guard's predicate is
+`scenario.responses_present() && cfg.router.is_some()`.
+
+**Corrected 2026-09-30 — this section previously asserted two things that were
+false.** (1) It claimed `caller_steps` "wins when both are present" and the
+router "is not engaged". There is **no `caller_steps` check anywhere in
+`driver.py`** — the routing gate is `router is not None and response_catalog is
+not None and agent_text` (`driver.py:712`), so with both keys present the
+**ROUTER runs**. Every migrated `gpt-live-*` scenario carries both keys, which
+is why they route. (2) It described the v2-28 parse-reject, which v2-29 deleted.
+
+The two ports' predicates are **complementary, not symmetric**:
+
+| scenario | `lks` | `lksr` |
+|---|---|---|
+| `responses:` + `router:` | OK, routes | **Err** (guard) |
+| `responses:`, no `router:` | ConfigError at **run** time | OK, `caller_steps` |
+| `router:`, no `responses:` | OK, silent | OK, silent |
+| neither | OK | OK |
+
+Each port refuses exactly what the other accepts, because they answer different
+questions — the Rust guard asks "would I half-run an unimplemented router?",
+Python's `ConfigError` asks "did the author forget the decision layer?".
+**`lksr` is a subset port: it validates LESS, never differently.** Making them
+match would require `lksr` to re-implement every authoring check `lks` has. Note
+it is **run** time, not load: `load_config` never reads a scenario.
+`crates/lks-core/tests/router_guard.rs` pins both predicates and their
+relationship.
 
 | Concern | Action |
 |---|---|

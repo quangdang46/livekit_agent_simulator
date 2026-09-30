@@ -206,12 +206,40 @@ Docs: [docs/migration-caller-steps-to-responses.md](docs/migration-caller-steps-
 
 ### ⚠️ The routed path is PYTHON-ONLY
 
-`lksr` does **not** execute router scenarios. `scenario.rs` `KNOWN_KINDS` has no
-`"Responses"` and `scenario_jsonl.rs:185` hard-rejects unknown kinds, so a
-`responses:` scenario is **rejected** under `lksr` rather than silently run
-legacy. No `lksr` user is stranded: `caller_steps` is mandatory and wins when
-both are present, so a dual-key scenario executes the `caller_steps` path under
-`lksr` and the router is simply not engaged.
+`lksr` does **not** execute router scenarios. It does **not** reject them at
+parse either: `KNOWN_KINDS` contains `"Responses"`, and both `scenario_yaml.rs`
+and `scenario_jsonl.rs:348` store the catalog verbatim. v2-28 chose
+parse-reject; **v2-29 replaced that** with a run-time guard, because a parser
+error cannot name the two remedies an operator actually has.
+
+The guard is one line in `lks-livekit/src/run.rs`, predicate
+`scenario.responses_present() && cfg.router.is_some()`.
+
+| scenario | `lks` (Python) | `lksr` (Rust) |
+|---|---|---|
+| `responses:` + `router:` | OK, routes | **Err** — guard, both remedies named |
+| `responses:`, no `router:` | ConfigError at **run** time | OK, runs `caller_steps` |
+| `router:`, no `responses:` | OK, silent | OK, silent |
+| neither | OK | OK |
+
+The two predicates are **complementary, not symmetric** — each port refuses
+exactly what the other accepts. That is deliberate: the Rust guard asks "would I
+half-run an unimplemented router?" (needs both halves attached), while Python's
+`ConfigError` asks "did the author forget the decision layer?" (a config-
+authoring concern). `lksr` is a **subset port: it validates LESS, never
+differently** — making them match would require `lksr` to re-implement every
+authoring check `lks` has. `crates/lks-core/tests/router_guard.rs` pins both
+predicates and their relationship, so nobody "fixes" this into symmetry.
+
+⚠️ It is **run** time, not load time. `load_config` only parses `config.yaml`
+and never reads a scenario, so it cannot raise about `responses:` at all.
+
+⚠️ **`caller_steps` does not win when both keys are present.** The routing gate
+is `router is not None and response_catalog is not None and agent_text`
+(`caller_contract/driver.py:712`) with no `caller_steps` check anywhere — the
+ROUTER runs. Every migrated `gpt-live-*` scenario carries both keys, which is
+why they route. This was documented the other way round until 2026-09-30, in
+four places at once.
 
 Do not port the router to Rust in v1 — `caller_contract.rs` carries ~1000 lines
 with zero references outside that file, so porting means wiring dead code, which

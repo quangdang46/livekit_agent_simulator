@@ -91,18 +91,68 @@ fn refuses(responses_present: bool, router_configured: bool) -> bool {
     responses_present && router_configured
 }
 
+/// Python's predicate, transcribed from
+/// `caller_contract/live_wiring.py::_attach_response_router` (the `router_cfg
+/// is None` branch raises ConfigError). It is written out HERE, in the test
+/// that compares it to [`refuses`], because the relationship between the two
+/// is the thing under test — a comment asserting "symmetric" is what let both
+/// go wrong for a day.
+///
+/// This does NOT call Python. It pins the *stated* Python behaviour, and
+/// `tests/test_router_wiring.py` in the Python suite pins that the real
+/// function raises; if the two ever diverge, both suites fail and the
+/// disagreement is visible instead of silent.
+fn python_refuses(responses_present: bool, router_configured: bool) -> bool {
+    responses_present && !router_configured
+}
+
 #[test]
 fn the_predicate_refuses_only_when_both_are_true() {
     assert!(refuses(true, true), "routed run must be refused");
     assert!(
         !refuses(true, false),
-        "responses with no router is INERT — caller_steps wins"
+        "responses with no router leaves lksr nothing unimplemented to half-run, \
+         so caller_steps is the complete behaviour — NOT because caller_steps wins \
+         (there is no caller_steps check anywhere in the routing gate)"
     );
     assert!(
         !refuses(false, true),
         "a configured router with no catalog does nothing"
     );
     assert!(!refuses(false, false));
+}
+
+#[test]
+fn the_two_ports_are_complementary_not_symmetric() {
+    // The relationship is deliberate, and this test exists so nobody "fixes"
+    // it into symmetry. `lksr` is a SUBSET port: it validates LESS, never
+    // differently. Making the predicates identical would require `lksr` to
+    // re-implement every authoring check `lks` has (dispatch_metadata,
+    // target_keywords, text_planner, observe sub-groups) — reintroducing the
+    // cross-port divergence the guard exists to prevent.
+    for responses in [false, true] {
+        for router in [false, true] {
+            if responses && router {
+                assert!(refuses(responses, router), "lksr must refuse a routed run");
+                assert!(
+                    !python_refuses(responses, router),
+                    "lks routes this one — it must not raise"
+                );
+            } else if responses && !router {
+                assert!(
+                    !refuses(responses, router),
+                    "lksr has no router to half-run; refusing breaks every stock template"
+                );
+                assert!(
+                    python_refuses(responses, router),
+                    "lks raises ConfigError here — the authoring half-config"
+                );
+            } else {
+                assert!(!refuses(responses, router));
+                assert!(!python_refuses(responses, router));
+            }
+        }
+    }
 }
 
 #[test]

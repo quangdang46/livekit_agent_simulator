@@ -584,6 +584,47 @@ own bead — remove the field and its docstring if nobody claims it.
 
 `contract.router_decision` events in `reports/009-gpt-live-retry-while-speaking-20260929-094728-b1ae/events.jsonl`.
 
+#### RETRACTION (2026-09-30) — the catalog is NOT the problem; the harness reads the wrong turn
+
+**Everything above this line is wrong about the cause.** I concluded the router was
+"guessing and labelling it matched" from reading transcripts, without measuring.
+Measured, it is the opposite: **the router picks the CORRECT response, for the
+NEXT turn's question.**
+
+Verified by POSTing directly to the judge/router endpoint with *this repo's real*
+catalog, `_SYSTEM` and `_user_prompt`: turn 5 — "provide your callback phone
+number" → `callback_number`. Catalog, prompt, schema and endpoint all correct.
+
+Re-reading the run-013 table with that in mind:
+
+| turn | agent asked | observed | actually correct for |
+|---|---|---|---|
+| 2 | "are you still there?" | `wrap_up` | `off_script` |
+| 4 | "anything else today?" | `callback_number` | turn 5's question |
+| 5 | "callback phone number?" | `contact_name` | the contact-name ask |
+| untranscribed | *(empty)* | `preamble_ack` | `off_script` |
+
+Every "miss" is the right answer one turn later. The mechanism is
+`agent_wait.py::wait_agent_turn`, which returns
+`observer.last_agent_final_text` — a **single overwritten slot, not a queue**
+(no `deque`/`queue` anywhere). With duplex, `still_speaking` lags ~2.4s
+(problem 1, and what the turn-alignment beads are fixing), so turn N's final
+arrives while the agent is still flagged speaking, turn N+1's final overwrites
+it, and the function returns turn N+1's text.
+
+**Two consequences:**
+
+1. `probabilities`/logprobs would make this **worse** — adding abstain to a
+   router that already chose correctly turns a right turn into `off_script`.
+   Withdrawn from the plan.
+2. One-turn-behind is a **consequence of problem 1's signal lag**, not a router
+   contract bug. Fixing the signal fixes this as a side effect; the single-slot
+   → queue change makes correctness independent of it in the meantime.
+
+Run `027-gpt-live-happy-path-20260930-031157-8809` is the artifact I misread, and
+should be used as the replay input for the regression test.
+
+
 #### Run 013 — confirms it, and answers "what actually decides it"
 
 `reports/013-gpt-live-retry-while-speaking-20260929-104409-e643/events.jsonl`,

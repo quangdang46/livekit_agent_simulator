@@ -82,9 +82,13 @@ def test_responses_coexists_with_caller_steps_and_loses():
     # add or remove actions. It does NOT decide precedence.
     #
     # This assertion's message used to claim "caller_steps wins; the router is
-    # not engaged". That was FALSE and it had propagated to four places
-    # (AGENTS.md, the `lks execute` help, a Rust guard comment, and the
-    # migration guide). The driver's gate is only
+    # not engaged". That was FALSE, and the sweep for it kept finding more
+    # copies than the last sweep did — it had reached seven sites (this file,
+    # AGENTS.md, README.md, the `lks execute` help, `responses.py`'s module
+    # docstring, the migration guide, and two Rust comments), and an earlier
+    # commit claimed "all four" having checked four. A count in a commit
+    # message is a claim like any other.
+    # The driver's gate is only
     # `router is not None and response_catalog is not None and agent_text` —
     # there is no caller_steps check anywhere in driver.py, so with both keys
     # present the ROUTER runs. Every migrated gpt-live-* scenario carries both,
