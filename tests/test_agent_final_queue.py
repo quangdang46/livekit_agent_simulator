@@ -227,3 +227,65 @@ def test_tier_2_does_not_preempt_a_queued_final():
     assert first == "queued turn-N", (
         f"tier 2 preempted the queue and returned {first!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# over-seal detection — evidence, not control
+# ---------------------------------------------------------------------------
+
+
+def test_one_utterance_sealed_twice_is_recorded() -> None:
+    """The transport's idle timer closes a burst on any audio gap.
+
+    Measured on the target repo, 2026-09-30: "Thank you. Could you tell me
+    the exact number" and "Thank you. Could you tell me the exact number of"
+    arrived 3.3s apart, the second a strict extension of the first. The agent
+    said one thing; the adapter sealed it twice.
+
+    The consequence is a truncated transcript, and a truncated transcript is
+    unroutable BY CONSTRUCTION — the tail IS the question. So the router
+    choosing something nearby is correct behaviour on an unusable input, not a
+    routing fault. This records the fact so the report can show it.
+    """
+    from livekit_agent_simulator.livekit.observer import Observer
+
+    obs = Observer.__new__(Observer)  # no room, no connection
+    obs._agent_final_queue = []
+    obs._over_sealed = []
+    obs._finalized_segments = set()
+    obs.agent_state = "listening"
+
+    obs._push_agent_final("Thank you. Could you tell me the exact number")
+    assert obs._over_sealed == [], "a first utterance has nothing to extend"
+
+    obs._push_agent_final("Thank you. Could you tell me the exact number of")
+    assert len(obs._over_sealed) == 1, obs._over_sealed
+    rec = obs._over_sealed[0]
+    assert rec["previous_chars"] == 45
+    assert rec["this_chars"] == 48
+    assert rec["gap_ms"] >= 0
+
+
+def test_a_genuinely_new_utterance_is_not_an_over_seal() -> None:
+    """Prefix detection must not fire on ordinary consecutive turns.
+
+    The run that exposed this also merged three separate questions into one
+    209-character item, so the two directions both occur. Only a STRICT
+    extension counts — a repeat of the same text is a provider re-finalising
+    one segment, which the segment-id dedup already handles.
+    """
+    from livekit_agent_simulator.livekit.observer import Observer
+
+    obs = Observer.__new__(Observer)
+    obs._agent_final_queue = []
+    obs._over_sealed = []
+    obs._finalized_segments = set()
+    obs.agent_state = None
+
+    obs._push_agent_final("May I have the full name of the person in charge?")
+    obs._push_agent_final("Please provide your callback phone number.")
+    assert obs._over_sealed == []
+
+    # Shorter, i.e. the prefix runs the other way — not an extension.
+    obs._push_agent_final("Thank you.")
+    assert obs._over_sealed == []

@@ -214,7 +214,10 @@ class Observer:
         # overwrites it before the flag clears. On run 013 that put the router
         # exactly one turn behind on every decision. The queue makes turn
         # assignment independent of when the flag clears.
-        self._agent_final_queue: list[tuple[str, float]] = []
+        self._agent_final_queue: list[tuple[str, float, str | None]] = []
+        # One utterance sealed as two, by the adapter idle timer.
+        # Evidence only; see `_push_agent_final`.
+        self._over_sealed: list[dict[str, int]] = []
 
         self.agent_state: str | None = None
         self.agent_state_observed = False
@@ -285,11 +288,65 @@ class Observer:
         """
         if segment_id and segment_id in self._finalized_segments:
             return
-        self._agent_final_queue.append((text, time.monotonic()))
+        # Did the transport seal one utterance as two? Measured on the target
+        # repo, 2026-09-30: "Thank you. Could you tell me the exact number"
+        # and "…the exact number of" arrived 3.3s apart, the second a strict
+        # extension of the first. The agent said one thing; the adapter closed
+        # the burst twice, because its `idleTimeout` fires on any audio gap.
+        #
+        # This is the discriminating signal for that defect and it is available
+        # here — the queue holds arrival order. A truncated final is unroutable
+        # BY CONSTRUCTION (the tail IS the question), so the router picking
+        # something nearby is correct behaviour on an unusable input, not a
+        # routing fault.
+        #
+        # Recorded, not acted on. Whether the flow should wait for a
+        # continuation, mark the turn, or re-dispatch is a product decision
+        # about how a voice agent behaves when its own output is truncated.
+        if self._agent_final_queue:
+            prev = self._agent_final_queue[-1][0]
+            if len(text) > len(prev) and text.startswith(prev):
+                self._over_sealed.append(
+                    {
+                        "previous_chars": len(prev),
+                        "this_chars": len(text),
+                        "gap_ms": int(
+                            (time.monotonic() - self._agent_final_queue[-1][1]) * 1000
+                        ),
+                    }
+                )
+        # Was the agent still speaking when this final arrived?
+        #
+        # EVIDENCE ONLY, and — measured 2026-09-30 — NOT the instrument for
+        # the truncation people are chasing. That truncation is the LiveKit
+        # duplex adapter's `idleTimeout` (duplex_adapter.js:248, 800ms default)
+        # closing a burst on audio silence and committing a partial transcript
+        # as a complete turn. By the time the final reaches us the adapter has
+        # already declared the turn over, so `agent_state` is `listening` and
+        # this field will be `None` or `listening` on exactly the cases that
+        # matter. It catches genuine barge-in, which is a different mechanism.
+        #
+        # The right signal is the PREFIX relationship recorded below: if this
+        # final starts with the previous one, the transport sealed one
+        # utterance twice.
+        #
+        # Both are recorded rather than acted on. Dropping mid-turn finals
+        # re-creates the overwrite bug the queue was built to fix; routing them
+        # with a caveat still routes half a question. What the flow should DO
+        # about a truncated turn is a product decision nobody has made yet.
+        self._agent_final_queue.append(
+            (text, time.monotonic(), self.agent_state)
+        )
 
-    def take_agent_finals(self) -> list[str]:
-        """Drain queued agent finals, oldest first."""
-        out = [t for t, _ in self._agent_final_queue]
+    def take_agent_finals(self) -> list[tuple[str, float, str | None]]:
+        """Drain queued agent finals, oldest first.
+
+        Each entry is ``(text, monotonic, agent_state_at_arrival)``. The
+        third element is the agent's own declared state when the final
+        landed — `speaking` means the agent had not finished. See
+        `_push_agent_final` for why it is recorded and not acted on.
+        """
+        out = list(self._agent_final_queue)
         self._agent_final_queue.clear()
         return out
 
