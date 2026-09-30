@@ -16,6 +16,15 @@ use std::time::{Duration, Instant};
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 
 use lks_core::errors::RunError;
+
+/// Mirrors Python `TRIGGER_GAP_TOLERANCE_S` (driver.py:58) = 1.2s. A trigger
+/// whose condition drops out for less than this stays armed, so a brief VAD
+/// gap cannot silently disarm a cue Python would still fire.
+const TRIGGER_GAP_TOLERANCE: Duration = Duration::from_millis(1200);
+
+/// Mirrors Python `TRIGGER_WAIT_BUDGET_S` (driver.py:45) = 30.0s. Bounds how
+/// long one step waits for its trigger before the run fails loudly.
+const TRIGGER_WAIT_BUDGET: Duration = Duration::from_secs(30);
 use lks_core::logging::event::EventWriter;
 use serde_json::json;
 use tokio::sync::{mpsc, Mutex};
@@ -213,6 +222,13 @@ impl ScriptRuntime {
         let mut fired: Vec<String> = Vec::new();
         let mut arm_idx: usize = 0;
         let mut trigger_since: Vec<Option<Instant>> = vec![None; self.steps.len()];
+        // Per-step gap clock: when a trigger stops being satisfied, this
+        // records WHEN, so a brief dropout is tolerated, not treated as a
+        // reset. See the comment at the reset site for the Python port.
+        let mut trigger_gap_since: Vec<Option<Instant>> = vec![None; self.steps.len()];
+        // (arm_idx, armed_at): the trigger-wait budget is keyed by step, so
+        // advancing starts a fresh budget instead of inheriting a spent one.
+        let mut armed_at: Option<(usize, Instant)> = None;
         let mut awaiting_reply_since: Option<Instant> = None;
         // Local "have we fired our own opener yet" flag — see BUG FIX note
         // below on why this must NOT be `state.user_has_spoken`.
@@ -313,10 +329,66 @@ impl ScriptRuntime {
             };
             drop(state);
 
+            // Trigger wait budget. Python bounds this with
+            // TRIGGER_WAIT_BUDGET_S = 30.0 (driver.py:45) and turns expiry into
+            // BEHAVIOR_TIMEOUT. Without it a never-satisfied trigger parks the
+            // step until the stop channel: a hang leaves no report, while a
+            // failed trigger leaves a red one. Keyed by arm_idx so moving on
+            // starts a fresh budget.
+            if armed_at.map(|(i, _)| i) != Some(arm_idx) {
+                armed_at = Some((arm_idx, Instant::now()));
+            } else if let Some((_, armed)) = armed_at {
+                if armed.elapsed() >= TRIGGER_WAIT_BUDGET {
+                    {
+                        let mut w = self.writer.lock().await;
+                        w.emit(
+                            "sim.script.trigger_timeout",
+                            Some(
+                                &serde_json::json!({
+                                    "step_id": id,
+                                    "trigger": trigger,
+                                    "waited_ms": TRIGGER_WAIT_BUDGET.as_millis() as i64,
+                                })
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                            ),
+                            "sim.script",
+                            None,
+                            None,
+                            false,
+                            None,
+                        );
+                    }
+                    return Err(RunError(format!(
+                        "script step {} trigger {} never fired within {}s",
+                        id,
+                        trigger,
+                        TRIGGER_WAIT_BUDGET.as_secs()
+                    )));
+                }
+            }
+
             if !active {
-                trigger_since[arm_idx] = None;
+                // GAP TOLERANCE. Python holds the continuity clock across a
+                // short VAD dropout and only disarms once the gap reaches
+                // TRIGGER_GAP_TOLERANCE_S (driver.py:1283-1288). The reset here
+                // was unconditional on a SINGLE inactive sample, so a trigger
+                // Python fires reliably could silently never fire under lksr.
+                match trigger_gap_since[arm_idx].as_ref() {
+                    Some(gap_start) => {
+                        if gap_start.elapsed() >= TRIGGER_GAP_TOLERANCE {
+                            trigger_since[arm_idx] = None;
+                            trigger_gap_since[arm_idx] = None;
+                        }
+                    }
+                    None => trigger_gap_since[arm_idx] = Some(Instant::now()),
+                }
                 continue;
             }
+            // Condition satisfied again: the dropout is over, so the gap clock
+            // resets exactly like Python's `gap_since = None` on a hit.
+            trigger_gap_since[arm_idx] = None;
             let started = *trigger_since[arm_idx].get_or_insert_with(Instant::now);
             let elapsed_ms = started.elapsed().as_millis() as i64;
             if elapsed_ms < need {
