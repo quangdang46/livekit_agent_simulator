@@ -39,7 +39,12 @@ fn spawn_runtime(
     writer: Arc<TokioMutex<EventWriter>>,
     state: Arc<TokioMutex<ScriptObserverState>>,
     first_speaker: &str,
-) -> (broadcast::Sender<()>, broadcast::Receiver<()>, Fired, tokio::task::JoinHandle<Result<(), lks_core::errors::RunError>>) {
+) -> (
+    broadcast::Sender<()>,
+    broadcast::Receiver<()>,
+    Fired,
+    tokio::task::JoinHandle<Result<(), lks_core::errors::RunError>>,
+) {
     let (end_tx, end_rx) = broadcast::channel::<()>(1);
     let fired: Fired = Arc::new(StdMutex::new(Vec::new()));
     let fired2 = fired.clone();
@@ -169,13 +174,10 @@ async fn a_never_satisfied_trigger_fails_at_the_python_budget() {
     // The agent NEVER becomes an active speaker.
 
     let started = std::time::Instant::now();
-    let outcome = tokio::time::timeout(
-        std::time::Duration::from_secs(45),
-        task,
-    )
-    .await
-    .expect("run() must not hang past the budget")
-    .expect("task must not panic");
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(45), task)
+        .await
+        .expect("run() must not hang past the budget")
+        .expect("task must not panic");
     let elapsed = started.elapsed();
 
     assert!(

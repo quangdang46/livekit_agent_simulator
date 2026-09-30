@@ -684,14 +684,23 @@ def load_config(project_root: Path | str, profile: str | None = None, environmen
     ao_raw = obs_raw.get("audio_onset") or {}
     if not isinstance(ao_raw, dict):
         raise ConfigError("`observe.audio_onset` must be a mapping (or absent)")
+    # Defaults come from the dataclass, never from literals here. The
+    # literals used to be the pre-tuning values (0.012/3/5/60) while
+    # AudioOnsetConfig had already been re-tuned to 0.025/4/15/1500 — see
+    # its comment for the run-057 evidence (43 onsets over 5 answers, vs 20
+    # aligned with real turn starts). A config that set only
+    # `audio_onset: {enabled: true}` therefore got the OLD, over-firing
+    # detector and silently missed the tuning entirely. Reading the defaults
+    # off the dataclass makes that class of drift impossible to reintroduce.
+    _ao = AudioOnsetConfig()
     audio_onset = AudioOnsetConfig(
-        enabled=bool(ao_raw.get("enabled", False)),
-        vad=str(ao_raw.get("vad", "rms")).strip().lower(),
-        threshold=float(ao_raw.get("threshold", 0.012)),
-        win_ms=int(ao_raw.get("win_ms", 20)),
-        energy_frames=int(ao_raw.get("energy_frames", 3)),
-        exit_frames=int(ao_raw.get("exit_frames", 5)),
-        refractory_ms=int(ao_raw.get("refractory_ms", 60)),
+        enabled=bool(ao_raw.get("enabled", _ao.enabled)),
+        vad=str(ao_raw.get("vad", _ao.vad)).strip().lower(),
+        threshold=float(ao_raw.get("threshold", _ao.threshold)),
+        win_ms=int(ao_raw.get("win_ms", _ao.win_ms)),
+        energy_frames=int(ao_raw.get("energy_frames", _ao.energy_frames)),
+        exit_frames=int(ao_raw.get("exit_frames", _ao.exit_frames)),
+        refractory_ms=int(ao_raw.get("refractory_ms", _ao.refractory_ms)),
     )
     if audio_onset.vad not in ("rms",):
         raise ConfigError(
