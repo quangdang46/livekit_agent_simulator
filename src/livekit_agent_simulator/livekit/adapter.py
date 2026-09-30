@@ -119,10 +119,31 @@ class LiveKitAdapter:
                 if self._is_agent_participant(p):
                     return p.identity
             if asyncio.get_event_loop().time() > deadline:
+                # The old message ended in a QUESTION — "Is the agent process
+                # running and registered with that exact agent_name?" — which
+                # sends the reader to check one hypothesis. Measured across 14
+                # such runs on the target repo (2026-09-30), the actual cause
+                # was the worker parent's own log: `error launching job /
+                # runner initialization timed out`, i.e. the supervised runner
+                # CHILD never signalled ready while the parent stayed up
+                # reporting `registered worker`. The parent looks healthy from
+                # outside, so the question leads away from the answer.
+                #
+                # This message cannot see the worker log — it is another
+                # process and there is no channel from it into this run — so it
+                # says what WAS observed and where the cause would be named,
+                # instead of proposing a guess. A message that says "I do not
+                # know, and here is where the reason is" is more useful than
+                # one that asserts a hypothesis it has not checked.
                 raise AgentJoinTimeout(
-                    f"Agent `{self.cfg.livekit.agent_name}` did not join room `{room_name}` within "
-                    f"{self.cfg.livekit.agent_join_timeout_ms}ms. Is the agent process running and "
-                    f"registered with that exact agent_name?"
+                    f"Agent `{self.cfg.livekit.agent_name}` never appeared in "
+                    f"room `{room_name}` within "
+                    f"{self.cfg.livekit.agent_join_timeout_ms}ms. This run "
+                    f"observed no join; the cause is not visible from here. "
+                    f"Check the agent worker's own log for this run_id — a "
+                    f"parent that still logs `registered worker` while its "
+                    f"supervised runner child failed to start produces exactly "
+                    f"this failure."
                 )
             await asyncio.sleep(poll_ms / 1000)
 
