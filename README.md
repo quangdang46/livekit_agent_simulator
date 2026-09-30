@@ -428,6 +428,7 @@ Target-only data lives under `<target>/.agent-sim/` (**gitignored**). Created by
 | `simulator.voice.model` / `voice` / `language` | no | Provider-neutral voice bag; defaults flash-live, Puck, `en-US` |
 | `simulator.profiles` | no | **Named caller profiles** — switch provider without editing the file |
 | `simulator.target_keywords` | no | `{target: [kw, …]}` merged into the semantic verifier. **Read this if a `do:` turn fails with `CALLER_BEHAVIOR_VIOLATION`** — the built-in target table is commercial vocabulary only, so a target outside it can never pass and you find out by paying for a call |
+| `simulator.text_temperature` | no | Default `0.0` (was fixed at `0.4`). Governs the **`do:` opener generator**, not `text_planner`. At `0.4` the validator's verdict flapped between identical runs, because the generator resampled and the retry loop resamples rather than re-reasons |
 | `judge.model` | no | If set + PassCriteria → post-run LLM judge |
 | `router.*` | no | **Opt-in.** Only needed if a scenario authors `responses:`. Absent is normal; `lks init` deliberately does not scaffold it |
 | `text_planner.*` | no | Opt-in. `enabled: false` publishes routed lines verbatim; `true` paraphrases them |

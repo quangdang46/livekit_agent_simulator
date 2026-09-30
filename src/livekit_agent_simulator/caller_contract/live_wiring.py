@@ -62,9 +62,15 @@ class ContractDriverFailure(RuntimeError):
 def _build_text_backend(cfg: Any) -> Any:
     provider = getattr(cfg.simulator, "provider", "openai")
     api_key = cfg.simulator.api_key
+    # `simulator.text_temperature` governs the `do:` utterance GENERATOR only.
+    # It is NOT `text_planner`, which is built separately (see
+    # `_attach_response_router`) and paraphrases an already-authored line.
+    # Toggling the planner off does not make generation deterministic — an
+    # earlier version of that claim cost a peer session an experiment.
+    temperature = getattr(cfg.simulator, "text_temperature", 0.0)
     if provider == "google":
-        return GeminiTextBackend(api_key=api_key)
-    return OpenAITextBackend(api_key=api_key)
+        return GeminiTextBackend(api_key=api_key, temperature=temperature)
+    return OpenAITextBackend(api_key=api_key, temperature=temperature)
 
 
 def _build_semantic_verifier(cfg: Any) -> SemanticVerifierProtocol:

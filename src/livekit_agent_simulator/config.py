@@ -101,6 +101,28 @@ class SimulatorConfig:
     language: str = DEFAULT_LANGUAGE
     voice: SimulatorVoiceConfig = field(default_factory=SimulatorVoiceConfig)
     name: str = "default"
+    #: Sampling temperature for the `do:` UTTERANCE GENERATOR
+    #: (`_build_text_backend`), NOT for `text_planner` — those are two
+    #: different backends on two different paths. The planner paraphrases an
+    #: already-authored line; this one opens a `do:` turn, and whatever it
+    #: emits is the sole input to the deterministic
+    #: `RuleBasedSemanticVerifier`.
+    #:
+    #: Why it is worth a knob: at the previous fixed 0.4 the verifier's verdict
+    #: was observed flipping across identical runs — same scenario, same
+    #: persona, same target, `INVALID:SEMANTIC_ACT_MISMATCH` on some runs and
+    #: `VALID` on others. The verifier is a pure rule and cannot flip on
+    #: identical input, so the input itself was varying. The driver's retry
+    #: loop (`max_retries + 1` attempts) re-invokes THIS generator, so it
+    #: resamples rather than re-reasons, which is why a mismatch sometimes
+    #: clears and sometimes does not.
+    #:
+    #: 0.0 is the default rather than 0.4 because a flapping verdict is
+    #: unusable for regression comparison, and a run that is graded on a
+    #: different utterance each time is not measuring the thing it claims to.
+    #: The cost is that openers repeat more; raise it if natural variety
+    #: matters more than a comparable run.
+    text_temperature: float = 0.0
     # Consumer-supplied target vocabulary for the semantic verifier.
     # EMPTY BY DEFAULT, and the package ships no entries of its own:
     # `price`/`charge`/`fees` are one domain's business words, and
@@ -387,7 +409,37 @@ def _build_simulator_config(
         voice=voice,
         name=name,
         target_keywords=target_keywords,
+        text_temperature=_build_text_temperature(
+            sim_raw.get("text_temperature", DEFAULT_TEXT_TEMPERATURE)
+        ),
     )
+
+
+#: Fixed 0.4 previously. See `SimulatorConfig.text_temperature` for why the
+#: default is now 0.0 — the short version is that a verdict which flaps
+#: between runs cannot be compared against anything.
+DEFAULT_TEXT_TEMPERATURE = 0.0
+
+
+def _build_text_temperature(raw: Any) -> float:
+    """Validate `simulator.text_temperature` — the `do:` opener generator.
+
+    Range is the provider's own (0.0-2.0 for both OpenAI and Gemini). It is
+    checked here rather than left to the provider because a provider-side
+    rejection surfaces as an opaque 400 at run time, and the run has usually
+    already been paid for by then.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ConfigError(
+            f"`simulator.text_temperature` must be a number, got {raw!r}"
+        )
+    value = float(raw)
+    if not 0.0 <= value <= 2.0:
+        raise ConfigError(
+            "`simulator.text_temperature` must be between 0.0 and 2.0 "
+            f"(got {value})"
+        )
+    return value
 
 
 def _resolve_router_provider(value: Any, *, section_name: str) -> str:
