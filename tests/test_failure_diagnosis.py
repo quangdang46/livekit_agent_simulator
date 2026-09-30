@@ -134,3 +134,32 @@ def test_a_success_carries_no_pointer(tmp_path) -> None:
     from livekit_agent_simulator.run_orchestrator import _with_report_pointer
 
     assert _with_report_pointer(None, tmp_path) is None
+
+
+def test_the_cli_enables_faulthandler_before_doing_anything() -> None:
+    """A native crash produces no traceback and no `run.error`.
+
+    Measured on the target repo, 2026-09-30: `uv run lks execute` exited 139
+    (SIGSEGV) with three events on disk and nothing else. A live run holds two
+    native extensions in-process — `livekit-rtc` and the sherpa-onnx TTS
+    runtime — and the exit code alone cannot say which faulted.
+
+    The check reads the source rather than calling `main()`: calling it would
+    start the background updater and dispatch a command, and the property
+    under test is an ordering one (enabled FIRST), which is only visible in
+    the source.
+    """
+    import inspect
+
+    from livekit_agent_simulator import cli
+
+    source = inspect.getsource(cli.main)
+    assert "faulthandler.enable" in source, (
+        "the CLI must enable faulthandler or a native crash leaves no trace"
+    )
+    enable_at = source.index("faulthandler.enable")
+    work_at = source.index("start_background_check")
+    assert enable_at < work_at, (
+        "faulthandler must be enabled before any work starts — the run that "
+        "needs it is the one that cannot be instrumented in advance"
+    )

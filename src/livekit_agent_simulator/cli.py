@@ -736,6 +736,22 @@ def update() -> None:
 
 
 def main() -> None:
+    # Native crashes in a live run take the whole process down with no
+    # traceback and no `run.error` — measured on the target repo, 2026-09-30:
+    # `uv run lks execute` exited 139 (SIGSEGV) leaving three events and
+    # nothing else. A live run holds TWO native extensions in-process,
+    # `livekit-rtc` and the sherpa-onnx TTS runtime, and the exit code alone
+    # cannot say which one faulted.
+    #
+    # `faulthandler` is stdlib and costs nothing: on a fatal signal it dumps
+    # the Python stack at the fault, which separates the two in one run
+    # instead of one run per hypothesis. Enabled unconditionally rather than
+    # behind a flag — the run that needs it is by definition the one that
+    # cannot be instrumented in advance.
+    import faulthandler
+
+    faulthandler.enable(all_threads=True)
+
     start_background_check()
     try:
         app()
