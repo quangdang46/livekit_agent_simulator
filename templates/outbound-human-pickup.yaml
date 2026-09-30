@@ -49,3 +49,38 @@ pass_criteria:
   criteria:
   - The agent spoke after the call was answered
   - The conversation was understandable
+
+# NOTE: the optional response-router `responses:` catalog is documented
+# COMMENTED OUT in templates/smoke-hello.yaml rather than active here, for
+# the same reason: a catalog with no `router:` block in config raises
+# ConfigError at run time. Show, do not enable.
+# ─────────────────────────────────────────────────────────────────────────────
+# OPTIONAL — the response-router catalog. SHOWN, NOT ENABLED.
+#
+# Uncommenting this block alone WILL NOT WORK, and that is deliberate: a
+# scenario carrying `responses:` with no `router:` block in
+# `.agent-sim/config.yaml` raises a ConfigError naming this scenario. The
+# failure is loud on purpose — silently falling back to `caller_steps` would
+# make a routed scenario look exactly like a legacy one while ignoring every
+# response you authored.
+#
+# To turn it on you must ALSO uncomment `router:` (and `text_planner:`) in
+# `.agent-sim/config.yaml`. Both blocks ship commented-out there for the same
+# reason: `lks init` scaffolds a project for someone who has not asked for a
+# router, and a shipped-but-dead api_key placeholder is the "knob nobody runs"
+# smell.
+#
+# A working example lives in templates/examples/router-smoke.yaml (not copied
+# by `lks init`).
+#
+# responses:
+#   company_name:
+#     intent: ask_company_name
+#     instruction: Select this when the agent asks which company the caller represents.
+#     text: It's Bluebird Property Management.
+#   off_script:
+#     intent: off_script
+#     instruction: Select this only when the agent's question matches none of the
+#       other responses.
+#     text: I'm sorry, could we stay focused?
+#     system: true          # REQUIRED — parse fails without it
