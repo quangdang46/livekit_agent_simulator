@@ -167,6 +167,14 @@ class AgentTurnWait(Protocol):
         The driver reads it via ``getattr(agent, "is_agent_speaking_now",
         lambda: False)`` so older fakes without this method behave as
         "agent silent" — preserving pre-trigger behavior.
+
+        Implementations SHOULD prefer the agent's own turn state over audio
+        energy when it is available. `active_speakers_changed` is derived from
+        VAD energy and, measured on run 035, lags the agent's real audio by
+        ~2.4s — long enough for a `silence` trigger to fire while the agent is
+        audibly mid-turn (PROBLEMS.md §1). The agent decides its own turn
+        boundaries, so its published state is authoritative where energy is
+        only an estimate.
         """
         ...
 

@@ -28,6 +28,11 @@ from .agent_session_observer import AgentSessionObserver
 ATTR_FINAL = "lk.transcription_final"
 ATTR_SEGMENT_ID = "lk.segment_id"
 
+# The participant attribute LiveKit's agent-worker publishes for its own turn
+# state. Values: idle | initializing | listening | thinking | speaking.
+# `speaking -> listening` is the authoritative turn end.
+AGENT_STATE_ATTRIBUTE_KEY = "lk.agent.state"
+
 # Lower index = higher priority when deduping finals from multiple sources.
 # Provider sim-transcript sources (sim.gemini / sim.openai) are the most
 # trustworthy caller transcripts; data-topic and lk.transcription are mirrors.
@@ -155,6 +160,30 @@ class Observer:
         self.agent_is_active_speaker = False
         self._agent_active_since_mono: float | None = None
 
+        # The agent's own turn state, read from the participant attribute
+        # LiveKit's agent-worker publishes (`lk.agent.state`: idle |
+        # initializing | listening | thinking | speaking).
+        #
+        # Why this exists and `agent_is_active_speaker` alone is not enough:
+        # `active_speakers_changed` is derived from audio ENERGY and, measured
+        # on run 035 (PROBLEMS.md §1), lags the agent's real audio by ~2.4s.
+        # That is long enough for a `silence` trigger to satisfy "agent has been
+        # silent for delay_ms" while the agent is audibly mid-turn, so the
+        # caller publishes over the agent and the utterance is never delivered
+        # as a user turn.
+        #
+        # The agent decides its own turn boundaries, so `speaking ->
+        # listening` is the turn end — not an inference from energy. The
+        # transcript is NOT a substitute: it arrives AFTER the audio (15.4s vs
+        # 17.8s measured), so switching to it would fire the caller EARLIER
+        # and make the overlap worse.
+        #
+        # `None` means "the agent has not published the attribute". That is a
+        # distinct third state, not "silent" and not "speaking" — see
+        # `agent_state_observed`.
+        self.agent_state: str | None = None
+        self.agent_state_observed = False
+
         # (role, normalized text) -> (source, monotonic time)
         self._recent_finals: dict[tuple[str, str], tuple[str, float]] = {}
 
@@ -238,6 +267,40 @@ class Observer:
                 and p.identity == self.agent_identity
             ):
                 self._start_agent_record(track)
+
+        @room.on("participant_attributes_changed")
+        def _on_attrs(changed: dict[str, str], participant: rtc.Participant) -> None:
+            """Track the agent's own turn state.
+
+            Registered even though `participant_attributes_changed` is not in
+            the client SDK's published EventTypes list in some versions — it is
+            dispatched by the room implementation, and a handler that never
+            fires is harmless. It is the ONLY way to see the agent's own turn
+            boundary; `active_speakers_changed` is an energy signal and is
+            ~2.4s late (PROBLEMS.md §1).
+
+            `changed` holds only the keys that changed, so this is a dict
+            lookup, not a diff walk.
+            """
+            if participant.identity != self.agent_identity:
+                return
+            if AGENT_STATE_ATTRIBUTE_KEY not in changed:
+                return
+            value = changed[AGENT_STATE_ATTRIBUTE_KEY]
+            if not value or value == self.agent_state:
+                return
+            previous = self.agent_state
+            self.agent_state = value
+            self.agent_state_observed = True
+            if value == "speaking" and previous != "speaking":
+                self._agent_active_since_mono = time.monotonic()
+                self._agent_has_spoken = True
+            self.writer.emit(
+                "room.agent_state",
+                spec={"state": value, "previous": previous},
+                source="room",
+                include_dialogue=False,
+            )
 
         @room.on("active_speakers_changed")
         def _on_speakers(speakers: list[rtc.Participant]) -> None:

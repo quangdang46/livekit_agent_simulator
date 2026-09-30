@@ -55,15 +55,43 @@ class ObserverAgentWait:
     # evaluator against a stale turn while the agent's real reply is still
     # pending. Never return the same final twice).
     _last_returned_text: str | None = field(default=None, repr=False)
+    # True once `is_agent_speaking_now` has actually read the agent's own
+    # `lk.agent.state`. Stays False on the energy fallback, which is the
+    # condition a run report must surface — an unread signal is a guess.
+    agent_state_used: bool = field(default=False, repr=False)
 
     def is_agent_speaking_now(self) -> bool:
         """Realtime agent-speech signal for trigger gating (Slice 4).
 
-        One-line delegate to the Observer's active-speaker flag — no new
-        thread, no new subscription. Used by the driver's trigger-wait
-        helpers (agent_speaking/silence), never by the blocking
-        ``wait_agent_turn`` path.
+        Prefers the agent's OWN turn state (`lk.agent.state`) and falls back
+        to the Observer's active-speaker flag. Both are polled (no new thread,
+        no new subscription beyond the attribute handler).
+
+        Why prefer the attribute: `active_speakers_changed` is VAD energy and
+        lags the agent's real audio by ~2.4s (measured, run 035 —
+        PROBLEMS.md §1). That is long enough for a `silence` trigger to satisfy
+        "agent has been silent for delay_ms" while the agent is audibly
+        mid-turn, so the caller publishes over the agent and the utterance is
+        never delivered as a user turn. The agent decides its own turn
+        boundaries, so `speaking -> listening` is authoritative where energy is
+        an estimate.
+
+        Falling back is deliberate, not ideal. An agent that never publishes
+        the attribute must still be gateable on energy, or every such scenario
+        would fire immediately. But the fallback is recorded
+        (`agent_state_used` below) so a run that silently degraded does not
+        read as a run that worked — the same reasoning that stopped the
+        contract driver from treating an absent `responses:` catalog as
+        "legacy, fine".
+
+        Only `speaking` counts as speaking. `thinking` is the agent
+        formulating, and gating on it would extend the silence gate backwards
+        over a turn that is about to begin.
         """
+        state = getattr(self.observer, "agent_state", None)
+        if isinstance(state, str) and state:
+            self.agent_state_used = True
+            return state == "speaking"
         return bool(getattr(self.observer, "agent_is_active_speaker", False))
 
     def last_speech_at_ms(self) -> float | None:

@@ -618,6 +618,26 @@ async def run_contract_driver_path(
             _emit("contract.record_written", {"path": str(record_path)})
     assert result is not None  # driver.run always returns (failures are values, not raises)
 
+    # Did the silence gate actually read the agent's own turn state, or did it
+    # silently fall back to audio energy?
+    #
+    # The fallback is CORRECT — it is the historical behaviour — but it is
+    # also the ~2.4s-late signal PROBLEMS.md §1 is about. A run that
+    # degraded to energy looks identical to one that did not, which is the same
+    # silent-failure shape that let the router ship un-attached and let
+    # `confidence` sit permanently null. So it is recorded, once, loudly
+    # enough to find in a report.
+    if not getattr(agent, "agent_state_used", False):
+        _emit(
+            "contract.agent_state_unavailable",
+            {
+                "reason": "agent never published lk.agent.state; "
+                "trigger gating fell back to active_speakers energy "
+                "(~2.4s late — PROBLEMS.md §1)",
+                "observed": bool(getattr(observer, "agent_state_observed", False)),
+            },
+        )
+
     if replay_record is not None:
         replay_backend.assert_outcome(
             failure_reason=(
