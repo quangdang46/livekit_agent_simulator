@@ -539,3 +539,199 @@ async def test_do_silence_gate_is_bounded_by_talkative_agent():
 
     assert result.failure is None
     assert len(sink.published) == 1, "bounded gate must publish anyway on expiry"
+
+
+# ---------------------------------------------------------------------------
+# dtmf branch (dtmf-restore 3tv.4.2)
+#
+# Split by layer, not by feature: the publisher's own behaviour lives in
+# test_contract_dtmf.py, and what the DRIVER does with a `dtmf` action belongs
+# here with the other action branches, where a reader looking for "what does
+# the driver do with kind X" will find it.
+# ---------------------------------------------------------------------------
+
+
+class RecordingDtmf:
+    """DtmfPublisher stand-in: records digits, returns a scripted result."""
+
+    def __init__(self, *, published: int = 3, error: str | None = None) -> None:
+        self.seen: list[str] = []
+        self._published = published
+        self._error = error
+
+    async def publish(self, digits: str):
+        from livekit_agent_simulator.caller_contract.dtmf import DtmfResult
+
+        self.seen.append(digits)
+        return DtmfResult(digits=digits, published=self._published, error=self._error)
+
+
+def _collect() -> tuple[list[tuple[str, dict]], Any]:
+    events: list[tuple[str, dict]] = []
+
+    def _emit(kind: str, spec: dict) -> None:
+        events.append((kind, spec))
+
+    return events, _emit
+
+
+def _dtmf_steps(**extra):
+    step: dict = {"dtmf": "123"}
+    step.update(extra)
+    return parse_steps([step, {"end": True}], file="t")
+
+
+@pytest.mark.asyncio
+async def test_a_dtmf_step_publishes_tones_and_emits_exactly_one_event():
+    driver, orch = _driver()
+    publisher = RecordingDtmf(published=3)
+    sink, agent = FakeSink(orch), FakeAgent()
+    events, emit = _collect()
+
+    result = await driver.run(_dtmf_steps(), sink, agent, dtmf=publisher, emit=emit)
+
+    assert result.ended_by == EndedBy.SCENARIO
+    assert publisher.seen == ["123"]
+    dtmf_events = [spec for kind, spec in events if kind == "sim.script.dtmf"]
+    assert len(dtmf_events) == 1, f"expected exactly one, got {len(dtmf_events)}"
+    assert dtmf_events[0]["digits"] == "123"
+    assert dtmf_events[0]["published"] == 3
+    assert dtmf_events[0]["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_dtmf_publishes_no_audio():
+    """Regression 764dc3a: a keypress must not reach the mixer.
+
+    TTS is for utterances. Tones ride the SIP DTMF path, not PCM, and a dtmf
+    step that pushed audio would be spoken aloud by the agent's speaker.
+    """
+    driver, orch = _driver()
+    publisher = RecordingDtmf(published=3)
+    sink, agent = FakeSink(orch), FakeAgent()
+    events, emit = _collect()
+
+    await driver.run(_dtmf_steps(), sink, agent, dtmf=publisher, emit=emit)
+
+    assert sink.published == [], "dtmf must not push PCM into the mixer"
+    assert not any(kind == "contract.published" for kind, _ in events)
+
+
+@pytest.mark.asyncio
+async def test_a_missing_publisher_fails_rather_than_dropping_silently():
+    """The defect this branch exists to close.
+
+    Before it, `dtmf` fell through to a bare `contract.control` emit and the
+    run reported SCENARIO having pressed nothing.
+    """
+    driver, orch = _driver()
+    sink, agent = FakeSink(orch), FakeAgent()
+    events, emit = _collect()
+
+    result = await driver.run(_dtmf_steps(), sink, agent, dtmf=None, emit=emit)
+
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.TRANSPORT_ERROR
+    assert "DtmfPublisher" in result.failure.detail
+    assert not any(kind == "sim.script.dtmf" for kind, _ in events)
+
+
+@pytest.mark.asyncio
+async def test_a_total_publish_failure_is_a_transport_error():
+    driver, orch = _driver()
+    publisher = RecordingDtmf(published=0, error="timeout: transport wedged")
+    sink, agent = FakeSink(orch), FakeAgent()
+    events, emit = _collect()
+
+    result = await driver.run(_dtmf_steps(), sink, agent, dtmf=publisher, emit=emit)
+
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.TRANSPORT_ERROR
+    # The event is still emitted, so the report shows what was attempted.
+    assert any(kind == "sim.script.dtmf" for kind, _ in events)
+
+
+@pytest.mark.asyncio
+async def test_a_partial_publish_is_not_a_failure():
+    """Two of three tones going out is not the same as none.
+
+    The publisher already reports the count; failing the run on a partial
+    would throw away evidence of what did work.
+    """
+    driver, orch = _driver()
+    publisher = RecordingDtmf(published=2, error="timeout: wedged on the third")
+    sink, agent = FakeSink(orch), FakeAgent()
+    events, emit = _collect()
+
+    result = await driver.run(_dtmf_steps(), sink, agent, dtmf=publisher, emit=emit)
+
+    assert result.ended_by == EndedBy.SCENARIO
+    assert result.failure is None
+    dtmf_events = [spec for kind, spec in events if kind == "sim.script.dtmf"]
+    assert dtmf_events[0]["published"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.skip(
+    reason="dsl.py still rejects trigger:/barge_in: on dtmf steps — that "
+           "restriction is dtmf-restore 3tv.4.3. The branch under test is "
+           "here and follows play_audio verbatim; this test starts running "
+           "the moment the parser allows the step, which is what 3tv.4.3 is for."
+)
+async def test_a_dtmf_trigger_that_never_fires_is_a_timeout():
+    """Not a no-op. A step whose trigger never arrived pressed nothing."""
+    driver, orch = _driver()
+    publisher = RecordingDtmf()
+    sink, agent = FakeSink(orch), FakeAgent()
+    events, emit = _collect()
+
+    steps = parse_steps(
+        [{"dtmf": "1", "trigger": {"kind": "agent_speaking", "timeout_s": 0.05}},
+         {"end": True}],
+        file="t",
+    )
+    result = await driver.run(steps, sink, agent, dtmf=publisher, emit=emit)
+
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.BEHAVIOR_TIMEOUT
+    assert publisher.seen == [], "nothing may be published when the trigger never fired"
+
+
+@pytest.mark.asyncio
+async def test_silence_still_emits_a_control_event_and_publishes_nothing():
+    """Unchanged behaviour, pinned so the dtmf branch did not alter it."""
+    driver, orch = _driver()
+    sink, agent = FakeSink(orch), FakeAgent()
+    events, emit = _collect()
+
+    steps = parse_steps([{"silence": 1}, {"end": True}], file="t")
+    result = await driver.run(steps, sink, agent, emit=emit)
+
+    assert result.ended_by == EndedBy.SCENARIO
+    controls = [spec for kind, spec in events if kind == "contract.control"]
+    assert controls and controls[0]["kind"] == "silence"
+    assert sink.published == []
+
+
+@pytest.mark.asyncio
+async def test_an_unhandled_action_kind_fails_loudly():
+    """The tripwire commit 665ec8c lacked.
+
+    The parser restricts authored steps to `_KNOWN_ACTION_KINDS`, so this can
+    only be reached by a directly-constructed action — which is exactly the
+    case that used to fall through silently if a new kind was added to the
+    frozenset without a matching branch here.
+    """
+    from livekit_agent_simulator.caller_contract.dsl import CallerAction
+
+    driver, orch = _driver()
+    sink, agent = FakeSink(orch), FakeAgent()
+    events, emit = _collect()
+
+    rogue = CallerAction(kind="telepathy", line_no=1, requires_turn_gate=False)
+
+    result = await driver.run([rogue], sink, agent, emit=emit)
+
+    assert result.failure is not None
+    assert result.failure.reason == FailureReason.VALIDATION_ERROR
+    assert "telepathy" in result.failure.detail

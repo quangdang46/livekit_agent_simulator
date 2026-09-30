@@ -33,6 +33,7 @@ from . import (
     GenerationIdentity,
     ValidationResult,
 )
+from .dtmf import DtmfPublisher
 from .dsl import CallerAction, TriggerConfig
 from .failures import RunFailure, TTSSynthesisError
 
@@ -259,6 +260,7 @@ class ContractCallerDriver:
         silent_mode: bool = False,
         greeting_timeout_s: float = 30.0,
         assets: AudioAssetPlayer | None = None,
+        dtmf: DtmfPublisher | None = None,
         hold_timeout_s: float | None = None,
         on_hold_timeout: Any = None,
     ) -> DriverResult:
@@ -330,6 +332,7 @@ class ContractCallerDriver:
                 spoken=0,
                 silent_mode=silent_mode,
                 assets=assets,
+                dtmf=dtmf,
                 _emit=_emit,
             )
         finally:
@@ -392,6 +395,7 @@ class ContractCallerDriver:
         spoken: int,
         silent_mode: bool,
         assets: AudioAssetPlayer | None,
+        dtmf: DtmfPublisher | None,
         _emit: Any,
     ) -> DriverResult:
         for action in actions:
@@ -583,6 +587,84 @@ class ContractCallerDriver:
                 )
                 continue
 
+            if action.kind == "dtmf":
+                # Keypad tones. NOT an utterance: no TTS, no validator, no
+                # turn-log entry, and — the point of the whole restore — NOT a
+                # silent no-op. This branch exists because `dtmf` used to land
+                # in the bare fall-through below, which meant a documented verb
+                # parsed, ran, and returned DriverResult(SCENARIO) having
+                # published nothing. A keypress that silently never happened
+                # was reported as a clean run.
+                if action.trigger is not None:
+                    _emit(
+                        "contract.trigger_armed",
+                        {
+                            "kind": action.trigger.kind,
+                            "line": action.line_no,
+                            "action": "dtmf",
+                        },
+                    )
+                    fired = await _wait_trigger(action.trigger, agent, emit=_emit)
+                    if not fired:
+                        # Fails rather than `continue`, matching say and
+                        # play_audio. A dtmf step whose trigger times out means
+                        # the caller pressed nothing, which is a failed
+                        # scenario and not a no-op.
+                        _emit(
+                            "contract.behavior_violation",
+                            {"reason": "TRIGGER_TIMEOUT", "line": action.line_no},
+                        )
+                        return self._fail(
+                            FailureReason.BEHAVIOR_TIMEOUT,
+                            f"trigger {action.trigger.kind!r} never fired",
+                            EndedBy.TIMEOUT,
+                            completed,
+                            spoken,
+                        )
+                if dtmf is None or not hasattr(dtmf, "publish"):
+                    # The room-identity gate in live_wiring normally refuses
+                    # earlier, in the split-room topologies where DTMF cannot
+                    # reach the agent. Reaching here means it was not wired.
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        "dtmf requires a DtmfPublisher (no silent drop)",
+                        EndedBy.TRANSPORT,
+                        completed,
+                        spoken,
+                    )
+                digits = action.dtmf_digits or ""
+                result = await dtmf.publish(digits)
+                # `sim.script.dtmf`, NOT `contract.dtmf`: script/summary.py
+                # already counts it, and the Rust port already emits the same
+                # name for the same authored step, so one event name means one
+                # vocabulary across both ports. A bespoke kind would be read by
+                # nothing.
+                _emit(
+                    "sim.script.dtmf",
+                    {
+                        "digits": result.digits,
+                        "published": result.published,
+                        "error": result.error,
+                        "line": action.line_no,
+                    },
+                )
+                if result.published == 0 and result.error is not None:
+                    return self._fail(
+                        FailureReason.TRANSPORT_ERROR,
+                        f"dtmf publish failed: {result.error}",
+                        EndedBy.TRANSPORT,
+                        completed,
+                        spoken,
+                    )
+                continue
+
+            if action.kind == "silence":
+                # Passive: the caller simply does not speak for a beat. No
+                # publish, no PCM, nothing to fail — the only assertion is that
+                # it is not mistaken for a keypress.
+                _emit("contract.control", {"kind": action.kind, "line": action.line_no})
+                continue
+
             if action.kind in ("end", "hangup"):
                 _emit("contract.end", {"kind": action.kind})
                 return DriverResult(
@@ -637,8 +719,21 @@ class ContractCallerDriver:
                 log.append(Turn(speaker="caller", text=interrupt_text))
                 continue
 
-            # dtmf / silence: control actions, never AI/TTS.
-            _emit("contract.control", {"kind": action.kind, "line": action.line_no})
+            # Unreachable: every kind in `_KNOWN_ACTION_KINDS` (dsl.py) now has
+            # an explicit branch above — say, do, wait, play_audio, dtmf,
+            # silence, end/hangup, interrupt. This used to be a bare
+            # fall-through that swallowed `dtmf` and `silence` as "control
+            # actions", which is how a documented verb became a no-op that
+            # reported as a clean run. It is the tripwire commit 665ec8c
+            # lacked: the next kind added to `_KNOWN_ACTION_KINDS` without a
+            # branch here now fails loudly instead of silently doing nothing.
+            return self._fail(
+                FailureReason.VALIDATION_ERROR,
+                f"unhandled caller action {action.kind!r}",
+                EndedBy.ERROR,
+                completed,
+                spoken,
+            )
 
         return DriverResult(
             ended_by=EndedBy.SCENARIO,

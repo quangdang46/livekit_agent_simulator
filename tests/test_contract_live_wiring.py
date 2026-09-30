@@ -684,11 +684,19 @@ async def test_transport_failure_does_not_consume_validator_retries():
 
 @pytest.mark.asyncio
 
-async def test_wait_and_dtmf_never_publish():
+async def test_wait_and_silence_never_publish():
+    # Was `test_wait_and_dtmf_never_publish`, and its dtmf half encoded the
+    # defect this epic removes: it asserted that a `dtmf` step published
+    # nothing and the run still ended SCENARIO — i.e. it pinned the silent
+    # no-op. `silence` carries the same "control action, never AI/TTS"
+    # contract and is genuinely inert, so it keeps the assertion honest.
+    # dtmf now has its own branch; those tests are in test_contract_driver.py.
 
     scenario = SimpleNamespace(
 
-        caller_actions=parse_steps([{"wait": 10}, {"dtmf": "123"}, {"end": True}], file="t")
+        caller_actions=parse_steps(
+            [{"wait": 10}, {"silence": True}, {"end": True}], file="t"
+        )
 
     )
 
