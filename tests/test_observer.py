@@ -80,7 +80,24 @@ def test_parse_transcript_payload_generic_type(tmp_path) -> None:
         "turn": {"role": "agent", "text": "Hello", "timestampMs": 1},
     }
     parsed = obs._parse_transcript_payload(payload)
-    assert parsed == ("agent", "Hello")
+    # No `turnId` on the wire -> None, so this behaves exactly as before the
+    # field was read. A worker that does not publish it must keep working.
+    assert parsed == ("agent", "Hello", None)
+
+
+def test_parse_transcript_payload_keeps_the_turn_id(tmp_path) -> None:
+    """`turnId` sits at the TOP level of the payload, not inside `turn`.
+
+    Dropping it is what let one utterance become two turns — see the next test.
+    """
+    obs, _ = _observer(tmp_path)
+    payload = {
+        "type": "transcript_turn",
+        "interim": False,
+        "turn": {"role": "agent", "text": "Hello", "timestampMs": 1},
+        "turnId": "turn-42",
+    }
+    assert obs._parse_transcript_payload(payload) == ("agent", "Hello", "data:turn-42")
 
 
 def test_late_user_echo_after_agent_reply_not_new_turn(tmp_path) -> None:
@@ -147,7 +164,7 @@ def test_parse_transcript_payload_custom_type_from_config(tmp_path) -> None:
         "type": "live_transcript",
         "turn": {"role": "user", "text": "Hi"},
     }
-    assert obs._parse_transcript_payload(payload) == ("user", "Hi")
+    assert obs._parse_transcript_payload(payload) == ("user", "Hi", None)
 
 
 def test_agent_audio_onset_emits_corrected_timestamp(tmp_path) -> None:
@@ -309,3 +326,58 @@ def test_cross_source_duplicate_dropped_across_many_turns(tmp_path):
     ]
     assert len(finals) == len(lines)
     assert [e["spec"]["text"] for e in finals] == lines
+
+
+def test_data_channel_turn_id_does_not_drive_dedup(tmp_path) -> None:
+    """Evidence yes, control no.
+
+    `_finalized_segments` is only populated for `lk.transcription`, so a
+    data-channel id never has anything to compare against. This pins that: if
+    someone opens that gate, a worker re-publishing a corrected final under the
+    same turnId would be silently dropped, and that is a worse failure than
+    the duplicate this id was added to help diagnose.
+    """
+    obs, _ = _observer(tmp_path)
+    payload = {
+        "type": "transcript_turn",
+        "interim": False,
+        "turn": {"role": "agent", "text": "Hello"},
+        "turnId": "turn-7",
+    }
+    role, text, seg = obs._parse_transcript_payload(payload)
+    assert (role, text, seg) == ("agent", "Hello", "data:turn-7")
+
+    # Drive the REAL path rather than simulating it. An earlier version of
+    # this test hardcoded `if "lk.transcription" == "lk.transcription"`, which
+    # is always true — it exercised the branch the test claims to exclude and
+    # then asserted the opposite, so it failed for a reason that had nothing
+    # to do with the behaviour under test.
+    obs.on_transcript(
+        role, text, final=True, source="voice_ai.transcript", segment_id=seg
+    )
+    assert obs._finalized_segments == set(), (
+        "a data-channel turn id reached _finalized_segments; that changes "
+        "which finals are dropped and is not what this field is for"
+    )
+
+    # And the lk path DOES record, so the gate is real and this test is not
+    # passing merely because the field is never used. Role `user` because an
+    # agent final at turn 0 takes the preamble branch, which returns early
+    # without touching the set — which is what made the first attempt at this
+    # assertion fail for an unrelated reason.
+    obs.on_transcript(
+        "user", "Hi", final=True, source="lk.transcription", segment_id="seg-1"
+    )
+    assert ("user", "seg-1") in obs._finalized_segments
+
+
+def test_turn_id_is_namespaced_away_from_livekit_segment_ids(tmp_path) -> None:
+    """They share one key space, so a bare id could collide."""
+    obs, _ = _observer(tmp_path)
+    payload = {
+        "type": "transcript_turn",
+        "interim": False,
+        "turn": {"role": "agent", "text": "Hello"},
+        "turnId": "seg-abc",
+    }
+    assert obs._parse_transcript_payload(payload)[2] == "data:seg-abc"

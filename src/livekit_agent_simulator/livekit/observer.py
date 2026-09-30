@@ -754,8 +754,10 @@ class Observer:
         emitted_tool = self._match_tool_patterns(topic, payload)
         parsed = self._parse_transcript_payload(payload)
         if parsed is not None:
-            role, text = parsed
-            self.on_transcript(role, text, final=True, source=topic or "data")
+            role, text, turn_id = parsed
+            self.on_transcript(
+                role, text, final=True, source=topic or "data", segment_id=turn_id
+            )
             return
         if not emitted_tool:
             self.writer.emit(
@@ -764,8 +766,32 @@ class Observer:
                 source=topic or "data",
             )
 
-    def _parse_transcript_payload(self, payload: dict[str, Any]) -> tuple[str, str] | None:
-        """Generic transcript_turn shape — any data topic, not hardcoded to one worker."""
+    def _parse_transcript_payload(
+        self, payload: dict[str, Any]
+    ) -> tuple[str, str, str | None] | None:
+        """Generic transcript_turn shape — any data topic, not hardcoded to one worker.
+
+        Returns ``(role, text, turn_id)``. The third element is EVIDENCE ONLY.
+
+        `turnId` sits at the top level of the wire payload, next to `turn`, and
+        was being dropped. That is why every `voice_ai.transcript` row in a
+        report carries no segment id (`seg=-`) while `lk.transcription` rows
+        carry a real one — so on a data-channel transcript it was impossible to
+        tell "the same utterance published twice" from "two utterances". Three
+        sessions reasoned wrongly about run 062 before that was noticed.
+
+        It is namespaced (`data:<turnId>`) so it can never collide with a
+        LiveKit transcriber segment id, which shares the same
+        `_finalized_segments` key space.
+
+        It is deliberately NOT wired into the segment dedup. `_finalized_segments`
+        is only populated for `source == "lk.transcription"`, so passing a
+        data-channel id there changes nothing today; and if that gate were ever
+        opened, a worker re-publishing a corrected final under the same id would
+        be silently dropped. Evidence yes, control no — the actual duplicate
+        (a worker sealing one utterance at 9, then 55, then 69 characters) mints
+        a NEW id each time, so no id-based rule can collapse it.
+        """
         if payload.get("type") not in self.observe.transcript_payload_types:
             return None
         if payload.get("interim"):
@@ -777,7 +803,12 @@ class Observer:
         text = turn.get("text")
         if role not in ("user", "agent") or not isinstance(text, str) or not text.strip():
             return None
-        return role, text.strip()
+        turn_id = payload.get("turnId")
+        if not isinstance(turn_id, str) or not turn_id.strip():
+            turn_id = None
+        else:
+            turn_id = f"data:{turn_id}"
+        return role, text.strip(), turn_id
 
     def _match_tool_patterns(self, topic: str, payload: Any) -> bool:
         if not isinstance(payload, dict):
