@@ -96,6 +96,33 @@ responses:
    pattern-match on the *answer* instead of the *question*, and the router
    would quietly become a guesser.
 
+4. **⚠️ A broad entry silently disables `off_script` — and with it, the whole
+   attribution mechanism.** This is the one that costs the most to debug,
+   because nothing errors and the router is behaving perfectly.
+
+   An entry whose instruction is a soft catch-all — "select this when the
+   agent signals the call is wrapping up, **or otherwise**" — competes with
+   the `system: true` entry for exactly the inputs the system entry exists
+   for. The model picks the broad entry, the caller answers, the agent
+   acknowledges, and the loop repeats. Measured on the target repo, 2026-09-30:
+   an agent saying *"You're welcome."* is not asking anything, so
+   `off_script` is the correct verdict — but a catch-all entry framed around
+   "signals the call is wrapping up" captured it, three times in a row, and
+   `DegeneracyGuard` ended the run.
+
+   Every symptom pointed at the router. It was not the router: it selected the
+   same id for the same input three times, deterministically, per its own
+   instruction. **`off_script` never fired, so nothing was ever attributed to
+   the agent** — which is the entire reason the system entry is required.
+
+   The check: for every entry, name an agent utterance that must select it, and
+   one that must NOT. If you cannot name the second, the entry is a catch-all
+   wearing a specific name. Note that acknowledgements ("You're welcome.",
+   "Thank you.") are a class of agent turn the catalog vocabulary does not
+   cover at all — they are not questions, and they are not out-of-scope
+   deflections, so a catalog with no entry for them will always leak them
+   somewhere.
+
 ## What changes at runtime
 
 Routing replaces the **generation** step only. Everything after it is

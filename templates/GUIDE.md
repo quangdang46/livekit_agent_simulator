@@ -282,6 +282,24 @@ spotted: five scenarios, dozens of runs, and every "the router chose the wrong
 response" reading turned out to be a depleted catalog. The `system: true` entry
 is the only one that never depletes.
 
+#### ⚠️ A catch-all entry silently disables `off_script`
+
+If any entry's `instruction` is a soft catch-all — "…or otherwise signals the
+call is wrapping up" — it competes with the `system: true` entry for exactly
+the inputs that entry exists for. The model picks the catch-all, the caller
+answers, the agent acknowledges, repeat. Nothing errors, and the router is
+behaving perfectly: it picks the same id for the same input, every time, per
+its own instruction.
+
+The damage is that `off_script` never fires, so nothing is ever attributed to
+the agent — which is the whole reason the system entry is required.
+
+For each entry, name an agent utterance that must select it **and one that
+must not**. If you cannot name the second, it is a catch-all. Agent
+acknowledgements ("You're welcome.", "Thank you.") are a turn class the
+catalog vocabulary does not cover: not a question, not an out-of-scope
+deflection, so a catalog with no entry for them leaks them somewhere.
+
 ### Hold / agent dead-air timeout (`hold_music_timeout_s`)
 
 `Execute.spec.hold_music_timeout_s` (5–300 s; Persona alias `speech_conditions.hold_music_timeout_s`, Execute wins) — after the agent has spoken at least once, if the **agent** produces no activity for N seconds the sim caller hangs up like a real human giving up on hold. Emits `sim.hold_timeout` + `sim.hang_up`, ends the run with reason `hold_music_timeout` (`ended_by: sim`). The timer resets on any agent activity and is **not** paused by scripted caller silence (agent dead air is what it measures). See example `hold-timeout-agent-stall`.
