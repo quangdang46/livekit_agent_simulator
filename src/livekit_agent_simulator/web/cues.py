@@ -59,6 +59,74 @@ __all__ = [
 ]
 
 
+def _router_evidence(caller_contract: Any) -> dict[str, Any]:
+    """Shape the router evidence for the player, ALWAYS returning something.
+
+    Three states, and the distinction between them is the whole point:
+
+      available=True     a routed run. `off_script` is an AGENT deviation.
+      available=False    a caller_steps run — correct, expected, no evidence
+                         to show. `reason` says so, so the panel can say
+                         "this run was not routed" instead of showing an
+                         empty box.
+      available=False    a routed run whose block is missing or malformed.
+                         Same shape as above, but `reason` names it as a
+                         defect, because the human is looking at a run that
+                         SHOULD have routing evidence and does not.
+
+    Counting `faults`/`unroutable` separately is not cosmetic: they are
+    HARNESS problems, and a player that summed them into "agent went
+    off-script" would manufacture exactly the false accusation `off_script`
+    exists to prevent.
+    """
+    base: dict[str, Any] = {
+        "available": False,
+        "reason": "",
+        "matched": 0,
+        "off_script": 0,
+        "faults": 0,
+        "unroutable": 0,
+        "decisions": [],
+        "harness_problems_are_not_agent_deviations": True,
+    }
+    if not isinstance(caller_contract, dict):
+        base["reason"] = (
+            "no caller_contract block — this report predates the contract "
+            "driver, so no routing evidence exists"
+        )
+        return base
+
+    raw = caller_contract.get("router")
+    if raw is None:
+        # The run really was caller_steps (or pre-router). The caller_contract
+        # block being present without a `router` key is the normal legacy
+        # shape, not a defect.
+        base["reason"] = "not a routed run (scenario used caller_steps)"
+        return base
+    if not isinstance(raw, dict):
+        base["reason"] = (
+            f"router block is malformed ({type(raw).__name__}, expected object) "
+            "— routing evidence exists but cannot be read"
+        )
+        return base
+
+    def _count(key: str) -> int:
+        v = raw.get(key)
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+    decisions = raw.get("decisions")
+    return {
+        "available": True,
+        "reason": "",
+        "matched": _count("matched"),
+        "off_script": _count("off_script"),
+        "faults": _count("faults"),
+        "unroutable": _count("unroutable"),
+        "decisions": decisions if isinstance(decisions, list) else [],
+        "harness_problems_are_not_agent_deviations": True,
+    }
+
+
 def build_cues_payload(report_dir: Path) -> dict[str, Any]:
     """Return cues.json body for a single run report directory."""
     report_dir = Path(report_dir)
@@ -154,6 +222,15 @@ def build_cues_payload(report_dir: Path) -> dict[str, Any]:
         "caller": {"behavior_summary": behavior_summary} if behavior_summary is not None else None,
         "behavior_summary": behavior_summary,
         "caller_contract": caller_contract,
+        # Explicit routing evidence, surfaced at the top level rather than
+        # left for the player to dig out of `caller_contract`.
+        #
+        # `available: false` is a DELIBERATE payload, not an omission. A routed
+        # run whose router block is missing or malformed would otherwise render
+        # an empty panel — the report looks fine and the routing evidence is
+        # invisible to the human reviewing the call. That is the same silent
+        # failure as an unread snapshot key, in a place no test guarded.
+        "router": _router_evidence(caller_contract),
         "tool_events": tool_events,
         "tool_summary": tool_summary,
         "session_summary": _build_session_summary(events, t0, duration_ms),

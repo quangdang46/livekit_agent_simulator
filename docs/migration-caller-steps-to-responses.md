@@ -142,13 +142,35 @@ because nothing will fail if it is skipped.
 
 ### Re-run, and confirm unchanged
 
-| Scenario | What "unchanged" looks like |
-|---|---|
-| `gpt-live-happy-path` | Caller answers the question the agent actually asked. No "already told you" repetition. |
-| `gpt-live-queue-fifo` | Flow advances node by node. `flow_superseded_turn_completion_dropped` appears when the flow overtakes GPT-Live speech. |
-| `barge` | Caller speaks over the agent; the utterance is delivered as a user turn. |
-| SIP demo (`outbound_sim_callee`) | Unchanged — SIP leg does not touch the caller contract. |
-| the 7 archived `_archive/` scenarios | **Byte-identical output.** Any difference is a defect, not a fixture update. |
+⚠️ **Two different criteria, and mixing them reports the wrong thing.** The
+target repo has **no `.jsonl` fixtures** — `find .agent-sim/scenarios -name
+'*.jsonl'` returns nothing; the only `.jsonl` files under `.agent-sim/` are
+`reports/*/events.jsonl`, which are run *output*, not expectations. So a
+byte-compare against "the `.jsonl` next to it" is not executable. That row was
+wrong when this table was first written and was corrected after the peer
+session globbed the directory.
+
+Also: the seven `_archive/scenario-N.yaml` files are **not GPT-Live flow
+scenarios**. Their ids are marker/cue cases (`s1_global_custom_spoken`,
+`s2_no_custom_markers_at_all`, …) — no `dispatch`, no `responses:`, not in the
+caller-contract domain. Checking them under "the GPT-Live flow did not change"
+is a category error.
+
+| Scenario | Criterion | What "unchanged" looks like |
+|---|---|---|
+| `gpt-live-happy-path` | behaviour | Caller answers the question the agent actually asked. No "already told you" repetition. |
+| `gpt-live-queue-fifo` | behaviour | Flow advances node by node. `flow_superseded_turn_completion_dropped` appears when the flow overtakes GPT-Live speech. |
+| `gpt-live-retry-while-speaking` | behaviour | Flow retries while the model is speaking and does not wedge. Check there is **no** `flow_superseded_completion_expired`. |
+| `gpt-live-clip-to-composed` | behaviour | A pregen clip hands off to a composed node without the model re-reading it. |
+| `gpt-live-ending` | behaviour | The call terminates through the ENDING node, not a timeout. |
+| the 7 `_archive/scenario-N.yaml` | out of scope | Marker/cue scenarios, not caller-contract. If you want them checked, the real pairs are `templates/examples/*.yaml` ↔ `*.jsonl` **in this package**, which CI can glob. |
+
+**Byte-identical is the right criterion only for the 7 archived scenarios AND
+only as a within-this-package `templates/` comparison.** A scenario you have
+deliberately converted to `responses:` is *supposed* to produce different
+output — that is the point of the conversion. Comparing it byte-wise against
+its `caller_steps` predecessor and calling the difference a defect reports the
+migration backwards.
 
 ### Then, per scenario you intend to migrate
 
