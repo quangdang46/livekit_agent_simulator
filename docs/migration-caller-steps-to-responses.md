@@ -60,7 +60,15 @@ responses:
       represents.                                               # the ROUTER matches
     text: It's Bluebird Property Management.                    # ground truth; the
                                                                  # router never sees it
-    reusable: true          # may answer a repeated question. Not a TTL, not a count.
+    reusable: true          # NOT a TTL, not a count — and the default is
+                            # FALSE, which is the part that bites. Omit it
+                            # and this entry is SPENT after one use: it leaves
+                            # the router's option set entirely. Ask for a name
+                            # twice and the router cannot answer with the name
+                            # again — it picks something else, and that reads
+                            # as "the router chose wrong" when the catalog was
+                            # simply empty. Set it on anything the agent could
+                            # plausibly ask about twice.
 
   off_script:
     intent: off_script

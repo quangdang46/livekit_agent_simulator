@@ -175,6 +175,32 @@ class DegeneracyGuard:
 
     Deliberately stateful and deliberately small: the point is to fail the run,
     not to smooth anything over.
+
+    ── DO NOT exempt abstentions. Measured 2026-09-30, and the exemption
+    looks obviously right until you read the transcripts. ──
+
+    A proposal was to skip this counter when the chosen entry is the
+    `system: true` one — reasoning that "the model admitting uncertainty three
+    times is the contract working, not degeneracy, and this guard kills 5 of
+    25 runs". The frequency was right and the conclusion was wrong.
+
+    Those five runs were not a healthy call that the guard interrupted. The
+    agent was mid-utterance and never finished: the transcript accumulates
+    fragments turn over turn (`. Next, could` -> `. Next, could you` ->
+    `. Next, could you please`), no turn ever closes, and once the caller
+    answers "sorry, could you repeat that" the agent restarts a fragment it
+    has already begun. Exempting abstentions there converts a fast failure
+    into an unbounded loop on a duplex call that bills by the minute.
+
+    So the failure rate is a *symptom* of a conversation already dead, not
+    damage done by the guard. The guard is the only thing that stops it.
+
+    A non-consecutive cycle (A-B-A-B) is genuinely not caught here — only
+    consecutive repeats count. That is a real limit. It was left alone
+    because the one observed cycle was authored into existence by marking
+    every entry `reusable: true`, i.e. a catalog fault rather than evidence
+    that the guard is too weak. Loosening it to "3 of the last 5" would make
+    the guard kill MORE runs, which is the opposite of what is wanted.
     """
 
     last: str | None = None

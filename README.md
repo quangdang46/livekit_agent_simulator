@@ -240,6 +240,12 @@ and makes an agent that goes off-script **recorded** (`off_script`) rather
 than papered over. That verdict means the **agent** deviated, not the
 caller.
 
+⚠️ **Every other entry is one-shot unless you set `reusable: true`.** A spent
+entry leaves the router's option set entirely, so an agent that asks for the
+company name twice cannot be answered with the company name the second time —
+the router picks something else, which reads as a routing bug when the catalog
+was simply empty. Set it on anything the agent could plausibly ask about twice.
+
 - Working example: `templates/examples/router-smoke.yaml`
 - Migration guide + target-repo hand-off: [docs/migration-caller-steps-to-responses.md](docs/migration-caller-steps-to-responses.md)
 - Router prompts: [docs/router-prompts.md](docs/router-prompts.md)

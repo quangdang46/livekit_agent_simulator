@@ -255,6 +255,33 @@ lks scenario-init my-case --root /path/to/target
 | `PassCriteria` | no | Soft LLM judge rubric — flat `criteria[]` **or** `judges[]` + `mode` (`all` \| `majority` \| `any`) |
 | `Responses` | no | **Opt-in response catalog.** The Decision Router picks one authored response per turn instead of generating one. Needs a `router:` block in config, else `ConfigError` at **run** time. Coexists with `CallerSteps`; when both are present the **router runs** — see [docs/migration-caller-steps-to-responses.md](../../docs/migration-caller-steps-to-responses.md) |
 
+#### ⚠️ `reusable:` — the one setting whose omission is silent
+
+Every catalog entry is **one-shot by default**: once the router has used it, it
+leaves the option set entirely and cannot be picked again. That is deliberate
+(the enum shrinks rather than the model being offered a spent answer), but the
+failure is silent and it looks exactly like a router bug:
+
+> Agent asks for the company name a second time → the router picks `address`.
+> You read that as "the router chose wrong". The catalog was empty.
+
+**If the agent can plausibly ask twice, set `reusable: true`** — a name, a
+phone number, an address, a confirmation. Anything you would find annoying to
+be told only once per call.
+
+```yaml
+responses:
+  company_name:
+    instruction: ONLY for the company name. Never for a person's name.
+    text: It's Bluebird Property Management.
+    reusable: true          # without this it is spent after one use
+```
+
+This bit hard enough to invalidate a whole measurement round before it was
+spotted: five scenarios, dozens of runs, and every "the router chose the wrong
+response" reading turned out to be a depleted catalog. The `system: true` entry
+is the only one that never depletes.
+
 ### Hold / agent dead-air timeout (`hold_music_timeout_s`)
 
 `Execute.spec.hold_music_timeout_s` (5–300 s; Persona alias `speech_conditions.hold_music_timeout_s`, Execute wins) — after the agent has spoken at least once, if the **agent** produces no activity for N seconds the sim caller hangs up like a real human giving up on hold. Emits `sim.hold_timeout` + `sim.hang_up`, ends the run with reason `hold_music_timeout` (`ended_by: sim`). The timer resets on any agent activity and is **not** paused by scripted caller silence (agent dead air is what it measures). See example `hold-timeout-agent-stall`.
