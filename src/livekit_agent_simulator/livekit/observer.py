@@ -33,6 +33,31 @@ ATTR_SEGMENT_ID = "lk.segment_id"
 # `speaking -> listening` is the authoritative turn end.
 AGENT_STATE_ATTRIBUTE_KEY = "lk.agent.state"
 
+
+def _disconnect_reason_name(args: tuple[object, ...]) -> str:
+    """Name the `DisconnectReason` LiveKit passes to the `disconnected` callback.
+
+    Returns a stable, greppable string. Never raises and never returns an
+    empty string, because a disconnect whose reason cannot be named is still a
+    disconnect and "unknown" is a more useful thing to read than nothing.
+
+    The argument is a protobuf enum value (int) in the shipped SDK, but the
+    callback is variadic and the SDK has changed this shape before, so the
+    helper accepts whatever arrives and degrades to `repr` rather than
+    assuming.
+    """
+    raw = args[0] if args else None
+    if raw is None:
+        return "UNKNOWN"
+    try:
+        from livekit.rtc import DisconnectReason
+
+        # `Name(number)` raises ValueError on an unmapped value, which is
+        # exactly the case that should fall through to the string form.
+        return DisconnectReason.Name(int(raw))
+    except Exception:  # noqa: BLE001 — naming must never break the handler
+        return f"UNRECOGNIZED({raw!r})"
+
 # Lower index = higher priority when deduping finals from multiple sources.
 # Provider sim-transcript sources (sim.gemini / sim.openai) are the most
 # trustworthy caller transcripts; data-topic and lk.transcription are mirrors.
@@ -367,8 +392,28 @@ class Observer:
 
         @room.on("disconnected")
         def _on_disconnected(*args: object) -> None:
+            # LiveKit passes a `DisconnectReason` here (room.py:690:
+            # `self.emit("disconnected", reason)`) and this handler used to
+            # accept `*args` and emit an EMPTY spec, throwing the reason away.
+            #
+            # That is why a peer session reading run 081 could report
+            # "`room.disconnected` with no preceding `room.reason`" — there
+            # was never a reason recorded, because there was never a handler
+            # for one. The room dropped on the same millisecond the caller
+            # published, which is the single most informative fact available
+            # about that failure, and it was being discarded at the moment it
+            # was cheapest to keep.
+            #
+            # The enum distinguishes CLIENT_INITIATED from SIGNAL_CLOSE,
+            # ROOM_CLOSED, STATE_MISMATCH and the rest — which is exactly the
+            # difference between "the harness tore the room down" and "the
+            # transport went away underneath us". Those demand different
+            # responses and were previously indistinguishable.
             self.writer.emit(
-                "room.disconnected", spec={}, source="room", include_dialogue=False
+                "room.disconnected",
+                spec={"reason": _disconnect_reason_name(args)},
+                source="room",
+                include_dialogue=False,
             )
             self.agent_disconnected.set()
 

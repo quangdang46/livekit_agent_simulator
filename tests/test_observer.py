@@ -381,3 +381,55 @@ def test_turn_id_is_namespaced_away_from_livekit_segment_ids(tmp_path) -> None:
         "turnId": "seg-abc",
     }
     assert obs._parse_transcript_payload(payload)[2] == "data:seg-abc"
+
+
+# ---------------------------------------------------------------------------
+# the disconnect reason (previously discarded)
+# ---------------------------------------------------------------------------
+
+
+def test_a_disconnect_reason_is_named_not_dropped() -> None:
+    """LiveKit passes a `DisconnectReason` and the handler used to emit `{}`.
+
+    room.py:690 is `self.emit("disconnected", reason)`. The handler took
+    `*args` and wrote an empty spec, so every `room.disconnected` event in
+    every report said nothing about why. A peer reading run 081 correctly
+    reported "no preceding room.reason" — there was never a reason recorded,
+    because there was never a handler for one.
+    """
+    from livekit_agent_simulator.livekit.observer import _disconnect_reason_name
+
+    # The distinction that matters: the harness tearing the room down versus
+    # the transport going away underneath it. Previously indistinguishable.
+    assert _disconnect_reason_name((1,)) == "CLIENT_INITIATED"
+    assert _disconnect_reason_name((9,)) == "SIGNAL_CLOSE"
+    assert _disconnect_reason_name((10,)) == "ROOM_CLOSED"
+    assert _disconnect_reason_name((6,)) == "STATE_MISMATCH"
+
+
+def test_an_unnameable_reason_still_says_something() -> None:
+    """A disconnect whose reason cannot be named is still a disconnect.
+
+    An empty string would read as "no reason", which is a different claim.
+    """
+    from livekit_agent_simulator.livekit.observer import _disconnect_reason_name
+
+    assert _disconnect_reason_name(()) == "UNKNOWN"
+    assert _disconnect_reason_name((None,)) == "UNKNOWN"
+    assert "999" in _disconnect_reason_name((999,))
+
+
+def test_naming_a_reason_never_raises() -> None:
+    """This runs inside a LiveKit event callback.
+
+    If it raises, the handler that was supposed to record the disconnect
+    raises instead, and the evidence is lost the same way it was before —
+    except now with a traceback nobody sees.
+    """
+    from livekit_agent_simulator.livekit.observer import _disconnect_reason_name
+
+    class Hostile:
+        def __int__(self) -> int:
+            raise RuntimeError("no")
+
+    assert _disconnect_reason_name((Hostile(),))
