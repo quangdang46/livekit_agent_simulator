@@ -30,9 +30,19 @@ def evaluate_run_result(
     *,
     strict_judge: bool = False,
 ) -> dict[str, Any]:
-    """Score one execute_scenario result for CI."""
+    """Score one execute_scenario result for CI.
+
+    ``ok`` means **graded and passed**. A run the judge could not grade is
+    NOT a pass — that distinction is the whole point of this function, and
+    losing it makes a broken harness indistinguishable from a healthy one.
+    """
     hard: list[str] = []
     soft: list[str] = []
+    # Set when the scenario HAD pass criteria and the judge failed to produce
+    # a verdict. Kept separate from `hard` because a judge HTTP blip is not
+    # evidence of a regression, and a CI that treats them alike learns to
+    # ignore the gate.
+    ungraded = False
 
     if not result.get("executed"):
         hard.append("not_executed")
@@ -69,19 +79,37 @@ def evaluate_run_result(
             if strict_judge:
                 hard.append("judge_maybe")
         elif jv == "error":
-            # Misconfig / HTTP / parse — visible soft note only; never CI hard gate
+            # The judge did NOT grade this run. Measured on run 026
+            # (gpt-live-queue-fifo): the CLI printed `ok ✓  status done
+            # gate soft` while events.jsonl held
+            # `judge.verdict {verdict: "error", score: null}` — and there
+            # was no script.verify and no assert.verify, so NOTHING was
+            # graded. A green gate on an ungraded run is a false pass, and
+            # it is the same class as every other dead signal this
+            # migration has removed: a judge that has never run looks
+            # exactly like a judge that passed.
+            #
+            # It is deliberately NOT a hard failure: a judge HTTP blip is
+            # not evidence the agent regressed, and a gate that cannot
+            # tell those apart gets ignored wholesale. So `ok` goes False
+            # (nobody graded it, so nothing passed) and `ungraded` marks
+            # why, leaving `hard_reasons` clean for a caller that wants to
+            # retry rather than investigate.
             soft.append("judge_error")
+            ungraded = True
         # skipped → ignore (same UX as no PassCriteria)
 
     hard_fail = len(hard) > 0
     soft_fail = len(soft) > 0
     return {
-        "ok": not hard_fail,
+        "ok": not hard_fail and not ungraded,
         "hard_fail": hard_fail,
         "soft_fail": soft_fail,
+        # True = nothing was graded, which is NOT the same as failing.
+        "ungraded": ungraded,
         "hard_reasons": hard,
         "soft_reasons": soft,
-        "gate": "hard" if hard_fail else ("soft" if soft_fail else "pass"),
+        "gate": "hard" if hard_fail else ("ungraded" if ungraded else ("soft" if soft_fail else "pass")),
     }
 
 

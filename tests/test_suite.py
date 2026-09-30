@@ -68,15 +68,30 @@ def test_gate_judge_soft_by_default() -> None:
 
 
 def test_gate_judge_error_never_hard() -> None:
+    """A judge transport error is NOT a hard regression — and NOT a pass.
+
+    The first half is the original intent and still holds. The second half
+    used to be `ok is True`, which was a false pass: run 026
+    (gpt-live-queue-fifo) reported `ok ✓` in the CLI while
+    `events.jsonl` held `judge.verdict {verdict: "error"}` and neither
+    `script.verify` nor `assert.verify` had run, so nothing was graded.
+
+    A judge HTTP blip is also not evidence the agent regressed, which is why
+    it stays out of `hard_reasons` and `ungraded` is a separate flag — a CI
+    that cannot tell "not graded" from "graded and passed" learns to ignore
+    the gate entirely. See tests/test_gate_ungraded.py.
+    """
     r = _ok_result()
     r["summary"]["verdict"] = {
         "verdict": "error",
         "notes": "HTTP judge 401: unauthorized",
     }
     g = evaluate_run_result(r, strict_judge=True)
-    assert g["ok"] is True
+    assert g["hard_fail"] is False
     assert "judge_error" in g["soft_reasons"]
     assert "judge_error" not in g["hard_reasons"]
+    assert g["ungraded"] is True
+    assert g["ok"] is False, "a run nobody graded is not a pass"
 
 
 def test_gate_judge_skipped_ignored() -> None:

@@ -564,6 +564,7 @@ async def execute_scenario(
             "status": result.get("status"),
             "gate": gate["gate"],
             "ok": gate["ok"],
+            "ungraded": gate.get("ungraded", False),
             "hard_reasons": gate["hard_reasons"],
             # `cli_render` renders this column; without it a failed run shows
             # only `status:failed` and the real cause is one layer down in
