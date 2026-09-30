@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 from ..config import JudgeConfig
@@ -182,12 +183,25 @@ async def _judge(
         assert_digest=build_assert_digest(assert_verify),
         router_digest=router_digest,
     )
+    _t0 = time.monotonic()
     try:
         text = await backend.complete_json(system=JUDGE_SYSTEM, user=user)
     except Exception as e:
+        # Diagnosable, because a bare "TimeoutError: timed out" cost hours:
+        # it does not say how big the request was, how long it actually ran,
+        # or how many criteria it was grading. Measured on this repo's own
+        # judge (2026-09-30): a real call over a 4.5k-char prompt completes
+        # in ~26s against a 180s timeout, so a timeout is NOT explained by
+        # prompt size or config — and without these numbers there is no way
+        # to tell a slow endpoint from a slow generation.
         return JudgmentResult(
             verdict="error",
-            notes=f"{type(e).__name__}: {e}",
+            notes=(
+                f"{type(e).__name__}: {e} "
+                f"[prompt_chars={len(user)} transcript_chars={len(packet['transcript'])} "
+                f"criteria={len(criteria)} turns={len(turns)} "
+                f"elapsed_s={time.monotonic() - _t0:.1f}]"
+            ),
         ).to_dict()
 
     result = apply_relevancy(_parse_llm_json(text))

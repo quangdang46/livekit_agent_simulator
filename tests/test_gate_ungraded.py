@@ -156,3 +156,52 @@ def test_every_gate_outcome_exposes_the_same_keys():
     }
     for got in outcomes:
         assert set(got) == expected, f"key set drifted: {set(got) ^ expected}"
+
+
+# --------------------------------------------------------------------------
+# the judge error must be diagnosable
+# --------------------------------------------------------------------------
+
+
+def test_a_judge_error_reports_enough_to_diagnose_it():
+    """A bare "TimeoutError: timed out" cost hours on 2026-09-30.
+
+    It said nothing about prompt size, elapsed time, or how many criteria
+    were being graded — so there was no way to distinguish a slow endpoint
+    from a slow generation, and the obvious hypotheses (dead endpoint, huge
+    prompt, broken config) all had to be eliminated by hand.
+    """
+    import asyncio
+
+    from livekit_agent_simulator.evals import runner as R
+
+    class _Boom:
+        async def complete_json(self, *, system, user):
+            raise TimeoutError("timed out")
+
+    def _fake_backend(*a, **k):
+        return _Boom()
+
+    turns = [
+        {"turn": 1, "user_text": "hello there", "agent_text": "hi, who are you?"},
+        {"turn": 2, "user_text": "acme", "agent_text": "thanks"},
+    ]
+    real_backend_from_config = R.backend_from_config
+    R.backend_from_config = _fake_backend  # type: ignore[assignment]
+    try:
+        out = asyncio.run(
+            R.judge_run(
+                R.JudgeConfig(base_url="http://x/v1", api_key="k", model="m"),
+                "sk-x",
+                ["criterion one", "criterion two"],
+                turns,
+                [],
+            )
+        )
+    finally:
+        R.backend_from_config = real_backend_from_config
+
+    assert out["verdict"] == "error"
+    notes = out["notes"]
+    for token in ("prompt_chars=", "transcript_chars=", "criteria=2", "turns=2", "elapsed_s="):
+        assert token in notes, f"notes must carry {token!r} to be diagnosable: {notes!r}"
