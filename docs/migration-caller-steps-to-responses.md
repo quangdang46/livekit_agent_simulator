@@ -8,7 +8,7 @@ scenarios keep byte-identical behaviour because nothing about them changes.
 |---|---|
 | `caller_steps` only | Legacy path. Unchanged. (Default, and still what every existing scenario does.) |
 | `responses:` only | Routed path. The Decision Router picks one `responseId` per turn. |
-| **both** | **`caller_steps` wins, and the router is not engaged.** |
+| **both** | **The ROUTER runs.** `caller_steps` still supplies the opening action and stays mandatory, but it does not win precedence. |
 | `responses:` + `router:` in config | Routed path. |
 | `responses:` with **no** `router:` in config | **`ConfigError` at run time**, naming the scenario and both keys. |
 

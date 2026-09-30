@@ -176,8 +176,16 @@ Scenario → Persona → [Context] → [Simulator] → [Execute] → [Dispatch] 
 | **`caller_steps`** (`say` / `do` / `wait` / `dtmf` / `interrupt` / `end`) | The contract path, and the **default**. Every scenario carries it. |
 | **`responses:`** | Opt-in response catalog. Routes via the Decision Router. |
 
-They coexist. **When both are present, `caller_steps` wins and the router is
-not engaged** — that is what keeps every existing scenario unchanged.
+They coexist, and **`caller_steps` does NOT win** — the router runs whenever
+one is attached. `caller_steps` supplies the opening action and stays
+mandatory; the driver's gate (`router.py:712`) checks only
+`router is not None and response_catalog is not None and agent_text`, with no
+reference to `caller_steps` at all. Every migrated `gpt-live-*` scenario
+carries both keys, which is why they route.
+
+This was documented the other way round in four places for a while, one of
+them a Rust guard comment — corrected 2026-09-30 after the peer session
+counted 11 reports containing `contract.router_decision`.
 
 ⚠️ **Two things to know before touching the routed path:**
 

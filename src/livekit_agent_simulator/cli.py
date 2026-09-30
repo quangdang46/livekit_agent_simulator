@@ -154,7 +154,9 @@ def execute(
                     the AGENT went somewhere the catalog does not cover —
                     an agent deviation, not a caller fault.
 
-    When both are present, caller_steps wins and the router is not engaged.
+    When both are present, the ROUTER runs. `caller_steps` still supplies the
+    opening action and stays mandatory, but it does not win precedence: the
+    driver's gate looks only at whether a router and a catalog are attached.
     A scenario carrying `responses:` needs a `router:` block in
     .agent-sim/config.yaml; without one it fails with a ConfigError naming
     the scenario, rather than quietly running the legacy path. Use

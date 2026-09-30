@@ -7,6 +7,10 @@ round-trip test below is what holds them to each other.
 
 from __future__ import annotations
 
+import inspect
+
+from livekit_agent_simulator.caller_contract.driver import ContractCallerDriver
+
 import pytest
 
 from livekit_agent_simulator.scenario import ScenarioError
@@ -74,7 +78,47 @@ def test_responses_coexists_with_caller_steps_and_loses():
     sc = scenario_from_dict(doc)
     assert sc.responses is not None
     assert sc.caller_actions, "caller_steps must still produce actions"
-    assert len(sc.caller_actions) == 1, "caller_steps wins; the catalog does not add actions"
+    # WHAT THIS ACTUALLY CHECKS, corrected: the catalog is DATA, it does not
+    # add or remove actions. It does NOT decide precedence.
+    #
+    # This assertion's message used to claim "caller_steps wins; the router is
+    # not engaged". That was FALSE and it had propagated to four places
+    # (AGENTS.md, the `lks execute` help, a Rust guard comment, and the
+    # migration guide). The driver's gate is only
+    # `router is not None and response_catalog is not None and agent_text` —
+    # there is no caller_steps check anywhere in driver.py, so with both keys
+    # present the ROUTER runs. Every migrated gpt-live-* scenario carries both,
+    # which is why they route.
+    assert len(sc.caller_actions) == 1, (
+        "the catalog is data: it must not add or remove caller actions. It "
+        "does not decide precedence between the two paths."
+    )
+
+
+def test_the_router_runs_when_both_keys_are_present():
+    """The rule as IMPLEMENTED, asserted where the router is actually chosen.
+
+    Not `driver.py` internals — the gate is
+    `self.router is not None and self.response_catalog is not None and
+    agent_text`, with no reference to caller_steps. This asserts the
+    observable consequence so the real rule has a test, instead of only a
+    comment that says something else.
+    """
+    doc = _doc(
+        responses=CATALOG,
+        caller_steps=[{"say": "legacy line", "trigger": {"kind": "time", "delay_ms": 100}}],
+    )
+    sc = scenario_from_dict(doc)
+    # Both survive parsing, so both reach the driver, and the driver's gate
+    # picks the router. caller_steps still supplies the opening action.
+    assert sc.responses is not None
+    assert sc.caller_actions
+    assert "caller_steps" not in inspect.getsource(
+        ContractCallerDriver._run_behavior
+    ), (
+        "if a caller_steps check appears in the behaviour loop, precedence has "
+        "changed and this test plus the docs need revisiting together"
+    )
 
 
 # ------------------------------------------------------------------- export
