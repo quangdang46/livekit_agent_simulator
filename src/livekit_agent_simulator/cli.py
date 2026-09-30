@@ -144,7 +144,22 @@ def execute(
         "in another repo. Does not edit the scenario and does not persist.",
     ),
 ) -> None:
-    """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)"""
+    """Validate then execute one scenario from .agent-sim/scenarios/. (MCP: execute_scenario)
+
+    A scenario drives the caller in one of two ways:
+
+      caller_steps  the default: scripted say/do/wait/dtmf/interrupt/end.
+      responses:    opt-in. The Decision Router picks ONE authored response
+                    per turn from the catalog, and `off_script` records that
+                    the AGENT went somewhere the catalog does not cover —
+                    an agent deviation, not a caller fault.
+
+    When both are present, caller_steps wins and the router is not engaged.
+    A scenario carrying `responses:` needs a `router:` block in
+    .agent-sim/config.yaml; without one it fails with a ConfigError naming
+    the scenario, rather than quietly running the legacy path. Use
+    --no-router to force the legacy path deliberately.
+    """
     result = _run(
         ops.execute_scenario(
             _root(root),
@@ -511,7 +526,13 @@ def validate(
     root: Optional[Path] = ROOT_OPTION,
     as_json: bool = JSON_OPTION,
 ) -> None:
-    """Validate one scenario. (MCP: validate_scenario)"""
+    """Validate one scenario. (MCP: validate_scenario)
+
+    Checks the scenario shape, including a `responses:` catalog's required
+    `system: true` entry. It does NOT check that a configured router will
+    accept the scenario's targets — that vocabulary is consumer-supplied via
+    `simulator.target_keywords`, so the only sound check here is structural.
+    """
     result = ops.validate_scenario(_root(root), scenario_id)
     _emit(result, as_json, cli_render.render_validate)
     if not result.get("valid"):

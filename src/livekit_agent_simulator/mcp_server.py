@@ -17,7 +17,10 @@ mcp = FastMCP(
     instructions=(
         "Simulate a realtime AI caller against a LiveKit voice agent and inspect the "
         "forensic behavior log. Typical flow: guide → init_project → edit .agent-sim/config.yaml → "
-        "preflight → init_scenario / list_scenarios → execute_scenario → get_run_report / get_run_log."
+        "preflight → init_scenario / list_scenarios → execute_scenario → get_run_report / get_run_log. "
+        "A scenario drives the caller via caller_steps (default, scripted) or via a "
+        "`responses:` catalog, in which case a Decision Router picks one authored response per "
+        "turn and off-script turns are attributed to the AGENT, not the caller."
     ),
 )
 
@@ -308,7 +311,26 @@ def get_run_log(
 
 @mcp.tool
 async def get_run_report(project_root: str, run_id: str) -> dict[str, Any]:
-    """Full report: summary (incl. caller.behavior_summary, script/assert verify), judge, suspicious turns, paths."""
+    """Full report: summary, script/assert verify, judge, suspicious turns, paths.
+
+    Caller evidence lives under summary["caller_contract"]. Which block is
+    present depends on how the scenario drove the caller:
+
+      "router"      a routed run (scenario authors `responses:`). Has
+                    matched / off_script / faults / unroutable counts and a
+                    per-decision list. `off_script` means the AGENT went
+                    somewhere the catalog does not cover — an agent
+                    deviation, not a caller fault. `faults` and `unroutable`
+                    are HARNESS problems and are counted outside the
+                    decision list so they cannot be misread as agent
+                    deviations.
+      (no "router")  a caller_steps run. The legacy behavior/positional
+                    blocks are still the thing worth reading.
+
+    A run whose router degraded to audio-energy gating emits
+    `contract.agent_state_unavailable` in the log — worth checking before
+    trusting turn boundaries in either mode.
+    """
     return await ops.get_run_report(project_root, run_id)
 
 

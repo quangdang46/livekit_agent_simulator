@@ -72,6 +72,8 @@ async def run_preflight(
     if connectivity and result.ok:
         await _check_livekit_api(cfg, result)
 
+    _check_router_config(cfg, result)
+
     # Optional telephony surface (informational unless required by a SIP scenario at run time).
     tel = cfg.telephony
     if tel.outbound_trunk_id or tel.dial_in or tel.sim_inbound_number:
@@ -107,6 +109,65 @@ async def run_preflight(
         result.add("telephony", "pass", "not configured (WebRTC-only OK)")
 
     return result, cfg
+
+
+def _check_router_config(cfg: SimConfig, result: PreflightResult) -> None:
+    """Report the opt-in response-router surface, or say it is off.
+
+    The router is deliberately NOT scaffolded by `lks init` — a shipped-but-dead
+    `api_key` placeholder is the "knob nobody runs" smell AGENTS.md forbids. That
+    makes absence the normal state, so it is stated explicitly rather than left
+    for the reader to infer: a silent omission here is indistinguishable from
+    preflight not knowing the feature exists.
+
+    `text_planner.enabled: false` is not a failure. It is the byte-exact mode,
+    where the routed line is published verbatim and no paraphrase call is made.
+    """
+    router = getattr(cfg, "router", None)
+    if router is None:
+        result.add(
+            "router",
+            "info",
+            "not configured (opt-in) — scenarios using `responses:` need a `router:` block",
+        )
+    else:
+        provider = getattr(router, "provider", "?")
+        key = (getattr(router, "api_key", "") or "").strip()
+        if not key:
+            result.add(
+                f"router.api_key[{provider}]",
+                "fail",
+                "missing — the router has no credential to call the provider with",
+            )
+        else:
+            result.add(f"router.api_key[{provider}]", "pass", "present")
+
+        model = (getattr(router, "model", "") or "").strip()
+        result.add(
+            f"router.model[{provider}]",
+            "pass",
+            model or "adapter default (an alias, not a pinned version)",
+        )
+
+    # Reported independently of the router. The two config blocks load
+    # independently, so "text_planner set, router absent" is a reachable
+    # half-configuration - and hiding it behind an early return would make it
+    # invisible in exactly the report meant to surface it.
+    planner = getattr(cfg, "text_planner", None)
+    if planner is None:
+        result.add("text_planner", "info", "not configured — routed lines are published verbatim")
+    elif not getattr(planner, "enabled", False):
+        result.add(
+            "text_planner",
+            "pass",
+            "disabled — byte-exact mode, no paraphrase call per turn",
+        )
+    else:
+        result.add(
+            "text_planner",
+            "pass",
+            f"enabled [{getattr(planner, 'provider', '?')}] — routed lines are paraphrased",
+        )
 
 
 async def _check_livekit_api(cfg: SimConfig, result: PreflightResult) -> None:
