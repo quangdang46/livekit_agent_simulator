@@ -176,6 +176,27 @@ both edges. The docs' own caution applies in reverse here: `waiting` on a
 genuine turn end is the correct fix, but only if the signal is honest about
 when the audio actually stops.
 
+**Status: implemented (`turn-alignment.2`).** `lk.agent.state` is now tracked in
+`livekit/observer.py` and preferred by `ObserverAgentWait.is_agent_speaking_now`,
+which is the single point feeding every trigger loop. The loop itself, its
+`TRIGGER_GAP_TOLERANCE_S` continuity, and all three trigger kinds are untouched
+— only the *signal* changed, which is what the bead asked for. The delay knob
+remains (AGENTS.md: removing it would be a dead-feature regression).
+
+Two things worth knowing:
+
+- **The fallback is recorded, not silent.** An agent that publishes nothing still
+  falls back to energy — correct, and the historical behaviour — but
+  `run_contract_driver_path` emits `contract.agent_state_unavailable` when that
+  happened. A run that degraded must not read as a run that worked; that is the
+  same silent-failure shape that let the router ship un-attached and let
+  `confidence` sit permanently null.
+- **The falsifiable claim above is still open.** This change makes the harness
+  *able* to use an honest signal; whether `listening` actually lands after the
+  last audio frame needs a live duplex run, and the symmetric failure (barging
+  in at the tail) is exactly as bad as the one being fixed. Measured by
+  `voice-ai-agent-a1`, not asserted here.
+
 ---
 
 ## 2. No decision layer — the AI sits at phrasing only, there is no router
@@ -562,6 +583,33 @@ own bead — remove the field and its docstring if nobody claims it.
 ### Evidence
 
 `contract.router_decision` events in `reports/009-gpt-live-retry-while-speaking-20260929-094728-b1ae/events.jsonl`.
+
+#### Run 013 — confirms it, and answers "what actually decides it"
+
+`reports/013-gpt-live-retry-while-speaking-20260929-104409-e643/events.jsonl`,
+scenario `gpt-live-retry-while-speaking`, catalog with `preamble_ack` added.
+
+| turn | `agent_text` | `response_id` | correct? |
+|---|---|---|---|
+| 1 | "To begin, could I please get your company name and the full name of the person in charge?" | `vague_company` | yes |
+| 2 | "Next, are you still there?" | `wrap_up` | no |
+| 3 | "[untranscribed agent speech]" | `preamble_ack` | no — matched untranscribed noise |
+| 4 | "Great, glad to hear that. Would you like to go over anything else or have me pass along an…" | `callback_number` | no |
+| 5 | "Thank you. Next, could you please provide your callback phone number, including the area c…" | `contact_name` | **no — a genuine match was bypassed** |
+| 6 | "CouldOkay," | `off_script` | yes (garbled input) |
+
+Turn 1 is now correct: with the preamble no longer routed, the first
+question reaches `vague_company` as intended. From turn 2 the router is
+**one step behind again**, and turn 5 is the sharpest evidence in the
+whole set — the agent asks *for a callback phone number by name*,
+`callback_number` is in the catalog with exactly that instruction, and the
+router picks `contact_name`. That is test condition 4: a genuinely
+matching entry the router still ignored. **The catalog is not the
+control surface.**
+
+Turn 3 also shows a second failure mode: `[untranscribed agent speech]`
+is routed to a real entry rather than falling through, so an
+untranscribable turn fabricates a confident answer instead of declining.
 
 ---
 
