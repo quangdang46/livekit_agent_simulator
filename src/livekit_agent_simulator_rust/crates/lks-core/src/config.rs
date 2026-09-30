@@ -285,6 +285,95 @@ fn require(
     Ok(value)
 }
 
+/// Top-level keys accepted in `.agent-sim/config.yaml`.
+///
+/// This is the UNION of what the Python `lks` loader reads and what this port
+/// reads — NOT the intersection, and NOT only this port's own set. `lksr` is a
+/// subset port: it validates LESS, never differently (see the guard in
+/// `lks-livekit/src/run.rs`). If this list were only the keys `lksr` parses,
+/// then a perfectly valid Python config carrying `text_planner:` or
+/// `target_keywords:` would be REFUSED here, which would make the same
+/// `.agent-sim/` unusable on the Rust port — a new cross-port divergence, of
+/// exactly the kind the router guard's comment defends against.
+const TOP_LEVEL_KEYS: &[&str] = &[
+    "cues",
+    "judge",
+    "livekit",
+    "observe",
+    "project",
+    "router",
+    "simulator",
+    "telephony",
+    "text_planner",
+];
+
+/// Keys accepted inside `observe:`. Same union rule as `TOP_LEVEL_KEYS`:
+/// `text_temperature` lives under `simulator:`, but the rest of this list is
+/// what the Python observer reads, including keys `lksr` has no consumer for.
+const OBSERVE_KEYS: &[&str] = &[
+    "audio_onset",
+    "data_topics",
+    "flow_topics",
+    "lk_agent_session",
+    "lk_transcription",
+    "record_audio",
+    "silence_threshold_ms",
+    "timezone",
+    "tool_event_patterns",
+    "transcript_dedupe_window_ms",
+    "transcript_payload_types",
+    "turn_taking_warn_ms",
+];
+
+/// Reject a key the loader does not know, NAMING it.
+///
+/// The loader is otherwise fail-open: a typo'd or mis-nested key is simply not
+/// read, and every setting it was meant to set silently reverts to its
+/// default. Measured 2026-09-30 on the Python port: nesting `observe:` into
+/// subgroups loaded clean, with `timezone` reset to `UTC` and
+/// `silence_threshold_ms` reset 22000 -> 4000, and not one warning. For a
+/// harness whose whole job is reporting what actually happened, a silent
+/// default swap is worse than a refused config.
+///
+/// A missing key is NOT an error — this only fires for keys that are PRESENT
+/// and unrecognised, which is the typo case.
+fn reject_unknown_keys(
+    raw: &Map<String, Json>,
+    allowed: &[&str],
+    section_name: Option<&str>,
+) -> Result<(), ConfigError> {
+    let mut unknown: Vec<&str> = raw
+        .keys()
+        .filter(|k| !allowed.contains(&k.as_str()))
+        .map(|k| k.as_str())
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    let where_ = match section_name {
+        Some(s) => format!("`{s}:`"),
+        None => "the config root".to_string(),
+    };
+    let mut known: Vec<&str> = allowed.to_vec();
+    known.sort_unstable();
+    Err(ConfigError(format!(
+        "Unknown key(s) in {where_}: {}. Known keys: {}. \
+         An unrecognised key is not ignored — it means a setting you expected \
+         to apply silently did not. Check for a typo or a wrong nesting level.",
+        unknown
+            .iter()
+            .map(|k| format!("`{k}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        known
+            .iter()
+            .map(|k| format!("`{k}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )))
+}
+
 fn missing_err(section_name: &str, key: &str) -> ConfigError {
     ConfigError(format!(
         "Missing `{section_name}.{key}` in {DOT_FOLDER}/{CONFIG_FILENAME}. \
@@ -430,6 +519,8 @@ pub fn load_config(
         Some(Json::Object(m)) => m.clone(),
         _ => Map::new(),
     };
+    reject_unknown_keys(&raw_obj, TOP_LEVEL_KEYS, None)?;
+
     let observe = build_observe_config(&obs_raw)?;
 
     // ---- cues ----
@@ -829,6 +920,9 @@ fn build_judge_config(j: &Map<String, Json>) -> Result<JudgeConfig, ConfigError>
 }
 
 fn build_observe_config(obs_raw: &Map<String, Json>) -> Result<ObserveConfig, ConfigError> {
+    // Gate before any field is read, so a mis-nested block is refused rather
+    // than leaving every setting in it at its default.
+    reject_unknown_keys(obs_raw, OBSERVE_KEYS, Some("observe"))?;
     let mut patterns = Vec::new();
     if let Some(Json::Array(list)) = obs_raw.get("tool_event_patterns") {
         for p in list {
