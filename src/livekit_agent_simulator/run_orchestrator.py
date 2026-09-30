@@ -233,6 +233,27 @@ async def run_scenario(
     )
 
 
+def _with_report_pointer(error: str | None, report_dir: Path) -> str | None:
+    """Append the report directory to a failure message.
+
+    Measured on the target repo (2026-09-30): a run killed by a LiveKit
+    read timeout reported `TimeoutError: The read operation timed out (in
+    webrtc_sim)` and nothing else. Its `events.jsonl` held 40 events including
+    a `contract.turn_published` and a `judge.verdict` — the run was not
+    evidence-free, it was just not reachable from the one line the CLI prints.
+
+    A peer session reported that run as having "produced no evidence at all",
+    which is a reasonable reading of the output and completely wrong about the
+    run. The cost was a round trip to find 40 events that were already written.
+
+    So the message points at its own evidence. Cheap, and it only ever adds a
+    path that already exists.
+    """
+    if error is None:
+        return None
+    return f"{error} (report: {report_dir})"
+
+
 def diagnose_failure(
     status: str,
     events: list[dict[str, Any]],
@@ -1006,5 +1027,9 @@ async def run_scenario_instance(
         "status": status,
         "report_dir": str(report_dir),
         "summary": summary,
-        **({"error": diagnose_failure(status, writer.events, meta)} if status == "failed" else {}),
+        **(
+            {"error": _with_report_pointer(diagnose_failure(status, writer.events, meta), report_dir)}
+            if status == "failed"
+            else {}
+        ),
     }

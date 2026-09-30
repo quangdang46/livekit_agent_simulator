@@ -100,3 +100,37 @@ def test_events_without_a_spec_are_tolerated(tmp_path: Path) -> None:
     w = _writer(tmp_path)
     w.emit("run.error", spec={"error": "the real cause"}, include_dialogue=False)
     assert "the real cause" in (diagnose_failure("failed", [{}, {"spec": None}, *w.events]) or "")
+
+
+# ---------------------------------------------------------------------------
+# a failure must point at its own evidence
+# ---------------------------------------------------------------------------
+
+
+def test_a_failure_message_names_its_report_dir(tmp_path) -> None:
+    """A run that wrote 40 events reported as having written none.
+
+    Measured on the target repo, 2026-09-30: a read timeout produced
+    `TimeoutError: The read operation timed out (in webrtc_sim)` and nothing
+    else. The report next to it held 40 events including a
+    `contract.turn_published` and a `judge.verdict`. A peer session read the
+    one line the CLI prints and reported the run as evidence-free, which cost a
+    round trip to find evidence that was already on disk.
+    """
+    from livekit_agent_simulator.run_orchestrator import _with_report_pointer
+
+    report = tmp_path / "068-gpt-live-happy-path-20260930-070804-ba93"
+    report.mkdir()
+    (report / "events.jsonl").write_text('{"kind": "run.error"}\n', encoding="utf-8")
+
+    message = _with_report_pointer("TimeoutError: The read operation timed out (in webrtc_sim)", report)
+
+    assert message is not None
+    assert str(report) in message, "the failure must name where its evidence is"
+    assert "TimeoutError" in message, "the cause must survive the pointer"
+
+
+def test_a_success_carries_no_pointer(tmp_path) -> None:
+    from livekit_agent_simulator.run_orchestrator import _with_report_pointer
+
+    assert _with_report_pointer(None, tmp_path) is None
