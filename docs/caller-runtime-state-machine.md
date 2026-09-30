@@ -33,7 +33,14 @@ The two absolute invariants (§29.2) guard every transition that publishes:
 | `DONE` | All actions completed, no failure | return path |
 | `FAILED` | A `DriverResult` with `failure` set (any of the 7 codes) | `_fail()` paths |
 
-### 1.2 Per-behavior (owned by `_run_behavior`, `driver.py:592-912`)
+### 1.2 Per-behavior (owned by `_run_behavior`, `driver.py`)
+
+⚠️ **Citations name the function, not the line number.** They were line numbers
+once and went stale the moment the routed branch and the agent-finals queue
+landed — two rows in this table pointed at the validator's retry budget and the
+attempt-verdict diagnostic respectively, neither of which is the state it
+claimed. A line number is a claim about a file that any edit falsifies; a
+function name is not.
 
 | State | Meaning | Code |
 |---|---|---|
@@ -42,10 +49,10 @@ The two absolute invariants (§29.2) guard every transition that publishes:
 | `VALIDATING` | `validator.validate()` on the candidate; verdict recorded in `_attempt_verdicts` trail; `assert_verdict` fires in replay mode | `driver.py:680-708` |
 | `VIOLATION_CHECK` | Non-VALID verdict → `CALLER_BEHAVIOR_VIOLATION` (INVALID/UNKNOWN/ERROR after retries) | `driver.py:748-763` |
 | `STALENESS_CHECK` | `orchestrator.is_stale()` after validate AND after TTS, before publish; stale → `stalled_spins += 1`, cap → `TRANSPORT_ERROR` | `driver.py:766-776,811-821` |
-| `SILENCE_GATE` | `_wait_agent_silence()` (bounded `AGENT_SILENCE_WAIT_S = 6.0s`): non-barge `do:` waits for the agent to go silent before synthesizing (run 026 fix) | `driver.py:784-791` |
-| `SYNTHESIZING` | `self._speak(text)`; `TTSSynthesisError` → `TTS_ERROR` | `driver.py:796-810` |
-| `PUBLISHING` | `sink.publish()` (staleness re-check + drain); `PublishDrainTimeout` → `TRANSPORT_ERROR`; refused publish → stalled-spin path | `driver.py:822-847`, `publish_sink.py` |
-| `WAITING_AGENT` | `asyncio.sleep(1.0)` settle (outside the agent timeout budget) + `_wait_agent_turn_with_policy(timeout_s=30.0)`; `None` → `AGENT_TIMEOUT` | `driver.py:855-889` |
+| `SILENCE_GATE` | `_wait_agent_silence()` (bounded `AGENT_SILENCE_WAIT_S = 6.0s`): non-barge `do:` waits for the agent to go silent before synthesizing (run 026 fix) | `driver.py` → `_wait_agent_silence` |
+| `SYNTHESIZING` | `self._speak(text)`; `TTSSynthesisError` → `TTS_ERROR` | `driver.py` → `_speak` |
+| `PUBLISHING` | `sink.publish()` (staleness re-check + drain); `PublishDrainTimeout` → `TRANSPORT_ERROR`; refused publish → stalled-spin path | `publish_sink.py` |
+| `WAITING_AGENT` | `asyncio.sleep(1.0)` settle (outside the agent timeout budget) + `_wait_agent_turn_with_policy(timeout_s=30.0)`; `None` → `AGENT_TIMEOUT` | `driver.py` → `_wait_agent_turn_with_policy` |
 | `EVALUATING` | `orchestrator.evaluate_behavior()` → `SATISFIED` returns `(turns, agent_text)`; otherwise loop back to the `check_max_turns` gate | `driver.py:890-898` |
 | `BEHAVIOR_TIMEOUT` | Gate returned `FAILED_MAX_TURNS` → single canonical `BEHAVIOR_TIMEOUT` exit | `driver.py:899-912` |
 
@@ -55,6 +62,34 @@ The two absolute invariants (§29.2) guard every transition that publishes:
 (audio stop, inside debounce window) → `AGENT_TURN_COMPLETE` (debounce
 expiry via `poll()`) → `CALLER_TURN` (caller takes the turn) →
 `WAITING_FOR_AGENT`. Turn logic lives in LKS, never in the LiveKit SDK.
+
+### 1.3a Where an agent turn actually ends (changed 2026-09-30)
+
+Two mechanisms decide this, and conflating them caused a measured one-turn
+routing error on every decision of a barge-in run.
+
+**Which finals are available** — `Observer._push_agent_final` queues agent
+transcripts **in arrival order**. This was a single overwrite slot
+(`observer.last_agent_final_text`); the wait only returned a final once
+`agent_is_active_speaker` went false, that flag is VAD energy which lags the
+agent's real audio by ~2.4 s, so turn N's final was overwritten by turn N+1's
+before the flag cleared and the router answered the *next* question. The queue
+makes turn assignment independent of when the flag clears. Dedup is by
+**segment id**, never by text — text-dedup drops real turns where the agent
+genuinely repeats itself, and no-dedup regresses the "never return the same
+final twice" invariant. See `agent_wait.py` and `livekit/observer.py`.
+
+**When the agent is speaking** — `ObserverAgentWait.is_agent_speaking_now`
+prefers the agent's own published turn state (`lk.agent.state`) and falls back
+to `active_speakers_changed` energy. The agent decides its own turn boundaries,
+so its state is authoritative where energy is an estimate. The fallback is
+correct and historical, but it is the ~2.4 s-late signal, so a run that used it
+emits **`contract.agent_state_unavailable`** — a run that silently degraded must
+not read as a run that worked.
+
+This is one input read by many trigger loops (`agent_speaking`, `silence`, the
+`WAITING_AGENT` policy). The loops, their `TRIGGER_GAP_TOLERANCE_S` continuity,
+and all three trigger kinds are unchanged — only the signal changed.
 
 ### 1.4 Say/do/control actions (owned by `_run_actions`, `driver.py:326-434`)
 

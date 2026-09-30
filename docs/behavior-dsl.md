@@ -43,6 +43,17 @@ utterance that must satisfy the `BehaviorContract` you declare here. The
 generated candidate is always validated before anything reaches the
 agent — see "Caller Contract Validator" below.
 
+⚠️ **One deliberate carve-out.** A scenario that authors a `responses:`
+catalog routes through the Decision Router, and a routed candidate **bypasses
+the validator** (it gets a synthetic `ValidationResult(VALID,
+reason="ROUTED")`). That is intentional: the routed line is authored ground
+truth, so validating it means the harness grading its own fixture — and it
+fails closed, turning an agent bug into `CALLER_BEHAVIOR_VIOLATION`. The
+invariant above still holds for every `caller_steps` scenario, which is the
+default. **Do not "restore" the validator on the routed path** — it converts
+every routed turn into a violation. Reasoning:
+[`NEW_ARCHITECTURE_FOR_LKS_AND_LKSR.md`](../NEW_ARCHITECTURE_FOR_LKS_AND_LKSR.md) §27.7.
+
 ## Behavior catalog
 
 The default allowlist (`DEFAULT_BEHAVIOR_CATALOG` in
@@ -126,10 +137,30 @@ BEHAVIOR_TIMEOUT (choreography could not proceed).
 The run-path verifier is rule-based (`semantic.py`, zero deps). Three gates
 that bite scenario authors:
 
-1. **Pin `target:` only inside the lexicon.** `TARGET_KEYWORDS` covers
-   `price, delivery_date, order_status, hours, plan, status, charge, fees`.
-   Any other pinned target fails closed as TARGET_UNVERIFIED by design.
-   Carry off-lexicon topics via verbatim `say:` + conversation context.
+1. **`target:` needs evidence, and the default lexicon is commercial.**
+   `TARGET_KEYWORDS` ships `price, delivery_date, order_status, hours, plan,
+   status, charge, fees` — nothing else. A pinned target outside it fails
+   closed as `TARGET_UNVERIFIED` (and often `LOW_CONFIDENCE`), which costs a
+   **paid call** to discover.
+
+   **Do not work around that by dropping the target.** Extend the table instead:
+
+   ```yaml
+   # .agent-sim/config.yaml
+   simulator:
+     target_keywords:
+       building_problem: [building, repair, maintenance, broken, damaged, leak]
+   ```
+
+   Entries MERGE over the defaults, so one target does not require restating
+   the eight built-ins. This is the same shape as `known_behaviors=` on
+   `parse_steps` — and it exists because targets had no extension point while
+   behaviors did, an asymmetry nobody decided. Keeping the vocabulary out of
+   `src/` is deliberate: it is consumer domain, not core.
+
+   Carry genuinely verbatim material (names, model numbers) via `say:` +
+   conversation context — `target_keywords` supplies *evidence* for a target,
+   it does not make the agent say a specific string.
 2. **The generator sees only the contract + recent turns.** Persona
    brief/goals never reach the text backend. Domain-specific wording
    (names, models) belongs in `say:`; target-free `do:` works

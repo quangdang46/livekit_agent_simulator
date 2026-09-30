@@ -50,6 +50,15 @@ uv run --directory /path/to/livekit-agent-simulator lks web --root .
   in `.agent-sim/config.yaml` for your market (package defaults are `en-US` / `UTC`).
 - For a scenario that calls an SDK tool: `tool.start` + `tool.end`/`tool.error` and
   `session.chat_history` appear; `meta.json` does not list `tool_events` in `observe_gaps`.
+- If the summary shows `gate: ungraded`, the judge produced **no verdict** — that is
+  not a pass. Read `summary.verdict.notes`: it carries the exception plus
+  `prompt_chars` / `transcript_chars` / `criteria` / `turns`, so you can tell a
+  timeout from a config fault without re-running. The gate is `pass` only when
+  the run was graded *and* passed. See
+  [`templates/GUIDE.md`](../templates/GUIDE.md) for the full table.
+- If the log contains `contract.agent_state_unavailable`, the agent never
+  published `lk.agent.state` and turn gating fell back to audio energy
+  (~2.4 s late). The run is valid but its turn boundaries are estimates.
 
 ## Common failures
 
