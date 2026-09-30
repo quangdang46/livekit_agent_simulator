@@ -616,7 +616,12 @@ Copy the ones you need to `<target>/.agent-sim/scenarios/`, then `lks validate <
 - `amd-silent-caller` / `amd-slow-pickup` / `amd-voicemail-greeting` — AMD / machine answer (greeting → beep → silence)
 
 **IVR / DTMF:**
-- `ivr-pin-dtmf` — `action: dtmf` digits
+- `dtmf-ivr-menu` — keypad tones through the real driver. Replaces the old
+  `ivr-pin-dtmf`, which used the inert `action: dtmf` legacy surface. **Tones
+  only reach an agent when the sim and the agent share one LiveKit room** — in
+  the three SIP modes the room gate fails the run with `TRANSPORT_ERROR`
+  naming that topology, because a tone published into a room the agent cannot
+  hear would report success for a keypress that reached nobody.
 - `multi-judge-smoke` — multi-judge PassCriteria
 
 **Ambient / hold:**

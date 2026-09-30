@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
@@ -296,3 +297,129 @@ def test_every_error_category_is_greppable() -> None:
     """
     known = {"unknown-digit:", "timeout:", "publish-failed:"}
     assert known == {c + ":" for c in ("unknown-digit", "timeout", "publish-failed")}
+
+
+# ---------------------------------------------------------------------------
+# the template tripwire (dtmf-restore 3tv.6.2)
+#
+# The layers above are all unit-tested against fakes, which is exactly the
+# "feature nobody runs inside this package" shape AGENTS.md forbids — and the
+# one that let the response router ship entirely un-attached while every test
+# was green. This drives the SHIPPED TEMPLATE through the REAL driver, so the
+# two halves are pinned to each other: change the template and this fails;
+# break the dtmf branch and this fails.
+# ---------------------------------------------------------------------------
+
+TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "examples" / "dtmf-ivr-menu.yaml"
+
+
+class _TripwireAgent:
+    def __init__(self) -> None:
+        self.waits = 0
+
+    async def wait_agent_turn(self, *, timeout_s: float = 30.0):
+        self.waits += 1
+        return "What is your company name?"
+
+    def is_agent_speaking_now(self) -> bool:
+        return False
+
+    @property
+    def agent_state_used(self) -> bool:
+        return False
+
+
+class _TripwireSink:
+    def __init__(self) -> None:
+        self.published: list[tuple[bytes, str]] = []
+
+    async def publish(self, pcm, identity, *, label, gain=1.0):
+        self.published.append((pcm, label))
+        return True
+
+
+async def test_the_ivr_menu_template_drives_real_tones():
+    """The shipped example, parsed and run — not a hand-written step list.
+
+    Asserts the exact codes for "1w2w3w#": the `w` pauses must not become
+    tones, which is the one thing a hand-written test would not catch if the
+    template's digit string ever drifted from what the parser sees.
+    """
+    from livekit_agent_simulator.caller_contract.driver import ContractCallerDriver
+    from livekit_agent_simulator.caller_contract.dsl import parse_steps
+    from livekit_agent_simulator.caller_contract.language_adapter import (
+        AILanguageAdapter,
+    )
+    from livekit_agent_simulator.caller_contract.orchestrator import Orchestrator
+    from livekit_agent_simulator.caller_contract.semantic import (
+        RuleBasedSemanticVerifier,
+    )
+    from livekit_agent_simulator.caller_contract.validator import ContractValidator
+    from livekit_agent_simulator.scenario_yaml import load_scenario_yaml
+
+    assert TEMPLATE.is_file(), f"the shipped DTMF template is missing: {TEMPLATE}"
+    scenario = load_scenario_yaml(TEMPLATE)
+    assert scenario.id == "dtmf-ivr-menu"
+
+    publisher = RecordingParticipant()
+
+    # The REAL publisher, not a stub — the codes come from DTMF_CODES.
+    driver = ContractCallerDriver(
+        orchestrator=Orchestrator(),
+        validator=ContractValidator(semantic_verifier=RuleBasedSemanticVerifier()),
+        adapter=AILanguageAdapter(backend=None),  # unused: the template has no `do:`
+        synthesize=lambda text: b"\x00\x01" * 100,
+    )
+    sink = _TripwireSink()
+    events: list[tuple[str, dict]] = []
+    orch = driver.orchestrator
+
+    result = await driver.run(
+        scenario.caller_actions,
+        _StaleFreeSink(orch),
+        _TripwireAgent(),
+        emit=lambda kind, spec: events.append((kind, spec)),
+        dtmf=RoomDtmfPublisher(publisher),  # type: ignore[arg-type]
+    )
+
+    assert result.failure is None, result.failure
+    # 1 -> 1, 2 -> 2, 3 -> 3, # -> 11. The three `w` pauses publish nothing.
+    assert publisher.calls == [(1, "1"), (2, "2"), (3, "3"), (11, "#")], (
+        f"the template's digit string did not drive the expected tones: {publisher.calls}"
+    )
+    emitted = [spec for kind, spec in events if kind == "sim.script.dtmf"]
+    assert len(emitted) == 1, f"expected exactly one sim.script.dtmf, got {len(emitted)}"
+    assert emitted[0]["digits"] == "1w2w3w#"
+    assert emitted[0]["published"] == 4
+    assert emitted[0]["error"] is None
+    # Regression 764dc3a: a keypress is not speech and must not reach the mixer.
+    assert sink.published == []
+
+
+class _StaleFreeSink:
+    """Sink stand-in for the tripwire: accepts everything, records nothing.
+
+    The tripwire asserts that dtmf pushes NO PCM, so a sink that recorded
+    would conflate "no audio" with "audio not inspected".
+    """
+
+    def __init__(self, orch) -> None:
+        self._orch = orch
+
+    async def publish(self, pcm, identity, *, label, gain=1.0):
+        return True
+
+
+def test_the_template_digit_string_exercises_the_pause_path():
+    """A single-key template would not cover the parser.
+
+    The `w` in the shipped string is the reason: it is the only way to author
+    an inter-key gap, and the only branch in `RoomDtmfPublisher.publish` that
+    neither publishes nor fails.
+    """
+    from livekit_agent_simulator.scenario_yaml import load_scenario_yaml
+
+    scenario = load_scenario_yaml(TEMPLATE)
+    digits = [a.dtmf_digits for a in scenario.caller_actions if a.kind == "dtmf"]
+    assert digits == ["1w2w3w#"], f"the template stopped exercising pauses: {digits}"
+    assert "w" in digits[0]

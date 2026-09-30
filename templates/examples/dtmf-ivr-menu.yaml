@@ -1,0 +1,78 @@
+# DTMF IVR menu — the gated user flow for the keypad restore.
+#
+# Why this exists: the DTMF path had four layers built and nothing in this
+# package ever pressed a key. The driver branch was exercised only by unit
+# tests that injected a fake publisher, which is the "feature nobody runs"
+# shape AGENTS.md forbids — and the one that let the response router ship
+# entirely un-attached while every test was green.
+#
+# So this scenario exists to be DRIVEN, not just shipped. The tripwire is
+# `tests/test_contract_dtmf.py::test_the_ivr_menu_template_drives_real_tones`,
+# which runs it through the real driver and asserts a tone reached the
+# publisher. Delete the dtmf branch and that test fails here, in this package,
+# rather than in someone else's repo.
+#
+# NOT copied by `lks init`. It needs a running agent that answers a SIP or
+# webrtc call, and the tones only reach an agent when the sim and the agent
+# share ONE LiveKit room — see the room-identity gate in `live_wiring.py`.
+# In the three SIP modes (inbound_sip, outbound_sim_callee, agent_dials) the
+# room gate fails the run loudly with `TRANSPORT_ERROR` naming that topology,
+# which is correct: a tone published into a room the agent cannot hear would
+# emit a green `sim.script.dtmf` for a keypress that reached nobody.
+apiVersion: agent-sim/v1
+kind: Scenario
+metadata:
+  id: dtmf-ivr-menu
+  locale: en-US
+  tags:
+  - dtmf
+  - ivr
+persona:
+  name: Alex
+  brief: You are calling a business. An automated assistant reads a keypad menu. Press
+    the keys it asks for on your telephone keypad, and answer questions with one or
+    two words only.
+  style: polite, brief
+execute:
+  max_turns: 8
+  timeout_s: 120
+  first_speaker: user
+caller_steps:
+  # NO `do:` OPENER, AND THAT IS DELIBERATE — an earlier draft had
+  # `- do: {behavior: ask, target: greeting}` and this template could not
+  # have run. Both halves of that were wrong, and both are worth knowing:
+  #
+  #   1. `target: greeting` is not in the verifier's `TARGET_KEYWORDS`, whose
+  #      built-in entries are commercial vocabulary only (price, hours,
+  #      charge, fees, plan, status, delivery_date, order_status). An
+  #      unknown target has no evidence and the step fails
+  #      `TARGET_UNVERIFIED` on a paid call. Extend the table in config
+  #      rather than renaming around it:
+  #          simulator:
+  #            target_keywords:
+  #              menu: [menu, option, choice, keypad, press]
+  #
+  #   2. Dropping the target does not rescue it either. A target-free `do:`
+  #      never satisfies: `evaluate_behavior` has nothing to match the
+  #      agent's reply against, so the behaviour times out and the run dies
+  #      at `BEHAVIOR_TIMEOUT` before any tone is pressed. This is what
+  #      docs/behavior-dsl.md means by "target-free `do:` works
+  #      mid-conversation, never as the domain-specific opener".
+  #
+  # An IVR menu is not a conversation anyway: the assistant reads the menu
+  # and the caller presses. The caller asks nothing.
+  #
+  # `wait:` takes a BARE INTEGER in milliseconds, not `{seconds: 3}`.
+  - wait: 3000
+  # `w` is a pause, not a tone. It exercises the whole digit parser rather
+  # than the trivial single-key case, and it is the only way to author a
+  # natural inter-key gap.
+  - dtmf: "1w2w3w#"
+  # LOAD-BEARING, not padding. `dtmf:` immediately followed by `end:` hangs up
+  # before the agent can react, so the first real run would look broken even
+  # though every tone landed. This is the agent's chance to answer.
+  - wait: 3000
+  - end: true
+pass_criteria:
+  criteria:
+  - The agent heard the caller's keypad presses
