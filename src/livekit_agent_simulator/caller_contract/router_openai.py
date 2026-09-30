@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .http_json import build_request, post_json
 from .router import (
     RESPONSE_KEY,
     SCHEMA_NAME,
@@ -137,37 +138,26 @@ class OpenAIResponseRouter:
         )
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
-        """POST, with the port's shared retry policy: exactly one retry on
+        """POST with the port's shared retry policy: exactly one retry on
         transport failures and 429/5xx, NEVER on a 4xx.
 
         A 400 against our own runtime-generated schema is a builder bug, and
         retrying it only turns a loud failure into a slow one.
+
+        The retry decision is `router.should_retry`, the single authority for
+        that rule; the transport itself is shared with the text backends via
+        `http_json.post_json`, which is why the two families can no longer
+        drift apart without a test noticing.
         """
-        data = json.dumps(body).encode("utf-8")
-        last: RouterError | None = None
-        for attempt in range(2):  # one try, one retry
-            req = urllib.request.Request(
-                self._endpoint(),
-                data=data,
-                method="POST",
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", errors="replace")[:500]
-                err: RouterError = RouterError(f"openai router HTTP {e.code}: {detail}")
-                if not should_retry(e.code):
-                    raise err from e
-                last = err
-            except urllib.error.URLError as e:
-                last = RouterError(f"openai router unreachable: {e}")
-        raise last or RouterError("openai router unreachable")
+        return post_json(
+            request=build_request(
+                url=self._endpoint(), body=body, api_key=self._api_key
+            ),
+            timeout_s=self._timeout_s,
+            error_factory=lambda detail: RouterError(f"openai router {detail}"),
+            retry_policy=should_retry,
+            max_attempts=2,
+        )
 
 
 __all__ = ["OpenAIResponseRouter"]

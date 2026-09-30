@@ -30,6 +30,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .http_json import build_request, post_json
 from .router import (
     RESPONSE_KEY,
     ResponseRouter,
@@ -149,29 +150,21 @@ class GeminiResponseRouter:
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         """POST with the port's shared retry policy: one retry on transport and
-        429/5xx, never on 4xx. A 400 here is a schema-composition bug, not a
-        flake, and retrying only delays the report of it."""
-        data = json.dumps(body).encode("utf-8")
-        last: RouterError | None = None
-        for _ in range(2):  # one try, one retry
-            req = urllib.request.Request(
-                self._endpoint(),
-                data=data,
-                method="POST",
-                headers={"Content-Type": "application/json"},
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", errors="replace")[:500]
-                err: RouterError = RouterError(f"gemini router HTTP {e.code}: {detail}")
-                if not should_retry(e.code):
-                    raise err from e
-                last = err
-            except urllib.error.URLError as e:
-                last = RouterError(f"gemini router unreachable: {e}")
-        raise last or RouterError("gemini router unreachable")
+        429/5xx, never 4xx. A 400 here is a schema-composition bug, not a
+        flake, and retrying only delays the report of it.
+
+        Shared transport with the OpenAI adapter and both text backends; the
+        retry decision stays `router.should_retry`.
+        """
+        return post_json(
+            request=build_request(
+                url=self._endpoint(), body=body, api_key=self._api_key, auth_style="raw"
+            ),
+            timeout_s=self._timeout_s,
+            error_factory=lambda detail: RouterError(f"gemini router {detail}"),
+            retry_policy=should_retry,
+            max_attempts=2,
+        )
 
 
 __all__ = ["GeminiResponseRouter"]

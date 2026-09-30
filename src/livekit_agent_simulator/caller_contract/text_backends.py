@@ -24,6 +24,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .http_json import build_request, post_json
+
 
 class LanguageBackendError(RuntimeError):
     """Transport/parse failure — AILanguageAdapter wraps this into bounded
@@ -126,25 +128,18 @@ class OpenAITextBackend:
             ],
             "response_format": {"type": "json_object"},
         }
-        data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            self._endpoint(),
-            data=data,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+        # No retry, deliberately: the text backend has never retried, and a
+        # silent retry would turn a loud, fast failure into a slow one. The
+        # shared transport takes `retry_policy=None` to mean exactly that.
+        payload = post_json(
+            request=build_request(
+                url=self._endpoint(), body=body, api_key=self._api_key
+            ),
+            timeout_s=self._timeout_s,
+            error_factory=lambda detail: LanguageBackendError(
+                f"OpenAI text backend {detail}"
+            ),
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace")[:500]
-            raise LanguageBackendError(f"OpenAI text backend HTTP {e.code}: {err_body}") from e
-        except urllib.error.URLError as e:
-            raise LanguageBackendError(f"OpenAI text backend unreachable: {e}") from e
 
         choices = payload.get("choices") or []
         if not choices:
@@ -192,21 +187,16 @@ class GeminiTextBackend:
                 "responseMimeType": "application/json",
             },
         }
-        data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            self._endpoint(),
-            data=data,
-            method="POST",
-            headers={"Content-Type": "application/json"},
+        # Gemini carries its key in the endpoint URL, not a header.
+        payload = post_json(
+            request=build_request(
+                url=self._endpoint(), body=body, api_key=self._api_key, auth_style="raw"
+            ),
+            timeout_s=self._timeout_s,
+            error_factory=lambda detail: LanguageBackendError(
+                f"Gemini text backend {detail}"
+            ),
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace")[:500]
-            raise LanguageBackendError(f"Gemini text backend HTTP {e.code}: {err_body}") from e
-        except urllib.error.URLError as e:
-            raise LanguageBackendError(f"Gemini text backend unreachable: {e}") from e
 
         candidates = payload.get("candidates") or []
         if not candidates:
