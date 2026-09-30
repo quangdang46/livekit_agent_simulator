@@ -33,6 +33,7 @@ from ..config import CONFIG_FILENAME, DOT_FOLDER, ConfigError
 from . import EndedBy
 from .agent_wait import ObserverAgentWait
 from .driver import ContractCallerDriver, DriverResult
+from .dtmf import RoomDtmfPublisher
 from .language_adapter import AILanguageAdapter
 from .orchestrator import Orchestrator
 from .publish_sink import DEFAULT_DRAIN_TIMEOUT_S, BridgePublishSink
@@ -547,6 +548,51 @@ async def run_contract_driver_path(
     else:
         validator = ContractValidator(semantic_verifier=_build_semantic_verifier(cfg))
         adapter = AILanguageAdapter(backend=_build_text_backend(cfg))
+    # A tone must be published by the participant the agent perceives as the
+    # caller, and `publish_dtmf` is an unconditional room broadcast — the
+    # Python API exposes no destination identities. So the tone only reaches
+    # the agent when the sim and the agent share ONE LiveKit room.
+    #
+    #   mode                  sim_room            agent_room        shared
+    #   webrtc_sim            dispatch.room       dispatch.room     yes
+    #   outbound_human_pickup agent_room_name     dispatch.room     yes
+    #   inbound_sip           lks-sip-{run_id}    resolved, sep.    NO
+    #   outbound_sim_callee   lks-sip-{run_id}    room_name_for_run NO
+    #   agent_dials           lks-sip-{run_id}    room_name_for_run NO
+    #
+    # In the last three the sim publishes into a room the observer can hear
+    # and the agent cannot. Publishing there would emit a green
+    # `sim.script.dtmf` for a tone that reached nobody — which is WORSE than
+    # the silent no-op this epic removes, because it looks like proof.
+    #
+    # Publishing from the agent room instead is not a workaround either: the
+    # observer holds it, but it connects as `lks-obs-{run_id[:8]}` and the
+    # agent filters DTMF on sender identity (`getCallerIdentity()`, the first
+    # remote participant, which in inbound_sip is deterministically the SIP
+    # participant). Right room, wrong sender.
+    #
+    # So: no publisher, and the driver's dtmf branch fails the run with a
+    # message naming this topology. Fail-fast, not a stub that no-ops.
+    _bridge_room = getattr(bridge, "room", None)
+    _shared = (
+        _bridge_room is not None
+        and getattr(observer, "room", None) is not None
+        and _bridge_room.name == observer.room.name
+    )
+    # `room.local_participant` is accessed DIRECTLY inside a try, never through
+    # `getattr(..., None)`: the property raises a bare Exception when the room
+    # is not connected yet (livekit/rtc/room.py:224), and getattr does NOT
+    # swallow an exception raised inside a property — the "safety net" would
+    # itself raise, and it would raise with an SDK message that names neither
+    # DTMF nor the room. A room that is not connected cannot carry a tone, so
+    # that is simply "no publisher", and the driver's dtmf branch says so.
+    dtmf_pub: Any = None
+    if _shared:
+        try:
+            dtmf_pub = RoomDtmfPublisher(_bridge_room.local_participant)
+        except Exception:  # noqa: BLE001 — not-connected means no publisher
+            dtmf_pub = None
+
     driver = ContractCallerDriver(
         orchestrator=orch,
         validator=validator,
@@ -699,6 +745,7 @@ async def run_contract_driver_path(
             silent_mode=_silent,
             greeting_timeout_s=greeting_timeout_s,
             assets=assets,
+            dtmf=dtmf_pub,
             hold_timeout_s=hold_timeout_s,
             on_hold_timeout=_on_hold_timeout,
         )

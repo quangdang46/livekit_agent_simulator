@@ -43,6 +43,21 @@ class CallerBridge(Protocol):
     end_call: asyncio.Event
     transport_dropped: bool
 
+    #: The SIM room — the one the simulated caller publishes into.
+    #:
+    #: In-contract rather than duck-typed, and that matters: the DTMF room
+    #: gate in `live_wiring` compares this against the observer's room to
+    #: decide whether a tone can reach the agent at all. In the three SIP
+    #: modes the two are DIFFERENT LiveKit rooms and a data packet cannot
+    #: cross, so the gate must fail the run loudly there. With `room` only
+    #: reachable by `getattr`, that comparison is always-None-by-accident and
+    #: every mode fails closed with no explanation.
+    #:
+    #: Access `room.local_participant` directly rather than through `getattr`:
+    #: that property raises when the room is not connected yet, and `getattr`
+    #: does not swallow an exception raised inside a property.
+    room: rtc.Room
+
     async def run(self) -> None:
         """Connect the realtime session and pump audio until ``end_call``."""
         ...

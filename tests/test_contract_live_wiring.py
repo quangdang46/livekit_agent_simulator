@@ -1605,3 +1605,138 @@ async def test_a_responses_scenario_routes_through_the_real_driver_path():
     assert decisions[0]["response_id"] == "company_name"
     assert decisions[0]["off_script"] is False
     assert decisions[0]["agent_text"], "the decision must record what it routed on"
+
+
+# ---------------------------------------------------------------------------
+# the DTMF room-identity gate (dtmf-restore 3tv.4.4)
+#
+# `publish_dtmf` is an unconditional room broadcast — the Python API exposes no
+# destination identities. So a tone only reaches the agent when the sim and the
+# agent share ONE LiveKit room, which is true for webrtc_sim and
+# outbound_human_pickup and false for the three SIP modes.
+# ---------------------------------------------------------------------------
+
+
+class _FakeRoom:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.local_participant = _FakeParticipant()
+
+
+class _FakeParticipant:
+    def __init__(self) -> None:
+        self.tones: list[tuple[int, str]] = []
+
+    async def publish_dtmf(self, *, code: int, digit: str) -> None:
+        self.tones.append((code, digit))
+
+
+def _give_rooms(bridge, observer, *, bridge_room: str, observer_room: str) -> None:
+    """Attach rooms to the fakes. They deliberately have none by default."""
+    bridge.room = _FakeRoom(bridge_room)
+    observer.room = _FakeRoom(observer_room)
+
+
+@pytest.mark.asyncio
+async def test_a_shared_room_publishes_the_tone():
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps([{"dtmf": "5"}, {"end": True}], file="t")
+    )
+    bridge, observer, writer = FakeBridge(), FakeObserver(), FakeWriter()
+    _give_rooms(bridge, observer, bridge_room="dispatch-1", observer_room="dispatch-1")
+
+    with patch("urllib.request.urlopen") as mock_open:
+        reason = await run_contract_driver_path(
+            scenario, None, observer, bridge, writer, _fake_cfg()
+        )
+        mock_open.assert_not_called()
+
+    assert reason == "contract_scenario_end", reason
+    tones = bridge.room.local_participant.tones
+    assert tones == [(5, "5")], f"the tone was not published: {tones}"
+    kinds = [k for k, _ in writer.events]
+    assert kinds.count("sim.script.dtmf") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_split_room_fails_loudly_naming_the_topology():
+    """The failure mode this gate exists to prevent.
+
+    Publishing from the sim room in a SIP leg reaches the observer and nobody
+    else. That would emit a green `sim.script.dtmf` for a tone that reached
+    nobody — worse than a silent no-op, because it looks like proof.
+    """
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps([{"dtmf": "5"}, {"end": True}], file="t")
+    )
+    bridge, observer, writer = FakeBridge(), FakeObserver(), FakeWriter()
+    _give_rooms(bridge, observer, bridge_room="lks-sip-abc", observer_room="dispatch-1")
+
+    with pytest.raises(ContractDriverFailure) as exc:
+        await run_contract_driver_path(scenario, None, observer, bridge, writer, _fake_cfg())
+
+    detail = exc.value.result.failure.detail
+    assert exc.value.result.failure.reason == FailureReason.TRANSPORT_ERROR
+    assert "dtmf" in detail
+    assert bridge.room.local_participant.tones == [], "nothing may be published"
+
+
+@pytest.mark.asyncio
+async def test_silence_still_works_in_a_split_room():
+    """The gate is about DTMF only. A control action must not inherit its failure."""
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps([{"silence": True}, {"end": True}], file="t")
+    )
+    bridge, observer, writer = FakeBridge(), FakeObserver(), FakeWriter()
+    _give_rooms(bridge, observer, bridge_room="lks-sip-abc", observer_room="dispatch-1")
+
+    reason = await run_contract_driver_path(
+        scenario, None, observer, bridge, writer, _fake_cfg()
+    )
+
+    assert reason == "contract_scenario_end", reason
+    kinds = [k for k, _ in writer.events]
+    assert "contract.control" in kinds
+
+
+class _UnconnectedRoom:
+    """Models the real SDK: `local_participant` RAISES before connecting.
+
+    `livekit/rtc/room.py:224` raises a bare Exception. `getattr(room,
+    "local_participant", None)` does not swallow an exception raised inside a
+    property, so a defensive getattr here is not a safety net — it is a second
+    way to fail, with a message that names neither DTMF nor the room.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    @property
+    def local_participant(self):
+        raise Exception("cannot access local participant before connecting")
+
+
+@pytest.mark.asyncio
+async def test_an_unconnected_room_fails_as_dtmf_not_as_an_sdk_error():
+    """A room that cannot carry a tone is "no publisher", not a mystery.
+
+    The failure has to stay in the DTMF vocabulary, or the reader is sent to
+    the LiveKit SDK instead of to the two-room topology that caused it.
+    """
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps([{"dtmf": "5"}, {"end": True}], file="t")
+    )
+    bridge, observer, writer = FakeBridge(), FakeObserver(), FakeWriter()
+    bridge.room = _UnconnectedRoom("dispatch-1")
+    observer.room = _UnconnectedRoom("dispatch-1")  # same name -> gate passes
+
+    with pytest.raises(ContractDriverFailure) as exc:
+        await run_contract_driver_path(scenario, None, observer, bridge, writer, _fake_cfg())
+
+    detail = exc.value.result.failure.detail
+    assert exc.value.result.failure.reason == FailureReason.TRANSPORT_ERROR
+    assert "dtmf" in detail
+    assert "cannot access local participant" not in detail, (
+        "the SDK's own exception leaked through — the reader would go looking "
+        "in livekit/rtc instead of at the room topology"
+    )
