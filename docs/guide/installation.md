@@ -842,6 +842,24 @@ When any naturalness criterion is present, the judge returns a structured `conve
 
 Judge verdicts (`pass`/`fail`/`maybe`) are **soft** unless `--strict-judge` is passed; hard CI gates are status / assert / script verify.
 
+⚠️ **A run the judge could not grade is not a pass.** The gate has three
+outcomes and `ok` means *graded and passed*:
+
+| `gate` | meaning |
+|---|---|
+| `pass` | graded, and passed |
+| `hard` | graded, and failed — a regression |
+| `soft` | graded, with soft notes |
+| `ungraded` | the judge produced no verdict (`ungraded: true`) — **not** a pass, **not** a regression |
+
+`ungraded` is deliberately not a hard failure: a judge HTTP blip is not evidence
+the agent regressed, and a gate that cannot tell "not graded" from "graded and
+failed" gets ignored wholesale. Read `summary.verdict.notes` in the run report —
+it carries the judge's exception plus `prompt_chars` / `transcript_chars` /
+`criteria` / `turns`, so a timeout is distinguishable from a config fault without
+re-running anything. See [`templates/GUIDE.md`](../../templates/GUIDE.md) for the
+full gate table.
+
 Script action `hang_up` makes the sim caller leave the room (hard hangup).
 
 ### Telephony scenarios (optional)

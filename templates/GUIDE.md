@@ -71,7 +71,10 @@ Created by `init`. **Gitignored.** Paste secrets here (no env substitution in v1
 | `simulator.api_key` | yes | API key of the **active** provider (`google` → Gemini, `openai` → OpenAI) |
 | `simulator.provider` / `mode` | no | Defaults `google` / `realtime`; `openai` also realtime today (cascade reserved) |
 | `simulator.voice.model` / `voice` / `language` | no | Provider-neutral voice bag; defaults flash-live model, Puck, `en-US` |
+| `simulator.target_keywords` | no | `{target: [kw, …]}` merged into the semantic verifier's target table. **Read this if a `do:` turn fails with `CALLER_BEHAVIOR_VIOLATION: LOW_CONFIDENCE`** — the built-in table is commercial vocabulary only (`price`, `hours`, `charge`, …), so a target outside it has no evidence and can never pass |
 | `judge.model` / `base_url` / `api_key` | no | Soft LLM judge; HTTP OpenAI chat when `base_url` set, else Gemini |
+| `router.provider` / `model` / `api_key` / `timeout_ms` / `temperature` | no | **Opt-in.** Required only if a scenario authors `responses:`. Absent is the normal state; `lks init` deliberately does not scaffold it |
+| `text_planner.enabled` / `provider` / `model` / `api_key` | no | Opt-in. `false` publishes a routed line **verbatim** (byte-exact); `true` paraphrases it with the block's own backend. `provider`/`model`/`api_key` are read only when `enabled: true` |
 
 | `observe.record_audio` | no | `true` → local stereo WAV (L=sim, R=agent), no Egress |
 | `observe.timezone` | no | Default `UTC` (report timestamps) |
@@ -249,6 +252,7 @@ lks scenario-init my-case --root /path/to/target
 | `Assert` | no | tools / transcript / **`sip`** / **`tool_order`** / outcomes (`transcript_contains`, **`recovery`**, **`latency`**, **`ended_by`**, **`goals_met`**, **`constraint_respected`**, `llm_bool`) |
 | `Plugins` | no | Load local modules (verify + lifecycle hooks) — see **Plugins** below |
 | `PassCriteria` | no | Soft LLM judge rubric — flat `criteria[]` **or** `judges[]` + `mode` (`all` \| `majority` \| `any`) |
+| `Responses` | no | **Opt-in response catalog.** The Decision Router picks one authored response per turn instead of generating one. Needs a `router:` block in config, else `ConfigError` at **run** time. Coexists with `CallerSteps`; when both are present the **router runs** — see [docs/migration-caller-steps-to-responses.md](../../docs/migration-caller-steps-to-responses.md) |
 
 ### Hold / agent dead-air timeout (`hold_music_timeout_s`)
 
@@ -561,7 +565,7 @@ Full guide: https://github.com/quangdang46/livekit_agent_simulator/blob/main/doc
 | `validate` | `validate_scenario` |
 | `export` | `export_scenario` |
 | `scenario-init` | `init_scenario` |
-| `execute` | `execute_scenario` (flags: ``--name``, ``--repeat N --pass-at-k K``, ``--strict-judge``, ``--environment <name>``, ``--profile <name>``) |
+| `execute` | `execute_scenario` (flags: ``--name``, ``--repeat N --pass-at-k K``, ``--strict-judge``, ``--no-router``, ``--environment <name>``, ``--profile <name>``) |
 | `execute-all` | `execute_scenarios` (suite matrix + CI gate; flags: ``--repeat --pass-at-k --parallel N``, ``--strict-judge``, ``--environment <name>``, ``--profile <name>``) |
 | `execute-dict` | `execute_scenario_dict` (flag: ``--name`` / MCP ``run_name``, ``--environment <name>``) |
 | `scenario-from-run` | `scenario_from_run` |
@@ -644,6 +648,26 @@ Common codes:
 | `exploratory` | Empty goals / barge without recovery / stress traits soft-only |
 
 Authoring quality ≠ execute hard gate (status/assert/script_verify after a run).
+
+**The gate has three outcomes, and `ok` means *graded and passed*.** A run the
+judge could not grade is **not** a pass — it is `ungraded`, reported with its
+own `gate` value and `ungraded: true`. This is deliberately distinct from a
+failure: a judge HTTP blip is not evidence the agent regressed, and a gate that
+cannot tell "not graded" from "graded and failed" gets ignored wholesale.
+
+| `gate` | meaning |
+|---|---|
+| `pass` | graded, and passed |
+| `hard` | graded, and failed — a regression |
+| `soft` | graded, with soft notes (judge `maybe`, `fail` without `--strict-judge`) |
+| `ungraded` | the judge produced no verdict; **not** a pass, **not** a regression |
+
+Diagnose it from the run report: `summary.verdict.notes` carries the judge's
+exception with `prompt_chars` / `transcript_chars` / `criteria` / `turns`, so a
+timeout is distinguishable from a config fault without re-running anything.
+Also check for `contract.agent_state_unavailable` — that means the agent never
+published `lk.agent.state` and turn gating fell back to audio energy (~2.4 s
+late), so turn boundaries in that run are estimates.
 
 Golden baseline gate (CI): treat run A as baseline, fail exit `1` if candidate regresses:
 
