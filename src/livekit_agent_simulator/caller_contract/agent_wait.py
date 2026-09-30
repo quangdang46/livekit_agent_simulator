@@ -250,16 +250,34 @@ class ObserverAgentWait:
             elapsed = timeout_s - (deadline - time.monotonic())
             if not self._snapshot_attempted and elapsed >= timeout_s * self.snapshot_fraction:
                 self._snapshot_attempted = True
+                # Drain FIRST. The snapshot is the newest session message, so
+                # using it while an arrival-queued final is still pending
+                # returns the wrong turn — the one-turn-behind symptom again,
+                # through a different door.
+                self._agent_final_queue.extend(self._drain_observer_finals())
+                if self._agent_final_queue:
+                    self._last_returned_text = self._agent_final_queue.pop(0)
+                    return self._last_returned_text
                 snapshot_text = await self._latest_session_agent_text(
                     exclude_before=seen_at_start
                 )
                 if snapshot_text:
-                    return snapshot_text
+                    # Record it. Returning tier-2 evidence without recording
+                    # lets a later wait hand back the same text as a new turn.
+                    self._last_returned_text = str(snapshot_text)
+                    return str(snapshot_text)
 
             await asyncio.sleep(self.poll_s)
 
         # Timeout: tier-3 floor — agent provably talked, words unknown.
-        if saw_audio:
+        #
+        # Recorded, like every other return, and that is the fix. The marker
+        # used to be returned WITHOUT setting `_last_returned_text`, so two
+        # consecutive untranscribed turns each got one — the driver saw
+        # "[untranscribed agent speech]" twice in a row and the router routed
+        # a marker it had already routed. Run 013 turn 3 is that symptom.
+        if saw_audio and _UNTRANSCRIBED_MARKER != self._last_returned_text:
+            self._last_returned_text = _UNTRANSCRIBED_MARKER
             return _UNTRANSCRIBED_MARKER
         return None
 

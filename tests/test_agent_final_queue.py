@@ -173,3 +173,57 @@ def test_an_observer_without_a_queue_still_works():
     obs.last_agent_final_text = "slot only"
     obs.agent_is_active_speaker = False
     assert _wait(_waiter(obs)) == "slot only"
+
+
+# --------------------------------------------------------------------------
+# tiers 2 and 3 are the same door: they must not bypass the queue, and they
+# must record what they return.
+# --------------------------------------------------------------------------
+
+
+def test_the_untranscribed_marker_is_returned_once_not_every_turn():
+    """Run 013 turn 3: `[untranscribed agent speech]` reached the router.
+
+    The tier-3 floor returned that marker WITHOUT recording it, so two
+    consecutive untranscribed turns each got one — the driver saw the same
+    marker twice and the router routed a line it had already routed. Every
+    other return path records; this one did not.
+    """
+    obs = _FakeObserver()
+    obs.agent_has_spoken = True
+    obs.agent_is_active_speaker = False
+
+    w = _waiter(obs)
+    first = _wait(w, timeout_s=0.1)
+    assert first == "[untranscribed agent speech]"
+
+    # The agent talks again but still nothing is transcribed.
+    obs.agent_has_spoken = True
+    second = _wait(w, timeout_s=0.1)
+    assert second is None, (
+        f"the marker was handed back a second time ({second!r}); two "
+        "consecutive untranscribed turns must not both look like new evidence"
+    )
+
+
+def test_tier_2_does_not_preempt_a_queued_final():
+    """A session snapshot is the NEWEST agent message.
+
+    If it is used while an arrival-queued final is still pending, it returns
+    the wrong turn — the one-turn-behind symptom through a different door.
+    Tier 2 now drains the queue first.
+    """
+    obs = _FakeObserver()
+    obs.land("queued turn-N", "SG_N")
+    obs.land("queued turn-N+1", "SG_N1")
+    obs.stop()
+
+    w = _waiter(obs)
+    # snapshot_fraction=0.0 makes tier 2 eligible on the first poll.
+    w._snapshot_attempted = False
+    w.snapshot_fraction = 0.0
+
+    first = _wait(w, timeout_s=0.3)
+    assert first == "queued turn-N", (
+        f"tier 2 preempted the queue and returned {first!r}"
+    )
