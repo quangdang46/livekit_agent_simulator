@@ -952,25 +952,54 @@ async def run_scenario_instance(
             json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     ended_utc = datetime.now(timezone.utc).isoformat()
-    await store.insert_events(run_id, writer.events)
-    await store.insert_turns(run_id, writer.turn_metrics())
-    await store.finish_run(run_id, status, summary, ended_utc)
+    # Everything from here to the return is POST-RUN bookkeeping: sqlite
+    # writes and the after_run hooks. None of it produces the evidence - the
+    # transcript, the events and summary.json are already on disk.
+    #
+    # So a failure here must NOT escape. It did, once: a read timeout on the
+    # sim leg surfaced during teardown/storage, ops.execute_scenario caught
+    # it, and the run came back as {"run_id": null, "status": "failed"} -
+    # discarding the identifiers and orphaning a paid run's whole transcript,
+    # with nothing pointing at it. Run 033 (gpt-live-instrumentation-repro).
+    #
+    # Persist the fault and keep going, so the caller always gets a run_id and
+    # a report_dir it can open.
+    def _record_post_run_fault(stage: str, exc: BaseException) -> None:
+        writer.emit(
+            "run.post_run_fault",
+            spec={
+                "stage": stage,
+                "error": f"{type(exc).__name__}: {exc}",
+                "evidence_persisted": True,
+            },
+            include_dialogue=False,
+        )
+
+    try:
+        await store.insert_events(run_id, writer.events)
+        await store.insert_turns(run_id, writer.turn_metrics())
+        await store.finish_run(run_id, status, summary, ended_utc)
+    except Exception as exc:  # noqa: BLE001 - sqlite is a cache, not the record
+        _record_post_run_fault("store", exc)
 
     # ── Phase: after_run hooks ──────────────────────────────────────────
-    plugin_registry.run_after_run_hooks(
-        AfterRunContext(
-            scenario=scenario,
-            project_root=Path(cfg.project_root),
-            run_id=run_id,
-            run_name=run_name,
-            report_dir=report_dir,
-            status=status,
-            summary=summary,
-            events=list(writer.events),
-            verdict=verdict,
-            options=dict(scenario.script_verify.plugin_options) if scenario.script_verify else {},
-        ),
-    )
+    try:
+        plugin_registry.run_after_run_hooks(
+            AfterRunContext(
+                scenario=scenario,
+                project_root=Path(cfg.project_root),
+                run_id=run_id,
+                run_name=run_name,
+                report_dir=report_dir,
+                status=status,
+                summary=summary,
+                events=list(writer.events),
+                verdict=verdict,
+                options=dict(scenario.script_verify.plugin_options) if scenario.script_verify else {},
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - a user plugin must not orphan a run
+        _record_post_run_fault("after_run_hooks", exc)
 
     return {
         "run_id": run_id,
