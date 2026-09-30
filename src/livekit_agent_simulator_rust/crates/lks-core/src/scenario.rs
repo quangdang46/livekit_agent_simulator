@@ -16,7 +16,7 @@ use crate::errors::ScenarioError;
 
 pub const API_VERSION: &str = "agent-sim/v1";
 
-pub const KNOWN_KINDS: [&str; 13] = [
+pub const KNOWN_KINDS: [&str; 14] = [
     "Persona",
     "Context",
     "Simulator",
@@ -30,6 +30,7 @@ pub const KNOWN_KINDS: [&str; 13] = [
     "Caller",
     "Telephony",
     "CallerSteps",
+    "Responses",
 ];
 
 pub const CALLER_MODES: [&str; 5] = [
@@ -304,12 +305,38 @@ pub struct Scenario {
     /// payloads — mirrors Python Scenario.caller_actions (parse only;
     /// no driver/orchestrator in this crate).
     pub caller_actions: Vec<crate::caller_dsl::CallerAction>,
+    /// The raw `responses:` catalog, exactly as authored. `None` when absent.
+    ///
+    /// Deliberately NOT parsed. `lksr` does not implement the router, and
+    /// building a partial parser would be exactly the half-feature
+    /// AGENTS.md forbids. Only the shape is checked (must be a mapping),
+    /// and only because Python checks that too.
+    ///
+    /// The RAW value is kept rather than a bool for one concrete reason:
+    /// `scenario_to_dict` is contractually "preserve fields on export"
+    /// (caller_dsl.rs:9). A bool could not put the catalog back, so export
+    /// would have to drop it — and parse-without-export is the exact
+    /// failure the plan warns about ("silently drops the catalog"). Storing
+    /// the value is what makes the round-trip honest without validating a
+    /// single key.
+    pub responses: Option<serde_json::Value>,
+
     pub plugin_modules: Vec<String>,
     pub asserts: Option<Json>,
     pub behavior_spec: Option<Map<String, Json>>,
     /// Caller policy override from the optimizer (None = use builtin DefaultCallerPolicy).
     /// Port of Python Scenario.caller_policy: Any = None.
     pub caller_policy: Option<crate::caller_policy::CallerPolicyContext>,
+}
+
+impl Scenario {
+    /// Whether a non-empty `responses:` catalog was authored.
+    ///
+    /// A `responses:` key that parses to `{}` counts as absent, matching the
+    /// parse arm: there is nothing for the run-time guard to refuse.
+    pub fn responses_present(&self) -> bool {
+        matches!(&self.responses, Some(v) if v.as_object().is_some_and(|m| !m.is_empty()))
+    }
 }
 
 impl Scenario {
@@ -791,6 +818,28 @@ pub fn scenario_from_dict(
         caller_actions = crate::caller_dsl::parse_steps(arr, path_label)?;
     }
 
+    // `responses:` — presence only, no catalog parse (see the field docstring).
+    // Shape is checked where Python checks it: it must be a mapping. Anything
+    // deeper is deliberately NOT validated, because lksr refuses the run
+    // outright rather than half-supporting it.
+    let responses = match data.get("responses") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Object(m)) if m.is_empty() => None,
+        Some(serde_json::Value::Object(_)) => data.get("responses").cloned(),
+        Some(other) => {
+            return Err(ScenarioError(format!(
+                "{path_label}: responses must be a mapping of id -> response, got {}",
+                match other {
+                    serde_json::Value::Array(_) => "an array",
+                    serde_json::Value::String(_) => "a string",
+                    serde_json::Value::Number(_) => "a number",
+                    serde_json::Value::Bool(_) => "a boolean",
+                    _ => "an unexpected value",
+                }
+            )))
+        }
+    };
+
     // Fix (lksr caller_steps ignored): the Rust caller bridges only ever
     // drove the legacy `script_steps` list (ScriptRuntime, see
     // crate::script), never `caller_actions` — a scenario authored purely
@@ -915,6 +964,7 @@ pub fn scenario_from_dict(
         script_steps,
         script_verify,
         caller_actions,
+        responses,
         plugin_modules,
         asserts,
         behavior_spec,

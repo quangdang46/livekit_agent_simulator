@@ -170,6 +170,7 @@ pub fn parse_scenario_jsonl(path: &PathBuf) -> Result<Scenario, ScenarioError> {
         behavior_spec: None,
         caller_policy: None,
         caller_actions: Vec::new(),
+        responses: None,
     };
 
     for (line_no, obj) in &records[1..] {
@@ -339,6 +340,25 @@ pub fn parse_scenario_jsonl(path: &PathBuf) -> Result<Scenario, ScenarioError> {
                 scenario.caller_actions =
                     crate::caller_dsl::parse_steps(steps, &path.display().to_string())
                         .map_err(|e| ScenarioError(format!("{}:{line_no}: {e}", path.display())))?;
+            }
+            // `responses:` — presence only, same as scenario_from_dict. lksr
+            // does not implement the router; the run-time guard in
+            // lks-livekit/src/run.rs refuses the run with both remedies
+            // named. Parsing the catalog here would be a half-feature.
+            "Responses" => {
+                let block = obj.get("spec").ok_or_else(|| {
+                    ScenarioError(format!(
+                        "{}:{line_no}: Responses requires a spec",
+                        path.display()
+                    ))
+                })?;
+                let map = block.as_object().ok_or_else(|| {
+                    ScenarioError(format!(
+                        "{}:{line_no}: Responses.spec must be a mapping of                          id -> response",
+                        path.display()
+                    ))
+                })?;
+                scenario.responses = Some(block.clone());
             }
             _ => {
                 return Err(ScenarioError(format!(

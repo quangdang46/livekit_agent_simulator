@@ -337,6 +337,13 @@ pub fn scenario_to_dict(s: &crate::scenario::Scenario) -> Map<String, Json> {
         }
         data.insert("caller_steps".into(), Json::Array(steps));
     }
+    // `responses:` export: the authored catalog, verbatim. See the
+    // `Scenario::responses` docstring — this arm is what stops
+    // parse-without-export from silently dropping a user's catalog, which
+    // caller_dsl.rs:9 names as this module's own contract.
+    if let Some(block) = &s.responses {
+        data.insert("responses".into(), block.clone());
+    }
     if !s.plugin_modules.is_empty() {
         data.insert(
             "plugin_modules".into(),

@@ -687,6 +687,27 @@ pub async fn execute_scenario_parsed(
     let nudge_rx = end_rx.resubscribe();
     let rate_end_rx = end_rx.resubscribe();
 
+    // v2 responses router: REFUSE, do not half-run it. See v2-28 for why
+    // lksr stays off this surface in v1, and v2-29 for the guard.
+    //
+    // Placed here, ONCE, rather than beside each
+    // `with_contract_only(...)` gate below, because the two gates are the
+    // Gemini and OpenAI branches of the same dispatch — a guard that has to
+    // be added twice is a guard that will be added once.
+    //
+    // The predicate is SYMMETRIC with Python's ConfigError, and that symmetry
+    // is the point: both ports must decide from the same condition, or the
+    // same scenario behaves differently under `lks` and `lksr` with nothing
+    // saying why. Note it is NOT "contains responses:" — a responses: block
+    // with no router configured is INERT AND CORRECT on both ports (caller_steps
+    // wins), and refusing there would break every stock template.
+    if scenario.responses_present() && cfg.router.is_some() {
+        return Err(RunError(format!(
+            "scenario `{}` authors `responses:` and a `router:` block is configured,              but lksr does not implement the v2 responses router.              Two remedies: (1) run it with the Python `lks` (lksr is opt-in via              --rust / -Rust), or (2) remove the `router:` block from              .agent-sim/config.yaml, which makes the router inert and the              scenario falls back to caller_steps.",
+            scenario.id
+        )));
+    }
+
     // Provider dispatch: config `simulator.provider` selects the caller bridge.
     let provider = cfg.simulator.provider.trim().to_lowercase();
     let bridge_future: std::pin::Pin<

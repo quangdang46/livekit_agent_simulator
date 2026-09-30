@@ -146,6 +146,14 @@ pub struct CuesConfig {
     pub aliases: BTreeMap<String, String>,
 }
 
+/// Does a `router:` block exist, and which provider does it name?
+///
+/// See the `SimConfig::router` docstring for why lksr stops here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouterPresence {
+    pub provider: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TelephonyConfig {
     pub outbound_trunk_id: Option<String>,
@@ -170,6 +178,14 @@ pub struct SimConfig {
     pub project: Option<String>,
     pub cues: CuesConfig,
     pub telephony: TelephonyConfig,
+    /// Presence + provider of the v2 `router:` block, and nothing else.
+    ///
+    /// lksr does not implement the router (v2-28), so it deliberately does
+    /// NOT mirror Python's RouterConfig field by field. It needs exactly one
+    /// fact — "is a router configured?" — to run the guard in
+    /// lks-livekit/src/run.rs, and parsing keys lksr would then reject as
+    /// unknown is how a half-feature starts.
+    pub router: Option<RouterPresence>,
     pub active_profile: Option<String>,
 }
 
@@ -422,6 +438,31 @@ pub fn load_config(
         _ => CuesConfig::default(),
     };
 
+    // ---- router (presence only; see SimConfig::router) ----
+    let router = match raw_obj.get("router") {
+        Some(Json::Object(m)) => Some(RouterPresence {
+            provider: m
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase(),
+        }),
+        Some(Json::Null) | None => None,
+        Some(other) => {
+            return Err(ConfigError(format!(
+                "`router:` must be a mapping, got {}",
+                match other {
+                    Json::Array(_) => "an array",
+                    Json::String(_) => "a string",
+                    Json::Number(_) => "a number",
+                    Json::Bool(_) => "a boolean",
+                    _ => "an unexpected value",
+                }
+            )))
+        }
+    };
+
     // ---- telephony ----
     let telephony = match raw_obj.get("telephony") {
         Some(Json::Object(m)) => build_telephony_config(m)?,
@@ -442,6 +483,7 @@ pub fn load_config(
         project,
         cues,
         telephony,
+        router,
         active_profile,
     })
 }
