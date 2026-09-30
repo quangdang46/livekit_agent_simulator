@@ -155,6 +155,13 @@ def test_say_without_trigger_has_no_gate():
     assert action.barge_in is False
 
 
+# `{"dtmf": ..., "trigger": ...}` used to be in this list, asserting it
+# raised. dtmf-restore 3tv.4.3 lifted that on purpose — a human presses after
+# the agent starts talking, and demo/dtmf-feature run 058 did exactly that.
+# Asserting the rejection would have re-pinned the restriction the bead
+# removes; `test_dtmf_accepts_a_trigger_and_keeps_it` below asserts the
+# opposite, including that the trigger survives parsing rather than being
+# dropped after passing the gate.
 @pytest.mark.parametrize(
     "step",
     [
@@ -167,7 +174,6 @@ def test_say_without_trigger_has_no_gate():
         {"say": "Hi.", "barge_in": "yes"},
         {"wait": 10, "trigger": {"kind": "time"}},
         {"wait": 10, "barge_in": True},
-        {"dtmf": "123", "trigger": {"kind": "time"}},
         {"end": True, "barge_in": True},
         {"do": "ask", "trigger": {"kind": "time"}},
         {"do": "ask", "barge_in": True},
@@ -748,3 +754,60 @@ def test_end_silence_hangup_reject_siblings(step):
     (P1 review fix — unknown fields must never silently disappear)."""
     with pytest.raises(DSLError):
         parse_steps([step], file="t")
+
+
+# ---------------------------------------------------------------------------
+# trigger: on a dtmf step (dtmf-restore 3tv.4.3)
+# ---------------------------------------------------------------------------
+
+
+def test_dtmf_accepts_a_trigger_and_keeps_it():
+    """A human presses after the agent starts talking, not before.
+
+    `demo/dtmf-feature/.agent-sim/reports/058-press-4-*` ran
+    `trigger: agent_speaking`; without this the tone fires at t=0, before the
+    agent has read its menu prompt, and the demo reads as broken.
+    """
+    action = parse_steps(
+        [{"dtmf": "123", "trigger": {"kind": "agent_speaking"}}, {"end": True}],
+        file="t",
+    )[0]
+    assert action.kind == "dtmf"
+    assert action.dtmf_digits == "123"
+    assert action.trigger is not None, (
+        "the reject tuple was lifted but the trigger was not parsed — it would "
+        "pass the gate and then be dropped, firing the tone at t=0 anyway"
+    )
+    assert action.trigger.kind == "agent_speaking"
+
+
+def test_dtmf_without_a_trigger_is_still_immediate():
+    """Lifting the gate must not make a trigger mandatory."""
+    action = parse_steps([{"dtmf": "1"}, {"end": True}], file="t")[0]
+    assert action.trigger is None
+
+
+def test_dtmf_still_rejects_barge_in():
+    """`barge_in` means "cut across the caller's speech". A tone is not speech.
+
+    The message says so, because the old one ("only supported on say: steps")
+    contradicted play_audio, which does accept `trigger:`.
+    """
+    with pytest.raises(DSLError) as exc:
+        parse_steps([{"dtmf": "1", "barge_in": True}, {"end": True}], file="t")
+    assert "barge_in" in str(exc.value)
+    assert "no meaning for dtmf" in str(exc.value)
+
+
+def test_wait_still_rejects_trigger():
+    """3tv.4.3 is about dtmf. Widening `wait` is scope creep nobody asked for."""
+    with pytest.raises(DSLError) as exc:
+        parse_steps([{"wait": 10, "trigger": {"kind": "agent_speaking"}}, {"end": True}], file="t")
+    assert "only supported on say:" in str(exc.value)
+
+
+def test_a_malformed_dtmf_trigger_is_still_rejected():
+    """Lifting the tuple must not lower the bar on the trigger's own shape."""
+    with pytest.raises(DSLError) as exc:
+        parse_steps([{"dtmf": "1", "trigger": {"kind": "telepathy"}}, {"end": True}], file="t")
+    assert "trigger" in str(exc.value)

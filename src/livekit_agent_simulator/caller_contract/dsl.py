@@ -438,7 +438,7 @@ def parse_step(
             )
         return _parse_do(raw_step["do"], file=file, line=line_no, known_behaviors=known_behaviors)
 
-    if kind in ("dtmf", "wait"):
+    if kind == "wait":
         if "trigger" in raw_step or "barge_in" in raw_step:
             raise _err(
                 "trigger:/barge_in: are only supported on say: steps in this slice",
@@ -446,15 +446,41 @@ def parse_step(
                 line=line_no,
                 field=kind,
             )
-        if kind == "dtmf":
-            digits = raw_step["dtmf"]
-            if not isinstance(digits, str) or not digits:
-                raise _err("dtmf: must be a non-empty digit string", file=file, line=line_no, field="dtmf")
-            return CallerAction(kind="dtmf", line_no=line_no, dtmf_digits=digits)
         ms = raw_step["wait"]
         if not isinstance(ms, int) or ms < 0:
             raise _err("wait: must be a non-negative integer (milliseconds)", file=file, line=line_no, field="wait")
         return CallerAction(kind="wait", line_no=line_no, wait_ms=ms)
+
+    if kind == "dtmf":
+        if "barge_in" in raw_step:
+            # `trigger` IS allowed on a keypress — a human presses after the
+            # agent starts talking, and `demo/dtmf-feature` run 058 did exactly
+            # that with `trigger: agent_speaking`. `barge_in` is different: it
+            # means "skip the wait-for-agent-silence gate so the caller can
+            # interrupt", and a tone is not caller speech. Lifting only the
+            # trigger half is the whole of 3tv.4.3.
+            raise _err(
+                "barge_in: has no meaning for dtmf — there is no caller speech "
+                "to cut across. Use `trigger:` if the tone must wait for the "
+                "agent.",
+                file=file,
+                line=line_no,
+                field="barge_in",
+            )
+        digits = raw_step["dtmf"]
+        if not isinstance(digits, str) or not digits:
+            raise _err("dtmf: must be a non-empty digit string", file=file, line=line_no, field="dtmf")
+        # The trigger must be PARSED here, not merely permitted by lifting the
+        # reject. Returning the action without it would let `trigger:` through
+        # the gate and then drop it on the floor — a tone firing at t=0 before
+        # the agent has read its menu prompt, which is exactly the behaviour
+        # 3tv.4.3 exists to remove.
+        return CallerAction(
+            kind="dtmf",
+            line_no=line_no,
+            dtmf_digits=digits,
+            trigger=_parse_trigger(raw_step.get("trigger"), file=file, line=line_no),
+        )
 
     if kind == "play_audio":
         pass  # handled below (trigger allowed, barge_in rejected there)

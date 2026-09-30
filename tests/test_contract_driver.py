@@ -672,12 +672,6 @@ async def test_a_partial_publish_is_not_a_failure():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason="dsl.py still rejects trigger:/barge_in: on dtmf steps — that "
-           "restriction is dtmf-restore 3tv.4.3. The branch under test is "
-           "here and follows play_audio verbatim; this test starts running "
-           "the moment the parser allows the step, which is what 3tv.4.3 is for."
-)
 async def test_a_dtmf_trigger_that_never_fires_is_a_timeout():
     """Not a no-op. A step whose trigger never arrived pressed nothing."""
     driver, orch = _driver()
@@ -686,7 +680,7 @@ async def test_a_dtmf_trigger_that_never_fires_is_a_timeout():
     events, emit = _collect()
 
     steps = parse_steps(
-        [{"dtmf": "1", "trigger": {"kind": "agent_speaking", "timeout_s": 0.05}},
+        [{"dtmf": "1", "trigger": {"kind": "agent_speaking"}},
          {"end": True}],
         file="t",
     )
