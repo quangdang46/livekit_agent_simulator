@@ -120,6 +120,8 @@ lks web --root /path/to/target          # Ctrl+C to stop
 
 5. **CI-friendly gates.**  
    Hard fails on status / assert / script; optional strict judge for softer LLM scoring.
+   A run the judge **could not grade** is neither: it reports `gate: ungraded`,
+   which is not a pass. `ok` means graded *and* passed.
 
 ---
 
@@ -339,6 +341,15 @@ See `web/README.md`.
 
 **Status:** data-plane ops (scenarios/validate/export/cues/plugins/runs/report/compare/optimize) and offline gates are at parity; the live-run path still has known gaps vs Python (script `speak` cues reach the room via the OpenAI bridge only, judge defaults to skip without `judge.base_url`, verify plugins need a build with `--features python-plugins`). For CI-critical runs use the Python `lks`; try `lksr` for quick local checks.
 
+⚠️ **`lksr` does not execute routed scenarios.** A scenario authoring
+`responses:` **with** a `router:` block configured is refused at run time with
+both remedies named. Without a `router:` block it runs `caller_steps` normally
+— `lks` raises `ConfigError` for that combination, so the two ports are
+deliberately **complementary, not symmetric**: each refuses what the other
+accepts. `lksr` is a subset port — it validates less, never differently. Full
+reasoning and the 2×2 table: [AGENTS.md](AGENTS.md), "The routed path is
+PYTHON-ONLY".
+
 Python `lks` stays the default install; pass `--rust` / `-Rust` for the Rust binary:
 
 ```bash
@@ -416,7 +427,10 @@ Target-only data lives under `<target>/.agent-sim/` (**gitignored**). Created by
 | `simulator.provider` / `mode` | no | Caller language backend: `google` (default) or `openai`; `realtime` mode (cascade reserved) |
 | `simulator.voice.model` / `voice` / `language` | no | Provider-neutral voice bag; defaults flash-live, Puck, `en-US` |
 | `simulator.profiles` | no | **Named caller profiles** — switch provider without editing the file |
+| `simulator.target_keywords` | no | `{target: [kw, …]}` merged into the semantic verifier. **Read this if a `do:` turn fails with `CALLER_BEHAVIOR_VIOLATION`** — the built-in target table is commercial vocabulary only, so a target outside it can never pass and you find out by paying for a call |
 | `judge.model` | no | If set + PassCriteria → post-run LLM judge |
+| `router.*` | no | **Opt-in.** Only needed if a scenario authors `responses:`. Absent is normal; `lks init` deliberately does not scaffold it |
+| `text_planner.*` | no | Opt-in. `enabled: false` publishes routed lines verbatim; `true` paraphrases them |
 | `observe.record_audio` | no (default `true`) | Local stereo WAV (L=sim, R=agent); no Egress |
 | `observe.data_topics` | no | Empty = all topics |
 | `observe.tool_event_patterns` | no | Map data payloads → tool start/end/error |
