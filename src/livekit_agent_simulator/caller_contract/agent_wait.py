@@ -87,9 +87,23 @@ class ObserverAgentWait:
     def _drain_observer_finals(self) -> list[str]:
         """Take everything the observer queued since the last drain.
 
-        A fake observer without `take_agent_finals` (older doubles, and the
-        many test stubs) yields nothing, and the pre-existing slot path
-        still works for it — so this degrades rather than breaking.
+        Normalises to plain text. The real observer yields
+        ``(text, monotonic, agent_state)`` tuples — it started yielding 2-tuples
+        when the arrival queue was added, and 3-tuples when the state evidence
+        was added — while older doubles and test stubs yield bare strings. Both
+        shapes are accepted.
+
+        REGRESSION, and it was mine: this read `[str(t) for t in taken]`, so
+        the moment the observer's tuple grew a field, every drained item
+        became a Python repr — `"('Thank you. May I have…', 181208.3,
+        'listening')"` — and THAT string went to the router as `agent_text`.
+        A peer session saw it on a real run: 4 of 5 turns arrived as
+        `"('text', 1)"` and routed against a repr instead of the sentence.
+
+        It passed 1500 tests because every test of this path built its own
+        fake observer returning plain strings. Nothing drove the real observer
+        through to `agent_text`. `test_a_real_observer_drains_to_plain_text`
+        now does.
         """
         take = getattr(self.observer, "take_agent_finals", None)
         if not callable(take):
@@ -98,7 +112,12 @@ class ObserverAgentWait:
             taken = take()
         except Exception:  # noqa: BLE001 — a waiter must not die on a probe
             return []
-        return [str(t) for t in (taken or []) if str(t)]
+        out: list[str] = []
+        for item in taken or []:
+            text = item[0] if isinstance(item, tuple) else item
+            if isinstance(text, str) and text.strip():
+                out.append(text)
+        return out
     # True once `is_agent_speaking_now` has actually read the agent's own
     # `lk.agent.state`. Stays False on the energy fallback, which is the
     # condition a run report must surface — an unread signal is a guess.

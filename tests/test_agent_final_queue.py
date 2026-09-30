@@ -289,3 +289,44 @@ def test_a_genuinely_new_utterance_is_not_an_over_seal() -> None:
     # Shorter, i.e. the prefix runs the other way — not an extension.
     obs._push_agent_final("Thank you.")
     assert obs._over_sealed == []
+
+
+def test_a_real_observer_drains_to_plain_text() -> None:
+    """The real observer, drained by the real waiter.
+
+    This path was broken by my own change: `_drain_observer_finals` did
+    `[str(t) for t in taken]`, so the day the observer's queue entry grew from
+    `(text, mono)` to `(text, mono, agent_state)`, every item became a Python
+    repr and THAT went to the router as `agent_text`. A peer session saw
+    `"('Thank you. May I have…', 1)"` on 4 of 5 turns of a real run.
+
+    It passed 1500 tests because every other test of this path supplied its own
+    fake observer returning bare strings. The gap was that no test drove the
+    real Observer through to the waiter — which is the same gap that let the
+    response router ship un-attached.
+    """
+    import asyncio
+
+    from livekit_agent_simulator.caller_contract.agent_wait import ObserverAgentWait
+    from livekit_agent_simulator.livekit.observer import Observer
+
+    obs = Observer.__new__(Observer)
+    obs._agent_final_queue = []
+    obs._over_sealed = []
+    obs._finalized_segments = set()
+    obs.agent_state = "listening"
+    # `last_agent_final_text` is a read-only property on Observer; the drain
+    # path does not need it set, only the queue and the state fields.
+    obs.agent_is_active_speaker = False
+    obs.agent_disconnected = asyncio.Event()
+
+    SENTENCE = "Thank you. May I have the full name of the person in charge?"
+    obs._push_agent_final(SENTENCE)
+
+    waiter = ObserverAgentWait(observer=obs)  # type: ignore[arg-type]
+    drained = waiter._drain_observer_finals()
+
+    assert drained == [SENTENCE], (
+        f"the waiter handed the router a repr, not a sentence: {drained!r}"
+    )
+    assert "(" not in drained[0], "a tuple repr means the text was stringified"
