@@ -1030,6 +1030,20 @@ pub struct RetryOutcome {
 /// Run the bounded retry loop. `capture_observed` mirrors Python's
 /// `record_observed` parameter: when true, each attempt that reached the
 /// semantic step stores its ObservedAct snapshot in the trail.
+///
+/// ── REAL GAP, unlike its neighbours. Do not delete without replacing. ──
+///
+/// The live path (`script.rs`) constructs `ContractValidator::new(None)`
+/// and calls `validate` directly, so it has NO retry loop. That is a genuine
+/// Python/Rust divergence in retry semantics, not dead weight.
+///
+/// Deleting this is only correct in the same change that gives the live path
+/// a bounded retry — otherwise the divergence the migration is removing gets
+/// locked in rather than closed. Unlike `TurnDetector` (staged for the
+/// turn-alignment work) and `plan_speak` (a delivery layer this port has no
+/// use for), this one has a live caller that is simply not using it yet.
+///
+/// See bead `response-router-v2-32`.
 pub fn validate_with_retry<F>(
     validator: &mut ContractValidator,
     contract: &BehaviorContract,
@@ -1378,6 +1392,27 @@ impl TurnState {
 /// TurnDetector state machine (mirrors orchestrator.py::TurnDetector).
 /// wall-clock `now_ms` is always explicit — no monotonic clock inside,
 /// so the machine is exactly replayable.
+///
+/// ── STAGED, NOT DEAD. Deliberately not wired yet. Do not delete. ──
+///
+/// `no live caller references this` is TRUE and it is NOT the same as
+/// "unused". `script.rs` (the live Rust caller path) holds only
+/// `trigger_since` / `trigger_gap_since` — "is the agent active, for how
+/// long" — and has zero references to `chunk_count`, `silence_debounce`, or
+/// `on_agent_audio`. So the two answer DIFFERENT questions:
+///
+///   * `script.rs`:       when should this step FIRE?
+///   * `TurnDetector`:    when did the agent's TURN END?
+///
+/// The second question is exactly `PROBLEMS.md` §1, and it is where the
+/// turn-alignment work is going. This struct is the only modelled notion of
+/// turn completion in the Rust port, so removing it would discard the thing
+/// that work is about to need.
+///
+/// Pinned by the tests in this file's `parity_tests` module against
+/// Python-pinned fixtures, so it is exercised even though it is not wired.
+/// See bead `response-router-v2-32` for the reachability measurement and the
+/// alternatives considered.
 pub struct TurnDetector {
     pub silence_debounce_ms: i64,
     pub state: TurnState,
