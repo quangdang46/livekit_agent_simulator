@@ -55,6 +55,50 @@ class ObserverAgentWait:
     # evaluator against a stale turn while the agent's real reply is still
     # pending. Never return the same final twice).
     _last_returned_text: str | None = field(default=None, repr=False)
+
+    # Agent finals that have landed but not yet been handed to the driver, in
+    # arrival order.
+    #
+    # This was a SINGLE OVERWRITE SLOT (`observer.last_agent_final_text`), and
+    # that is what put the router one turn behind.
+    #
+    # `wait_agent_turn` only returns a final once `agent_is_active_speaker` is
+    # false, and that flag is VAD energy that lags the agent's real audio by
+    # ~2.4s (PROBLEMS.md §1). So on a duplex transport:
+    #
+    #   1. turn N's final lands, but the agent is still flagged speaking
+    #   2. the wait holds
+    #   3. turn N+1's final lands and OVERWRITES the slot
+    #   4. the flag clears, and the wait returns turn N+1's text
+    #
+    # Measured on run 013 (gpt-live-retry-while-speaking): every routing
+    # decision was the correct answer for the NEXT question. Replaying the
+    # same catalog and the same agent lines through the router offline picks
+    # the right id every time — the prompt, catalog and schema were never
+    # wrong; only the text arriving was from the wrong turn.
+    #
+    # A queue makes turn assignment correct REGARDLESS of the lag. Fixing the
+    # lag (the turn-alignment work) then becomes a latency improvement rather
+    # than a correctness fix — which is the safer ordering, because the lag
+    # fix depends on a transport signal that is not yet measured on a live
+    # duplex call.
+    _agent_final_queue: list[str] = field(default_factory=list)
+
+    def _drain_observer_finals(self) -> list[str]:
+        """Take everything the observer queued since the last drain.
+
+        A fake observer without `take_agent_finals` (older doubles, and the
+        many test stubs) yields nothing, and the pre-existing slot path
+        still works for it — so this degrades rather than breaking.
+        """
+        take = getattr(self.observer, "take_agent_finals", None)
+        if not callable(take):
+            return []
+        try:
+            taken = take()
+        except Exception:  # noqa: BLE001 — a waiter must not die on a probe
+            return []
+        return [str(t) for t in (taken or []) if str(t)]
     # True once `is_agent_speaking_now` has actually read the agent's own
     # `lk.agent.state`. Stays False on the energy fallback, which is the
     # condition a run report must surface — an unread signal is a guess.
@@ -150,11 +194,26 @@ class ObserverAgentWait:
         # while the agent's real (stuck, interrupted, never-finalized) reply
         # is still pending. Tier 2 (session snapshot) and tier 3 (audio
         # floor) are consulted for genuinely-new evidence instead.
+        # Drain the observer's ARRIVAL queue FIRST, before any fast path
+        # reads the single slot. A final that landed while the agent was
+        # still flagged speaking is already overwritten in the slot; polling
+        # cannot recover it, so the queue is the only source that still has
+        # it. See Observer._push_agent_final.
+        self._agent_final_queue.extend(self._drain_observer_finals())
+
         preexisting_mono = seen_at_start
         preexisting_text = getattr(self.observer, "last_agent_final_text", None)
         still_speaking_at_start = bool(
             getattr(self.observer, "agent_is_active_speaker", False)
         )
+        # Queue FIRST. The slot holds only the NEWEST final, so consulting it
+        # while queued finals are pending returns the wrong turn — the
+        # one-turn-behind symptom. The slot path below remains as the
+        # fallback for observers with no arrival queue (older doubles, and
+        # the many test stubs that only set the two fields).
+        if self._agent_final_queue and not still_speaking_at_start:
+            self._last_returned_text = self._agent_final_queue.pop(0)
+            return self._last_returned_text
         if (
             preexisting_mono is not None
             and preexisting_text
@@ -171,15 +230,16 @@ class ObserverAgentWait:
             final_mono = getattr(self.observer, "last_agent_final_mono", None)
             final_text = getattr(self.observer, "last_agent_final_text", None)
             still_speaking = bool(getattr(self.observer, "agent_is_active_speaker", False))
-            if (
-                final_mono is not None
-                and final_mono != seen_at_start
-                and final_text
-                and not still_speaking
-                and str(final_text) != self._last_returned_text
-            ):
-                self._last_returned_text = str(final_text)
-                return str(final_text)
+            # Drain the observer's ARRIVAL queue, not the single slot.
+            # Polling `last_agent_final_text` cannot work: a final that
+            # landed while the agent was still flagged speaking is already
+            # overwritten by the next turn, and this loop would only ever see
+            # the newest. The observer records them as they land.
+            self._agent_final_queue.extend(self._drain_observer_finals())
+            if self._agent_final_queue and not still_speaking:
+                # Oldest first: turn N's text for turn N.
+                self._last_returned_text = self._agent_final_queue.pop(0)
+                return self._last_returned_text
 
             # Tier 3 latch: remember that the agent demonstrably talked.
             if getattr(self.observer, "agent_has_spoken", False):

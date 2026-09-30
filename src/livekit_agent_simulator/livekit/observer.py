@@ -181,6 +181,16 @@ class Observer:
         # `None` means "the agent has not published the attribute". That is a
         # distinct third state, not "silent" and not "speaking" — see
         # `agent_state_observed`.
+        # Every agent final, in arrival order, with its monotonic stamp.
+        # The single `last_agent_final_text` slot above cannot serve
+        # `ObserverAgentWait`: a final that lands while
+        # `agent_is_active_speaker` is still true (VAD energy, ~2.4s late —
+        # PROBLEMS.md §1) is held by the waiter, and the NEXT turn's final
+        # overwrites it before the flag clears. On run 013 that put the router
+        # exactly one turn behind on every decision. The queue makes turn
+        # assignment independent of when the flag clears.
+        self._agent_final_queue: list[tuple[str, float]] = []
+
         self.agent_state: str | None = None
         self.agent_state_observed = False
 
@@ -227,6 +237,36 @@ class Observer:
         return int((time.monotonic() - self._agent_active_since_mono) * 1000)
 
     # ------------------------------------------------------------------ attach
+
+    def _push_agent_final(self, text: str, segment_id: str | None = None) -> None:
+        """Record an agent final in arrival order.
+
+        Dedup is by SEGMENT ID, never by text.
+
+        Two wrong answers were tried here. Collapsing adjacent duplicate TEXT
+        would drop a real turn where the agent genuinely says the same thing
+        twice ("yes.") — the driver would then wait for a reply that already
+        arrived. Dropping dedup entirely regresses run 039, whose invariant is
+        that the same final is never returned twice: a provider that
+        re-finalises one segment would be served that segment's text again as
+        if it were a new turn.
+
+        Segment id is the discriminator that separates those two cases, and
+        the observer already tracks it for exactly this purpose
+        (`_finalized_segments`, `spec["same_turn"]`). With no segment id
+        there is nothing to compare, so the final is queued as new — a
+        conservative choice that can only surface MORE evidence to the
+        waiter, never less.
+        """
+        if segment_id and segment_id in self._finalized_segments:
+            return
+        self._agent_final_queue.append((text, time.monotonic()))
+
+    def take_agent_finals(self) -> list[str]:
+        """Drain queued agent finals, oldest first."""
+        out = [t for t, _ in self._agent_final_queue]
+        self._agent_final_queue.clear()
+        return out
 
     def attach(self) -> None:
         room = self.room
@@ -673,6 +713,7 @@ class Observer:
             if self.turn == 0 and self.first_speaker == "user" and not self._user_has_spoken:
                 self._last_agent_final_mono = time.monotonic()
                 self._last_agent_final_text = text
+                self._push_agent_final(text, segment_id)
                 self.writer.emit(
                     "transcript.agent.preamble",
                     spec={**spec, "note": "agent spoke before user; not counted as a turn"},
@@ -689,6 +730,7 @@ class Observer:
             self._agent_replied_this_turn = True
             self._last_agent_final_mono = time.monotonic()
             self._last_agent_final_text = text
+            self._push_agent_final(text, segment_id)
             self._finalized_roles.add("agent")
             if source == "lk.transcription" and segment_id:
                 self._finalized_segments.add((role, segment_id))
