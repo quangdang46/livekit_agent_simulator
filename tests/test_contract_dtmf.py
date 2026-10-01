@@ -1,5 +1,33 @@
 """DTMF publishing: the seam, the code map, and the hang guard.
 
+WHERE THE SIX BEAD CASES LIVE (dtmf-restore 3tv.6.1)
+--------------------------------------------------
+The bead asked for all six in this file. They are split by LAYER instead,
+because a reader looking at the room gate wants it beside the other
+live-wiring tests, and one looking at the driver branch wants it beside the
+other action branches. This map exists so "is DTMF fully covered?" is still
+answerable in one place.
+
+  CASE 1 digit mapping          HERE   test_1w2hash_sends_three_tones_and_no_call_for_w
+  CASE 2 dtmf pushes no PCM     driver test_dtmf_publishes_no_audio
+  CASE 3 hanging transport     HERE   test_a_dead_transport_times_out_instead_of_hanging
+  CASE 4 raising transport     HERE   test_an_sdk_error_becomes_a_value_not_an_exception
+  CASE 5 room gate             wiring test_a_split_room_fails_loudly_naming_the_topology
+                                       test_silence_still_works_in_a_split_room
+                                       test_an_unconnected_room_fails_as_dtmf_not_as_an_sdk_error
+  CASE 6 trigger gating        driver test_a_dtmf_trigger_that_never_fires_is_a_timeout
+
+Plus, added after the bead was written: the shipped-template tripwire (HERE),
+the DTMF code map being LiveKit's and not RFC 4733 (HERE), and over-seal
+detection (test_agent_final_queue.py).
+
+The renames the bead also asked for are done: the old
+`test_wait_and_dtmf_never_publish`, which PINNED the defect by asserting a
+dtmf step published nothing and the run still ended SCENARIO, is now
+`test_wait_and_silence_never_publish` in test_contract_live_wiring.py with its
+wait coverage kept and its dtmf half inverted here.
+
+
 The third of these is the one that matters. `publish_dtmf` awaits a LiveKit
 `Queue.wait_for` that has **no timeout parameter at all** — verified against the
 installed SDK, `livekit/rtc/_utils.py`:

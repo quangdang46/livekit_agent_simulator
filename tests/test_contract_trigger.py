@@ -800,7 +800,19 @@ def test_dtmf_still_rejects_barge_in():
 
 
 def test_wait_still_rejects_trigger():
-    """3tv.4.3 is about dtmf. Widening `wait` is scope creep nobody asked for."""
+    """3tv.4.3 is about dtmf. Widening `wait` is scope creep nobody asked for.
+
+    MUTATION-VERIFIED, but the result is worth recording because it is not the
+    obvious one. Removing this specific `wait` guard does NOT make this test
+    fail: there is a SECOND catch-all further down (`elif "trigger" in
+    raw_step ...`) that rejects the same surface with the same message. The
+    first guard is defence in depth, not the thing holding the line.
+
+    Removing BOTH does make it fail. So this test proves the `wait`
+    restriction survives a widening of the whole surface — which is the bead's
+    actual acceptance criterion — and it does not claim to localise which gate
+    did the rejecting.
+    """
     with pytest.raises(DSLError) as exc:
         parse_steps([{"wait": 10, "trigger": {"kind": "agent_speaking"}}, {"end": True}], file="t")
     assert "only supported on say:" in str(exc.value)
