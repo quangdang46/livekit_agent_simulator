@@ -305,15 +305,24 @@ def collect_authoring_findings(scenario: Any) -> list[AuthoringWarning]:
             )
         )
 
-    dtmf_steps = [s for s in steps if getattr(s, "action", None) == "dtmf"]
-    if dtmf_steps and "draft" not in tags:
+    # `caller_actions`, NOT `script_steps`. This warning used to filter on the
+    # legacy `ScriptStep.action`, which is the surface `665ec8c` left with no
+    # execution path — so it promised DTMF handling for a verb that cannot run,
+    # and said nothing about `- dtmf:` under `caller_steps:`, which is the one
+    # that does. (dtmf-restore 3tv.5.2)
+    dtmf_actions = [
+        a for a in (getattr(scenario, "caller_actions", None) or [])
+        if getattr(a, "kind", None) == "dtmf"
+    ]
+    if dtmf_actions and "draft" not in tags:
         findings.append(
             AuthoringWarning(
                 code="dtmf_untagged_draft",
                 severity="info",
                 message=(
-                    "Script action=dtmf present — tag scenario draft until the agent under test "
-                    "handles SIP DTMF (sim can send; many agents only parse spoken digits)."
+                    "caller_steps `- dtmf:` present — tag scenario draft until "
+                    "the agent under test handles SIP DTMF (sim can send; many "
+                    "agents only parse spoken digits)."
                 ),
             )
         )

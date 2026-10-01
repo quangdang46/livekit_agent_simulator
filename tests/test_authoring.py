@@ -270,3 +270,79 @@ def test_interaction_pre_delay_only_does_not_warn():
 
 def test_scenario_without_caller_actions_does_not_warn():
     assert "interaction_shaping_not_applied" not in _codes(_scenario())
+
+
+# ---------------------------------------------------------------------------
+# the dtmf warning follows the surface that can actually send tones
+# (dtmf-restore 3tv.5.2)
+# ---------------------------------------------------------------------------
+
+
+def test_dtmf_warning_fires_for_caller_steps():
+    """`caller_steps: - dtmf:` is the surface with an execution path.
+
+    The warning used to filter on the legacy `script_steps`, which
+    `665ec8c` left with no execution path at all — so it promised DTMF
+    handling for a verb that cannot run, and stayed silent about the verb that
+    does. Neither direction had a test, which is how it sat there.
+    """
+    from livekit_agent_simulator.caller_contract.dsl import parse_steps
+
+    s = _scenario(
+        persona={"brief": "x", "goals": ["g"], "traits": []},
+        caller_actions=parse_steps(
+            [{"dtmf": "123"}, {"end": True}], file="t"
+        ),
+    )
+    codes = {f.code for f in collect_authoring_findings(s)}
+    assert "dtmf_untagged_draft" in codes
+
+
+def test_dtmf_warning_does_not_fire_for_the_legacy_surface():
+    """A dtmf in `script_steps` does nothing, so promising on it is wrong."""
+    s = _scenario(
+        persona={"brief": "x", "goals": ["g"], "traits": []},
+        script_steps=[
+            ScriptStep(
+                id="d1",
+                trigger="time",
+                delay_ms=0,
+                action="dtmf",
+                digits="123",
+            ),
+        ],
+    )
+    codes = {f.code for f in collect_authoring_findings(s)}
+    assert "dtmf_untagged_draft" not in codes, (
+        "the warning is attached to a surface with no execution path again"
+    )
+
+
+def test_a_tagged_draft_stays_quiet():
+    """The `draft` tag is the documented opt-out and must keep working."""
+    from livekit_agent_simulator.caller_contract.dsl import parse_steps
+
+    s = _scenario(
+        persona={"brief": "x", "goals": ["g"], "traits": []},
+        caller_actions=parse_steps([{"dtmf": "1"}, {"end": True}], file="t"),
+        tags=["smoke", "draft"],
+    )
+    codes = {f.code for f in collect_authoring_findings(s)}
+    assert "dtmf_untagged_draft" not in codes
+
+
+def test_the_warning_names_the_caller_surface_not_the_legacy_one():
+    """The message itself promised the wrong syntax."""
+    from livekit_agent_simulator.caller_contract.dsl import parse_steps
+
+    s = _scenario(
+        persona={"brief": "x", "goals": ["g"], "traits": []},
+        caller_actions=parse_steps([{"dtmf": "1"}, {"end": True}], file="t"),
+    )
+    msg = next(
+        f.message
+        for f in collect_authoring_findings(s)
+        if f.code == "dtmf_untagged_draft"
+    )
+    assert "caller_steps" in msg and "`- dtmf:`" in msg
+    assert "Script action=dtmf" not in msg
