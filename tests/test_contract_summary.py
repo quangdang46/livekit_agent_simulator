@@ -83,3 +83,62 @@ def test_recorder_rows_enrich_validation_and_observed() -> None:
     assert detail["validation"] == "passed"
     assert detail["observed_act"] == "ask"
     assert detail["confidence"] == 0.75
+
+
+def test_truncated_turns_are_surfaced_not_left_inside_a_data_blob() -> None:
+    """A run that lost turns must not read like one that did not.
+
+    The flow runtime publishes `agent_turn_truncated` on `voice_ai.flow`. Before
+    this it landed inside a generic `data.message` payload, which is exactly
+    where the truncation was invisible for a day on 2026-09-30: the evidence
+    existed in the log and nothing summarised it.
+
+    `missing_text` is carried, not reduced to a boolean — a bare flag is the
+    shape `confidence` had for two hours, a name implying information it does
+    not carry.
+    """
+    from livekit_agent_simulator.caller_contract.contract_summary import (
+        build_caller_contract_summary,
+    )
+
+    events = [
+        {
+            "kind": "contract.agent_turn_truncated",
+            "spec": {
+                "turn": 3,
+                "node_id": "n1",
+                "spoken_len": 40,
+                "instructed_len": 60,
+                "missing_len": 20,
+                "missing_text": " the building's address?",
+            },
+        },
+        {
+            "kind": "contract.agent_turn_truncated",
+            "spec": {"turn": 5, "node_id": "n2", "missing_len": 9, "missing_text": " how many?"},
+        },
+    ]
+    summary = build_caller_contract_summary(events=events)
+
+    assert summary["turns_truncated"] == 2, summary
+    detail = summary["truncated_turns_detail"]
+    assert [d["turn"] for d in detail] == [3, 5], detail
+    assert detail[0]["missing_text"] == " the building's address?", (
+        "the MISSING TAIL is the evidence — a count alone says a run was lossy "
+        "without saying what was lost"
+    )
+
+
+def test_a_clean_run_reports_zero_truncations_not_a_missing_key() -> None:
+    """Zero, not absent.
+
+    A consumer checking `turns_truncated` must not have to distinguish "the key
+    is missing because the summary is old" from "this run lost nothing".
+    """
+    from livekit_agent_simulator.caller_contract.contract_summary import (
+        build_caller_contract_summary,
+    )
+
+    summary = build_caller_contract_summary(events=[])
+    assert summary["turns_truncated"] == 0
+    assert summary["truncated_turns_detail"] == []

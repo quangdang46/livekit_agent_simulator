@@ -82,6 +82,16 @@ def build_caller_contract_summary(
     published: list[dict[str, Any]] = [
         e for e in events if e.get("kind") == "contract.turn_published"
     ]
+    # Turns the transport sealed mid-sentence. Counted HERE, from events, rather
+    # than read off the observer, so it survives the same way its siblings do
+    # and needs no live handle.
+    #
+    # Without it a run that lost half its turns reads exactly like one that
+    # did not, which is how the truncation stayed invisible for a day: the
+    # evidence existed in `data.message` payloads and nothing summarised it.
+    truncated = [
+        e for e in events if e.get("kind") == "contract.agent_turn_truncated"
+    ]
     violations: dict[str, str] = {}
     for e in events:
         if e.get("kind") == "contract.behavior_violation":
@@ -207,7 +217,23 @@ def build_caller_contract_summary(
                 }
             )
 
-    return {"behaviors": behaviors_out, "caller": caller_rows}
+    # `turns_truncated` is additive: a consumer reading the old keys sees the
+    # same shape, and one that cares can now tell a lossy run from a clean one
+    # without walking events.jsonl.
+    return {
+        "behaviors": behaviors_out,
+        "caller": caller_rows,
+        "turns_truncated": len(truncated),
+        "truncated_turns_detail": [
+            {
+                "turn": (e.get("spec") or {}).get("turn"),
+                "node_id": (e.get("spec") or {}).get("node_id"),
+                "missing_len": (e.get("spec") or {}).get("missing_len"),
+                "missing_text": (e.get("spec") or {}).get("missing_text"),
+            }
+            for e in truncated
+        ],
+    }
 
 
 __all__ = ["build_caller_contract_summary"]

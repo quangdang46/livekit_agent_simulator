@@ -33,6 +33,10 @@ ATTR_SEGMENT_ID = "lk.segment_id"
 # `speaking -> listening` is the authoritative turn end.
 AGENT_STATE_ATTRIBUTE_KEY = "lk.agent.state"
 
+#: Payload type the target repo's flow runtime publishes when the transport cut
+#: a turn short. See `docs/plans/truncated-turn-mitigation.md` over there.
+_FLOW_TRUNCATED_TYPE = "agent_turn_truncated"
+
 
 def _disconnect_reason_name(args: tuple[object, ...]) -> str:
     """Name the `DisconnectReason` LiveKit passes to the `disconnected` callback.
@@ -183,6 +187,9 @@ class Observer:
         self._finalized_segments: set[tuple[str, str]] = set()
 
         self.agent_is_active_speaker = False
+        # Turns the transport sealed mid-sentence. Counted so a report can say
+        # "this run lost N turns" without the reader walking the event log.
+        self.agent_turn_truncations = 0
         # Barge-in overlap evidence. The TRIGGER is real agent audio
         # (`_on_agent_onset`); `_agent_declared_speaking_mono` records only how
         # far ahead the agent announced, for the report. See the handlers for
@@ -950,6 +957,33 @@ class Observer:
             role, text, turn_id = parsed
             self.on_transcript(
                 role, text, final=True, source=topic or "data", segment_id=turn_id
+            )
+            return
+        # The flow runtime announces a turn the transport cut short. Surfaced
+        # as its OWN event rather than left inside a `data.message` blob,
+        # because the alternative is that a run which lost mid-sentence turns
+        # reads exactly like one that did not — which is what cost a day on
+        # 2026-09-30.
+        #
+        # `missing_text` is carried through, not reduced to a boolean. A bare
+        # flag is the shape `confidence` had for two hours: a name implying
+        # information that carries none. A consumer has to see WHAT was never
+        # said to recognise the case.
+        if isinstance(payload, dict) and payload.get("type") == _FLOW_TRUNCATED_TYPE:
+            self.agent_turn_truncations += 1
+            self.writer.emit(
+                "contract.agent_turn_truncated",
+                spec={
+                    "node_id": payload.get("nodeId"),
+                    "spoken_len": payload.get("spokenLen"),
+                    "instructed_len": payload.get("instructedLen"),
+                    "missing_len": payload.get("missingLen"),
+                    "missing_text": payload.get("missingText"),
+                    "sender": sender,
+                    "topic": topic,
+                },
+                source=topic or "data",
+                include_dialogue=False,
             )
             return
         if not emitted_tool:

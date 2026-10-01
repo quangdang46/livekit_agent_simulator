@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -510,3 +513,92 @@ def test_no_overlap_when_the_agent_is_not_the_other_speaker() -> None:
     obs._emit_barge_in_overlap(signal="audio_onset")
 
     assert obs.writer.events == [], obs.writer.events
+
+
+# ---------------------------------------------------------------------------
+# the flow runtime's truncated-turn event, at the OBSERVER seam
+# ---------------------------------------------------------------------------
+
+
+def _data_packet(topic: str, payload: dict):
+    class _Pkt:
+        pass
+
+    p = _Pkt()
+    p.topic = topic
+    p.participant = SimpleNamespace(identity="agent-AJ_x")
+    p.data = json.dumps(payload).encode("utf-8")
+    return p
+
+
+def _observer_for_data():
+    from livekit_agent_simulator.livekit.observer import Observer
+
+    class _W:
+        def __init__(self):
+            self.events: list[tuple[str, dict]] = []
+
+        def emit(self, kind, spec=None, **kw):
+            self.events.append((kind, spec or {}))
+
+    obs = Observer.__new__(Observer)
+    obs.writer = _W()
+    obs.observe = SimpleNamespace(
+        data_topics=[], transcript_payload_types=[], tool_event_patterns=[]
+    )
+    obs.agent_identity = "agent-AJ_x"
+    obs.agent_turn_truncations = 0
+    obs._agent_final_queue = []
+    obs._over_sealed = []
+    obs._finalized_segments = set()
+    obs.agent_state = None
+    return obs
+
+
+def test_the_flow_truncation_event_becomes_a_typed_contract_event() -> None:
+    """The observer half, which the summary tests bypass entirely.
+
+    Those tests build events directly, so removing the observer's detection left
+    them green — caught by mutation, not by reading. A run's truncation count
+    comes from the OBSERVER recognising the payload, so that is what has to be
+    covered.
+    """
+    obs = _observer_for_data()
+    obs._handle_data_topic(
+        "voice_ai.flow",
+        _data_packet(
+            "voice_ai.flow",
+            {
+                "type": "agent_turn_truncated",
+                "nodeId": "n1",
+                "spokenLen": 40,
+                "instructedLen": 60,
+                "missingLen": 20,
+                "missingText": " the building's address?",
+            },
+        ),
+    )
+
+    kinds = [k for k, _ in obs.writer.events]
+    assert "contract.agent_turn_truncated" in kinds, obs.writer.events
+    assert "data.message" not in kinds, (
+        "it must leave the generic blob — a payload buried in data.message is "
+        "why this stayed invisible for a day"
+    )
+    spec = dict(obs.writer.events)["contract.agent_turn_truncated"]
+    assert spec["node_id"] == "n1"
+    assert spec["missing_len"] == 20
+    assert spec["missing_text"] == " the building's address?"
+    assert obs.agent_turn_truncations == 1
+
+
+def test_an_unrelated_flow_event_still_lands_as_a_data_message() -> None:
+    """The detection must not swallow every flow payload."""
+    obs = _observer_for_data()
+    obs._handle_data_topic(
+        "voice_ai.flow",
+        _data_packet("voice_ai.flow", {"type": "flow_node_active", "nodeId": "n1"}),
+    )
+    kinds = [k for k, _ in obs.writer.events]
+    assert kinds == ["data.message"], kinds
+    assert obs.agent_turn_truncations == 0
