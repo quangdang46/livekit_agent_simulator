@@ -1710,16 +1710,6 @@ pub fn plan_speak(
     outcome
 }
 
-pub fn plan_dtmf(digits: &str) -> InteractionOutcome {
-    InteractionOutcome {
-        kind: InteractionActionKind::Dtmf,
-        tokens: vec![],
-        pre_delay_ms: 0,
-        pace: None,
-        dtmf_digits: Some(digits.to_string()),
-    }
-}
-
 pub fn plan_silence() -> InteractionOutcome {
     InteractionOutcome {
         kind: InteractionActionKind::Silence,
@@ -2637,7 +2627,6 @@ mod parity_tests {
 
         for case in data["action_cases"].as_array().unwrap() {
             let kind = match case["op"].as_str().unwrap() {
-                "dtmf" => super::plan_dtmf(case["digits"].as_str().unwrap()).kind,
                 "silence" => super::plan_silence().kind,
                 "hangup" => super::plan_hangup().kind,
                 "backchannel_default" => {
