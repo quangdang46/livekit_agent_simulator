@@ -306,3 +306,51 @@ async def test_repeated_abstention_does_not_read_as_a_degenerate_router():
     with pytest.raises(Exception):
         for _ in range(3):
             guard.observe("company")
+
+
+async def test_every_decision_records_its_confidence():
+    """A mechanism whose only output is its own failures cannot be calibrated.
+
+    Measured on the target repo, 2026-09-30: a peer ran feat-03-barge-in and
+    saw `contract.router_abstained: 0` across fourteen turns, several of them
+    visibly uncertain, with no way to tell whether every value was above the
+    floor or whether some were `None` and silently skipped the check —
+    `contract.router_decision` carried no confidence at all.
+
+    So the floor had no evidence behind it. This is what makes
+    `CONFIDENCE_FLOOR` calibratable rather than a guess, and it is why the
+    field is on EVERY decision rather than only on the ones that abstained.
+    """
+    d, _o, sink, agent = _setup(_ConfidentRouter(0.83), _catalog())
+    await d.run(_steps(), sink, agent)
+
+    assert d.routed_turns, "nothing routed, so nothing was proven"
+    assert all(r["confidence"] == 0.83 for r in d.routed_turns), d.routed_turns
+    assert all(r["abstained"] is False for r in d.routed_turns), d.routed_turns
+
+
+async def test_a_router_that_reports_no_confidence_is_visible_in_the_record():
+    """`None` must not look like a confident pick.
+
+    The abstain guard is `is not None and (...)`, so a router that does not
+    report confidence skips the check silently — indistinguishable, from the
+    report, from a model that was never unsure. That is the same class of hole
+    as before, one level in.
+    """
+    class _Silent:
+        name = "silent"
+
+        async def route(self, *, agent_transcript, catalog):
+            from livekit_agent_simulator.caller_contract.router import RouteDecision
+
+            return RouteDecision(response_id="company", backend="silent")
+
+    d, _o, sink, agent = _setup(_Silent(), _catalog())
+    await d.run(_steps(), sink, agent)
+
+    assert d.routed_turns
+    assert all(r["confidence"] is None for r in d.routed_turns), (
+        "a router that reports no confidence must record that, not look "
+        "confident"
+    )
+    assert all(r["abstained"] is False for r in d.routed_turns)

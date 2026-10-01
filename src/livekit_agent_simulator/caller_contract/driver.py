@@ -804,6 +804,11 @@ class ContractCallerDriver:
             # listen of the audio just published, not a second one. Routing
             # changes WHAT the caller says, never WHEN it speaks.
             routed_candidate: CandidateUtterance | None = None
+            # Read by the `contract.router_decision` event below, so it is
+            # declared outside the routing block: it is False for every turn
+            # that never routed, and saying so in the event is more useful than
+            # omitting the key.
+            abstained = False
             if self.router is not None and self.response_catalog is not None and agent_text:
                 try:
                     decision = await self.router.route(
@@ -826,7 +831,6 @@ class ContractCallerDriver:
                     # abstention is not counted as a repeat — otherwise a run
                     # where the model correctly declines three times would be
                     # killed as a degenerate router.
-                    abstained = False
                     if decision.confidence is not None and (
                         decision.confidence < CONFIDENCE_FLOOR
                     ):
@@ -888,11 +892,32 @@ class ContractCallerDriver:
                 self.routed_turns.append({
                     "turn": turns, "response_id": decision.response_id,
                     "off_script": off_script,
+                    # Confidence on every turn, not only the abstaining ones:
+                    # without it there is no way to tell "never unsure" from
+                    # "this router does not report certainty", and the floor
+                    # stays unmeasured.
+                    "confidence": decision.confidence,
+                    "abstained": abstained,
                     "backend": decision.backend, "latency_ms": decision.latency_ms,
                 })
                 _emit("contract.router_decision", {
                     "behavior": contract.behavior, "turn": turns,
                     "response_id": decision.response_id, "off_script": off_script,
+                    # The confidence, on EVERY decision — including the ones
+                    # that abstained away, and including the ones that were
+                    # never uncertain.
+                    #
+                    # A peer session measured fourteen turns on
+                    # feat-03-barge-in and could not tell why abstention never
+                    # fired: the only place confidence appeared was
+                    # `router_abstained`, which by construction only appears on
+                    # the runs you least want. A mechanism whose only output is
+                    # its own failures cannot be calibrated from those, and
+                    # `CONFIDENCE_FLOOR` is an unmeasured guess until this
+                    # exists.
+                    "confidence": decision.confidence,
+                    "abstained": abstained,
+                    "confidence_floor": CONFIDENCE_FLOOR,
                     "backend": decision.backend,
                     "latency_ms": decision.latency_ms,
                     "agent_text": agent_text[:200],
