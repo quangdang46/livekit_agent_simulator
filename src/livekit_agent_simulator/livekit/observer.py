@@ -183,13 +183,12 @@ class Observer:
         self._finalized_segments: set[tuple[str, str]] = set()
 
         self.agent_is_active_speaker = False
-        # Barge-in overlap evidence. `_unconfirmed_speaking_since` is set when
-        # the agent declares `speaking` before VAD confirms it, and cleared by
-        # `_resolve_unconfirmed_speaking`, which emits
-        # `room.barge_in_overlap`. See the handler for why.
+        # Barge-in overlap evidence. The TRIGGER is real agent audio
+        # (`_on_agent_onset`); `_agent_declared_speaking_mono` records only how
+        # far ahead the agent announced, for the report. See the handlers for
+        # why the announcement is not the trigger.
         self._active_speaker_identities: list[str] = []
-        self._unconfirmed_speaking_since: float | None = None
-        self._unconfirmed_while: list[str] = []
+        self._agent_declared_speaking_mono: float | None = None
         self._agent_active_since_mono: float | None = None
 
         # The agent's own turn state, read from the participant attribute
@@ -273,28 +272,45 @@ class Observer:
 
     # ------------------------------------------------------------------ attach
 
-    def _resolve_unconfirmed_speaking(self, *, caller_present: bool) -> None:
-        """Emit the barge-in overlap once it is measurable.
+    def _emit_barge_in_overlap(self, *, signal: str) -> None:
+        """Record that the agent took the floor while the caller held it.
 
-        Fires when VAD finally agrees with the agent's own declaration. The
-        number that matters is `unconfirmed_ms` — how long the agent said it
-        was speaking before the room agreed — because that is the window in
-        which the caller loses its tail.
+        `signal` says which evidence fired, because they are not equally
+        trustworthy:
+
+          `audio_onset`  real agent speech while the caller was the active
+                         speaker. This is the case that truncates a caller
+                         turn, and the only one emitted when
+                         `observe.record_audio` is on.
+          `agent_state`  the agent announced `speaking` with no audio yet
+                         while the caller was active. The announcement LEADS
+                         the audio by +67ms to +4590ms across eight measured
+                         runs, so this is a proxy — reported, and labelled,
+                         rather than presented as a cut.
         """
-        started = self._unconfirmed_speaking_since
-        if started is None:
+        identities = self._active_speaker_identities
+        caller_present = bool(identities) and not any(
+            i == self.agent_identity for i in identities
+        )
+        if not caller_present:
             return
-        self._unconfirmed_speaking_since = None
+        declared = self._agent_declared_speaking_mono
+        self._agent_declared_speaking_mono = None
         self.writer.emit(
             "room.barge_in_overlap",
             spec={
-                "unconfirmed_ms": int((time.monotonic() - started) * 1000),
-                "caller_was_active": caller_present,
-                "active_speakers_at_declaration": self._unconfirmed_while,
+                "signal": signal,
+                "declared_lead_ms": (
+                    None if declared is None
+                    else max(0, int((time.monotonic() - declared) * 1000))
+                ),
+                "caller_was_active": True,
+                "active_speakers": identities,
                 "note": (
-                    "the agent declared `speaking` before VAD confirmed it; "
-                    "when caller_was_active is true, the agent took the mic "
-                    "mid-utterance and the caller's transcript may be cut"
+                    "the agent started speaking while the caller was the "
+                    "active speaker, so the caller's turn may be cut; "
+                    "signal=agent_state means this is the announcement "
+                    "rather than confirmed audio"
                 ),
             },
             source="room",
@@ -465,9 +481,20 @@ class Observer:
                 # fields were already in the log and nothing joined them, so
                 # the report could not show that the agent had cut the caller
                 # off — it took reading the WAV stereo channels by hand.
-                if not self.agent_is_active_speaker:
-                    self._unconfirmed_speaking_since = time.monotonic()
-                    self._unconfirmed_while = self._active_speaker_identities
+                # A declaration with no sound yet is the agent ANNOUNCING,
+                # not the agent talking. Measured across eight runs on the
+                # target repo (2026-09-30), the declaration LEADS the first
+                # audio onset by +67ms to +4590ms, seven of eight with the
+                # state first. Treating the declaration as a barge-in
+                # therefore reports cuts that never happened — run 115, the
+                # ambient-noise run where a caller naturally talks early,
+                # produced five such false positives.
+                #
+                # So the overlap is emitted from `_on_agent_onset`, where the
+                # audio is real. This records the declaration time only so the
+                # event can report how far ahead the agent announced, which is
+                # worth seeing even though it is not the trigger.
+                self._agent_declared_speaking_mono = time.monotonic()
             self.writer.emit(
                 "room.agent_state",
                 spec={"state": value, "previous": previous},
@@ -487,9 +514,6 @@ class Observer:
                 # not among them. Good enough and it needs no new field — the
                 # room holds exactly one other participant in every mode LKS
                 # runs.
-                self._resolve_unconfirmed_speaking(
-                    caller_present=bool(identities) and not agent_now
-                )
             elif not agent_now:
                 self._agent_active_since_mono = None
             self.agent_is_active_speaker = agent_now
@@ -620,7 +644,14 @@ class Observer:
         time = (audio_t0_relative_to_run) + (onset_frame / sample_rate):
             ts_mono_ms = (started_mono - writer.t0_mono) + onset_to_audio_ms(...)
         This is the *perceived* agent speech onset — never detection time.
+
+        Also the trigger for `room.barge_in_overlap`: real agent audio arriving
+        while the caller holds the floor is the case that actually cuts a caller
+        turn. The `lk.agent.state` announcement leads this by up to 4.5s, so
+        keying the overlap on the announcement reported five false positives on
+        run 115 alone.
         """
+        self._emit_barge_in_overlap(signal="audio_onset")
         if self.recorder is None:
             return
         started = self.recorder.started_mono

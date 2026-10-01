@@ -472,22 +472,41 @@ def test_the_agent_declaring_speaking_before_vad_emits_overlap_evidence() -> Non
     obs._agent_active_since_mono = None
     obs._agent_has_spoken = False
     obs._active_speaker_identities = ["lks-caller"]
-    obs._unconfirmed_speaking_since = None
-    obs._unconfirmed_while = []
+    obs._agent_declared_speaking_mono = None
 
     # The agent declares speaking while the caller is the active speaker.
-    obs._unconfirmed_speaking_since = time.monotonic()
-    obs._unconfirmed_while = ["lks-caller"]
-    obs._resolve_unconfirmed_speaking(caller_present=True)
+    obs._agent_declared_speaking_mono = time.monotonic()
+    obs._emit_barge_in_overlap(signal="audio_onset")
 
     kinds = [k for k, _ in obs.writer.events]
     assert "room.barge_in_overlap" in kinds, obs.writer.events
     spec = dict(obs.writer.events)["room.barge_in_overlap"]
     assert spec["caller_was_active"] is True
-    assert spec["active_speakers_at_declaration"] == ["lks-caller"]
-    assert spec["unconfirmed_ms"] >= 0
+    assert spec["active_speakers"] == ["lks-caller"]
+    assert spec["signal"] == "audio_onset"
+    assert spec["declared_lead_ms"] is not None and spec["declared_lead_ms"] >= 0
 
-    # Fires once: a second resolution must not duplicate it.
-    before = len(obs.writer.events)
-    obs._resolve_unconfirmed_speaking(caller_present=True)
-    assert len(obs.writer.events) == before, "overlap emitted twice for one gap"
+
+def test_no_overlap_when_the_agent_is_not_the_other_speaker() -> None:
+    """The caller must actually hold the floor.
+
+    The onset handler fires on every agent utterance; an overlap event that
+    ignored this would fire on every turn of a healthy call.
+    """
+    class _Writer:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        def emit(self, kind, spec=None, **kwargs) -> None:
+            self.events.append((kind, spec or {}))
+
+    obs = Observer.__new__(Observer)
+    obs.writer = _Writer()
+    obs.agent_identity = "agent-1"
+    obs.agent_is_active_speaker = False
+    obs._active_speaker_identities = ["agent-1"]
+    obs._agent_declared_speaking_mono = None
+
+    obs._emit_barge_in_overlap(signal="audio_onset")
+
+    assert obs.writer.events == [], obs.writer.events
