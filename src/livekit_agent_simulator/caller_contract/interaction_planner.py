@@ -62,7 +62,13 @@ class InteractionOutcome:
     tokens: list[str] = field(default_factory=list)  # SPEAK / BACKCHANNEL only
     pre_delay_ms: int = 0
     pace: str | None = None
-    dtmf_digits: str | None = None
+    # `dtmf_digits` was removed here (dtmf-restore 3tv.7.1 follow-up). Only
+    # `plan_dtmf` ever set it, and that method went with the unwired twin.
+    #
+    # Do NOT confuse this with `CallerAction.dtmf_digits` in caller_contract/
+    # dsl.py, which is ALIVE: `parse_steps` sets it and the driver's dtmf branch
+    # reads it. Same name, opposite fate — removing the wrong one would have
+    # silently disabled every keypress.
 
 
 def verify_semantic_preserving(original_utterance: str, tokens: list[str]) -> bool:
