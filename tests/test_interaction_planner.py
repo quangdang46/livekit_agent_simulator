@@ -108,12 +108,17 @@ def test_plan_speak_asserts_semantic_preserving_internally() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_plan_dtmf_route() -> None:
-    planner = CallerInteractionPlanner()
-    outcome = planner.plan_dtmf("123#")
-    assert outcome.kind == InteractionActionKind.DTMF
-    assert outcome.dtmf_digits == "123#"
-    assert outcome.tokens == []
+# REMOVED (dtmf-restore 3tv.7.1): test_plan_dtmf_route
+#
+# `plan_dtmf` had zero production callers — the only reference outside its own
+# definition was this test, and the only thing constructing
+# `InteractionActionKind.DTMF` was `plan_dtmf`. Removing the method without the
+# enum variant would have left a variant nothing on either port constructs, so
+# both went together (the Rust twin at b74d24b followed the same rule).
+#
+# The real DTMF path is RoomDtmfPublisher, which does not go through the
+# interaction planner at all: it emits `sim.script.dtmf` and routes tones
+# directly. See caller_contract/dtmf.py.
 
 
 def test_plan_silence_route() -> None:

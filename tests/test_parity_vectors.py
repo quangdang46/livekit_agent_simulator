@@ -371,9 +371,11 @@ def test_interaction_planner_vector_matches_python_delivery() -> None:
 
     for case in data["action_cases"]:
         op = case["op"]
-        if op == "dtmf":
-            outcome = planner.plan_dtmf(case["digits"])
-        elif op == "silence":
+        # No `dtmf` arm: `plan_dtmf` and the DTMF enum variant were removed in
+        # dtmf-restore 3tv.7.1, and the fixture case went with them. The Rust
+        # twin follows the same rule (b74d24b). A dtmf op here would now be an
+        # unknown op and hit the guard below, which is the point of the guard.
+        if op == "silence":
             outcome = planner.plan_silence()
         elif op == "hangup":
             outcome = planner.plan_hangup()

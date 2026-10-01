@@ -50,7 +50,6 @@ _STUMBLE_SUFFIX = "..."
 
 class InteractionActionKind(str, Enum):
     SPEAK = "SPEAK"
-    DTMF = "DTMF"
     SILENCE = "SILENCE"
     HANGUP = "HANGUP"
     BACKCHANNEL = "BACKCHANNEL"
@@ -114,9 +113,6 @@ class CallerInteractionPlanner:
             "whitelist — this must never happen (report §28.5(18))"
         )
         return outcome
-
-    def plan_dtmf(self, digits: str) -> InteractionOutcome:
-        return InteractionOutcome(kind=InteractionActionKind.DTMF, dtmf_digits=digits)
 
     def plan_silence(self) -> InteractionOutcome:
         return InteractionOutcome(kind=InteractionActionKind.SILENCE)
