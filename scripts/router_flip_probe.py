@@ -372,10 +372,17 @@ def main() -> int:
             "inputs": inputs,
         }
         args.out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        # `.format` rather than nested f-strings: the nested form is PEP 701,
+        # valid on 3.12 and a SyntaxError on 3.10, which is a CI matrix
+        # version for this project.
+        kinds = ", ".join(
+            "{}={}".format(k.rsplit(".", 1)[-1], v)
+            for k, v in sorted(per_kind.items())
+        )
         print(
-            f"{len(inputs)} inputs from {len(reports)} run(s) of {args.scenario} "
-            f"({', '.join(f'{k.split('.')[-1]}={v}' for k, v in sorted(per_kind.items()))})"
-            f" -> {args.out}"
+            "{} inputs from {} run(s) of {} ({}) -> {}".format(
+                len(inputs), len(reports), args.scenario, kinds, args.out
+            )
         )
         if not inputs:
             print(

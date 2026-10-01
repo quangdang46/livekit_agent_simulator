@@ -352,9 +352,14 @@ pub fn parse_scenario_jsonl(path: &PathBuf) -> Result<Scenario, ScenarioError> {
                         path.display()
                     ))
                 })?;
-                let map = block.as_object().ok_or_else(|| {
+                // The binding is unused but the CHECK is the point: it is what
+                // rejects a `spec` that is not a mapping. Prefixed with `_` so
+                // the validation stays and `cargo clippy -- -D warnings` — which
+                // is a release gate — stops failing on it. Pre-existing, not
+                // introduced by the DTMF work.
+                let _map = block.as_object().ok_or_else(|| {
                     ScenarioError(format!(
-                        "{}:{line_no}: Responses.spec must be a mapping of                          id -> response",
+                        "{}:{line_no}: Responses.spec must be a mapping of id -> response",
                         path.display()
                     ))
                 })?;

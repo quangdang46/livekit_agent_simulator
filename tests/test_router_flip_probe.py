@@ -31,7 +31,11 @@ from livekit_agent_simulator.caller_contract.responses import ResponseCatalog  #
 
 def _raw(n: int = 3) -> dict[str, dict[str, str]]:
     raw = {
-        f"r{i}": {"intent": f"i{i}", "instruction": f"ask {i}", "text": f"T{i}"}
+        "r{}".format(i): {
+            "intent": "i{}".format(i),
+            "instruction": "ask {}".format(i),
+            "text": "T{}".format(i),
+        }
         for i in range(n)
     }
     raw["fallback"] = {
