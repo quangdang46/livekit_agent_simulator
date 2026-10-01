@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 
 import asyncio
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from . import (
@@ -100,7 +100,7 @@ def build_routed_context(
     ctx["canonical_text"] = response.text
     return ctx
 from .orchestrator import BehaviorOutcome, Orchestrator
-from .router import CONFIDENCE_FLOOR, DegeneracyGuard, RouterError, RouterTerminal
+from .router import DegeneracyGuard, RouterError, RouterTerminal
 from .validator import ContractValidator, ValidationResult, Verdict
 
 
@@ -808,71 +808,42 @@ class ContractCallerDriver:
             # declared outside the routing block: it is False for every turn
             # that never routed, and saying so in the event is more useful than
             # omitting the key.
-            abstained = False
             if self.router is not None and self.response_catalog is not None and agent_text:
                 try:
                     decision = await self.router.route(
                         agent_transcript=agent_text, catalog=self.response_catalog,
                     )
-                    # ABSTENTION. A pick the model is not confident about is
-                    # discarded and the system entry is used instead, so an
-                    # agent question the catalog does not cover is RECORDED
-                    # rather than answered with the nearest plausible entry.
+                    # NO ABSTENTION PATH. It was built (b40f1c3) on the
+                    # premise that the router could express certainty, and
+                    # measured on the target repo that premise is false for the
+                    # model in use — runs 137-138 and feat-06-confidence-probe:
                     #
-                    # Measured on the target repo, 2026-09-30 (run 098): the
-                    # agent asked for "the exact number of floors and total
-                    # units", no entry covered it, the router picked a real
-                    # entry anyway, and `off_script` was false because that
-                    # flag is derived from the label of whatever was chosen.
-                    # The miss was invisible. Adding an entry fixed the symptom
-                    # and left the class intact.
+                    #     covered, correct            0.900
+                    #     covered, wrong entry        0.950
+                    #     NOT COVERED AT ALL          0.950
                     #
-                    # The pick is dropped BEFORE the degeneracy guard, so an
-                    # abstention is not counted as a repeat — otherwise a run
-                    # where the model correctly declines three times would be
-                    # killed as a degenerate router.
-                    if decision.confidence is not None and (
-                        decision.confidence < CONFIDENCE_FLOOR
-                    ):
-                        # `system_id` is a property that raises rather than
-                        # returning None when a catalog has no system entry.
-                        # Parse enforces exactly one, so this is belt-and-braces
-                        # for a directly-constructed catalog.
-                        try:
-                            system_id = self.response_catalog.system_id
-                        except StopIteration:
-                            system_id = None
-                        if system_id is not None and system_id != decision.response_id:
-                            _emit(
-                                "contract.router_abstained",
-                                {
-                                    "discarded": decision.response_id,
-                                    "confidence": decision.confidence,
-                                    "floor": CONFIDENCE_FLOOR,
-                                    "used": system_id,
-                                },
-                            )
-                            decision = replace(decision, response_id=system_id)
-                            # Abstentions are NOT fed to the degeneracy guard.
-                            # The guard's rule is "the same id twice means the
-                            # router is stuck", and a model that correctly
-                            # declines three times in a row is not stuck.
-                            # Substituting the system entry and THEN observing
-                            # it reproduced exactly the failure this whole
-                            # change exists to remove — my own test caught it,
-                            # after I had written a comment claiming the
-                            # opposite. Measured pattern from the target repo,
-                            # independently, on the guard path: after a barge-in
-                            # the agent re-asks and the router answers
-                            # correctly, and the third repeat killed the run.
-                            abstained = True
+                    # Confidence does not move when the catalog cannot answer,
+                    # which is the one moment a floor could act on. No threshold
+                    # exists: anything between 0.90 and 0.95 rejects everything
+                    # or nothing, and the abstention path beneath it never
+                    # executed once in any run.
+                    #
+                    # Removed because a knob proven inert is the same failure as
+                    # the dead `confidence` field this file carried earlier the
+                    # same day — it just had a consumer, so it LOOKED alive.
+                    # That is the failure this whole migration has been
+                    # removing, and leaving it would reintroduce it knowingly.
+                    #
+                    # `confidence` STAYS in the schema and on every decision.
+                    # It is the evidence the measurement above rests on, and
+                    # dropping it would make the finding unreproducible.
+                    #
                     if self._degeneracy is None:
                         self._degeneracy = DegeneracyGuard()
                     # Inside the try: a degenerate router must become a RED
                     # run via the RouterTerminal arm below, not propagate out
                     # of the driver.
-                    if not abstained:
-                        self._degeneracy.observe(decision.response_id)
+                    self._degeneracy.observe(decision.response_id)
                 except RouterTerminal as exc:
                     return self._fail(
                         FailureReason.LANGUAGE_GENERATION_ERROR,
@@ -897,27 +868,26 @@ class ContractCallerDriver:
                     # "this router does not report certainty", and the floor
                     # stays unmeasured.
                     "confidence": decision.confidence,
-                    "abstained": abstained,
                     "backend": decision.backend, "latency_ms": decision.latency_ms,
                 })
                 _emit("contract.router_decision", {
                     "behavior": contract.behavior, "turn": turns,
                     "response_id": decision.response_id, "off_script": off_script,
-                    # The confidence, on EVERY decision — including the ones
-                    # that abstained away, and including the ones that were
-                    # never uncertain.
+                    # Confidence on EVERY decision, and it stays after the
+                    # abstention path was removed.
                     #
-                    # A peer session measured fourteen turns on
-                    # feat-03-barge-in and could not tell why abstention never
-                    # fired: the only place confidence appeared was
-                    # `router_abstained`, which by construction only appears on
-                    # the runs you least want. A mechanism whose only output is
-                    # its own failures cannot be calibrated from those, and
-                    # `CONFIDENCE_FLOOR` is an unmeasured guess until this
-                    # exists.
+                    # It is the evidence the removal rests on: covered-and-
+                    # correct 0.900, covered-and-wrong 0.950, not-covered-at-
+                    # all 0.950, measured on the target repo. Dropping the field
+                    # would make that finding unreproducible, and it is the
+                    # number a future provider has to beat before any
+                    # threshold could be reconsidered.
+                    #
+                    # It is NOT used to decide anything today. A field that is
+                    # recorded and never read is exactly what this migration
+                    # removed twice — the difference here is that it is the
+                    # input to a MEASURED negative result, not a promise.
                     "confidence": decision.confidence,
-                    "abstained": abstained,
-                    "confidence_floor": CONFIDENCE_FLOOR,
                     "backend": decision.backend,
                     "latency_ms": decision.latency_ms,
                     "agent_text": agent_text[:200],

@@ -32,46 +32,31 @@ from typing import Any, Protocol
 # https://developers.openai.com/api/docs/guides/structured-outputs
 SCHEMA_NAME = "response_route"
 RESPONSE_KEY = "responseId"
-#: The model's own certainty, and REQUIRED in the schema. See
-#: `build_route_schema` — under strict structured outputs a property the
-#: schema omits can never be returned, which is why an earlier, schema-free
-#: `confidence` was permanently None.
+# CONFIDENCE_FLOOR WAS HERE AND IS NOW REMOVED.
+#
+# The measurement that removed it, on the model in use (target repo, runs
+# 137-138 and feat-06-confidence-probe, 2026-09-30):
+#
+#     covered by an entry, correct      0.900
+#     covered by an entry, wrong        0.950
+#     NOT COVERED BY ANY ENTRY          0.950
+#
+# Confidence does not move when the catalog cannot answer — the one moment a
+# floor could act on. No threshold exists: anything between 0.90 and 0.95
+# rejects everything or nothing, and the abstention path beneath the floor never
+# executed once in any run, on either backend.
+#
+# It was built on the premise that the router could express certainty. That
+# premise is false here, and a knob proven inert is the same failure as the
+# dead `confidence` field this module carried earlier the same day — the
+# difference being only that it had a consumer, so it LOOKED alive. Removing it
+# is the same call that field got.
+#
+# `CONFIDENCE_KEY` STAYS, and is still required in the schema. It is the input
+# to the measurement above; without it the finding cannot be reproduced, and it
+# is the number a future provider has to beat before any threshold could be
+# reconsidered. `RouteDecision.confidence` stays for the same reason.
 CONFIDENCE_KEY = "confidence"
-
-#: Below this the pick is discarded and the system entry is used instead.
-#:
-#: MEASURED, and the measurement says this cannot be a safety net — on this
-#: model, confidence carries NO information about correctness. Measured on the
-#: target repo, runs 137-138, feat-03-barge-in (2026-09-30):
-#:
-#:     correct  (company_name for a company-name question)   0.900
-#:     wrong    (nothing_else for an announcement)           0.950
-#:     wrong    (acknowledgement for a question)           0.950
-#:
-#: The confidently-wrong answers scored HIGHER than the correct ones. A floor
-#: can only reject what the model admits to being unsure about, and this model
-#: is not unsure when it is wrong. Any threshold between 0.90 and 0.95 rejects
-#: everything or nothing.
-#:
-#: So this is NOT a tunable value. See bead livekit-agent-simulator-0k7, closed
-#: with that answer.
-#:
-#: MEASURED INERT on the model in use. A further run (feat-06-confidence-probe)
-#: asked for the company name with `company_name` deliberately ABSENT from the
-#: catalog — no correct answer existed — and confidence was 0.950, the same
-#: value as the confident-and-wrong picks and HIGHER than the
-#: confident-and-correct one. The signal does not move when the catalog cannot
-#: answer, which is the one moment a floor could act on. The distribution is
-#: effectively a point mass at ~0.95.
-#:
-#: CONSEQUENCE, stated rather than smoothed over: on this model this floor
-#: cannot fire, so the abstention path beneath it never executes. That is
-#: flagged to the owner as a candidate for REMOVAL rather than tuning — a knob
-#: proven inert is the same failure as the dead `confidence` field this file
-#: previously carried, and AGENTS.md's "delete half-features in the same
-#: change" applies to it. It is kept here only until that decision lands, not
-#: because it is expected to work.
-CONFIDENCE_FLOOR = 0.4
 
 # A degenerate router returns the same id three decisions running. That is a
 # HARNESS defect, not a conversation: a green suite built on it would be a lie,

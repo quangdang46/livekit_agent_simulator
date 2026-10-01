@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import pytest
 
+from livekit_agent_simulator.caller_contract import router as _router_module
+
 from livekit_agent_simulator.caller_contract.responses import ResponseCatalog
 from livekit_agent_simulator.caller_contract.router import (
-    CONFIDENCE_FLOOR,
     DEGENERATE_RUN_LENGTH,
     RESPONSE_KEY,
     DegeneracyGuard,
@@ -91,38 +92,33 @@ def test_valid_body_becomes_a_decision():
     assert d.backend == "t"
 
 
-def test_confidence_is_required_in_the_schema_because_it_is_consumed():
-    """Why `confidence` exists, and why it is in the SCHEMA.
+def test_confidence_is_required_because_it_is_the_evidence_for_its_own_removal():
+    """The field stayed after the mechanism it fed was removed.
 
-    It was removed earlier today and this test documented why it could never
-    work: the schema was `{"responseId"}` with `additionalProperties: False`
-    under `"strict": True`, so the provider was structurally forbidden from
-    returning anything else and every run recorded `confidence: null`.
+    CONFIDENCE_FLOOR is gone: measured on the model in use, confidence does not
+    move between a correct answer (0.900), a wrong one (0.950), and a question
+    NO entry covers (0.950). A knob that cannot fire is the same failure as the
+    dead `confidence` field this module carried earlier the same day.
 
-    That reasoning was right and the conclusion was wrong. It said the signal
-    was unobtainable — when it was unobtainable *in that schema*. Declaring it
-    is what makes it obtainable: strict mode enforces required properties, so a
-    property the schema carries is one the provider MUST emit.
-
-    What changed is that it has a consumer. `CONFIDENCE_FLOOR` in the driver
-    discards a pick below the floor and uses the system entry instead, so an
-    unmodelled agent question is recorded rather than answered with the
-    nearest plausible entry — measured on run 098, where the agent asked for
-    "the exact number of floors and total units" and the flag stayed false.
+    `confidence` STAYS required in the schema, because it is the input to that
+    measurement. Without it the finding cannot be reproduced and no future
+    provider can be shown to beat it. The distinction is deliberate: this is
+    the record of a measured negative result, not a promise of behaviour.
     """
-    assert CONFIDENCE_FLOOR > 0.0, (
-        "a zero floor disables abstention entirely, which is the bug"
-    )
-
     schema = build_route_schema(["a", "b"])
     assert "confidence" in schema["properties"]
-    assert "confidence" in schema["required"]
+    assert "confidence" in schema["required"], (
+        "confidence must stay REQUIRED — it is the evidence the removal rests on"
+    )
+    assert not hasattr(_router_module, "CONFIDENCE_FLOOR"), (
+        "the floor was measured inert on this model; shipping it back is "
+        "shipping a knob that provably cannot fire"
+    )
 
     parsed = parse_route_body(
         {RESPONSE_KEY: "a", "confidence": 0.55}, options=["a", "b"], backend="t"
     )
-    assert parsed.confidence == 0.55
-    assert parsed.confidence >= CONFIDENCE_FLOOR, "above the floor: the pick stands"
+    assert parsed.confidence == 0.55, "the field is still carried per decision"
 
 
 def test_a_body_without_confidence_is_a_fault_not_a_silent_none():
