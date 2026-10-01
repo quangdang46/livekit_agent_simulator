@@ -152,6 +152,24 @@ pub fn build_caller_behavior_summary(events: &[Map<String, Json>]) -> Map<String
         // barge pass. Counting those from the four-kind aggregate would
         // report them against the wrong population.
     );
+    // Python emits this key (script/verify.py:268) and `lksr` did not, so a
+    // web consumer reading summary.json["dtmf_fired"] got undefined under one
+    // port and a number under the other. The web type declared it optional, so
+    // nothing CRASHED — which is why this sat unnoticed. Emitting it on both
+    // ports removes the divergence rather than relying on the type being
+    // optional.
+    //
+    // Note the overlap with script_cues_fired, which since 3tv.7.2 counts the
+    // four-kind aggregate and so already includes dtmf. Whether this key is a
+    // second signal or plain redundancy is an open question — see bead t7f — but
+    // shipping one port's key and not the other's is not a choice worth making.
+    out.insert(
+        "dtmf_fired".into(),
+        json!(events
+            .iter()
+            .filter(|e| ev_kind(e) == "sim.script.dtmf")
+            .count()),
+    );
     out.insert("waits_fired".into(), json!(waits.len()));
     out.insert("barges_fired".into(), json!(barges.len()));
     out.insert("barges_during_agent".into(), json!(barges_during.len()));

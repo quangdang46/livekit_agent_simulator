@@ -175,6 +175,11 @@ fn build_caller_behavior_summary_aggregates() {
     // asserted 2 while the summary counted speak-cues only, so the test was
     // pinning the very behaviour this bead fixes.
     assert_eq!(s["script_cues_fired"], json!(4));
+    // `dtmf_fired` was emitted by Python (script/verify.py:268) and not by
+    // lksr, so this key was the one asymmetry the four-kind aggregate did NOT
+    // close. The web type declared it optional, so nothing crashed — which is
+    // exactly why it went unnoticed.
+    assert_eq!(s["dtmf_fired"], json!(1));
     assert_eq!(s["waits_fired"], json!(1));
     // barges_fired counts recovery barges only (correction counts, noise doesn't)
     assert_eq!(s["barges_fired"], json!(1));
@@ -198,6 +203,7 @@ fn build_caller_behavior_summary_zero_when_empty() {
     use lks_core::script::summary::build_caller_behavior_summary;
     let s = build_caller_behavior_summary(&[]);
     assert_eq!(s["script_cues_fired"], json!(0));
+    assert_eq!(s["dtmf_fired"], json!(0));
     assert_eq!(s["waits_fired"], json!(0));
     assert_eq!(s["barges_fired"], json!(0));
     assert_eq!(s["agent_finals_after_barge"], json!(0));
