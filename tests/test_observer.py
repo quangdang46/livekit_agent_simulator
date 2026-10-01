@@ -433,3 +433,61 @@ def test_naming_a_reason_never_raises() -> None:
             raise RuntimeError("no")
 
     assert _disconnect_reason_name((Hostile(),))
+
+
+# ---------------------------------------------------------------------------
+# barge-in overlap: the agent declaring `speaking` before VAD agrees
+# ---------------------------------------------------------------------------
+
+
+def test_the_agent_declaring_speaking_before_vad_emits_overlap_evidence() -> None:
+    """The 281ms window where a barge-in is invisible.
+
+    Measured on the target repo, 2026-09-30, run 106: the caller published
+    220800 bytes at +44484ms; the agent went `speaking` at +45765ms while
+    `active_speakers` was still `["lks-caller"]`; the caller was transcribed
+    as the single word " You" and the agent then re-asked for the number.
+
+    BOTH fields were already in the log. Nothing joined them, so the report
+    could not show that the agent had cut the caller off — it took reading the
+    WAV stereo channels by hand to find it. This is the join.
+    """
+    import time
+
+    from livekit_agent_simulator.livekit.observer import Observer
+
+    class _Writer:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        def emit(self, kind, spec=None, **kwargs) -> None:
+            self.events.append((kind, spec or {}))
+
+    obs = Observer.__new__(Observer)
+    obs.writer = _Writer()
+    obs.agent_state = None
+    obs.agent_state_observed = False
+    obs.agent_identity = "agent-1"
+    obs.agent_is_active_speaker = False
+    obs._agent_active_since_mono = None
+    obs._agent_has_spoken = False
+    obs._active_speaker_identities = ["lks-caller"]
+    obs._unconfirmed_speaking_since = None
+    obs._unconfirmed_while = []
+
+    # The agent declares speaking while the caller is the active speaker.
+    obs._unconfirmed_speaking_since = time.monotonic()
+    obs._unconfirmed_while = ["lks-caller"]
+    obs._resolve_unconfirmed_speaking(caller_present=True)
+
+    kinds = [k for k, _ in obs.writer.events]
+    assert "room.barge_in_overlap" in kinds, obs.writer.events
+    spec = dict(obs.writer.events)["room.barge_in_overlap"]
+    assert spec["caller_was_active"] is True
+    assert spec["active_speakers_at_declaration"] == ["lks-caller"]
+    assert spec["unconfirmed_ms"] >= 0
+
+    # Fires once: a second resolution must not duplicate it.
+    before = len(obs.writer.events)
+    obs._resolve_unconfirmed_speaking(caller_present=True)
+    assert len(obs.writer.events) == before, "overlap emitted twice for one gap"

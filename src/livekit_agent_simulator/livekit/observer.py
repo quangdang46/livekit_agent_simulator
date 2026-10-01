@@ -183,6 +183,13 @@ class Observer:
         self._finalized_segments: set[tuple[str, str]] = set()
 
         self.agent_is_active_speaker = False
+        # Barge-in overlap evidence. `_unconfirmed_speaking_since` is set when
+        # the agent declares `speaking` before VAD confirms it, and cleared by
+        # `_resolve_unconfirmed_speaking`, which emits
+        # `room.barge_in_overlap`. See the handler for why.
+        self._active_speaker_identities: list[str] = []
+        self._unconfirmed_speaking_since: float | None = None
+        self._unconfirmed_while: list[str] = []
         self._agent_active_since_mono: float | None = None
 
         # The agent's own turn state, read from the participant attribute
@@ -265,6 +272,34 @@ class Observer:
         return int((time.monotonic() - self._agent_active_since_mono) * 1000)
 
     # ------------------------------------------------------------------ attach
+
+    def _resolve_unconfirmed_speaking(self, *, caller_present: bool) -> None:
+        """Emit the barge-in overlap once it is measurable.
+
+        Fires when VAD finally agrees with the agent's own declaration. The
+        number that matters is `unconfirmed_ms` — how long the agent said it
+        was speaking before the room agreed — because that is the window in
+        which the caller loses its tail.
+        """
+        started = self._unconfirmed_speaking_since
+        if started is None:
+            return
+        self._unconfirmed_speaking_since = None
+        self.writer.emit(
+            "room.barge_in_overlap",
+            spec={
+                "unconfirmed_ms": int((time.monotonic() - started) * 1000),
+                "caller_was_active": caller_present,
+                "active_speakers_at_declaration": self._unconfirmed_while,
+                "note": (
+                    "the agent declared `speaking` before VAD confirmed it; "
+                    "when caller_was_active is true, the agent took the mic "
+                    "mid-utterance and the caller's transcript may be cut"
+                ),
+            },
+            source="room",
+            include_dialogue=False,
+        )
 
     def _push_agent_final(self, text: str, segment_id: str | None = None) -> None:
         """Record an agent final in arrival order.
@@ -417,6 +452,22 @@ class Observer:
             if value == "speaking" and previous != "speaking":
                 self._agent_active_since_mono = time.monotonic()
                 self._agent_has_spoken = True
+                # The agent declared speaking before VAD energy confirms it.
+                # That gap is where a barge-in is invisible: if the CALLER is
+                # the active speaker during it, the agent took the mic
+                # mid-sentence.
+                #
+                # Measured on the target repo, 2026-09-30 (run 106): the
+                # caller published 220800 bytes at +44484ms; the agent went
+                # `speaking` at +45765ms while `active_speakers` was still
+                # `["lks-caller"]`; the caller was transcribed as the single
+                # word " You" and the agent then re-asked for the number. Both
+                # fields were already in the log and nothing joined them, so
+                # the report could not show that the agent had cut the caller
+                # off — it took reading the WAV stereo channels by hand.
+                if not self.agent_is_active_speaker:
+                    self._unconfirmed_speaking_since = time.monotonic()
+                    self._unconfirmed_while = self._active_speaker_identities
             self.writer.emit(
                 "room.agent_state",
                 spec={"state": value, "previous": previous},
@@ -427,9 +478,18 @@ class Observer:
         @room.on("active_speakers_changed")
         def _on_speakers(speakers: list[rtc.Participant]) -> None:
             identities = [s.identity for s in speakers]
+            self._active_speaker_identities = identities
             agent_now = self.agent_identity in identities
             if agent_now and not self.agent_is_active_speaker:
                 self._agent_active_since_mono = time.monotonic()
+                # The observer only knows the AGENT's identity, so "someone
+                # else is talking" is the test: speakers present and the agent
+                # not among them. Good enough and it needs no new field — the
+                # room holds exactly one other participant in every mode LKS
+                # runs.
+                self._resolve_unconfirmed_speaking(
+                    caller_present=bool(identities) and not agent_now
+                )
             elif not agent_now:
                 self._agent_active_since_mono = None
             self.agent_is_active_speaker = agent_now

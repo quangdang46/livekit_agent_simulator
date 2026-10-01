@@ -369,9 +369,29 @@ def render_preflight(console: Console, data: dict[str, Any]) -> None:
     )
 
 
+def fmt_gate_ok(gate: Any, ok: Any) -> str:
+    """Render the gate verdict as THREE states, not two.
+
+    The gate distinguishes pass / soft / hard / ungraded, but this column
+    collapsed `ungraded` onto `✗` because `ok` is False for it. That made a
+    run which was graded on nothing read identically to a run that failed.
+
+    Measured on the target repo, 2026-09-30: run 107 completed the full
+    GPT-Live conversation, `assert 4/4`, `status: done`, `tool_errors 0` — and
+    printed `ok: ✗`, because the judge timed out and nothing was graded. A
+    reader sees a failed run. It is the same class as the dead `confidence`
+    field: a real signal, rendered so it cannot be told apart from the
+    opposite one.
+    """
+    if str(gate).lower() == "ungraded":
+        return "? UNGRADED"
+    return "✓" if bool(ok) else "✗"
+
+
 def render_execute(console: Console, data: dict[str, Any]) -> None:
     val = data.get("validation") or {}
-    ok = bool(data.get("ok"))
+    ok = data.get("ok")
+    gate = data.get("gate")
     _kv(
         console,
         [
@@ -379,9 +399,10 @@ def render_execute(console: Console, data: dict[str, Any]) -> None:
             ("repeat", truncate(data.get("repeat"))),
             ("pass_at_k", truncate(data.get("pass_at_k"))),
             ("hard_passes", truncate(data.get("hard_passes"))),
-            ("ok", "✓" if ok else "✗"),
+            ("ok", fmt_gate_ok(gate, ok)),
             ("run_id", data.get("run_id") or _DASH),
             ("status", data.get("status") or _DASH),
+            ("gate", truncate(gate)),
         ],
         title="execute",
     )
