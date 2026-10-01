@@ -158,11 +158,23 @@ fn build_caller_behavior_summary_aggregates() {
             300,
             json!({"step_id": "w1", "trigger": "silence"}),
         ),
+        // A DTMF step emits sim.script.dtmf, and the point of the four-kind
+        // set is that a run which only DTMFs still reports cues fired.
+        // Without this event the assertion below is satisfied by the wait
+        // alone, and the dtmf half of the fix could break unnoticed.
+        ev(
+            "sim.script.dtmf",
+            350,
+            json!({"step_id": "d1", "digits": "123#"}),
+        ),
         ev("transcript.agent.final", 500, json!({"text": "ok"})),
         ev("interruption", 150, json!({"by": "sim"})),
     ];
     let s = build_caller_behavior_summary(&events);
-    assert_eq!(s["script_cues_fired"], json!(2));
+    // 2 speak cues + 1 wait hold + 1 DTMF tone = 4 script actions. This
+    // asserted 2 while the summary counted speak-cues only, so the test was
+    // pinning the very behaviour this bead fixes.
+    assert_eq!(s["script_cues_fired"], json!(4));
     assert_eq!(s["waits_fired"], json!(1));
     // barges_fired counts recovery barges only (correction counts, noise doesn't)
     assert_eq!(s["barges_fired"], json!(1));

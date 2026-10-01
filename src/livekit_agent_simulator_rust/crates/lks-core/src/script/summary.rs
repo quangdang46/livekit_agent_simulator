@@ -20,6 +20,26 @@ fn ev_mono(e: &Map<String, Json>) -> i64 {
     e.get("ts_mono_ms").and_then(|v| v.as_i64()).unwrap_or(0)
 }
 
+/// Every script action kind that counts as "a cue fired".
+///
+/// Mirrors Python `script/summary.py:16-21`, which is the reference (owner
+/// decision on dtmf-restore 3tv.3). The four kinds are speak cues, DTMF tones,
+/// wait holds and hang-ups — a DTMF step emits `sim.script.dtmf`, so a
+/// pure-DTMF run must not report 0 cues fired.
+///
+/// DELIBERATELY NOT the `cues` filter below. `cues` is speak-cues only and
+/// feeds `cues_during_agent` and the barge pass as well, so widening it would
+/// change those two fields as a side effect and report them against the wrong
+/// population. `script_cues_fired` gets its own aggregate for exactly that
+/// reason.
+const SCRIPT_ACTION_KINDS: [&str; 4] = [
+    "sim.script.cue",
+    "sim.script.dtmf",
+    "sim.script.wait",
+    "sim.script.hang_up",
+];
+
+/// Aggregate barge / silence / recovery stats for summary.json + report player.
 /// Aggregate barge / silence / recovery stats for summary.json + report player.
 pub fn build_caller_behavior_summary(events: &[Map<String, Json>]) -> Map<String, Json> {
     let cues: Vec<&Map<String, Json>> = events
@@ -121,7 +141,17 @@ pub fn build_caller_behavior_summary(events: &[Map<String, Json>]) -> Map<String
     }
 
     let mut out = Map::new();
-    out.insert("script_cues_fired".into(), json!(cues.len()));
+    let script_actions = events
+        .iter()
+        .filter(|e| SCRIPT_ACTION_KINDS.contains(&ev_kind(e)))
+        .count();
+    out.insert(
+        "script_cues_fired".into(),
+        json!(script_actions),
+        // `cues` (speak-cues only) still feeds cues_during_agent and the
+        // barge pass. Counting those from the four-kind aggregate would
+        // report them against the wrong population.
+    );
     out.insert("waits_fired".into(), json!(waits.len()));
     out.insert("barges_fired".into(), json!(barges.len()));
     out.insert("barges_during_agent".into(), json!(barges_during.len()));
