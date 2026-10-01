@@ -226,6 +226,39 @@ migration backwards.
         never be misread as an agent deviation.
 - [ ] Only then flip `text_planner.enabled: true`.
 
+### A green run is one sample, not a stable gate
+
+Measured 2026-10-01: the same scenario file, byte-identical, passed its
+asserts on one run and failed the next on
+`SEMANTIC_ACT_MISMATCH` from the caller behaviour verifier.
+
+This is **not** a configuration bug and not a dead knob — verified: whatever
+`simulator.text_temperature` says reaches the backend
+(`0.0 → backend._temperature = 0.0`). It is the remaining part of temperature
+pinning that pinning cannot fix: **`temperature: 0` is not deterministic at the
+provider.** Two identical requests can come back with different sampled text,
+because batching and the serving stack are not pinned bit-for-bit.
+
+The verifier cannot absorb that, because it is a pure rule with no temperature
+of its own: given the same utterance it always answers the same thing, but it
+is handed *different* utterances. Pinning the router (which is what
+`text_temperature` does) removed a large share of the variance; it did not
+remove the rest, one layer down.
+
+So, stated plainly:
+
+- A scenario that passes its asserts on a **live** run is evidence for **that
+  run**. It is not a stable gate, and anyone reading a previous "4/4" as a
+  guarantee is reading a coin flip.
+- A scenario that passes on **replay** (`--record` / `--replay`) is stable,
+  because the recorded text is byte-identical.
+
+Accepted rather than engineered around, on the owner's decision
+(2026-10-01). The alternatives were all larger than the problem: giving the
+verifier its own temperature is meaningless for a rule, and loosening
+`verify_semantic_preserving` to accept several variants of one utterance would
+weaken a check that currently catches real problems.
+
 ### Reading a router run in the report
 
 ```
