@@ -245,3 +245,50 @@ async def test_a_disconnect_failure_does_not_prevent_deletion() -> None:
     assert "sim.error" in kinds
     where = [s.get("where") for k, s in writer.events if k == "sim.error"]
     assert where == ["disconnect_rooms"]
+
+
+def test_a_cancelled_run_still_writes_evidence() -> None:
+    """A run that vanishes leaves nothing to investigate.
+
+    Measured on the target repo, 2026-09-30: runs 118 and 119 wrote exactly
+    three events — run.started, dispatch.created, dispatch.agent_joined — and
+    stopped. No sim.connected, no contract.*, and no run.error at all.
+
+    Cause: `asyncio.CancelledError` is a BaseException, not an Exception, so the
+    `except Exception` in `run_scenario_instance` does not catch it and it
+    walks past every handler in the function.
+    """
+    import asyncio
+    import inspect
+
+    from livekit_agent_simulator import run_orchestrator
+
+    assert not issubclass(asyncio.CancelledError, Exception), (
+        "Python moved CancelledError back under Exception; the explicit clause "
+        "is then redundant but harmless, and this note would be wrong"
+    )
+
+    source = inspect.getsource(run_orchestrator.run_scenario_instance)
+    cancelled = source.index("except asyncio.CancelledError")
+    # The generic clause must be the one AFTER the cancellation clause. This
+    # function has several `except Exception` blocks, so a plain .index finds
+    # the first one anywhere and orders the comparison wrongly.
+    # Indented form, not the bare string: the CancelledError clause's own
+    # comment contains the words "except Exception", and a plain .index finds
+    # that instead of the real clause.
+    generic = source.index("\n        except Exception", cancelled)
+    assert cancelled < generic, (
+        "the CancelledError clause must come first — BaseException subclasses "
+        "are matched in order"
+    )
+    # It must record, not swallow.
+    window = source[cancelled:generic]
+    assert '"run.error"' in window, (
+        "a cancelled run must still write run.error, or the report is empty"
+    )
+    assert "raise" in window, (
+        "swallowing a cancellation leaves the task silently unfinished"
+    )
+    # The generic clause keeps its original behaviour: record, mark failed,
+    # and carry on so the report is still written.
+    assert 'status = "failed"' in source[generic : generic + 400]

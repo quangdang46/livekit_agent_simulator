@@ -14,6 +14,7 @@ End conditions (first one wins):
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import re
@@ -681,6 +682,30 @@ async def run_scenario_instance(
             if leg_handle is not None:
                 await leg_handle.disconnect_rooms()
             status = "done"
+        except asyncio.CancelledError as e:
+            # CancelledError is a BaseException, NOT an Exception, since
+            # Python 3.8 — so `except Exception` below does not catch it, and
+            # anything that cancels during connect or teardown walks straight
+            # past every handler in this function.
+            #
+            # Measured on the target repo, 2026-09-30: runs 118 and 119 wrote
+            # exactly three events — run.started, dispatch.created,
+            # dispatch.agent_joined — and stopped. No sim.connected, no
+            # contract.*, and no run.error at all. The run did not fail; it
+            # ceased to exist, which leaves nothing to investigate.
+            #
+            # Recorded and re-raised. Swallowing a cancellation would leave the
+            # task silently unfinished, which is worse than a loud failure.
+            writer.emit(
+                "run.error",
+                spec={
+                    "error": f"{type(e).__name__}: {e}" if str(e) else type(e).__name__,
+                    "mode": caller_mode,
+                    "cancelled": True,
+                },
+                include_dialogue=False,
+            )
+            raise
         except Exception as e:
             writer.emit(
                 "run.error",
