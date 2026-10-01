@@ -1629,7 +1629,11 @@ pub struct InteractionOutcome {
     pub tokens: Vec<String>,
     pub pre_delay_ms: i64,
     pub pace: Option<String>,
-    pub dtmf_digits: Option<String>,
+    // `dtmf_digits` was removed here (dtmf-restore 3tv.7.1 follow-up). It
+    // was written by exactly one constructor, `plan_dtmf`, which no port ever
+    // called. Do NOT confuse this with the DTMF digits the RUST caller
+    // actually publishes: that travels as `ScriptAction::Cue(CueCommand::Dtmf
+    // { digits })` in lks-livekit, never through InteractionOutcome.
 }
 
 /// Minimal interaction config for the delivery layer (mirrors the
@@ -1699,7 +1703,6 @@ pub fn plan_speak(
         tokens,
         pre_delay_ms,
         pace,
-        dtmf_digits: None,
     };
     debug_assert!(
         verify_semantic_preserving(validated_utterance, &outcome.tokens),
@@ -1714,7 +1717,6 @@ pub fn plan_silence() -> InteractionOutcome {
         tokens: vec![],
         pre_delay_ms: 0,
         pace: None,
-        dtmf_digits: None,
     }
 }
 
@@ -1724,7 +1726,6 @@ pub fn plan_hangup() -> InteractionOutcome {
         tokens: vec![],
         pre_delay_ms: 0,
         pace: None,
-        dtmf_digits: None,
     }
 }
 
@@ -1734,7 +1735,6 @@ pub fn plan_backchannel(text: Option<&str>) -> InteractionOutcome {
         tokens: vec![text.unwrap_or("uh-huh").to_string()],
         pre_delay_ms: 0,
         pace: None,
-        dtmf_digits: None,
     }
 }
 
@@ -1744,7 +1744,6 @@ pub fn trigger_barge_in() -> InteractionOutcome {
         tokens: vec![],
         pre_delay_ms: 0,
         pace: None,
-        dtmf_digits: None,
     }
 }
 
