@@ -1606,7 +1606,6 @@ const STUMBLE_SUFFIX: &str = "...";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractionActionKind {
     Speak,
-    Dtmf,
     Silence,
     Hangup,
     Backchannel,
@@ -1617,7 +1616,6 @@ impl InteractionActionKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             InteractionActionKind::Speak => "SPEAK",
-            InteractionActionKind::Dtmf => "DTMF",
             InteractionActionKind::Silence => "SILENCE",
             InteractionActionKind::Hangup => "HANGUP",
             InteractionActionKind::Backchannel => "BACKCHANNEL",
