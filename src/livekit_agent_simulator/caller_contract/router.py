@@ -53,13 +53,24 @@ CONFIDENCE_KEY = "confidence"
 #: is not unsure when it is wrong. Any threshold between 0.90 and 0.95 rejects
 #: everything or nothing.
 #:
-#: So this is NOT a tuned value and must not be fitted to this distribution.
-#: It is retained because the abstention PATH is real and a different model or
-#: provider may populate the low band — and because removing the mechanism
-#: would restore the original defect (a miss being silently answered with the
-#: nearest plausible entry). What it must not be is presented as a calibrated
-#: threshold. Calibrating it is bead livekit-agent-simulator-0k7, and on this
-#: evidence the honest answer there is that no number exists for this model.
+#: So this is NOT a tunable value. See bead livekit-agent-simulator-0k7, closed
+#: with that answer.
+#:
+#: MEASURED INERT on the model in use. A further run (feat-06-confidence-probe)
+#: asked for the company name with `company_name` deliberately ABSENT from the
+#: catalog — no correct answer existed — and confidence was 0.950, the same
+#: value as the confident-and-wrong picks and HIGHER than the
+#: confident-and-correct one. The signal does not move when the catalog cannot
+#: answer, which is the one moment a floor could act on. The distribution is
+#: effectively a point mass at ~0.95.
+#:
+#: CONSEQUENCE, stated rather than smoothed over: on this model this floor
+#: cannot fire, so the abstention path beneath it never executes. That is
+#: flagged to the owner as a candidate for REMOVAL rather than tuning — a knob
+#: proven inert is the same failure as the dead `confidence` field this file
+#: previously carried, and AGENTS.md's "delete half-features in the same
+#: change" applies to it. It is kept here only until that decision lands, not
+#: because it is expected to work.
 CONFIDENCE_FLOOR = 0.4
 
 # A degenerate router returns the same id three decisions running. That is a
