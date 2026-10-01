@@ -85,6 +85,32 @@ def parse_script_steps(spec: dict[str, Any], path_label: str) -> list[ScriptStep
                 f"(supported: {sorted(SUPPORTED_TRIGGERS)})"
             )
         action = str(raw.get("action", "speak"))
+        if action == "dtmf":
+            # `script: steps: - action: dtmf` parses, runs, and does NOTHING.
+            # `665ec8c` deleted the ScriptRunner that executed it, so the verb
+            # was left accepting input it never acted on — the same shape as the
+            # bug the DTMF restore existed to fix, one layer down. It is not
+            # left as a silent no-op here.
+            #
+            # Rejecting rather than deleting (dtmf-restore 3tv.10) keeps the
+            # parse surface aligned with Rust, whose contract path PROJECTS
+            # caller steps onto this one
+            # (lks-core/src/scenario.rs:805-808 -> :446-454 -> ScriptRuntime)
+            # and so still accepts the verb legitimately there. Deleting it in
+            # Python alone would widen the very divergence this epic closes.
+            #
+            # No shipped template authors this — verified by grep over
+            # `templates/` and `docs/` — so the break costs nothing real.
+            raise ValueError(
+                f"{path_label}: Script step {step_id!r}: `action: dtmf` has no "
+                f"executor in lks — 665ec8c deleted the ScriptRunner that ran "
+                f"it, so this step parses and then does nothing. Author the "
+                f"keypress under caller_steps instead:\n"
+                f"    caller_steps:\n"
+                f"      - dtmf: \"{raw.get('digits') or raw.get('digits_string') or '1'}\"\n"
+                f"which executes through RoomDtmfPublisher and emits "
+                f"sim.script.dtmf."
+            )
         if action not in SUPPORTED_ACTIONS:
             raise ValueError(
                 f"{path_label}: Script step {step_id!r}: action must be speak|wait"
