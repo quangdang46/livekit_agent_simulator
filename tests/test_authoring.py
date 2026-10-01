@@ -346,3 +346,64 @@ def test_the_warning_names_the_caller_surface_not_the_legacy_one():
     )
     assert "caller_steps" in msg and "`- dtmf:`" in msg
     assert "Script action=dtmf" not in msg
+
+
+# ---------------------------------------------------------------------------
+# an overlapping catalog entry is flagged at authoring time
+# ---------------------------------------------------------------------------
+
+
+def _catalog_scenario(instruction: str):
+    import tempfile
+    from pathlib import Path
+
+    from livekit_agent_simulator.scenario import parse_scenario
+
+    d = Path(tempfile.mkdtemp()) / "s.yaml"
+    d.write_text(
+        "apiVersion: agent-sim/v1\n"
+        "kind: Scenario\n"
+        "metadata: {id: t}\n"
+        "persona: {brief: x, goals: [g]}\n"
+        "responses:\n"
+        f"  ack: {{intent: ack, instruction: {instruction!r}, text: 'Welcome.'}}\n"
+        "  sys:\n"
+        "    intent: off\n"
+        "    instruction: 'Select only when nothing else matches.'\n"
+        "    text: 'Sorry?'\n"
+        "    system: true\n",
+        encoding="utf-8",
+    )
+    return parse_scenario(d)
+
+
+def test_a_negation_clause_in_an_instruction_is_flagged():
+    """A "never choose this when" clause is a symptom, not a style choice.
+
+    Measured 2026-09-30 on the target repo: an entry reading "Never choose
+    this for a turn that contains a question" was selected at 0.950 confidence
+    FOR a turn that contained a question. It had been narrowed into that shape
+    because a wider entry kept winning the same turns — so rewriting
+    instructions relocated the failure rather than fixing it.
+
+    Flagged here because authoring time is where it is free. The router cannot
+    see the overlap, and a confidence floor cannot catch it either, because the
+    wrong pick scores HIGHER than the right one.
+    """
+    s = _catalog_scenario(
+        "Select for a thank-you. Never choose this for a question."
+    )
+    codes = {f.code for f in collect_authoring_findings(s)}
+    assert "response_instruction_negation" in codes, sorted(codes)
+
+
+def test_a_catalog_without_a_negation_clause_is_quiet():
+    """The warning must not fire on a catalog that is fine.
+
+    It matches a CLAUSE, not an overlap, because an overlap cannot be detected
+    without a model — and a false warning on a good catalog is worse than
+    silence, because it teaches people to ignore the warning.
+    """
+    s = _catalog_scenario("Select only for a thank-you.")
+    codes = {f.code for f in collect_authoring_findings(s)}
+    assert "response_instruction_negation" not in codes, sorted(codes)

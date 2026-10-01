@@ -149,6 +149,24 @@ def _first_speaker(scenario: Any) -> str:
     return "agent"
 
 
+def _catalog_entries(scenario: Any) -> list[tuple[str, Any]]:
+    """`(id, spec)` for a parsed scenario's response catalog, or [].
+
+    The catalog may arrive as a parsed `ResponseCatalog` or as the raw dict,
+    depending on how the scenario was built, and an authoring finding must
+    work on both rather than assuming one.
+    """
+    catalog = getattr(scenario, "responses", None)
+    if catalog is None:
+        return []
+    entries = getattr(catalog, "responses", None)
+    if isinstance(entries, dict):
+        return list(entries.items())
+    if isinstance(catalog, dict):
+        return list(catalog.items())
+    return []
+
+
 def collect_authoring_findings(scenario: Any) -> list[AuthoringWarning]:
     """Return structured soft authoring findings for a parsed Scenario."""
     findings: list[AuthoringWarning] = []
@@ -310,6 +328,41 @@ def collect_authoring_findings(scenario: Any) -> list[AuthoringWarning]:
     # execution path — so it promised DTMF handling for a verb that cannot run,
     # and said nothing about `- dtmf:` under `caller_steps:`, which is the one
     # that does. (dtmf-restore 3tv.5.2)
+    # A NEGATION in an instruction is a structural signal, not a style note.
+    #
+    # Measured 2026-09-30 on the target repo: an entry reading "Never choose
+    # this for a turn that contains a question" was selected at 0.950
+    # confidence FOR a turn that contained a question. It had been narrowed
+    # into that shape because a wider entry was winning the same turns, so
+    # rewriting instructions relocated the failure rather than fixing it.
+    #
+    # "Never choose this when..." almost always means another entry overlaps
+    # this one, and that overlap is invisible: the router has no way to see it,
+    # and a confidence floor cannot catch it because the wrong pick scored
+    # HIGHER than the right one. So this flags it at authoring time, where it
+    # is free.
+    #
+    # Deliberately advisory and deliberately narrow: it matches a clause, not
+    # an overlap, because an overlap cannot be detected without a model and a
+    # false warning on a catalog that is fine is worse than silence. See bead
+    # livekit-agent-simulator-41kq, which is why narrowing an instruction is
+    # named there as NOT the fix.
+    for _rid, _spec in _catalog_entries(scenario):
+        _instr = str(getattr(_spec, "instruction", "") or "").lower()
+        if "never choose" in _instr or "do not choose" in _instr:
+            findings.append(
+                AuthoringWarning(
+                    code="response_instruction_negation",
+                    message=(
+                        f"response {_rid!r} has a 'never choose' clause — that usually means "
+                        "another entry overlaps it. Measured 2026-09-30: such an entry was "
+                        "still chosen at 0.950 confidence for exactly the turns its clause "
+                        "excludes, and narrowing it moved the failure to another entry. "
+                        "Resolving the overlap is the fix; rewriting the instruction is not."
+                    ),
+                )
+            )
+
     dtmf_actions = [
         a for a in (getattr(scenario, "caller_actions", None) or [])
         if getattr(a, "kind", None) == "dtmf"
