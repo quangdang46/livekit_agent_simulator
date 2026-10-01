@@ -282,14 +282,31 @@ spotted: five scenarios, dozens of runs, and every "the router chose the wrong
 response" reading turned out to be a depleted catalog. The `system: true` entry
 is the only one that never depletes.
 
-#### ⚠️ A catch-all entry silently disables `off_script`
+#### ⚠️ Overlapping entries: the hazard runs BOTH ways
 
-If any entry's `instruction` is a soft catch-all — "…or otherwise signals the
-call is wrapping up" — it competes with the `system: true` entry for exactly
-the inputs that entry exists for. The model picks the catch-all, the caller
-answers, the agent acknowledges, repeat. Nothing errors, and the router is
-behaving perfectly: it picks the same id for the same input, every time, per
-its own instruction.
+Measured 2026-09-30 on the target repo, and the first version of this note got
+it backwards.
+
+It is not "a wide entry swallows a narrow one". Narrowing the wide entry does
+not hand the turn to the narrow one — it **hands it to a different wide entry**.
+One run narrowed `nothing_else` so it could not take a bare acknowledgement;
+`acknowledgement` then absorbed the opening announcement *and* a company-name
+question, which its own instruction forbids ("Never choose this for a turn that
+contains a question"). It was selected at 0.950 confidence.
+
+So the defect is **two overlapping entries**, not one badly-phrased one, and
+no amount of instruction rewriting fixes it. Whichever entry is phrased to
+catch a class of turns ends up catching turns it was never meant to have.
+
+The consequences are silent on both sides:
+- the model picks one of them, the caller answers, the agent acknowledges,
+  repeat — a `system: true` entry that never gets to fire
+- the wrong answer scores **higher** confidence than the right one, so no
+  confidence floor can catch it either
+
+Practical check before you trust a run: read the entry the router chose and ask
+whether a *different* entry was closer. If yes, the catalog is the problem, not
+the router.
 
 The damage is that `off_script` never fires, so nothing is ever attributed to
 the agent — which is the whole reason the system entry is required.
