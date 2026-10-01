@@ -39,11 +39,27 @@ RESPONSE_KEY = "responseId"
 CONFIDENCE_KEY = "confidence"
 
 #: Below this the pick is discarded and the system entry is used instead.
-#: Chosen to be a guess on purpose and CALIBRATION IS STILL OPEN: the honest
-#: statement is that no distribution of real confidences has been measured
-#: yet, because the corpus has 24 of 44 lines observed only once (see the
-#: migration doc). A threshold fitted to unmeasured data is worse than a
-#: documented guess, so this is one, and it is named so it is greppable.
+#:
+#: MEASURED, and the measurement says this cannot be a safety net — on this
+#: model, confidence carries NO information about correctness. Measured on the
+#: target repo, runs 137-138, feat-03-barge-in (2026-09-30):
+#:
+#:     correct  (company_name for a company-name question)   0.900
+#:     wrong    (nothing_else for an announcement)           0.950
+#:     wrong    (acknowledgement for a question)           0.950
+#:
+#: The confidently-wrong answers scored HIGHER than the correct ones. A floor
+#: can only reject what the model admits to being unsure about, and this model
+#: is not unsure when it is wrong. Any threshold between 0.90 and 0.95 rejects
+#: everything or nothing.
+#:
+#: So this is NOT a tuned value and must not be fitted to this distribution.
+#: It is retained because the abstention PATH is real and a different model or
+#: provider may populate the low band — and because removing the mechanism
+#: would restore the original defect (a miss being silently answered with the
+#: nearest plausible entry). What it must not be is presented as a calibrated
+#: threshold. Calibrating it is bead livekit-agent-simulator-0k7, and on this
+#: evidence the honest answer there is that no number exists for this model.
 CONFIDENCE_FLOOR = 0.4
 
 # A degenerate router returns the same id three decisions running. That is a
