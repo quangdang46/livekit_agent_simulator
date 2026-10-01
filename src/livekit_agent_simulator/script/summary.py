@@ -78,6 +78,13 @@ def build_caller_behavior_summary(events: list[dict]) -> dict[str, Any]:
 
     return {
         "script_cues_fired": len(all_script_actions),
+        # Present on BOTH ports. It lived only on `verify.py` (the assertion
+        # surface) until 1a4fc8a added it to the Rust summary, which left the
+        # two summaries disagreeing in the OPPOSITE direction to the gap it was
+        # filed for. A parity fix that lands on one surface of one port moves
+        # the divergence rather than closing it — the same failure as narrowing
+        # a catch-all instruction, found by the same pair of people.
+        "dtmf_fired": sum(1 for e in events if e.get("kind") == "sim.script.dtmf"),
         "waits_fired": len(waits),
         "barges_fired": len(barges),
         "barges_during_agent": len(barges_during),
