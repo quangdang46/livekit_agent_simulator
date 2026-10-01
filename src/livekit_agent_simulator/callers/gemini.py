@@ -310,11 +310,13 @@ class GeminiCallerBridge:
         # True while Script hang_up is injecting a spoken farewell (must not mute it).
         self._script_hangup_farewell = False
 
-    def bind_script_pending(self, is_pending: Callable[[], bool] | None) -> None:
-        """Wire ScriptRunner.has_pending_steps (or equivalent). None = no script gate."""
-        self._script_pending = is_pending
-
     def _script_steps_pending(self) -> bool:
+        """Always False now that `bind_script_pending` is gone.
+
+        Two call sites read it (`:1434`, `:1497`), so removing it is a caller
+        refactor rather than a cleanup. See the note on `_script_pending` in
+        `__init__`.
+        """
         fn = self._script_pending
         if fn is None:
             return False
@@ -322,15 +324,6 @@ class GeminiCallerBridge:
             return bool(fn())
         except Exception:
             return False
-
-    def begin_script_hangup_farewell(self) -> None:
-        """Allow Script goodbye TTS past suppress/mute gates."""
-        self._script_hangup_farewell = True
-        self._suppress_output_until_mono = None
-        self._mute_persona_audio = False
-
-    def end_script_hangup_farewell(self) -> None:
-        self._script_hangup_farewell = False
 
     async def drain_persona_speech(self, *, timeout_s: float = 4.0) -> None:
         """Wait for queued sim speech to leave the mic (goodbye playout)."""
@@ -811,27 +804,6 @@ class GeminiCallerBridge:
         until = time.monotonic() + duration_ms / 1000
         prev = self._suppress_output_until_mono
         self._suppress_output_until_mono = until if prev is None else max(prev, until)
-
-    def begin_scripted_user_silence(
-        self,
-        duration_ms: int,
-        *,
-        grace_s: float = 20.0,
-        mute_persona: bool = False,
-    ) -> None:
-        """Hold dead_call grace for a wait step; optionally mute freestyle TTS.
-
-        Default ``mute_persona=False`` is pacing without forcing the caller mute.
-        Pass ``mute_persona=True`` for intentional dead-air / unresponsive tests.
-        """
-        if duration_ms <= 0:
-            return
-        until = time.monotonic() + duration_ms / 1000
-        prev = self._script_hold_until_mono
-        self._script_hold_until_mono = until if prev is None else max(prev, until)
-        self._script_hold_grace_s = max(self._script_hold_grace_s, float(grace_s))
-        if mute_persona:
-            self.suppress_persona_output(duration_ms)
 
     def scripted_silence_active(self) -> bool:
         """True while scripted silence is holding or within post-hold grace (agent may re-engage)."""

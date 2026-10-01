@@ -169,10 +169,13 @@ class OpenAICallerBridge:
 
     # ------------------------------------------------------------------ setup
 
-    def bind_script_pending(self, is_pending: Callable[[], bool] | None) -> None:
-        self._script_pending = is_pending
-
     def _script_steps_pending(self) -> bool:
+        """Always False now that `bind_script_pending` is gone.
+
+        Kept because three call sites read it (`:1157` and the Gemini twin),
+        so removing it is a caller refactor, not a cleanup. See the note on
+        `_script_pending` in `__init__`.
+        """
         fn = self._script_pending
         if fn is None:
             return False
@@ -180,14 +183,6 @@ class OpenAICallerBridge:
             return bool(fn())
         except Exception:
             return False
-
-    def begin_script_hangup_farewell(self) -> None:
-        self._script_hangup_farewell = True
-        self._suppress_output_until_mono = None
-        self._mute_persona_audio = False
-
-    def end_script_hangup_farewell(self) -> None:
-        self._script_hangup_farewell = False
 
     async def drain_persona_speech(self, *, timeout_s: float = 4.0) -> None:
         await self._drain_persona_speech(timeout_s=timeout_s)
@@ -553,22 +548,6 @@ class OpenAICallerBridge:
         until = time.monotonic() + duration_ms / 1000
         prev = self._suppress_output_until_mono
         self._suppress_output_until_mono = until if prev is None else max(prev, until)
-
-    def begin_scripted_user_silence(
-        self,
-        duration_ms: int,
-        *,
-        grace_s: float = 20.0,
-        mute_persona: bool = False,
-    ) -> None:
-        if duration_ms <= 0:
-            return
-        until = time.monotonic() + duration_ms / 1000
-        prev = self._script_hold_until_mono
-        self._script_hold_until_mono = until if prev is None else max(prev, until)
-        self._script_hold_grace_s = max(self._script_hold_grace_s, float(grace_s))
-        if mute_persona:
-            self.suppress_persona_output(duration_ms)
 
     def scripted_silence_active(self) -> bool:
         if self._script_hold_until_mono is None:

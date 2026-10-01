@@ -70,10 +70,6 @@ class CallerBridge(Protocol):
         """Hard disconnect by Script (``action=hang_up``)."""
         ...
 
-    def bind_script_pending(self, is_pending: Any) -> None:
-        """Wire ``ScriptRunner.has_pending_steps`` (None = no script gate)."""
-        ...
-
     # -- audio wiring ------------------------------------------------------
     async def publish_mic(self) -> rtc.AudioSource:
         """Publish the sim mic + start the parallel mixer."""
@@ -124,26 +120,8 @@ class CallerBridge(Protocol):
         """Block model audio/text to the room for a scripted silence."""
         ...
 
-    def begin_scripted_user_silence(
-        self,
-        duration_ms: int,
-        *,
-        grace_s: float = 20.0,
-        mute_persona: bool = False,
-    ) -> None:
-        """Hold dead_call grace for a Script wait step."""
-        ...
-
     def scripted_silence_active(self) -> bool:
         """True while scripted silence is holding / within grace."""
-        ...
-
-    def begin_script_hangup_farewell(self) -> None:
-        """Allow Script goodbye TTS past suppress/mute gates."""
-        ...
-
-    def end_script_hangup_farewell(self) -> None:
-        """End the Script hang-up farewell window."""
         ...
 
     async def drain_persona_speech(self, *, timeout_s: float = 4.0) -> None:

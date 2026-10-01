@@ -292,15 +292,20 @@ async def test_output_transcript_done_commits_final():
     assert bridge.end_call.is_set()
 
 
-@pytest.mark.asyncio
-async def test_output_transcript_done_defers_when_script_pending():
-    bridge = _bridge()
-    bridge.bind_script_pending(lambda: True)
-    bridge._dispatch_event("response.audio_transcript.delta", {"delta": "Bye"}, None)
-    bridge._dispatch_event("response.audio_transcript.done", {}, None)
-    await asyncio.sleep(0.05)
-    assert not bridge.end_call.is_set()
-    assert bridge._mute_persona_audio is False  # deferred, not teardown
+# REMOVED (dtmf-restore 3tv.9): test_output_transcript_done_defers_when_script_pending
+#
+# It set the gate via `bind_script_pending(lambda: True)` and asserted the
+# farewell defers. That binding call was the ONLY production path that could
+# ever make the gate true, and it is gone — so the test was exercising a branch
+# that cannot be reached in a run. It was also the last reference keeping
+# `bind_script_pending` alive: without this deletion the "orphan" would never
+# have looked orphaned.
+#
+# It is the same condition the bead is about. The dead DTMF surface stayed
+# quiet for a week because its test went with it and nothing noticed; a test
+# for unreachable behaviour is what makes a dead branch look covered. The
+# deferral branch itself is still in the caller and is still dead — collapsing
+# it is a caller refactor, deliberately out of scope here.
 
 
 # ---------------------------------------------------------------------------
