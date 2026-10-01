@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..audio.sapi_tts import TARGET_RATE, synthesize_pcm16_mono
+from ..audio.sherpa_models import _DEFAULT_LANGUAGE as _SHERPA_LANGUAGE
 from ..config import CONFIG_FILENAME, DOT_FOLDER, ConfigError
 from . import EndedBy
 from .agent_wait import ObserverAgentWait
@@ -119,6 +120,16 @@ def _build_semantic_verifier(cfg: Any) -> SemanticVerifierProtocol:
     return RuleBasedSemanticVerifier(target_keywords=target_keywords or None)
 
 
+class _TtsLanguageError(RuntimeError):
+    """Neither TTS engine could speak the caller's text.
+
+    Distinct from a generic synthesis failure on purpose: every TTS problem in
+    this module used to surface as whatever the engine raised — most often
+    `IndexError: tuple index out of range`, which names neither engine, neither
+    language, nor the actual cause.
+    """
+
+
 def _synthesize(text: str) -> bytes:
     """Contract-path TTS: sherpa-onnx offline engine first, OS TTS fallback.
 
@@ -180,7 +191,39 @@ def _synthesize(text: str) -> bytes:
             _TTS_DOWNGRADE_REASON = "sherpa produced no audio (empty pcm)"
             _SHERPA_DEAD = True
     _TTS_BRANCH = "sapi_fallback"
-    pcm = synthesize_pcm16_mono(text, rate=TARGET_RATE) or b""
+    try:
+        pcm = synthesize_pcm16_mono(text, rate=TARGET_RATE) or b""
+    except Exception as exc:  # noqa: BLE001 — reported below, never swallowed
+        # The OS fallback is the LAST branch, and it was the only one not
+        # wrapped. So a text that BOTH engines reject propagated a bare
+        # `IndexError: tuple index out of range` out of `_synthesize`, the
+        # driver retried TTS three times, and the run failed as
+        # `TTS_ERROR: TTS synthesis failed after 3 attempt(s): tuple index out
+        # of range` — naming neither engine, neither language, nor the fact
+        # that the text was the problem.
+        #
+        # Measured on the target repo, 2026-09-30. Two runs, ja-JP callers on
+        # two different transports (gpt-realtime-2.1-mini and gpt-live-1),
+        # byte-identical failures, while the agent half of both calls spoke
+        # normally. English callers are green on the same two transports, so
+        # the variable is the language and not the transport — but the report
+        # said "index out of range", which is not a language statement.
+        #
+        # The pinned model is `kitten-nano-en-v1` and `_DEFAULT_LANGUAGE` is a
+        # hardcoded "en-US" that is never compared against the scenario's
+        # declared language. So this message names that, rather than leaving
+        # the next person to bisect it from the error text.
+        raise _TtsLanguageError(
+            f"neither TTS engine could synthesize this text: the pinned sherpa "
+            f"model is English-only (kitten-nano-en-v1, voice af_heart, "
+            f"language {_SHERPA_LANGUAGE}) and the OS fallback also failed "
+            f"with {type(exc).__name__}: {exc}. A caller that speaks a "
+            f"non-Latin script has no voice here. Either author the "
+            f"caller's lines in a language the pinned model speaks, or pin a "
+            f"model for that language in audio/sherpa_models.py — "
+            f"default_voice() returns a hardcoded '{_SHERPA_LANGUAGE}' and "
+            f"never consults simulator.language."
+        ) from exc
     if not pcm:
         # No OS TTS on this machine (e.g. Linux CI): deterministic offline
         # sine blip so the publish/drain path still exercises end to end.

@@ -451,3 +451,46 @@ def test_the_template_digit_string_exercises_the_pause_path():
     digits = [a.dtmf_digits for a in scenario.caller_actions if a.kind == "dtmf"]
     assert digits == ["1w2w3w#"], f"the template stopped exercising pauses: {digits}"
     assert "w" in digits[0]
+
+
+# ---------------------------------------------------------------------------
+# a caller with no voice (dtmf-adjacent: the TTS path, not the wire)
+# ---------------------------------------------------------------------------
+
+
+def test_a_non_latin_caller_says_which_engine_and_language_failed(monkeypatch) -> None:
+    """`IndexError: tuple index out of range` names nothing.
+
+    Measured on the target repo, 2026-09-30: two runs with ja-JP callers on
+    two different transports (gpt-realtime-2.1-mini, gpt-live-1) failed
+    byte-identically while the AGENT half of both calls spoke normally —
+    26 audio onsets each. English callers are green on the same two transports,
+    so the variable is the language, not the transport. But the report said
+    `TTS_ERROR: TTS synthesis failed after 3 attempt(s): tuple index out of
+    range`, which names neither engine, neither language, nor the text.
+
+    The pinned model is English-only and the OS fallback was the one branch
+    not wrapped, so the error escaped `_synthesize` entirely.
+
+    SCOPE, stated honestly: this test exercises the OS-fallback branch,
+    because that is the branch reachable without the `tts-sherpa` extra. The
+    sherpa branch reaches the same raise by falling through — it fails, sets
+    `_SHERPA_DEAD`, and lands here — but that path is not executed by this
+    test and is not claimed to be.
+    """
+    from livekit_agent_simulator.caller_contract import live_wiring
+
+    def _boom(text: str, rate: int = 0):
+        raise IndexError("tuple index out of range")
+
+    monkeypatch.setattr(live_wiring, "synthesize_pcm16_mono", _boom)
+    monkeypatch.setattr(live_wiring, "_SHERPA_DEAD", True, raising=False)
+
+    with pytest.raises(live_wiring._TtsLanguageError) as exc:
+        live_wiring._synthesize("こんにちは")
+
+    msg = str(exc.value)
+    assert "English-only" in msg
+    assert "kitten-nano-en-v1" in msg, msg
+    assert "non-Latin" in msg, msg
+    assert "simulator.language" in msg, msg
