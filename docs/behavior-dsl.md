@@ -107,7 +107,13 @@ construction, not just by convention.
 
 - `wait:` blind ms sleep only — there is no wait-for-agent-turn primitive;
   gate a `say:` with `trigger: {kind: silence}` instead.
-- `dtmf:` IVR digits string (`"1w2"`, `w` = 120ms pause). `silence:` is an
+- `dtmf:` IVR digits string (`"1w2"`, `w` = 120ms pause). Since the restore
+  this is a real wire call (`RoomDtmfPublisher`), not a planner cue: it
+  reaches the room through `publish_dtmf` and appears in `events.jsonl` as
+  **`sim.script.dtmf`**. That event proves the tones were submitted to the
+  local participant — **not** that an agent received them, since the server
+  excludes the sender from fan-out. It is also not a report marker: there is
+  no DTMF chip in the web player. `silence:` is an
   emit-only control marker (no runtime wait). `hangup:` hangs up. `end:`
   terminates the run (`DriverResult` SCENARIO).
 - `interrupt:` fixed short cut-in line (correction/backchannel via

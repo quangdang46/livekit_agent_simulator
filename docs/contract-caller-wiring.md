@@ -41,6 +41,39 @@ The validator bypass is the load-bearing subtlety and it carves out the
 invariant below. See `NEW_ARCHITECTURE_FOR_LKS_AND_LKSR.md` §27.7 and
 [docs/migration-caller-steps-to-responses.md](migration-caller-steps-to-responses.md).
 
+## DTMF (`- dtmf:`)
+
+A keypress is a **wire call**, not a planner cue. `RoomDtmfPublisher`
+(`caller_contract/dtmf.py`) walks the digit string left to right: `w` is a
+pause and publishes nothing, a mapped digit is sent and then held for
+`DTMF_GAP_MS`, and the first unmappable character stops the walk and reports
+why. The caller sees `sim.script.dtmf` in the event log.
+
+**What that event does NOT prove.** It proves the tones were submitted to the
+**local participant**. It does **not** prove an agent received them: the server
+excludes the sender from data fan-out, so the simulated caller structurally
+cannot observe its own tone. The only in-repo delivery evidence is the agent's
+own reaction. A run log reading `error: null` is not proof of delivery.
+
+Two further things a reader of a run log needs:
+
+- **The tones are only reachable in a shared room.** `publish_dtmf` is an
+  unconditional room broadcast — the Python API exposes no destination
+  identities — so in the three SIP modes the sim and the agent sit in
+  different LiveKit rooms and a tone reaches the observer and nobody else.
+  The room gate fails the run with `TRANSPORT_ERROR` and a message naming that
+  topology, rather than emitting a green event for a keypress that went
+  nowhere.
+- **`DTMF_CODES` is LiveKit's map, not RFC 4733.** LiveKit maps `#` to 11;
+  the RFC says 15. `livekit/sip` ignores `code` on the room-to-phone leg so
+  the divergence is invisible in a call — but an agent asserting on
+  `SipDTMF.code` rather than `.digit` sees 11 here and 15 there.
+
+There is no DTMF chip in the report player. `MARKER_DTMF` exists but is only
+reachable from a `sim.script.cue` spec's `interrupt_class`, and neither the
+Python nor the Rust web renderer draws one. Adding one is a separate change
+across both web toolchains.
+
 ## Why text-only backend for `do:`
 
 The live bug class (role-flip/recap) exists because generation and audio
@@ -86,8 +119,10 @@ involved in caller speech again; the bridge keeps only mic/mixer plumbing.
   adapter/validator.
 - `do` exhaustion (no VALID after retries) → `CALLER_BEHAVIOR_VIOLATION` +
   STOP; never speaks the rejected candidate.
-- `wait`/`dtmf`/`interrupt`/`end` never go through AI/TTS (planner control
-  actions only).
+- `wait`/`interrupt`/`end` never go through AI/TTS (planner control actions
+  only). **`dtmf` is no longer one of those** — since the restore it is a real
+  wire call (`RoomDtmfPublisher` → `participant.publish_dtmf`), still with no
+  AI/TTS and no PCM, and still gated by the trigger. See below.
 - **The "validator is the single enforcement choke point" invariant has ONE
   deliberate carve-out**: a routed turn (a scenario authoring `responses:`)
   receives a synthetic `ValidationResult(VALID, reason="ROUTED")` without
