@@ -210,7 +210,7 @@ def test_the_router_request_carries_the_real_schema() -> None:
 
         def read(self):
             return json.dumps(
-                {"choices": [{"message": {"content": json.dumps({"responseId": "company"})}}]}
+                {"choices": [{"message": {"content": json.dumps({"responseId": "company", "confidence": 0.9})}}]}
             ).encode()
 
     def _capture(req, timeout=None):

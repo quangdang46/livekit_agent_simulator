@@ -32,6 +32,19 @@ from typing import Any, Protocol
 # https://developers.openai.com/api/docs/guides/structured-outputs
 SCHEMA_NAME = "response_route"
 RESPONSE_KEY = "responseId"
+#: The model's own certainty, and REQUIRED in the schema. See
+#: `build_route_schema` — under strict structured outputs a property the
+#: schema omits can never be returned, which is why an earlier, schema-free
+#: `confidence` was permanently None.
+CONFIDENCE_KEY = "confidence"
+
+#: Below this the pick is discarded and the system entry is used instead.
+#: Chosen to be a guess on purpose and CALIBRATION IS STILL OPEN: the honest
+#: statement is that no distribution of real confidences has been measured
+#: yet, because the corpus has 24 of 44 lines observed only once (see the
+#: migration doc). A threshold fitted to unmeasured data is worse than a
+#: documented guess, so this is one, and it is named so it is greppable.
+CONFIDENCE_FLOOR = 0.4
 
 # A degenerate router returns the same id three decisions running. That is a
 # HARNESS defect, not a conversation: a green suite built on it would be a lie,
@@ -95,6 +108,12 @@ class RouteDecision:
     """
 
     response_id: str
+    #: The model's own certainty. REQUIRED in the wire schema and CONSUMED by
+    #: the driver, which discards a pick below ``CONFIDENCE_FLOOR``. This field
+    #: existed once as documentation with no consumer and was permanently None
+    #: on every run; it was removed rather than left as a lie. It is back only
+    #: because something reads it now.
+    confidence: float | None = None
     backend: str = ""
     latency_ms: int | None = None
 
@@ -137,8 +156,22 @@ def build_route_schema(response_ids: list[str]) -> dict[str, Any]:
         "type": "object",
         "properties": {
             RESPONSE_KEY: {"type": "string", "enum": list(response_ids)},
+            CONFIDENCE_KEY: {"type": "number"},
         },
-        "required": [RESPONSE_KEY],
+        # BOTH required. That is the whole point of putting confidence in the
+        # schema: strict structured outputs forbid any property outside it, so
+        # a field the schema does not declare can never be returned. An earlier
+        # draft of this file carried `confidence` as documentation only, which
+        # is why it was permanently None on every run (measured 2026-09-30) —
+        # the router had no way to express certainty and `off_script` could
+        # only ever be a label on whatever it picked.
+        #
+        # With both required, `CONFIDENCE_FLOOR` in the driver turns "the model
+        # is not sure" into a real decision: below the floor the pick is
+        # discarded and the system entry is used instead, so an unmodelled
+        # agent question is RECORDED rather than silently answered with the
+        # nearest plausible entry.
+        "required": [RESPONSE_KEY, CONFIDENCE_KEY],
         "additionalProperties": False,
     }
 
@@ -242,7 +275,18 @@ def parse_route_body(raw: Any, *, options: list[str], backend: str) -> RouteDeci
         raise RouterFault(
             f"{backend}: returned {response_id!r}, which is not one of the offered options"
         )
-    return RouteDecision(response_id=response_id, backend=backend)
+    confidence = raw.get(CONFIDENCE_KEY)
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+        raise RouterFault(
+            f"{backend}: {CONFIDENCE_KEY!r} was {type(confidence).__name__}, not a "
+            "number. The schema marks it required, so its absence means a "
+            "provider that is not honouring strict structured outputs."
+        )
+    return RouteDecision(
+        response_id=response_id,
+        confidence=float(confidence),
+        backend=backend,
+    )
 
 
 def should_retry(status: int | None, exc: BaseException | None = None) -> bool:

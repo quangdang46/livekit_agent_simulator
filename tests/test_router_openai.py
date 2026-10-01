@@ -82,18 +82,19 @@ def test_prompt_includes_the_system_entry_as_a_selection_rule():
 
 
 def test_request_uses_strict_structured_output_and_the_generated_schema():
-    _, urlopen = _route(_respond({"choices": [{"message": {"content": json.dumps({RESPONSE_KEY: "company"})}}]}))
+    _, urlopen = _route(_respond({"choices": [{"message": {"content": json.dumps({RESPONSE_KEY: "company", "confidence": 0.9})}}]}))
     sent = json.loads(urlopen.call_args[0][0].data)
     fmt = sent["response_format"]
     assert fmt["type"] == "json_schema"
+    extra = fmt["json_schema"]["schema"]
     assert fmt["json_schema"]["strict"] is True, "without strict this is not Structured Outputs at all"
-    assert fmt["json_schema"]["schema"]["required"] == [RESPONSE_KEY]
+    assert fmt["json_schema"]["schema"]["required"] == [RESPONSE_KEY, "confidence"]
     assert sent["model"] == "gpt-4.1-nano"
     assert sent["temperature"] == 0
 
 
 def test_valid_reply_routes_and_records_telemetry():
-    decision, _ = _route(_respond({"choices": [{"message": {"content": json.dumps({RESPONSE_KEY: "company"})}}]}))
+    decision, _ = _route(_respond({"choices": [{"message": {"content": json.dumps({RESPONSE_KEY: "company", "confidence": 0.9})}}]}))
     assert decision.response_id == "company"
     assert decision.backend == "openai"
     assert decision.latency_ms is not None

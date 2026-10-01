@@ -81,17 +81,19 @@ def test_prompt_does_not_restate_the_schema():
 
 
 def test_request_pins_required_and_the_schema():
-    _, urlopen = _route(_respond(_candidates(json.dumps({RESPONSE_KEY: "company"}))))
+    _, urlopen = _route(_respond(_candidates(json.dumps({RESPONSE_KEY: "company", "confidence": 0.9}))))
     cfg = json.loads(urlopen.call_args[0][0].data)["generationConfig"]
     assert cfg["responseMimeType"] == "application/json"
     schema = cfg["responseSchema"]
-    # Absent `required` is exactly what makes an empty {} reachable on Gemini.
-    assert schema["required"] == [RESPONSE_KEY]
+    # Absent `required` is exactly what makes an empty {} reachable on Gemini —
+    # every property is optional there by default. Both fields must be pinned,
+    # and confidence is the one that makes abstention possible at all.
+    assert set(schema["required"]) == {RESPONSE_KEY, "confidence"}
     assert cfg["maxOutputTokens"] > 0, "a thinking budget must not starve the reply"
 
 
 def test_valid_reply_routes_and_records_telemetry():
-    decision, _ = _route(_respond(_candidates(json.dumps({RESPONSE_KEY: "company"}))))
+    decision, _ = _route(_respond(_candidates(json.dumps({RESPONSE_KEY: "company", "confidence": 0.9}))))
     assert decision.response_id == "company"
     assert decision.backend == "gemini"
     assert decision.latency_ms is not None

@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from . import (
@@ -100,7 +100,7 @@ def build_routed_context(
     ctx["canonical_text"] = response.text
     return ctx
 from .orchestrator import BehaviorOutcome, Orchestrator
-from .router import DegeneracyGuard, RouterError, RouterTerminal
+from .router import CONFIDENCE_FLOOR, DegeneracyGuard, RouterError, RouterTerminal
 from .validator import ContractValidator, ValidationResult, Verdict
 
 
@@ -809,12 +809,66 @@ class ContractCallerDriver:
                     decision = await self.router.route(
                         agent_transcript=agent_text, catalog=self.response_catalog,
                     )
+                    # ABSTENTION. A pick the model is not confident about is
+                    # discarded and the system entry is used instead, so an
+                    # agent question the catalog does not cover is RECORDED
+                    # rather than answered with the nearest plausible entry.
+                    #
+                    # Measured on the target repo, 2026-09-30 (run 098): the
+                    # agent asked for "the exact number of floors and total
+                    # units", no entry covered it, the router picked a real
+                    # entry anyway, and `off_script` was false because that
+                    # flag is derived from the label of whatever was chosen.
+                    # The miss was invisible. Adding an entry fixed the symptom
+                    # and left the class intact.
+                    #
+                    # The pick is dropped BEFORE the degeneracy guard, so an
+                    # abstention is not counted as a repeat — otherwise a run
+                    # where the model correctly declines three times would be
+                    # killed as a degenerate router.
+                    abstained = False
+                    if decision.confidence is not None and (
+                        decision.confidence < CONFIDENCE_FLOOR
+                    ):
+                        # `system_id` is a property that raises rather than
+                        # returning None when a catalog has no system entry.
+                        # Parse enforces exactly one, so this is belt-and-braces
+                        # for a directly-constructed catalog.
+                        try:
+                            system_id = self.response_catalog.system_id
+                        except StopIteration:
+                            system_id = None
+                        if system_id is not None and system_id != decision.response_id:
+                            _emit(
+                                "contract.router_abstained",
+                                {
+                                    "discarded": decision.response_id,
+                                    "confidence": decision.confidence,
+                                    "floor": CONFIDENCE_FLOOR,
+                                    "used": system_id,
+                                },
+                            )
+                            decision = replace(decision, response_id=system_id)
+                            # Abstentions are NOT fed to the degeneracy guard.
+                            # The guard's rule is "the same id twice means the
+                            # router is stuck", and a model that correctly
+                            # declines three times in a row is not stuck.
+                            # Substituting the system entry and THEN observing
+                            # it reproduced exactly the failure this whole
+                            # change exists to remove — my own test caught it,
+                            # after I had written a comment claiming the
+                            # opposite. Measured pattern from the target repo,
+                            # independently, on the guard path: after a barge-in
+                            # the agent re-asks and the router answers
+                            # correctly, and the third repeat killed the run.
+                            abstained = True
                     if self._degeneracy is None:
                         self._degeneracy = DegeneracyGuard()
                     # Inside the try: a degenerate router must become a RED
                     # run via the RouterTerminal arm below, not propagate out
                     # of the driver.
-                    self._degeneracy.observe(decision.response_id)
+                    if not abstained:
+                        self._degeneracy.observe(decision.response_id)
                 except RouterTerminal as exc:
                     return self._fail(
                         FailureReason.LANGUAGE_GENERATION_ERROR,

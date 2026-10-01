@@ -211,3 +211,98 @@ async def test_a_router_attached_by_the_real_seam_reaches_this_branch():
     assert seen, "a router attached by the real seam never reached the branch"
     assert d.routed_turns and d.routed_turns[0]["response_id"] == "company"
 
+
+
+# ---------------------------------------------------------------------------
+# abstention: a pick the model is unsure about is discarded, not spoken
+# ---------------------------------------------------------------------------
+
+
+class _ConfidentRouter:
+    """A real entry at a caller-supplied confidence."""
+
+    name = "confident"
+
+    def __init__(self, confidence: float) -> None:
+        self.confidence = confidence
+        self.seen: list[str] = []
+
+    async def route(self, *, agent_transcript: str, catalog):
+        from livekit_agent_simulator.caller_contract.router import RouteDecision
+
+        self.seen.append(agent_transcript)
+        return RouteDecision(
+            response_id="company", confidence=self.confidence, backend="confident"
+        )
+
+
+async def test_a_low_confidence_pick_is_discarded_and_the_system_entry_used():
+    """The miss becomes VISIBLE instead of answered by the nearest entry.
+
+    Measured on the target repo, run 098: the agent asked for "the exact number
+    of floors and total units", no catalog entry covered it, the router picked a
+    real entry anyway, and `off_script` was false — because that flag is derived
+    from the LABEL of whatever was chosen. Adding an entry fixed the symptom
+    and left the class intact.
+    """
+    from livekit_agent_simulator.caller_contract.router import CONFIDENCE_FLOOR
+
+    d, _o, sink, agent = _setup(_ConfidentRouter(CONFIDENCE_FLOOR - 0.2), _catalog())
+    await d.run(_steps(), sink, agent)
+
+    assert d.routed_turns, "the run never routed, so nothing was proven"
+    assert d.routed_turns[0]["off_script"] is True, (
+        "a discarded pick must land on the system entry and be RECORDED as "
+        f"off_script, got {d.routed_turns[0]}"
+    )
+    assert d.routed_turns[0]["response_id"] == "sys"
+
+
+async def test_a_confident_pick_is_used_as_is():
+    """The other direction.
+
+    Without this the floor could be any number at all and the test above would
+    still pass with a router that abstains on everything.
+    """
+    from livekit_agent_simulator.caller_contract.router import CONFIDENCE_FLOOR
+
+    d, _o, sink, agent = _setup(_ConfidentRouter(0.95), _catalog())
+    await d.run(_steps(), sink, agent)
+
+    assert d.routed_turns
+    assert d.routed_turns[0]["response_id"] == "company"
+    assert d.routed_turns[0]["off_script"] is False
+    assert CONFIDENCE_FLOOR > 0.0, "a zero floor disables abstention entirely"
+
+
+async def test_repeated_abstention_does_not_read_as_a_degenerate_router():
+    """The guard must not punish the router for declining.
+
+    Measured on the target repo, run 123: after a barge-in the agent re-asked
+    and the router answered CORRECTLY the same way twice, and the third repeat
+    tripped DegeneracyGuard and killed the run. Feeding substituted system
+    entries into the guard reproduces that — my own test caught the first version
+    of this change doing exactly that, after I had written a comment claiming
+    the opposite.
+    """
+    from livekit_agent_simulator.caller_contract.router import DegeneracyGuard
+
+    d, _o, sink, agent = _setup(_ConfidentRouter(0.1), _catalog())
+    result = await d.run(_steps(), sink, agent)
+
+    assert result.failure is None, (
+        f"declining repeatedly killed the run: {result.failure}"
+    )
+    assert len(d.routed_turns) > 2, "need more than one turn to prove anything"
+    assert all(t["off_script"] for t in d.routed_turns), (
+        "every turn should have abstained; a non-abstaining one means the "
+        "floor was crossed by accident"
+    )
+    # And the guard still catches a genuinely stuck router — abstention
+    # exempts DECLINING, not REPEATING. The threshold is 3, so the third
+    # identical id raises; getting this wrong makes the exemption look like
+    # the guard was simply turned off.
+    guard = DegeneracyGuard()
+    with pytest.raises(Exception):
+        for _ in range(3):
+            guard.observe("company")

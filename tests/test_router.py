@@ -11,6 +11,7 @@ import pytest
 
 from livekit_agent_simulator.caller_contract.responses import ResponseCatalog
 from livekit_agent_simulator.caller_contract.router import (
+    CONFIDENCE_FLOOR,
     DEGENERATE_RUN_LENGTH,
     RESPONSE_KEY,
     DegeneracyGuard,
@@ -45,7 +46,10 @@ def test_schema_is_wrapped_not_a_bare_enum():
     s = build_route_schema(["a", "b"])
     assert s["type"] == "object"
     assert s["properties"][RESPONSE_KEY]["enum"] == ["a", "b"]
-    assert s["required"] == [RESPONSE_KEY]
+    assert s["properties"]["confidence"]["type"] == "number"
+    # Both REQUIRED: an optional property is one the provider may omit,
+    # which is how the earlier schema-free confidence stayed None forever.
+    assert set(s["required"]) == {RESPONSE_KEY, "confidence"}
     assert s["additionalProperties"] is False
 
 
@@ -80,43 +84,58 @@ def test_schema_is_cached_and_rebuilt_only_when_the_option_set_changes():
 
 
 def test_valid_body_becomes_a_decision():
-    d = parse_route_body({RESPONSE_KEY: "a"}, options=["a", "b"], backend="t")
+    d = parse_route_body(
+        {RESPONSE_KEY: "a", "confidence": 0.9}, options=["a", "b"], backend="t"
+    )
     assert d.response_id == "a"
     assert d.backend == "t"
 
 
-def test_route_decision_carries_no_confidence_and_the_schema_forbids_one():
-    """The dead knob this replaced, and why it could never have worked.
+def test_confidence_is_required_in_the_schema_because_it_is_consumed():
+    """Why `confidence` exists, and why it is in the SCHEMA.
 
-    `RouteDecision.confidence` was documented as "telemetry only", parsed out
-    of the provider body, and recorded per-decision in the run summary. It could
-    never be populated: the request is
-    `{"responseId": {...}}` with `additionalProperties: False` under
-    `"strict": True`, so the provider is structurally forbidden from returning
-    anything else. Every real run recorded `confidence: null`.
+    It was removed earlier today and this test documented why it could never
+    work: the schema was `{"responseId"}` with `additionalProperties: False`
+    under `"strict": True`, so the provider was structurally forbidden from
+    returning anything else and every run recorded `confidence: null`.
 
-    The old test here passed a hand-made body containing `confidence` — an
-    input the provider cannot send — so it read as covered while the production
-    path was permanently empty. This test pins the schema instead, which is
-    the thing that actually decides.
+    That reasoning was right and the conclusion was wrong. It said the signal
+    was unobtainable — when it was unobtainable *in that schema*. Declaring it
+    is what makes it obtainable: strict mode enforces required properties, so a
+    property the schema carries is one the provider MUST emit.
+
+    What changed is that it has a consumer. `CONFIDENCE_FLOOR` in the driver
+    discards a pick below the floor and uses the system entry instead, so an
+    unmodelled agent question is recorded rather than answered with the
+    nearest plausible entry — measured on run 098, where the agent asked for
+    "the exact number of floors and total units" and the flag stayed false.
     """
-    from livekit_agent_simulator.caller_contract.router import (
-        RESPONSE_KEY,
-        RouteDecision,
-    )
-
-    assert not hasattr(RouteDecision("a"), "confidence"), (
-        "confidence must not come back: strict structured outputs forbid any "
-        "property outside the schema"
+    assert CONFIDENCE_FLOOR > 0.0, (
+        "a zero floor disables abstention entirely, which is the bug"
     )
 
     schema = build_route_schema(["a", "b"])
-    assert schema["additionalProperties"] is False
-    assert schema["required"] == [RESPONSE_KEY]
-    assert set(schema["properties"]) == {RESPONSE_KEY}, (
-        "if a second property is ever added here, this test must be revisited - "
-        "it is what makes confidence structurally impossible"
+    assert "confidence" in schema["properties"]
+    assert "confidence" in schema["required"]
+
+    parsed = parse_route_body(
+        {RESPONSE_KEY: "a", "confidence": 0.55}, options=["a", "b"], backend="t"
     )
+    assert parsed.confidence == 0.55
+    assert parsed.confidence >= CONFIDENCE_FLOOR, "above the floor: the pick stands"
+
+
+def test_a_body_without_confidence_is_a_fault_not_a_silent_none():
+    """The schema requires it, so its absence means a non-conforming provider.
+
+    Defaulting to None would restore the exact failure this replaced: the
+    driver cannot tell "the model is unsure" from "the model did not say", and
+    both look like a confident pick.
+    """
+    with pytest.raises(RouterFault) as exc:
+        parse_route_body({RESPONSE_KEY: "a"}, options=["a", "b"], backend="t")
+    assert "confidence" in str(exc.value)
+
 
 
 def test_an_extra_provider_property_is_still_ignored_not_fatal():
