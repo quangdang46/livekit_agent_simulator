@@ -292,3 +292,39 @@ def test_a_cancelled_run_still_writes_evidence() -> None:
     # The generic clause keeps its original behaviour: record, mark failed,
     # and carry on so the report is still written.
     assert 'status = "failed"' in source[generic : generic + 400]
+
+
+# ---------------------------------------------------------------------------
+# the bounded sim-leg retry
+# ---------------------------------------------------------------------------
+
+
+def test_the_leg_retry_is_bounded_and_skips_a_call_that_already_spoke() -> None:
+    """Retry once, and only when nothing was transcribed.
+
+    Measured on the target repo, 2026-09-30: `TimeoutError: The read
+    operation timed out` ended runs 066, 068, 112, 114 and damaged 115. A peer
+    session put it as the blocker on every scenario that reached a real
+    conversation and then stopped.
+
+    The "already spoke" condition is the whole safety property. A call that has
+    transcribed anything already cost real money on the OpenAI realtime
+    session; reconnecting it pays twice for the same run. A call that never
+    spoke cost a room and a join.
+    """
+    import inspect
+
+    from livekit_agent_simulator import run_orchestrator
+
+    source = inspect.getsource(run_orchestrator.run_scenario_instance)
+    assert "sim.leg_retry" in source, "the retry must be RECORDED, never silent"
+    assert "_connect_attempts >= 2" in source, "the retry must be bounded at one"
+    assert "spoke" in source and "transcript." in source, (
+        "the retry must be skipped once anything was transcribed"
+    )
+    # It must NOT retry the deliberate outcomes, which have their own events.
+    retry_block = source[source.index("except TimeoutError") : source.index("except (AgentJoinTimeout")]
+    assert "AgentJoinTimeout" not in retry_block, (
+        "a run that never joined is a configuration problem; retrying it hides "
+        "the problem for longer"
+    )

@@ -472,25 +472,75 @@ async def run_scenario_instance(
 
             # ── Phase 2–3: SimLeg.connect (Strategy) ─────────────────────
             leg = sim_leg_factory(caller_mode)
-            try:
-                leg_handle = await leg.connect(
-                    SimLegContext(
-                        adapter=adapter,
-                        cfg=cfg,
-                        scenario=scenario,
-                        writer=writer,
-                        run_id=run_id,
-                        dispatch_metadata=dispatch_metadata,
-                        first_speaker=run.first_speaker,
+            leg_ctx = SimLegContext(
+                adapter=adapter,
+                cfg=cfg,
+                scenario=scenario,
+                writer=writer,
+                run_id=run_id,
+                dispatch_metadata=dispatch_metadata,
+                first_speaker=run.first_speaker,
+            )
+            # ONE bounded retry on a transport read timeout.
+            #
+            # Measured on the target repo, 2026-09-30: `TimeoutError: The read
+            # operation timed out` ended runs 066, 068, 112, 114 and damaged
+            # 115. Peer voice-ai-agent-69 put it as the blocker on every scenario
+            # that reached a real conversation and then stopped — it is not
+            # noise, it is what ends long runs.
+            #
+            # The condition is NOT a bare timeout: retry only when NOTHING was
+            # transcribed. A call that already spoke cost real money on the
+            # OpenAI realtime session, and reconnecting it would pay twice for
+            # the same run. A call that never spoke cost a room and a join, so
+            # one retry is cheap and is the case that actually happens.
+            #
+            # Not retried on `AgentJoinTimeout` or `SimLegError`: those are
+            # deliberate outcomes with their own events, and a run that never
+            # joined is a configuration problem that a second attempt only
+            # hides for longer.
+            _connect_attempts = 0
+            while True:
+                _connect_attempts += 1
+                try:
+                    leg_handle = await leg.connect(leg_ctx)
+                    break
+                except TimeoutError as e:
+                    # `asyncio.TimeoutError` IS the builtin TimeoutError on
+                    # 3.11+, and the LiveKit read timeout surfaces as a bare
+                    # `TimeoutError`, so this matches it without a string test.
+                    spoke = any(
+                        (ev.get("kind") or "").startswith("transcript.")
+                        for ev in writer.events
                     )
-                )
-            except (AgentJoinTimeout, SimLegError) as e:
-                writer.emit(
-                    "dispatch.agent_timeout" if isinstance(e, AgentJoinTimeout) else "sim.leg_error",
-                    spec={"error": str(e), "mode": caller_mode},
-                    include_dialogue=False,
-                )
-                raise
+                    if _connect_attempts >= 2 or spoke:
+                        writer.emit(
+                            "sim.leg_error",
+                            spec={
+                                "error": str(e),
+                                "mode": caller_mode,
+                                "attempts": _connect_attempts,
+                                "retry_skipped_because_transcribed": spoke,
+                            },
+                            include_dialogue=False,
+                        )
+                        raise
+                    writer.emit(
+                        "sim.leg_retry",
+                        spec={
+                            "reason": str(e),
+                            "mode": caller_mode,
+                            "attempt": _connect_attempts,
+                        },
+                        include_dialogue=False,
+                    )
+                except (AgentJoinTimeout, SimLegError) as e:
+                    writer.emit(
+                        "dispatch.agent_timeout" if isinstance(e, AgentJoinTimeout) else "sim.leg_error",
+                        spec={"error": str(e), "mode": caller_mode},
+                        include_dialogue=False,
+                    )
+                    raise
 
             meta["room_name"] = leg_handle.agent_room_name
             meta["sim_room_name"] = leg_handle.sim_room_name
