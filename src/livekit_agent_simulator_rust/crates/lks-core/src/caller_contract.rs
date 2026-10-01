@@ -2547,6 +2547,76 @@ mod parity_tests {
         assert_eq!(actual_ended_by, expected_eb_sorted);
     }
 
+    /// Dispatch one `action_cases` op to its planner primitive.
+    ///
+    /// A function rather than an inline match so the `op => panic!` arm is
+    /// testable on its own. That arm is now the ONLY guard left against a
+    /// fixture op this port has no primitive for: after the `plan_dtmf`
+    /// removal there is no second thing that would notice. Inline, its value
+    /// depended on someone re-adding a `dtmf` case by hand; as a function,
+    /// `unknown_planner_op_still_panics` pins it on every run.
+    ///
+    /// The panic is also what a compiler cannot protect. Dropping the arm
+    /// outright fails to compile (non-exhaustive `&str` match), but changing
+    /// it to a fallback kind compiles fine and silently swallows the case —
+    /// so the test below asserts the panic, not merely that an arm exists.
+    fn dispatch_action_op(op: &str, case: &Value) -> super::InteractionActionKind {
+        match op {
+            "silence" => super::plan_silence().kind,
+            "hangup" => super::plan_hangup().kind,
+            "backchannel_default" => {
+                let o = super::plan_backchannel(None);
+                let expected_tokens: Vec<String> = case["expected_tokens"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap().to_string())
+                    .collect();
+                assert_eq!(o.tokens, expected_tokens, "{:?}", case);
+                o.kind
+            }
+            "barge_in" => super::trigger_barge_in().kind,
+            op => panic!("unknown planner action op {:?}", op),
+        }
+    }
+
+    /// The guard that catches a resurrected `dtmf` op.
+    ///
+    /// Before `plan_dtmf` was removed this case had a real arm, so the guard
+    /// could not fire. Now it is the only thing standing between a fixture op
+    /// with no primitive and a silently skipped case — and a skipped case
+    /// reports nothing at all, which is how the deletion would have gone
+    /// unnoticed in the first place.
+    #[test]
+    fn unknown_planner_op_still_panics() {
+        let case = serde_json::json!({"op": "dtmf", "digits": "123#"});
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_action_op("dtmf", &case)
+        }));
+        assert!(
+            outcome.is_err(),
+            "a `dtmf` op must panic now that the twin is gone, not resolve \
+             to some other kind and be counted as coverage"
+        );
+    }
+
+    /// Every op the shared fixture carries must still dispatch, so the guard
+    /// above cannot be satisfied by panicking on everything.
+    #[test]
+    fn every_fixture_op_still_dispatches() {
+        let data = load("interaction_planner.json");
+        for case in data["action_cases"].as_array().unwrap() {
+            let op = case["op"].as_str().unwrap();
+            let kind = dispatch_action_op(op, case);
+            assert_eq!(
+                kind.as_str(),
+                case["expected_kind"].as_str().unwrap(),
+                "op {:?}",
+                op
+            );
+        }
+    }
+
     #[test]
     fn interaction_planner_vector_matches_rust_delivery() {
         let data = load("interaction_planner.json");
@@ -2624,23 +2694,7 @@ mod parity_tests {
         }
 
         for case in data["action_cases"].as_array().unwrap() {
-            let kind = match case["op"].as_str().unwrap() {
-                "silence" => super::plan_silence().kind,
-                "hangup" => super::plan_hangup().kind,
-                "backchannel_default" => {
-                    let o = super::plan_backchannel(None);
-                    let expected_tokens: Vec<String> = case["expected_tokens"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|v| v.as_str().unwrap().to_string())
-                        .collect();
-                    assert_eq!(o.tokens, expected_tokens, "{:?}", case);
-                    o.kind
-                }
-                "barge_in" => super::trigger_barge_in().kind,
-                op => panic!("unknown planner action op {:?}", op),
-            };
+            let kind = dispatch_action_op(case["op"].as_str().unwrap(), case);
             assert_eq!(
                 kind.as_str(),
                 case["expected_kind"].as_str().unwrap(),
