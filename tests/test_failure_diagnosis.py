@@ -18,6 +18,9 @@ here rather than silently reverting the column to a dash.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from livekit_agent_simulator.logging.event_writer import EventWriter
 from livekit_agent_simulator.run_orchestrator import diagnose_failure
@@ -295,36 +298,124 @@ def test_a_cancelled_run_still_writes_evidence() -> None:
 
 
 # ---------------------------------------------------------------------------
-# the bounded sim-leg retry
+# the bounded sim-leg retry — as behaviour, not as source text
 # ---------------------------------------------------------------------------
 
 
-def test_the_leg_retry_is_bounded_and_skips_a_call_that_already_spoke() -> None:
-    """Retry once, and only when nothing was transcribed.
+class _Writer:
+    """Mirrors `EventWriter`: `events` holds DICTS with a "spec" key.
 
-    Measured on the target repo, 2026-09-30: `TimeoutError: The read
-    operation timed out` ended runs 066, 068, 112, 114 and damaged 115. A peer
-    session put it as the blocker on every scenario that reached a real
-    conversation and then stopped.
-
-    The "already spoke" condition is the whole safety property. A call that has
-    transcribed anything already cost real money on the OpenAI realtime
-    session; reconnecting it pays twice for the same run. A call that never
-    spoke cost a room and a join.
+    The first version stored `(kind, spec)` tuples, and the retry helper —
+    which correctly reads `ev.get("spec")` like the rest of the module — blew
+    up on them. The fake has to match the real shape or it tests nothing.
     """
-    import inspect
 
-    from livekit_agent_simulator import run_orchestrator
+    def __init__(self, events=()) -> None:
+        self.events: list[dict] = [
+            e if isinstance(e, dict) else {"kind": e[0], "spec": e[1]}
+            for e in events
+        ]
+        self.emitted: list[tuple[str, dict]] = []
 
-    source = inspect.getsource(run_orchestrator.run_scenario_instance)
-    assert "sim.leg_retry" in source, "the retry must be RECORDED, never silent"
-    assert "_connect_attempts >= 2" in source, "the retry must be bounded at one"
-    assert "spoke" in source and "transcript." in source, (
-        "the retry must be skipped once anything was transcribed"
-    )
-    # It must NOT retry the deliberate outcomes, which have their own events.
-    retry_block = source[source.index("except TimeoutError") : source.index("except (AgentJoinTimeout")]
-    assert "AgentJoinTimeout" not in retry_block, (
-        "a run that never joined is a configuration problem; retrying it hides "
-        "the problem for longer"
-    )
+    def emit(self, kind, spec=None, include_dialogue=True, **_):
+        self.events.append({"kind": kind, "spec": spec or {}})
+        self.emitted.append((kind, spec or {}))
+
+
+class _Leg:
+    """Fails `fail_times` times with `exc`, then succeeds."""
+
+    def __init__(self, *, fail_times=1, exc=None):
+        self.fail_times = fail_times
+        self.exc = exc or TimeoutError("The read operation timed out")
+        self.calls = 0
+
+    async def connect(self, _ctx):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise self.exc
+        return SimpleNamespace(agent_room_name="r", sim_room_name="r")
+
+
+async def test_a_timeout_before_any_speech_is_retried_once():
+    """The case that actually happens, and the one worth retrying.
+
+    Measured on the target repo, 2026-09-30: the read timeout ended runs 066,
+    068, 112, 114 and damaged 115. A call that never spoke cost a room and a
+    join, so one more attempt is cheap.
+    """
+    from livekit_agent_simulator.run_orchestrator import _connect_leg_with_retry
+
+    leg, writer = _Leg(fail_times=1), _Writer()
+    handle = await _connect_leg_with_retry(leg, object(), writer, caller_mode="webrtc_sim")
+
+    assert handle is not None
+    assert leg.calls == 2, "exactly one retry"
+    kinds = [k for k, _ in writer.emitted]
+    assert kinds == ["sim.leg_retry"], writer.emitted
+    assert writer.emitted[0][1]["attempt"] == 1
+
+
+async def test_a_timeout_is_not_retried_twice():
+    """Bounded at one. An unbounded retry against a dead leg is a hang."""
+    from livekit_agent_simulator.run_orchestrator import _connect_leg_with_retry
+
+    leg, writer = _Leg(fail_times=5), _Writer()
+    with pytest.raises(TimeoutError):
+        await _connect_leg_with_retry(leg, object(), writer, caller_mode="webrtc_sim")
+
+    assert leg.calls == 2, f"retried {leg.calls - 1} times; must be exactly one"
+    last = writer.emitted[-1]
+    assert last[0] == "sim.leg_error"
+    assert last[1]["attempts"] == 2
+    assert last[1]["retry_skipped_because_transcribed"] is False
+
+
+async def test_a_call_that_already_spoke_is_never_retried():
+    """The money condition.
+
+    A call that has transcribed anything already paid for the OpenAI realtime
+    session. Reconnecting would pay twice for the same run. Measured: run 134
+    hit a read timeout AFTER turns were transcribed, and the retry correctly
+    stood down — that branch was exercised by a real run; this one now covers
+    the other direction, where it must NOT retry.
+    """
+    from livekit_agent_simulator.run_orchestrator import _connect_leg_with_retry
+
+    leg = _Leg(fail_times=1)
+    writer = _Writer([("transcript.agent.final", {"text": "hi"})])
+    with pytest.raises(TimeoutError):
+        await _connect_leg_with_retry(leg, object(), writer, caller_mode="webrtc_sim")
+
+    assert leg.calls == 1, "retried a call that had already spoken"
+    last = writer.emitted[-1]
+    assert last[0] == "sim.leg_error"
+    assert last[1]["retry_skipped_because_transcribed"] is True
+    assert not [k for k, _ in writer.emitted if k == "sim.leg_retry"]
+
+
+async def test_a_deliberate_timeout_is_not_retried():
+    """`AgentJoinTimeout` is a configuration problem, not a flaky wire.
+
+    Retrying it does not fix it — it just hides it for longer.
+    """
+    from livekit_agent_simulator.livekit.adapter import AgentJoinTimeout
+    from livekit_agent_simulator.run_orchestrator import _connect_leg_with_retry
+
+    leg = _Leg(fail_times=1, exc=AgentJoinTimeout("never joined"))
+    writer = _Writer()
+    with pytest.raises(AgentJoinTimeout):
+        await _connect_leg_with_retry(leg, object(), writer, caller_mode="webrtc_sim")
+
+    assert leg.calls == 1
+    assert writer.emitted[-1][0] == "dispatch.agent_timeout"
+
+
+async def test_a_clean_first_attempt_emits_nothing():
+    """The retry must be invisible on a healthy run."""
+    from livekit_agent_simulator.run_orchestrator import _connect_leg_with_retry
+
+    leg, writer = _Leg(fail_times=0), _Writer()
+    await _connect_leg_with_retry(leg, object(), writer, caller_mode="webrtc_sim")
+    assert leg.calls == 1
+    assert writer.emitted == []

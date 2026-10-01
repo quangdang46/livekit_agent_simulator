@@ -318,6 +318,76 @@ async def _cleanup_rooms(
             )
 
 
+async def _connect_leg_with_retry(
+    leg: Any,
+    leg_ctx: Any,
+    writer: Any,
+    *,
+    caller_mode: str,
+) -> Any:
+    """Connect the sim leg, retrying ONCE and only if nothing was transcribed.
+
+    Measured 2026-09-30 on the target repo: `TimeoutError: The read
+    operation timed out` ended runs 066, 068, 112 and 114 and damaged 115. A
+    peer session put it as the blocker on every scenario that reached a real
+    conversation and then stopped.
+
+    The condition is deliberately NOT a bare timeout. A call that has already
+    transcribed anything cost real money on the OpenAI realtime session, so
+    reconnecting it would pay twice for the same run. A call that never spoke
+    cost a room and a join — that is the case that actually occurs, and the one
+    worth a second attempt.
+
+    `AgentJoinTimeout` and `SimLegError` are NOT retried. Those are deliberate
+    outcomes with their own events, and a run that never joined is a
+    configuration problem that a second attempt only hides for longer.
+
+    Extracted from `run_scenario_instance` so it is testable as BEHAVIOUR
+    rather than as source text. The previous test for this read the function's
+    source and asserted on string positions, which cannot tell a working retry
+    from a dead one.
+    """
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            return await leg.connect(leg_ctx)
+        except TimeoutError as e:
+            # `asyncio.TimeoutError` IS the builtin TimeoutError on 3.11+, and
+            # the LiveKit read timeout surfaces as a bare `TimeoutError`, so
+            # this matches it without a string test on the message.
+            spoke = any(
+                (ev.get("kind") or "").startswith("transcript.")
+                for ev in writer.events
+            )
+            if attempts >= 2 or spoke:
+                writer.emit(
+                    "sim.leg_error",
+                    spec={
+                        "error": str(e),
+                        "mode": caller_mode,
+                        "attempts": attempts,
+                        "retry_skipped_because_transcribed": spoke,
+                    },
+                    include_dialogue=False,
+                )
+                raise
+            writer.emit(
+                "sim.leg_retry",
+                spec={"reason": str(e), "mode": caller_mode, "attempt": attempts},
+                include_dialogue=False,
+            )
+        except (AgentJoinTimeout, SimLegError) as e:
+            writer.emit(
+                "dispatch.agent_timeout"
+                if isinstance(e, AgentJoinTimeout)
+                else "sim.leg_error",
+                spec={"error": str(e), "mode": caller_mode},
+                include_dialogue=False,
+            )
+            raise
+
+
 def diagnose_failure(
     status: str,
     events: list[dict[str, Any]],
@@ -499,48 +569,9 @@ async def run_scenario_instance(
             # deliberate outcomes with their own events, and a run that never
             # joined is a configuration problem that a second attempt only
             # hides for longer.
-            _connect_attempts = 0
-            while True:
-                _connect_attempts += 1
-                try:
-                    leg_handle = await leg.connect(leg_ctx)
-                    break
-                except TimeoutError as e:
-                    # `asyncio.TimeoutError` IS the builtin TimeoutError on
-                    # 3.11+, and the LiveKit read timeout surfaces as a bare
-                    # `TimeoutError`, so this matches it without a string test.
-                    spoke = any(
-                        (ev.get("kind") or "").startswith("transcript.")
-                        for ev in writer.events
-                    )
-                    if _connect_attempts >= 2 or spoke:
-                        writer.emit(
-                            "sim.leg_error",
-                            spec={
-                                "error": str(e),
-                                "mode": caller_mode,
-                                "attempts": _connect_attempts,
-                                "retry_skipped_because_transcribed": spoke,
-                            },
-                            include_dialogue=False,
-                        )
-                        raise
-                    writer.emit(
-                        "sim.leg_retry",
-                        spec={
-                            "reason": str(e),
-                            "mode": caller_mode,
-                            "attempt": _connect_attempts,
-                        },
-                        include_dialogue=False,
-                    )
-                except (AgentJoinTimeout, SimLegError) as e:
-                    writer.emit(
-                        "dispatch.agent_timeout" if isinstance(e, AgentJoinTimeout) else "sim.leg_error",
-                        spec={"error": str(e), "mode": caller_mode},
-                        include_dialogue=False,
-                    )
-                    raise
+            leg_handle = await _connect_leg_with_retry(
+                leg, leg_ctx, writer, caller_mode=caller_mode
+            )
 
             meta["room_name"] = leg_handle.agent_room_name
             meta["sim_room_name"] = leg_handle.sim_room_name
