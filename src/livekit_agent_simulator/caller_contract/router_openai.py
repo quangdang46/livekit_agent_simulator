@@ -131,8 +131,16 @@ class OpenAIResponseRouter:
             raise RouterFault(f"openai: content was not JSON: {e}") from e
 
         decision = parse_route_body(raw, options=options, backend=self.name)
+        # `confidence` MUST be forwarded. Dropping it here is what defeated the
+        # entire abstention mechanism: parse_route_body validated it and the
+        # dataclass default of None then made driver.py's
+        # `if decision.confidence is not None and (...)` short-circuit, so
+        # CONFIDENCE_FLOOR was never evaluated against a real number on any
+        # run. Measured on the target repo, run 136: eight of eight decisions
+        # recorded `confidence: null`.
         return RouteDecision(
             response_id=decision.response_id,
+            confidence=decision.confidence,
             backend=self.name,
             latency_ms=int((time.monotonic() - started) * 1000),
         )

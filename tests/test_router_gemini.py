@@ -167,3 +167,21 @@ def test_an_unreachable_transport_is_retried_once():
         with pytest.raises(RouterError, match="unreachable"):
             asyncio.run(GeminiResponseRouter(api_key="k").route(agent_transcript="x", catalog=_catalog()))
     assert m.call_count == 2
+
+
+def test_the_gemini_adapter_also_forwards_the_parsed_confidence() -> None:
+    """The twin of the OpenAI adapter's dropped-confidence bug.
+
+    Both adapters built a fresh RouteDecision from the parsed one without
+    forwarding `confidence`, so the dataclass default of None defeated
+    driver.py's floor check on every run. Character-for-character the same
+    omission on both ports, which is why neither parser test could see it.
+    """
+    decision, _ = _route(
+        _respond(_candidates(json.dumps({RESPONSE_KEY: "company", "confidence": 0.87}))),
+        catalog=_catalog(),
+        transcript="who are you",
+    )
+    assert decision.confidence is not None, (
+        "gemini adapter dropped the parsed confidence"
+    )

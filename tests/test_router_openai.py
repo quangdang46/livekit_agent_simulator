@@ -171,3 +171,37 @@ def test_an_unreachable_transport_is_retried_once():
         with pytest.raises(RouterError, match="unreachable"):
             asyncio.run(OpenAIResponseRouter(api_key="k").route(agent_transcript="x", catalog=_catalog()))
     assert m.call_count == 2
+
+
+def test_the_adapter_forwards_the_parsed_confidence() -> None:
+    """The bug that defeated abstention entirely.
+
+    `parse_route_body` validates `confidence` and would raise RouterFault if the
+    provider omitted it — so a body that parses has already proved the value
+    arrived. Both adapters then built a FRESH RouteDecision without forwarding
+    it, the dataclass default of None took over, and driver.py's
+    `if decision.confidence is not None and (...)` short-circuited. So
+    CONFIDENCE_FLOOR was never compared against a real number on any run:
+    eight of eight decisions on the target repo recorded `confidence: null`.
+
+    This is the seam the parser test could not see — it tests
+    `parse_route_body`, which was always correct. The value was produced
+    correctly and thrown away one line later.
+    """
+    import asyncio as _asyncio
+
+    from livekit_agent_simulator.caller_contract.router_openai import (
+        OpenAIResponseRouter,
+    )
+
+    decision, _ = _route(
+        _respond({"choices": [{"message": {"content": json.dumps(
+            {RESPONSE_KEY: "company", "confidence": 0.87}
+        )}}]}),
+        catalog=_catalog(),
+        transcript="who are you",
+    )
+    assert decision.confidence == 0.87, (
+        "the adapter dropped the parsed confidence — abstention cannot fire and "
+        "the floor is never evaluated"
+    )
