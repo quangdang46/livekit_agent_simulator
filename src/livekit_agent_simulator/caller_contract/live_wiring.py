@@ -846,14 +846,27 @@ async def run_contract_driver_path(
     if result.failure is not None:
         raise ContractDriverFailure(result)
 
+    # Only two endings can reach here, and the reason is structural rather than
+    # incidental: every other path goes through `_fail()`, which ALWAYS attaches
+    # a `RunFailure`, and the `raise` above turns any failure into a
+    # `ContractDriverFailure` before this map is consulted.
+    #
+    # The other four keys — contract_caller_end, contract_timeout,
+    # contract_transport_error, contract_error — plus the `contract_end`
+    # fallback were removed here (dead-end-reason-keys). They were not merely
+    # unused: they were listed in the map's published shape, so an
+    # `ended_by` assert appeared able to distinguish `contract_caller_end` from
+    # `contract_scenario_end` when it never could. That is what made the
+    # `c0d3e26` mutants undetectable — every contract run reported
+    # "unrecognized" and no assert naming a side could fire.
+    #
+    # A LOOKUP, not `.get`: a new `EndedBy` member must now fail loudly instead
+    # of silently inventing a reason string, which is the opposite of the
+    # default being removed.
     return {
         EndedBy.SCENARIO: "contract_scenario_end",
-        EndedBy.CALLER: "contract_caller_end",
         EndedBy.AGENT: "contract_agent_end",
-        EndedBy.TIMEOUT: "contract_timeout",
-        EndedBy.TRANSPORT: "contract_transport_error",
-        EndedBy.ERROR: "contract_error",
-    }.get(result.ended_by, "contract_end")
+    }[result.ended_by]
 
 
 __all__ = ["ContractDriverFailure", "run_contract_driver_path"]

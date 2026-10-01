@@ -836,7 +836,11 @@ def _eval_ended_by_outcome(oc: OutcomeExpect, events: list[dict[str, Any]]) -> d
         if side is not None:
             who = side
             reason_parts.append(f"end_reason: {er_s}")
-        elif er_s in ("max_turns", "timeout", "contract_timeout"):
+        elif er_s in ("max_turns", "timeout"):
+            # `contract_timeout` used to be in this tuple. It is never emitted:
+            # a TIMEOUT ending carries a RunFailure, so `run_contract_driver_path`
+            # raises before the EndedBy map is consulted. It listed a side-less
+            # reason that could not arrive. `max_turns` and `timeout` are live.
             reason_parts.append(f"end_reason: {er_s} (no hang-up side)")
         else:
             reason_parts.append(f"end_reason: {er_s} (unrecognized)")

@@ -1364,30 +1364,32 @@ async def test_agent_hangup_returns_contract_agent_end():
     "ended_by,expected",
     [
         (EndedBy.SCENARIO, "contract_scenario_end"),
-        (EndedBy.CALLER, "contract_caller_end"),
         (EndedBy.AGENT, "contract_agent_end"),
-        (EndedBy.TIMEOUT, "contract_timeout"),
-        (EndedBy.TRANSPORT, "contract_transport_error"),
-        (EndedBy.ERROR, "contract_error"),
-        # A key outside the map must degrade to the documented fallback rather
-        # than leak None/raw enum text into run.end_condition.reason.
-        ("not-an-ended-by", "contract_end"),
     ],
 )
 
 async def test_ended_by_maps_to_the_contract_reason_label(ended_by, expected):
 
-    """Pin every key of the EndedBy -> reason map, including the ones the
-    driver cannot currently reach.
+    """Pin every REACHABLE key of the EndedBy -> reason map.
 
-    Reachability today: driver.py builds a failure-free DriverResult only for
-    SCENARIO (two sites) and AGENT (one site); every other ending goes through
-    _fail(), which always attaches a RunFailure, and run_contract_driver_path
-    raises ContractDriverFailure before the map whenever failure is not None.
-    So contract_caller_end / contract_timeout / contract_transport_error /
-    contract_error are unreachable in production right now. They are pinned
-    anyway because they are the map's published domain -- a future change that
-    makes one reachable must not also be free to rename it.
+    This test used to pin all six plus the `contract_end` fallback. Four of
+    those keys and the fallback were deleted (dead-end-reason-keys) because
+    they cannot be emitted at all: the driver builds a failure-free
+    DriverResult only for SCENARIO (two sites) and AGENT (one); every other
+    ending goes through `_fail()`, which always attaches a RunFailure, and
+    `run_contract_driver_path` raises before the map whenever failure is not
+    None.
+
+    They were pinned deliberately, by an earlier bead, as the map's "published
+    domain" — so a future change that made one reachable would not be free to
+    rename it. That reasoning was sound; what it also did was make an
+    `type: ended_by` assert APPEAR able to distinguish `contract_caller_end`
+    from `contract_scenario_end` when it never could, which is part of why the
+    `c0d3e26` mutants went undetected.
+
+    Kept rather than deleted, because that earlier coverage-gap bead is closed
+    and its output should not vanish with this one. `test_an_unmapped_ending_
+    now_raises` replaces what the deleted cases used to guarantee.
     """
 
     async def _finished(self, *a, **kw):
@@ -1740,3 +1742,38 @@ async def test_an_unconnected_room_fails_as_dtmf_not_as_an_sdk_error():
         "the SDK's own exception leaked through — the reader would go looking "
         "in livekit/rtc instead of at the room topology"
     )
+
+
+async def test_an_unmapped_ending_now_raises_instead_of_inventing_a_reason():
+    """The `.get` default was removed with the dead keys, and this pins why.
+
+    The map used to end in `.get(result.ended_by, "contract_end")`. That
+    default was unreachable — `EndedBy` is a closed enum and every member was a
+    key — but it meant a NEW member would silently report a reason string that
+    matched nothing. Now it is a plain lookup, so the next `EndedBy` added
+    without a decision about its reason fails here rather than in a consumer
+    six layers down.
+
+    This replaces what the four deleted characterisation cases used to guarantee.
+    Those cases asserted the deleted keys produced their strings; this asserts
+    the property that makes deleting them safe.
+    """
+    import pytest
+
+    scenario = SimpleNamespace(
+        caller_actions=parse_steps([{"say": "Hi there."}], file="t")
+    )
+
+    async def _finished(self, *a, **kw):
+        # An ended_by with no entry in the map. Cannot happen through the real
+        # driver — every failure ending raises before the map — which is
+        # precisely why it is constructed directly here.
+        return DriverResult(ended_by="NOT_A_REAL_ENDED_BY", failure=None)
+
+    with patch("urllib.request.urlopen"), patch.object(
+        ContractCallerDriver, "run", _finished
+    ):
+        with pytest.raises(KeyError):
+            await run_contract_driver_path(
+                scenario, None, FakeObserver(), FakeBridge(), FakeWriter(), _fake_cfg()
+            )
